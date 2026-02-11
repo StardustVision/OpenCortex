@@ -1,0 +1,246 @@
+# MemCortex 架构设计文档（阶段草案 v0.1）
+
+## 0. 文档说明
+
+- 文档目标：沉淀当前会话已确认的技术决策与细节设计草案，作为 Phase 1 的实施基线。
+- 当前范围：优先完成本地持续记忆闭环 + 远程自学习候选技能闭环。
+- 不在本阶段范围：候选 Skill 下发后执行策略与运行时效果治理（后续阶段讨论）。
+
+---
+
+## 1. Phase 1 核心目标
+
+1. 在本地 AI 开发工作流中持续采集高价值记忆（优先支持 Claude Code、Cursor）。
+2. 构建可靠的本地事件队列与微批处理机制，确保“不中断、不丢失、可恢复”。
+3. 通过 MCP 同步到远程学习端，驱动 Agent Swarm 提炼候选 Skill。
+4. 候选 Skill 以高频真实使用为核心，不追求每日固定产出。
+
+---
+
+## 2. 技术栈决策（已确认）
+
+### 2.1 客户端与本地侧
+
+- 接入客户端（Phase 1）：`Claude Code`、`Cursor`
+- 集成方式：**MCP 触发**（本地运行 MCP server，通过 tools 触发采集与 flush）
+- 本地向量存储：`LanceDB`（**仅存储向量 + 向量检索**，不做队列）
+- 本地控制/队列存储：`SQLite`（spool 队列、元数据、状态机、dead letter）
+
+### 2.2 远程侧
+
+- 协议：`MCP`
+- 编排框架：`Agno`（中心编排）
+- 远程数据层（Phase 1.5）：`LanceDB + SQLite`
+- 后续演进：满足阈值后评估迁移 `PostgreSQL`（控制面）
+
+### 2.3 数据流主线
+
+`capture(event) -> spool(sqlite) -> maybe_flush -> flush(vector to lancedb) -> sync(remote MCP)`
+
+数据存储边界：
+- **SQLite**：事件队列、状态机、元数据、dead letter（持久化控制流）
+- **LanceDB**：已处理事件的向量 + 检索索引（用于后续学习/检索）
+
+---
+
+## 3. 本地架构详细设计
+
+### 3.1 本地组件职责
+
+1. Hook Adapter（按客户端捕获事件，通过 MCP tools 暴露）
+2. Event Normalizer（统一事件模型）
+3. Local Spool（SQLite 队列 + 状态机）
+4. Flush Engine（微批处理，向量写入 LanceDB）
+5. Sync Worker（低水位时通过 MCP 远程同步）
+6. Vector Store（**LanceDB 专用**：存储事件向量 + 支持检索）
+
+### 3.2 统一事件模型（MemoryEvent）
+
+建议字段：
+
+- `event_id`
+- `source_tool` (`claude_code|cursor`)
+- `session_id`
+- `event_type` (`user_prompt|assistant_response|tool_use_end|session_end|error`)
+- `content`（事件内容摘要）
+- `embedding`（**向量**：内容已向量化的向量数据，LanceDB 存储用）
+- `meta`（如项目路径、命令、退出码、文件引用）
+- `domain_hint`（可选）
+- `confidence`（可选）
+- `created_at`
+
+### 3.3 队列状态机
+
+`new -> reserved -> processed -> synced`
+
+失败分支：
+
+`failed -> dead_letter`
+
+### 3.4 flush 触发规则（OR 关系，已确认）
+
+满足任一条件即触发 flush：
+
+- 条数阈值：`reserved + processed 事件数 >= 20`
+- 时间阈值：`队列中最老事件 age >= 180s`
+- 空间阈值：`spool_size >= 100MB`
+
+### 3.5 重试规则（已确认）
+
+- 第 1 次失败：10 秒后重试
+- 第 2 次失败：30 秒后重试
+- 第 3 次失败：120 秒后重试
+- 超过阈值：进入 `dead_letter`
+
+### 3.6 并发与可靠性（已确认）
+
+- 并发控制：文件锁（单 flush writer）
+- 任务租约：`lease_timeout = 30s`
+- backlog 定义：**reserved + processed 状态的事件总数**（待同步到远程的事件）
+- 远程同步水位门：`backlog_low_watermark = 10`（触发 sync worker）
+
+### 3.7 Hook 触发优先级（已确认）
+
+1. **MCP trigger（外部强制）**：强制 flush（SessionEnd 等场景）
+2. **PostToolUse**：常规 maybe_flush（普通采集后评估）
+3. **PreSearch**：backlog >= 5 时先 flush（搜索前清理）
+4. **PreToolUse**：仅采集，不 flush
+
+> 注：MCP 触发机制通过本地 MCP server 的 tools 暴露，由客户端（如 Claude Code）主动调用。
+
+### 3.8 保留与容量策略（已确认）
+
+- 原始事件保留：7 天
+- dead letter 处理：每日
+- 每日清理后体积 > 70MB：compact
+- 体积 >= 100MB：进入保护模式（仅保留高价值事件采集）
+- 退出保护模式：体积 < 80MB 且 backlog < 10（reserved+processed 总数）
+
+---
+
+## 4. 远程 MCP 契约设计（MVP）
+
+### 4.1 最小工具集（已确认）
+
+1. `memory_ingest_batch`
+2. `memory_sync_query`
+3. `learning_run_daily`
+4. `skill_candidate_list`
+5. `skill_candidate_review`
+
+### 4.2 `memory_ingest_batch` 关键约束
+
+- 单批最大事件数：50
+- 支持 `raw_content`（可选）
+- 默认优先传 `content_summary`，敏感数据需脱敏并标记
+- 幂等键：`event_id + payload_hash`
+
+### 4.3 同步结果处理
+
+- `accepted_ids`：本地标记 `synced`
+- `duplicate_ids`：本地同样标记 `synced`
+- `rejected`：按错误码重试/隔离/人工处理
+
+### 4.4 审核策略
+
+- `skill_candidate_review` 使用单人审核
+- 必须记录：审核人、结论、备注、证据引用
+
+---
+
+## 5. 远程 Agent Swarm 设计（中心编排）
+
+### 5.1 角色与职责
+
+- `Orchestrator`：全流程状态推进与决策
+- `Context Cleaner`：清洗、脱敏、质量标记
+- `Memory Manager`：去重、合并、冲突标记、入库管理
+- `Learning Leader`：模式归纳与频率统计
+- `Skill Synthesizer`：候选 Skill 蓝图生成
+- `Safety Auditor`：风险审查与拦截
+
+### 5.2 流程原则
+
+- Agent 输出结构化结果 + 置信度 + 证据引用
+- 状态推进只由 Orchestrator 执行
+- 每日运行可无产出（0 candidate 合法）
+
+---
+
+## 6. 候选 Skill 生成策略（高频驱动）
+
+### 6.1 产出原则（已确认）
+
+- 不要求每日产出 skill
+- 仅高频、高复用、高成功率模式进入候选池
+
+### 6.2 候选门槛（已确认）
+
+- `support_count >= 8`
+- `unique_sessions >= 3`
+- `usage_count_7d >= 10`
+- `success_rate >= 0.8`
+- `heat_score >= 0.72`
+
+### 6.3 模板聚类与观察池（已确认）
+
+- 聚类方式：按任务模板聚类（非具体文件内容）
+- 模板相似度阈值：`0.80`
+- 高频但质量未达标：进入观察池（7 天）
+- 升级条件：连续 7 天 `success_rate >= 0.85` 且 `usage_7d >= 10`
+
+---
+
+## 7. 远程控制面 SQLite 草案
+
+### 7.1 建议核心表
+
+- `tasks`
+- `task_runs`
+- `candidates`
+- `reviews`
+- `dead_letters`
+- `audits`
+
+### 7.2 表职责摘要
+
+- `tasks`：任务状态机与租约重试
+- `task_runs`：执行尝试明细与错误追踪
+- `candidates`：候选 Skill 主体与热度指标
+- `reviews`：人工审核记录
+- `dead_letters`：异常隔离与处置轨迹
+- `audits`：全链路操作审计日志
+
+### 7.3 SQLite 运行建议
+
+- `PRAGMA journal_mode=WAL;`
+- `PRAGMA foreign_keys=ON;`
+- `PRAGMA busy_timeout=5000;`
+- `PRAGMA synchronous=NORMAL;`
+
+---
+
+## 8. Postgres 迁移触发条件（预埋）
+
+满足任意条件时启动控制面迁移评估：
+
+1. 日任务量 > 5 万
+2. 并发 worker > 5 且锁等待明显
+3. 审核/审计查询 P95 > 300ms 连续 7 天
+
+---
+
+## 9. 当前结论与下一步
+
+### 9.1 当前结论
+
+- Phase 1 架构路径清晰，具备直接实施条件。
+- 设计重点已从“功能跑通”转向“可恢复、可追踪、可演进”。
+
+### 9.2 下一步建议（实施前）
+
+1. 先完成 `Claude Code + Cursor` 的 Hook 事件映射表
+2. 确认 `MemoryEvent` 与 MCP 请求体 schema（v1 固定）
+3. 补充控制面 6 表 DDL（草案转可执行）
+4. 定义最小质量指标看板（错配率、纠错率、dead letter 率）
+
