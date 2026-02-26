@@ -1,22 +1,96 @@
 {
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 2000,
+            "command": "npx ruvector@latest hooks pre-edit \"$TOOL_INPUT_file_path\" 2>/dev/null || true"
+          },
+          {
+            "type": "command",
+            "timeout": 2000,
+            "command": "npx ruvector@latest hooks coedit-suggest --file \"$TOOL_INPUT_file_path\" 2>/dev/null || true"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 2000,
+            "command": "npx ruvector@latest hooks pre-command \"$TOOL_INPUT_command\" 2>/dev/null || true"
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 2000,
+            "command": "npx ruvector@latest hooks remember \"Reading: $TOOL_INPUT_file_path\" -t file_access 2>/dev/null || true"
+          }
+        ]
+      },
+      {
+        "matcher": "Glob|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 2000,
+            "command": "npx ruvector@latest hooks remember \"Search: $TOOL_INPUT_pattern\" -t search_pattern 2>/dev/null || true"
+          }
+        ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 2000,
+            "command": "npx ruvector@latest hooks remember \"Agent: $TOOL_INPUT_subagent_type\" -t agent_spawn 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 2000,
+            "command": "npx ruvector@latest hooks post-edit \"$TOOL_INPUT_file_path\" 2>/dev/null || true"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 2000,
+            "command": "npx ruvector@latest hooks post-command \"$TOOL_INPUT_command\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude-plugin/hooks/session-start.sh\""
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
+            "timeout": 5000,
+            "command": "npx ruvector@latest hooks session-start 2>/dev/null || true"
+          },
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude-plugin/hooks/user-prompt-submit.sh\"",
-            "timeout": 15
+            "timeout": 2000,
+            "command": "npx ruvector@latest hooks trajectory-begin -c \"claude-session\" -a \"claude\" 2>/dev/null || true"
           }
         ]
       }
@@ -26,17 +100,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude-plugin/hooks/stop.sh\""
-          }
-        ]
-      }
-    ],
-    "SessionEnd": [
-      {
-        "hooks": [
+            "timeout": 2000,
+            "command": "npx ruvector@latest hooks trajectory-end --success --quality 0.8 2>/dev/null || true"
+          },
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude-plugin/hooks/session-end.sh\""
+            "timeout": 2000,
+            "command": "npx ruvector@latest hooks session-end 2>/dev/null || true"
           }
         ]
       }

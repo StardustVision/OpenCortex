@@ -20,7 +20,7 @@ Usage::
 import argparse
 import logging
 from contextlib import asynccontextmanager
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastmcp import Context, FastMCP
 
@@ -225,6 +225,190 @@ async def memory_health(ctx: Context) -> Dict[str, Any]:
     """Check health of all components."""
     orch = _get_orch(ctx)
     return await orch.health_check()
+
+
+# ---------------------------------------------------------------------------
+# RuVector Hooks Tools (Native Self-Learning)
+# ---------------------------------------------------------------------------
+
+@mcp.tool(
+    name="memory_hooks_learn",
+    description=(
+        "Record a learning outcome using RuVector native Q-learning. "
+        "Maps OpenCortex concepts to hooks: state=URI, action=context_type, reward=feedback. "
+        "Returns best action recommendation based on learned patterns."
+    ),
+)
+async def memory_hooks_learn(
+    state: str,
+    action: str,
+    reward: float,
+    available_actions: str = "",
+    ctx: Context = None,
+) -> Dict[str, Any]:
+    """Record a learning outcome via RuVector hooks Q-learning.
+
+    Args:
+        state: Current state (e.g., URI, query context).
+        action: Action taken (e.g., "memory", "skill", "resource").
+        reward: Reward value (-1 to 1).
+        available_actions: Comma-separated available actions.
+    """
+    orch = _get_orch(ctx)
+    actions = available_actions.split(",") if available_actions else None
+    return await orch.hooks_learn(
+        state=state,
+        action=action,
+        reward=reward,
+        available_actions=actions,
+    )
+
+
+@mcp.tool(
+    name="memory_hooks_remember",
+    description=(
+        "Store content in RuVector semantic memory. "
+        "Useful for remembering important context that should persist beyond session."
+    ),
+)
+async def memory_hooks_remember(
+    content: str,
+    memory_type: str = "general",
+    ctx: Context = None,
+) -> Dict[str, Any]:
+    """Store content in semantic memory.
+
+    Args:
+        content: Content to remember.
+        memory_type: Type of memory (default: general).
+    """
+    orch = _get_orch(ctx)
+    return await orch.hooks_remember(content=content, memory_type=memory_type)
+
+
+@mcp.tool(
+    name="memory_hooks_recall",
+    description=(
+        "Search RuVector semantic memory for relevant content. "
+        "Different from vector search - searches learned patterns and memories."
+    ),
+)
+async def memory_hooks_recall(
+    query: str,
+    limit: int = 5,
+    ctx: Context = None,
+) -> List[Dict[str, Any]]:
+    """Search semantic memory.
+
+    Args:
+        query: Search query.
+        limit: Maximum results.
+    """
+    orch = _get_orch(ctx)
+    return await orch.hooks_recall(query=query, limit=limit)
+
+
+@mcp.tool(
+    name="memory_hooks_trajectory_begin",
+    description="Begin tracking a learning trajectory for multi-step tasks.",
+)
+async def memory_hooks_trajectory_begin(
+    trajectory_id: str,
+    initial_state: str,
+    ctx: Context = None,
+) -> Dict[str, Any]:
+    """Begin a learning trajectory."""
+    orch = _get_orch(ctx)
+    return await orch.hooks_trajectory_begin(
+        trajectory_id=trajectory_id,
+        initial_state=initial_state,
+    )
+
+
+@mcp.tool(
+    name="memory_hooks_trajectory_step",
+    description="Add a step to an existing learning trajectory.",
+)
+async def memory_hooks_trajectory_step(
+    trajectory_id: str,
+    action: str,
+    reward: float,
+    next_state: str = "",
+    ctx: Context = None,
+) -> Dict[str, Any]:
+    """Add a step to trajectory."""
+    orch = _get_orch(ctx)
+    return await orch.hooks_trajectory_step(
+        trajectory_id=trajectory_id,
+        action=action,
+        reward=reward,
+        next_state=next_state or None,
+    )
+
+
+@mcp.tool(
+    name="memory_hooks_trajectory_end",
+    description="End a learning trajectory with a quality score.",
+)
+async def memory_hooks_trajectory_end(
+    trajectory_id: str,
+    quality_score: float,
+    ctx: Context = None,
+) -> Dict[str, Any]:
+    """End a trajectory."""
+    orch = _get_orch(ctx)
+    return await orch.hooks_trajectory_end(
+        trajectory_id=trajectory_id,
+        quality_score=quality_score,
+    )
+
+
+@mcp.tool(
+    name="memory_hooks_error_record",
+    description=(
+        "Record an error and its fix for the system to learn from. "
+        "Helps the system remember how to fix common errors."
+    ),
+)
+async def memory_hooks_error_record(
+    error: str,
+    fix: str,
+    context: str = "",
+    ctx: Context = None,
+) -> Dict[str, Any]:
+    """Record an error and fix for learning."""
+    orch = _get_orch(ctx)
+    return await orch.hooks_error_record(
+        error=error,
+        fix=fix,
+        context=context or None,
+    )
+
+
+@mcp.tool(
+    name="memory_hooks_error_suggest",
+    description=(
+        "Get suggested fixes for an error based on learned patterns. "
+        "The system will recommend fixes based on previously recorded errors."
+    ),
+)
+async def memory_hooks_error_suggest(
+    error: str,
+    ctx: Context = None,
+) -> List[Dict[str, Any]]:
+    """Get suggested fixes for an error."""
+    orch = _get_orch(ctx)
+    return await orch.hooks_error_suggest(error=error)
+
+
+@mcp.tool(
+    name="memory_hooks_stats",
+    description="Get RuVector hooks intelligence statistics (Q-learning patterns, memories, trajectories, errors).",
+)
+async def memory_hooks_stats(ctx: Context) -> Dict[str, Any]:
+    """Get hooks statistics."""
+    orch = _get_orch(ctx)
+    return await orch.hooks_stats()
 
 
 # ---------------------------------------------------------------------------

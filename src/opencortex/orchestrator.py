@@ -55,6 +55,7 @@ from opencortex.retrieve.types import (
     TypedQuery,
 )
 from opencortex.storage.collection_schemas import init_context_collection
+from opencortex.storage.ruvector.hooks_client import RuVectorHooks
 from opencortex.storage.viking_fs import VikingFS, init_viking_fs
 from opencortex.storage.vikingdb_interface import VikingDBInterface
 from opencortex.utils.uri import CortexURI
@@ -87,12 +88,14 @@ class MemoryOrchestrator:
         embedder: Optional[EmbedderBase] = None,
         rerank_config: Optional[RerankConfig] = None,
         llm_completion: Optional[LLMCompletionCallable] = None,
+        hooks: Optional[RuVectorHooks] = None,
     ):
         self._config = config or get_config()
         self._storage = storage
         self._embedder = embedder
         self._rerank_config = rerank_config or RerankConfig()
         self._llm_completion = llm_completion
+        self._hooks = hooks
 
         self._fs: Optional[VikingFS] = None
         self._retriever: Optional[HierarchicalRetriever] = None
@@ -170,6 +173,10 @@ class MemoryOrchestrator:
 
         if self._llm_completion:
             self._analyzer = IntentAnalyzer(llm_completion=self._llm_completion)
+
+        # 7. RuVector hooks for native self-learning (auto-create if not provided)
+        if self._hooks is None:
+            self._hooks = self._create_default_hooks()
 
         self._initialized = True
         logger.info(
@@ -360,6 +367,43 @@ class MemoryOrchestrator:
             provider,
         )
         return None
+
+    def _create_default_hooks(self) -> Optional[RuVectorHooks]:
+        """
+        Auto-create RuVector hooks for native self-learning.
+
+        Uses npx ruvector hooks to provide:
+        - Semantic memory (remember/recall)
+        - Q-learning (learn/batch-learn)
+        - Trajectory tracking
+        - Error pattern learning
+
+        Returns:
+            RuVectorHooks instance, or None if npx is not available.
+        """
+        try:
+            from opencortex.storage.ruvector import RuVectorHooks
+
+            hooks = RuVectorHooks(
+                data_dir=self._config.data_root,
+                cli_path="npx",
+                timeout=30,
+            )
+            logger.info(
+                "[MemoryOrchestrator] Auto-created RuVectorHooks for native self-learning"
+            )
+            return hooks
+        except ImportError:
+            logger.warning(
+                "[MemoryOrchestrator] Could not import RuVectorHooks. "
+                "Native self-learning disabled."
+            )
+            return None
+        except Exception as exc:
+            logger.warning(
+                "[MemoryOrchestrator] Failed to create RuVectorHooks: %s", exc
+            )
+            return None
 
     def _ensure_init(self) -> None:
         """Raise if not initialized."""
@@ -887,6 +931,169 @@ class MemoryOrchestrator:
                     "is_protected": profile.is_protected,
                 }
         return None
+
+    # =========================================================================
+    # Native Self-Learning (RuVector Hooks)
+    # =========================================================================
+
+    async def hooks_learn(
+        self,
+        state: str,
+        action: str,
+        reward: float,
+        available_actions: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Record a learning outcome using RuVector native hooks (Q-learning).
+
+        Maps OpenCortex concepts to RuVector hooks:
+        - state: URI or context identifier
+        - action: context_type (memory/skill/resource)
+        - reward: feedback signal (-1 to 1)
+
+        Args:
+            state: Current state (e.g., URI)
+            action: Action taken (e.g., "memory", "skill")
+            reward: Reward value
+            available_actions: List of available actions
+
+        Returns:
+            Dict with learning result
+        """
+        self._ensure_init()
+        if not self._hooks:
+            return {"success": False, "error": "Hooks not initialized"}
+
+        result = await self._hooks.learn(
+            state=state,
+            action=action,
+            reward=reward,
+            available_actions=available_actions,
+        )
+        return {
+            "success": result.success,
+            "state": state,
+            "best_action": result.best_action,
+            "message": result.message,
+        }
+
+    async def hooks_remember(
+        self,
+        content: str,
+        memory_type: str = "general",
+    ) -> Dict[str, Any]:
+        """
+        Store content in RuVector semantic memory.
+
+        Args:
+            content: Content to remember
+            memory_type: Type of memory
+
+        Returns:
+            Dict with remember result
+        """
+        self._ensure_init()
+        if not self._hooks:
+            return {"success": False, "error": "Hooks not initialized"}
+
+        return await self._hooks.remember(content=content, memory_type=memory_type)
+
+    async def hooks_recall(
+        self,
+        query: str,
+        limit: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """
+        Search RuVector semantic memory.
+
+        Args:
+            query: Search query
+            limit: Maximum results
+
+        Returns:
+            List of matching memories
+        """
+        self._ensure_init()
+        if not self._hooks:
+            return []
+
+        return await self._hooks.recall(query=query, limit=limit)
+
+    async def hooks_trajectory_begin(self, trajectory_id: str, initial_state: str) -> Dict[str, Any]:
+        """Begin a learning trajectory."""
+        self._ensure_init()
+        if not self._hooks:
+            return {"success": False, "error": "Hooks not initialized"}
+
+        return await self._hooks.trajectory_begin(
+            trajectory_id=trajectory_id,
+            initial_state=initial_state,
+        )
+
+    async def hooks_trajectory_step(
+        self,
+        trajectory_id: str,
+        action: str,
+        reward: float,
+        next_state: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Add a step to a trajectory."""
+        self._ensure_init()
+        if not self._hooks:
+            return {"success": False, "error": "Hooks not initialized"}
+
+        return await self._hooks.trajectory_step(
+            trajectory_id=trajectory_id,
+            action=action,
+            reward=reward,
+            next_state=next_state,
+        )
+
+    async def hooks_trajectory_end(
+        self,
+        trajectory_id: str,
+        quality_score: float,
+    ) -> Dict[str, Any]:
+        """End a trajectory with quality score."""
+        self._ensure_init()
+        if not self._hooks:
+            return {"success": False, "error": "Hooks not initialized"}
+
+        return await self._hooks.trajectory_end(
+            trajectory_id=trajectory_id,
+            quality_score=quality_score,
+        )
+
+    async def hooks_error_record(self, error: str, fix: str, context: Optional[str] = None) -> Dict[str, Any]:
+        """Record an error and its fix for learning."""
+        self._ensure_init()
+        if not self._hooks:
+            return {"success": False, "error": "Hooks not initialized"}
+
+        return await self._hooks.error_record(error=error, fix=fix, context=context)
+
+    async def hooks_error_suggest(self, error: str) -> List[Dict[str, Any]]:
+        """Get suggested fixes for an error."""
+        self._ensure_init()
+        if not self._hooks:
+            return []
+
+        return await self._hooks.error_suggest(error=error)
+
+    async def hooks_stats(self) -> Dict[str, Any]:
+        """Get RuVector hooks statistics."""
+        self._ensure_init()
+        if not self._hooks:
+            return {"success": False, "error": "Hooks not initialized"}
+
+        stats = await self._hooks.stats()
+        return {
+            "success": True,
+            "q_learning_patterns": stats.q_learning_patterns,
+            "vector_memories": stats.vector_memories,
+            "learning_trajectories": stats.learning_trajectories,
+            "error_patterns": stats.error_patterns,
+        }
 
     # =========================================================================
     # Lifecycle

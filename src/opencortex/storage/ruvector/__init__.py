@@ -10,6 +10,7 @@ adapter-specific type definitions.
 
 from opencortex.storage.ruvector.adapter import RuVectorAdapter
 from opencortex.storage.ruvector.cli_client import RuVectorCLI
+from opencortex.storage.ruvector.hooks_client import HooksStats, LearningResult, RuVectorHooks
 from opencortex.storage.ruvector.http_client import RuVectorHTTPClient
 from opencortex.storage.ruvector.types import DecayResult, RuVectorConfig, SonaProfile
 
@@ -17,7 +18,10 @@ __all__ = [
     "RuVectorAdapter",
     "RuVectorCLI",
     "RuVectorHTTPClient",
+    "RuVectorHooks",
     "RuVectorConfig",
     "SonaProfile",
     "DecayResult",
+    "LearningResult",
+    "HooksStats",
 ]

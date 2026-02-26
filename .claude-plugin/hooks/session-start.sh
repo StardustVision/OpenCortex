@@ -14,12 +14,17 @@ mkdir -p "$PROJECT_DIR/.opencortex"
 
 if ! curl -sf "http://127.0.0.1:${RUVECTOR_PORT}/health" >/dev/null 2>&1; then
   if command -v node >/dev/null 2>&1 && [[ -f "$RUVECTOR_SCRIPT" ]]; then
+    # Kill stale ruvector processes that failed to release the DB lock
+    pkill -f "node.*ruvector-server\\.js.*--port ${RUVECTOR_PORT}" 2>/dev/null || true
+    sleep 0.2
+
     nohup node "$RUVECTOR_SCRIPT" \
       --port "$RUVECTOR_PORT" \
       --data-dir "$PROJECT_DIR/data/ruvector" \
       >"$PROJECT_DIR/.opencortex/ruvector.log" 2>&1 &
-    # Wait briefly for server to be ready
-    for i in 1 2 3 4 5; do
+
+    # Wait for server to be ready (RuVector starts in ~0.2s normally)
+    for i in 1 2 3; do
       sleep 0.3
       curl -sf "http://127.0.0.1:${RUVECTOR_PORT}/health" >/dev/null 2>&1 && break
     done
