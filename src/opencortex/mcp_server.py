@@ -274,11 +274,11 @@ def main():
     # Initialize config
     init_config(path=args.config)
 
-    mcp.run(
-        transport=args.transport,
-        host=args.host,
-        port=args.port,
-    )
+    run_kwargs = {"transport": args.transport}
+    if args.transport != "stdio":
+        run_kwargs["host"] = args.host
+        run_kwargs["port"] = args.port
+    mcp.run(**run_kwargs)
 
 
 if __name__ == "__main__":
