@@ -1,0 +1,12 @@
+name,description,module,path
+"brainstorming","Facilitate interactive brainstorming sessions using diverse creative techniques and ideation methods","core","_bmad/core/workflows/brainstorming/workflow.md"
+"party-mode","Orchestrates group discussions between all installed BMAD agents, enabling natural multi-agent conversations","core","_bmad/core/workflows/party-mode/workflow.md"
+"testarch-atdd","Generate failing acceptance tests before implementation using TDD red-green-refactor cycle","tea","_bmad/tea/workflows/testarch/atdd/workflow.yaml"
+"testarch-automate","Expand test automation coverage after implementation or analyze existing codebase to generate comprehensive test suite","tea","_bmad/tea/workflows/testarch/automate/workflow.yaml"
+"testarch-ci","Scaffold CI/CD quality pipeline with test execution, burn-in loops, and artifact collection","tea","_bmad/tea/workflows/testarch/ci/workflow.yaml"
+"testarch-framework","Initialize production-ready test framework architecture (Playwright or Cypress) with fixtures, helpers, and configuration","tea","_bmad/tea/workflows/testarch/framework/workflow.yaml"
+"testarch-nfr","Assess non-functional requirements (performance, security, reliability, maintainability) before release with evidence-based validation","tea","_bmad/tea/workflows/testarch/nfr-assess/workflow.yaml"
+"teach-me-testing","Multi-session learning companion that teaches testing progressively through 7 structured sessions with state persistence","tea","_bmad/tea/workflows/testarch/teach-me-testing/workflow.md"
+"testarch-test-design","Dual-mode workflow: (1) System-level testability review in Solutioning phase, or (2) Epic-level test planning in Implementation phase. Auto-detects mode based on project phase.","tea","_bmad/tea/workflows/testarch/test-design/workflow.yaml"
+"testarch-test-review","Review test quality using comprehensive knowledge base and best practices validation","tea","_bmad/tea/workflows/testarch/test-review/workflow.yaml"
+"testarch-trace","Generate requirements-to-tests traceability matrix, analyze coverage, and make quality gate decision (PASS/CONCERNS/FAIL/WAIVED)","tea","_bmad/tea/workflows/testarch/trace/workflow.yaml"
