@@ -49,24 +49,33 @@ PYTHONPATH=src python -m opencortex.mcp_server --transport sse --port 8920
 
 ### 4. Claude Code 集成
 
-#### 方式一：从 GitHub 安装（推荐）
+#### 方式一：克隆项目自动生效（推荐）
 
 ```bash
-claude plugin add https://github.com/StardustVision/OpenCortex.git
+git clone https://github.com/StardustVision/OpenCortex.git
+cd OpenCortex
 ```
 
-安装后 Claude Code 会自动注册 MCP Server 和 Hooks，无需手动配置。
+Claude Code 在项目目录下启动时自动发现并生效：
 
-#### 方式二：本地项目自动发现
+- `.mcp.json` → MCP Server（6 个 memory 工具）
+- `.claude/settings.json` → Hooks（自动记忆采集）
+- `.claude/commands/` → 自定义 Skill
 
-将项目克隆到本地后，Claude Code 打开项目目录时会自动发现：
+> 首次使用需创建 `opencortex.json` 配置文件（见步骤 2），并安装依赖（见步骤 1）。
 
-- `.mcp.json` — MCP Server 配置（stdio 模式）
-- `.claude-plugin/plugin.json` — 插件清单（Skills + Hooks + MCP）
+#### 方式二：作为插件加载
 
-#### 方式三：手动配置 MCP Server
+```bash
+# 在 Claude Code 中以插件模式加载本项目
+claude --plugin-dir /path/to/OpenCortex
+```
 
-在 Claude Code 的 `settings.json` 或项目 `.mcp.json` 中添加：
+或在 Claude Code 交互界面中使用 `/plugin install` 菜单安装。
+
+#### 方式三：仅配置 MCP Server（不含 Hooks）
+
+在任意项目的 `.mcp.json` 中添加：
 
 ```json
 {
@@ -74,7 +83,8 @@ claude plugin add https://github.com/StardustVision/OpenCortex.git
     "opencortex": {
       "type": "stdio",
       "command": "python",
-      "args": ["-m", "opencortex.mcp_server", "--config", "opencortex.json"]
+      "args": ["-m", "opencortex.mcp_server", "--config", "/path/to/opencortex.json"],
+      "env": { "PYTHONPATH": "/path/to/OpenCortex/src" }
     }
   }
 }
@@ -82,13 +92,13 @@ claude plugin add https://github.com/StardustVision/OpenCortex.git
 
 #### Hooks 自动记忆采集
 
-安装插件后，以下 Hooks 自动生效：
+项目内置 4 个 Hooks（通过 `.claude/settings.json` 注册），克隆即生效：
 
 | Hook | 触发时机 | 行为 |
 |------|---------|------|
 | **SessionStart** | 会话启动 | 初始化记忆会话，读取 tenant/user 配置 |
 | **UserPromptSubmit** | 每次用户输入 | 提示记忆可用 |
-| **Stop** (async) | 每轮 assistant 响应后 | 解析 transcript → 摘要 → 存储为记忆 |
+| **Stop** | 每轮 assistant 响应后 | 解析 transcript → 摘要 → 存储为记忆 |
 | **SessionEnd** | 会话结束 | 存储 session summary（轮数、时长） |
 
 #### Skills

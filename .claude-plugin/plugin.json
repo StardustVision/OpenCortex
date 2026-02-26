@@ -1,29 +1,12 @@
 {
   "name": "opencortex",
   "version": "0.2.0",
-  "description": "OpenCortex Memory Server — store, search, and reinforce AI agent memories via MCP. Features SONA reinforcement learning, hierarchical context management, multi-tenant isolation, and automatic session memory via hooks.",
-  "author": "MemCortex",
-  "repository": "https://github.com/StardustVision/OpenCortex.git",
-  "skills": [
-    {
-      "id": "opencortex-mcp",
-      "directory": "skills/opencortex-mcp"
-    },
-    {
-      "id": "memory-recall",
-      "directory": "skills/memory-recall"
-    }
-  ],
-  "hooks": "hooks/hooks.json",
-  "mcpServers": [
-    {
-      "id": "opencortex",
-      "name": "OpenCortex Memory Server",
-      "config": {
-        "type": "stdio",
-        "command": "python",
-        "args": ["-m", "opencortex.mcp_server", "--config", "opencortex.json"]
-      }
-    }
-  ]
+  "description": "OpenCortex Memory Server — AI agent memory with SONA reinforcement, automatic session capture via hooks, and multi-tenant isolation.",
+  "author": {
+    "name": "MemCortex"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/StardustVision/OpenCortex.git"
+  }
 }
