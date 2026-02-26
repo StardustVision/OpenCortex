@@ -2,7 +2,7 @@
   "name": "opencortex-marketplace",
   "description": "Memory management plugins for AI agents powered by OpenCortex.",
   "owner": {
-    "name": "MemCortex"
+    "name": "StardustVision"
   },
   "plugins": [
     {

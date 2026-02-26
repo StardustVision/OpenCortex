@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "description": "OpenCortex Memory Server — AI agent memory with SONA reinforcement, automatic session capture via hooks, and multi-tenant isolation.",
   "author": {
-    "name": "MemCortex"
+    "name": "StardustVision"
   },
   "repository": {
     "type": "git",
