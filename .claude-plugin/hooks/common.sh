@@ -15,8 +15,18 @@ PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 
 STATE_DIR="$PROJECT_DIR/.opencortex/memory"
 STATE_FILE="$STATE_DIR/session_state.json"
-CONFIG_FILE="$PROJECT_DIR/opencortex.json"
 BRIDGE="$PLUGIN_ROOT/scripts/oc_memory.py"
+
+# Config file discovery: project local first, then global default
+if [[ -f "$PROJECT_DIR/opencortex.json" ]]; then
+  CONFIG_FILE="$PROJECT_DIR/opencortex.json"
+elif [[ -f "$PROJECT_DIR/.opencortex.json" ]]; then
+  CONFIG_FILE="$PROJECT_DIR/.opencortex.json"
+elif [[ -f "$HOME/.opencortex/opencortex.json" ]]; then
+  CONFIG_FILE="$HOME/.opencortex/opencortex.json"
+else
+  CONFIG_FILE=""
+fi
 
 # Python resolution: prefer project venv, then system python
 if [[ -x "$PROJECT_DIR/.venv/bin/python3" ]]; then

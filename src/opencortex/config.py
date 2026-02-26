@@ -18,6 +18,10 @@ logger = logging.getLogger(__name__)
 # Default config file search order
 _CONFIG_FILE_NAMES = ["opencortex.json", ".opencortex.json"]
 
+# Global default config directory and file
+DEFAULT_CONFIG_DIR = Path.home() / ".opencortex"
+DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "opencortex.json"
+
 
 @dataclass
 class CortexConfig:
@@ -68,11 +72,19 @@ class CortexConfig:
         return asdict(self)
 
     def save(self, path: Optional[str] = None) -> None:
-        """Save config to JSON file."""
-        path = path or _CONFIG_FILE_NAMES[0]
-        with open(path, "w", encoding="utf-8") as f:
+        """Save config to JSON file.
+
+        If no path is given, saves to $HOME/.opencortex/opencortex.json
+        (creates the directory if needed).
+        """
+        if path:
+            save_path = Path(path)
+        else:
+            save_path = DEFAULT_CONFIG_PATH
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(save_path, "w", encoding="utf-8") as f:
             json.dump(self.to_dict(), f, indent=2, ensure_ascii=False)
-        logger.info(f"[CortexConfig] Saved to {path}")
+        logger.info(f"[CortexConfig] Saved to {save_path}")
 
     @classmethod
     def load(cls, path: Optional[str] = None) -> "CortexConfig":
@@ -87,10 +99,14 @@ class CortexConfig:
         if path:
             return cls._load_from_file(path)
 
-        # Search for config file
+        # Search for config file in CWD
         for name in _CONFIG_FILE_NAMES:
             if os.path.exists(name):
                 return cls._load_from_file(name)
+
+        # Fallback to global default: $HOME/.opencortex/opencortex.json
+        if DEFAULT_CONFIG_PATH.exists():
+            return cls._load_from_file(str(DEFAULT_CONFIG_PATH))
 
         # No config file found, return defaults
         return cls()
@@ -106,6 +122,20 @@ class CortexConfig:
         config = cls(**filtered)
         logger.info(f"[CortexConfig] Loaded from {path} (tenant={config.tenant_id}, user={config.user_id})")
         return config
+
+    @classmethod
+    def ensure_default_config(cls) -> Path:
+        """Create default config at $HOME/.opencortex/opencortex.json if it doesn't exist.
+
+        Returns:
+            Path to the default config file.
+        """
+        if not DEFAULT_CONFIG_PATH.exists():
+            DEFAULT_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            default = cls()
+            default.save(str(DEFAULT_CONFIG_PATH))
+            logger.info(f"[CortexConfig] Created default config at {DEFAULT_CONFIG_PATH}")
+        return DEFAULT_CONFIG_PATH
 
 
 # ---------------------------------------------------------------------------

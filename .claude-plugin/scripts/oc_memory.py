@@ -271,17 +271,28 @@ def summarize_turn(turn: Dict[str, str]) -> str:
 # ---------------------------------------------------------------------------
 
 def _find_config_path(project_dir: Path, explicit: Optional[str] = None) -> Optional[Path]:
-    """Find opencortex.json config file."""
+    """Find opencortex.json config file.
+
+    Search order:
+      1. Explicit path (--config)
+      2. Project local: ./opencortex.json or ./.opencortex.json
+      3. Global default: $HOME/.opencortex/opencortex.json
+    """
     if explicit:
         p = Path(explicit)
         if p.exists():
             return p
 
-    # Search in project dir, then current dir
+    # Search in project dir
     for name in ["opencortex.json", ".opencortex.json"]:
         candidate = project_dir / name
         if candidate.exists():
             return candidate
+
+    # Fallback to global default
+    global_config = Path.home() / ".opencortex" / "opencortex.json"
+    if global_config.exists():
+        return global_config
 
     return None
 

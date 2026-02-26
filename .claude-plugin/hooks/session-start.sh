@@ -4,8 +4,8 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
-if [[ ! -f "$CONFIG_FILE" ]]; then
-  msg='[opencortex-memory] WARNING: opencortex.json not found, memory hooks disabled'
+if [[ -z "$CONFIG_FILE" || ! -f "$CONFIG_FILE" ]]; then
+  msg='[opencortex-memory] WARNING: config not found. Create $HOME/.opencortex/opencortex.json or run: python -c "from opencortex.config import CortexConfig; CortexConfig.ensure_default_config()"'
   json_msg=$(_json_encode_str "$msg")
   echo "{\"systemMessage\": $json_msg}"
   exit 0
