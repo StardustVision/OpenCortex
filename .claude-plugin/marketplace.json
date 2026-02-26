@@ -1,5 +1,5 @@
 {
-  "name": "OpenCortex Marketplace",
+  "name": "opencortex-marketplace",
   "description": "Memory management plugins for AI agents powered by OpenCortex.",
   "owner": {
     "name": "MemCortex"
@@ -8,10 +8,10 @@
     {
       "name": "opencortex",
       "source": {
-        "type": "local",
-        "path": "."
+        "type": "git",
+        "url": "https://github.com/StardustVision/OpenCortex.git"
       },
-      "version": "0.1.0",
+      "version": "0.2.0",
       "description": "OpenCortex Memory Server — store, search, and reinforce AI agent memories via MCP with SONA reinforcement learning.",
       "category": "memory",
       "keywords": ["memory", "mcp", "sona", "vector-search", "reinforcement-learning"]
