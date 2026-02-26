@@ -1,7 +1,11 @@
 __pycache__/
 *.pyc
+.venv/
 .memcortex-dev/
 .memcortex/
 .opencortex/
+.openviking/
 opencortex.json
 .opencortex.json
+ruvector.db
+data/

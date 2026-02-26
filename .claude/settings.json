@@ -15,7 +15,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude-plugin/hooks/user-prompt-submit.sh\""
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude-plugin/hooks/user-prompt-submit.sh\"",
+            "timeout": 15
           }
         ]
       }
