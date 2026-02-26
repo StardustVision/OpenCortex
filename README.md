@@ -49,13 +49,54 @@ PYTHONPATH=src python -m opencortex.mcp_server --transport sse --port 8920
 
 ### 4. Claude Code 集成
 
-项目已包含 `.mcp.json`，Claude Code 打开项目目录时会自动发现 MCP Server。
+#### 方式一：从 GitHub 安装（推荐）
 
-Hooks 自动记忆采集也已配置在 `.claude-plugin/hooks/` 中：
-- **SessionStart** — 初始化记忆会话
-- **UserPromptSubmit** — 提示记忆可用
-- **Stop** — 每轮对话自动解析 transcript、摘要、存储
-- **SessionEnd** — 存储 session summary
+```bash
+claude plugin add https://github.com/StardustVision/OpenCortex.git
+```
+
+安装后 Claude Code 会自动注册 MCP Server 和 Hooks，无需手动配置。
+
+#### 方式二：本地项目自动发现
+
+将项目克隆到本地后，Claude Code 打开项目目录时会自动发现：
+
+- `.mcp.json` — MCP Server 配置（stdio 模式）
+- `.claude-plugin/plugin.json` — 插件清单（Skills + Hooks + MCP）
+
+#### 方式三：手动配置 MCP Server
+
+在 Claude Code 的 `settings.json` 或项目 `.mcp.json` 中添加：
+
+```json
+{
+  "mcpServers": {
+    "opencortex": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["-m", "opencortex.mcp_server", "--config", "opencortex.json"]
+    }
+  }
+}
+```
+
+#### Hooks 自动记忆采集
+
+安装插件后，以下 Hooks 自动生效：
+
+| Hook | 触发时机 | 行为 |
+|------|---------|------|
+| **SessionStart** | 会话启动 | 初始化记忆会话，读取 tenant/user 配置 |
+| **UserPromptSubmit** | 每次用户输入 | 提示记忆可用 |
+| **Stop** (async) | 每轮 assistant 响应后 | 解析 transcript → 摘要 → 存储为记忆 |
+| **SessionEnd** | 会话结束 | 存储 session summary（轮数、时长） |
+
+#### Skills
+
+| Skill | 说明 |
+|-------|------|
+| `/memory-recall <query>` | 按需检索历史记忆 |
+| `/opencortex-mcp` | 启动 MCP Server |
 
 ## MCP Tools
 
