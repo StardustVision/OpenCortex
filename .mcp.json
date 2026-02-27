@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "opencortex": {
-      "type": "stdio",
-      "command": "python",
-      "args": ["-m", "opencortex.mcp_server"]
-    }
-  }
-}
