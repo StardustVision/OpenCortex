@@ -645,4 +645,12 @@ OpenCortex 从以下开源项目移植并重构，在此致以诚挚感谢：
 - **VikingDBInterface** — 25 个 async 方法的存储抽象接口
 - **IntentAnalyzer** — LLM 驱动的会话意图分析与查询规划
 
-感谢 OpenViking 团队，OpenCortex 站在巨人的肩膀上。
+### [Agentic Context Engine (ACE)](https://github.com/kayba-ai/agentic-context-engine)
+
+Kayba AI 开源的 Agent 自学习上下文引擎。OpenCortex 的 ACE 模块设计受其启发：
+
+- **Skillbook 技能库** — 从对话轨迹中提取可复用技能的核心理念
+- **Reflector 反思机制** — LLM 驱动的轨迹分析与技能提炼
+- **Trajectory 轨迹管理** — state-action-reward 序列记录与评估
+
+感谢 OpenViking 和 ACE 团队，OpenCortex 站在巨人的肩膀上。
