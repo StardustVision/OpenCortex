@@ -1,0 +1,12 @@
+{
+  "mode": "local",
+  "local": {
+    "ruvector_port": 6921,
+    "mcp_port": 8920,
+    "mcp_transport": "streamable-http",
+    "data_dir": "data/ruvector"
+  },
+  "remote": {
+    "mcp_url": "http://your-server:8920/mcp"
+  }
+}

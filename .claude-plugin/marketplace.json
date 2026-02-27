@@ -5,8 +5,8 @@
   },
   "plugins": [
     {
-      "name": "opencortex",
-      "source": "./",
+      "name": "opencortex-memory",
+      "source": "plugins/opencortex-memory",
       "description": "OpenCortex Memory Server — store, search, and reinforce AI agent memories via MCP with SONA reinforcement learning.",
       "author": {
         "name": "StardustVision"

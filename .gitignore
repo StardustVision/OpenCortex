@@ -12,3 +12,7 @@ opencortex.json
 .opencortex.json
 ruvector.db
 data/
+.claude/
+.cursor/
+_bmad*/
+plugins/opencortex-memory/.mcp.json

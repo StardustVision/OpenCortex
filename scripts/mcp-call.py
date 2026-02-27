@@ -17,9 +17,44 @@ Environment:
 import json
 import sys
 import os
+from pathlib import Path
 
-# Default MCP server URL
-MCP_URL = os.environ.get("OPENCORTEX_MCP_URL", "http://127.0.0.1:8920")
+
+def _resolve_mcp_base_url() -> str:
+    """Resolve MCP base URL (without /mcp suffix).
+
+    Priority:
+    1. OPENCORTEX_MCP_URL env var
+    2. plugins/opencortex-memory/config.json (mode-aware)
+    3. Default http://127.0.0.1:8920
+    """
+    env_url = os.environ.get("OPENCORTEX_MCP_URL")
+    if env_url:
+        return env_url.rstrip("/").removesuffix("/mcp")
+
+    # Walk up from this script to find the project root (contains plugins/)
+    script_dir = Path(__file__).resolve().parent
+    for candidate in (script_dir.parent, Path.cwd()):
+        cfg_path = candidate / "plugins" / "opencortex-memory" / "config.json"
+        if cfg_path.is_file():
+            try:
+                cfg = json.loads(cfg_path.read_text())
+                mode = cfg.get("mode", "local")
+                if mode == "remote":
+                    url = cfg.get("remote", {}).get("mcp_url", "")
+                    if url:
+                        return url.rstrip("/").removesuffix("/mcp")
+                else:
+                    port = cfg.get("local", {}).get("mcp_port", 8920)
+                    return f"http://127.0.0.1:{port}"
+            except (json.JSONDecodeError, OSError):
+                pass
+            break
+
+    return "http://127.0.0.1:8920"
+
+
+MCP_URL = _resolve_mcp_base_url()
 
 
 def call_tool(tool_name: str, args: dict) -> dict:
