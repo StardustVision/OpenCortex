@@ -55,6 +55,7 @@ class HierarchicalRetriever:
         storage: VikingDBInterface,
         embedder: Optional[Any],
         rerank_config: Optional[RerankConfig] = None,
+        llm_completion: Optional[Any] = None,
     ):
         """Initialize hierarchical retriever with rerank_config.
 
@@ -62,6 +63,7 @@ class HierarchicalRetriever:
             storage: VikingDBInterface instance
             embedder: Embedder instance (supports dense/sparse/hybrid)
             rerank_config: Rerank configuration (optional, will fallback to vector search only)
+            llm_completion: Async LLM callable for RerankClient LLM fallback
         """
         self.storage = storage
         self.embedder = embedder
@@ -72,15 +74,22 @@ class HierarchicalRetriever:
 
         # Initialize rerank client only if config is available
         if rerank_config and rerank_config.is_available():
-            # TODO: Support later - initialize RerankClient here
-            self._rerank_client = None
+            from opencortex.retrieve.rerank_client import RerankClient
+
+            self._rerank_client = RerankClient(rerank_config, llm_completion=llm_completion)
+            self._fusion_beta = rerank_config.fusion_beta
             logger.info(
-                f"[HierarchicalRetriever] Rerank config available, threshold={self.threshold}"
+                "[HierarchicalRetriever] RerankClient active (mode=%s, beta=%.2f, threshold=%s)",
+                self._rerank_client.mode,
+                self._fusion_beta,
+                self.threshold,
             )
         else:
             self._rerank_client = None
+            self._fusion_beta = 0.0
             logger.info(
-                f"[HierarchicalRetriever] Rerank not configured, using vector search only with threshold={self.threshold}"
+                "[HierarchicalRetriever] Rerank not configured, using vector search only with threshold=%s",
+                self.threshold,
             )
 
     async def retrieve(
@@ -162,7 +171,7 @@ class HierarchicalRetriever:
         )
 
         # Step 3: Merge starting points
-        starting_points = self._merge_starting_points(query.query, root_uris, global_results)
+        starting_points = await self._merge_starting_points(query.query, root_uris, global_results)
 
         # Step 4: Recursive search
         candidates = await self._recursive_search(
@@ -213,34 +222,36 @@ class HierarchicalRetriever:
         )
         return results
 
-    def _merge_starting_points(
+    async def _merge_starting_points(
         self,
         query: str,
         root_uris: List[str],
         global_results: List[Dict[str, Any]],
         mode: str = "thinking",
     ) -> List[Tuple[str, float]]:
-        """Merge starting points.
+        """Merge starting points with optional rerank fusion.
+
+        When RerankClient is active in THINKING mode:
+          final_score = beta * rerank_score + (1-beta) * normalized_sona_score
+
         Returns:
             List of (uri, parent_score) tuples
         """
         points = []
         seen = set()
 
-        # Results from global search
-        docs = []
-        if self._rerank_client and mode == RetrieverMode.THINKING:
-            for r in global_results:
-                # todo: multi-modal
-                doc = r["abstract"]
-                docs.append(doc)
-            rerank_scores = self._rerank_client.rerank_batch(query, docs)
+        if self._rerank_client and mode == RetrieverMode.THINKING and global_results:
+            docs = [r.get("abstract", "") for r in global_results]
+            rerank_scores = await self._rerank_client.rerank(query, docs)
+            beta = self._fusion_beta
             for i, r in enumerate(global_results):
-                points.append((r["uri"], rerank_scores[i]))
+                sona_score = r.get("_score", 0.0)
+                fused = beta * rerank_scores[i] + (1 - beta) * sona_score
+                points.append((r["uri"], fused))
                 seen.add(r["uri"])
         else:
             for r in global_results:
-                points.append((r["uri"], r["_score"]))
+                points.append((r["uri"], r.get("_score", 0.0)))
                 seen.add(r["uri"])
 
         # Root directories as starting points
@@ -326,14 +337,12 @@ class HierarchicalRetriever:
 
             query_scores = []
             if self._rerank_client and mode == RetrieverMode.THINKING:
-                documents = []
-                for r in results:
-                    # todo: multi-modal
-                    doc = r["abstract"]
-                    documents.append(doc)
-
-                rerank_scores = self._rerank_client.rerank_batch(query, documents)
-                query_scores = rerank_scores
+                documents = [r.get("abstract", "") for r in results]
+                rerank_scores = await self._rerank_client.rerank(query, documents)
+                beta = self._fusion_beta
+                for r, rerank_s in zip(results, rerank_scores):
+                    sona_s = r.get("_score", 0.0)
+                    query_scores.append(beta * rerank_s + (1 - beta) * sona_s)
             else:
                 for r in results:
                     query_scores.append(r.get("_score", 0))

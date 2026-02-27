@@ -35,10 +35,12 @@ class EmbedResult:
     Attributes:
         dense_vector: Dense vector in List[float] format
         sparse_vector: Sparse vector in Dict[str, float] format, e.g. {'token1': 0.5, 'token2': 0.3}
+        source_type: Input source type — "text" or "multimodal"
     """
 
     dense_vector: Optional[List[float]] = None
     sparse_vector: Optional[Dict[str, float]] = None
+    source_type: str = "text"
 
     @property
     def is_dense(self) -> bool:

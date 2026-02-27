@@ -89,31 +89,37 @@ class VolcengineDenseEmbedder(DenseEmbedderBase):
             )
         return 2048
 
-    def embed(self, text: str) -> EmbedResult:
-        """Embed single text.
+    def embed(self, text: str, image_url: str = "") -> EmbedResult:
+        """Embed single text, optionally with an image for multimodal models.
 
         Args:
             text: Input text
+            image_url: Optional image URL for multimodal embedding
 
         Returns:
             EmbedResult with dense_vector
         """
         try:
             if self.input_type == "multimodal":
+                input_data = [{"type": "text", "text": text}]
+                if image_url:
+                    input_data.append({"type": "image_url", "image_url": {"url": image_url}})
                 response = self.client.multimodal_embeddings.create(
-                    input=[{"type": "text", "text": text}],
+                    input=input_data,
                     model=self.model_name,
                 )
                 vector = response.data.embedding
+                source_type = "multimodal" if image_url else "text"
             else:
                 response = self.client.embeddings.create(
                     input=text,
                     model=self.model_name,
                 )
                 vector = response.data[0].embedding
+                source_type = "text"
 
             vector = truncate_and_normalize(vector, self.dimension)
-            return EmbedResult(dense_vector=vector)
+            return EmbedResult(dense_vector=vector, source_type=source_type)
         except Exception as e:
             raise RuntimeError(f"Volcengine embedding failed: {e}") from e
 

@@ -10,12 +10,23 @@ from dataclasses import dataclass
 
 @dataclass
 class RerankConfig:
-    """Rerank configuration for retrieval."""
+    """Rerank configuration for retrieval.
+
+    Supports three modes (in priority order):
+    1. API mode — dedicated Rerank API (Volcengine/Jina/Cohere)
+    2. LLM mode — use LLM completion as listwise reranker (fallback)
+    3. Disabled — no rerank, pure SONA + embedding scores
+    """
 
     model: str = ""
     api_key: str = ""
     api_base: str = ""
     threshold: float = 0.0
+    provider: str = ""  # "volcengine" | "jina" | "cohere" | "llm"
+    fusion_beta: float = 0.7  # rerank weight vs SONA (0-1)
+    max_candidates: int = 20  # max docs to send for rerank (cost control)
+    use_llm_fallback: bool = True  # fallback to LLM when no API
 
     def is_available(self) -> bool:
-        return bool(self.model and self.api_key)
+        """Return True if reranking can be performed (API or LLM fallback)."""
+        return bool(self.model and self.api_key) or self.use_llm_fallback

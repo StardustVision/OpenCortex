@@ -412,6 +412,192 @@ async def memory_hooks_stats(ctx: Context) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Session Management Tools (Context Self-Iteration)
+# ---------------------------------------------------------------------------
+
+@mcp.tool(
+    name="session_begin",
+    description=(
+        "Begin a new session for context self-iteration. "
+        "The session will buffer messages and extract persistent memories on end."
+    ),
+)
+async def session_begin(
+    session_id: str,
+    ctx: Context,
+) -> Dict[str, Any]:
+    """Begin a new session.
+
+    Args:
+        session_id: Unique session identifier.
+    """
+    orch = _get_orch(ctx)
+    return await orch.session_begin(session_id=session_id)
+
+
+@mcp.tool(
+    name="session_message",
+    description=(
+        "Add a message to an active session. "
+        "Messages are buffered for memory extraction when the session ends."
+    ),
+)
+async def session_message(
+    session_id: str,
+    role: str,
+    content: str,
+    ctx: Context,
+) -> Dict[str, Any]:
+    """Add a message to a session.
+
+    Args:
+        session_id: Session identifier.
+        role: Message role ("user" or "assistant").
+        content: Message content.
+    """
+    orch = _get_orch(ctx)
+    return await orch.session_message(
+        session_id=session_id,
+        role=role,
+        content=content,
+    )
+
+
+@mcp.tool(
+    name="session_end",
+    description=(
+        "End a session and trigger memory extraction. "
+        "The system will analyze the conversation and automatically extract "
+        "persistent memories (preferences, patterns, skills, errors)."
+    ),
+)
+async def session_end(
+    session_id: str,
+    quality_score: float = 0.5,
+    ctx: Context = None,
+) -> Dict[str, Any]:
+    """End a session and extract memories.
+
+    Args:
+        session_id: Session to end.
+        quality_score: Overall session quality (0.0-1.0).
+    """
+    orch = _get_orch(ctx)
+    return await orch.session_end(
+        session_id=session_id,
+        quality_score=quality_score,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Hooks Integration Tools (Route through MCP → Viking FS → RuVector)
+# ---------------------------------------------------------------------------
+
+@mcp.tool(
+    name="hooks_route",
+    description=(
+        "Route a task to the best agent based on learned patterns. "
+        "Returns the recommended agent and reasoning."
+    ),
+)
+async def hooks_route(
+    task: str,
+    agents: str = "",
+    ctx: Context = None,
+) -> Dict[str, Any]:
+    """Route task to best agent.
+
+    Args:
+        task: Task description or command.
+        agents: Comma-separated available agent names.
+    """
+    orch = _get_orch(ctx)
+    agent_list = [a.strip() for a in agents.split(",") if a.strip()] if agents else None
+    return await orch.hooks_route(task=task, agents=agent_list)
+
+
+@mcp.tool(
+    name="hooks_init",
+    description="Initialize OpenCortex hooks configuration for a project.",
+)
+async def hooks_init(
+    project_path: str = ".",
+    ctx: Context = None,
+) -> Dict[str, Any]:
+    """Initialize hooks for a project.
+
+    Args:
+        project_path: Project root path.
+    """
+    orch = _get_orch(ctx)
+    return await orch.hooks_init(project_path=project_path)
+
+
+@mcp.tool(
+    name="hooks_pretrain",
+    description="Pre-train OpenCortex from repository content (files, patterns, structure).",
+)
+async def hooks_pretrain(
+    repo_path: str = ".",
+    ctx: Context = None,
+) -> Dict[str, Any]:
+    """Pre-train from repository.
+
+    Args:
+        repo_path: Repository root path.
+    """
+    orch = _get_orch(ctx)
+    return await orch.hooks_pretrain(repo_path=repo_path)
+
+
+@mcp.tool(
+    name="hooks_verify",
+    description="Verify OpenCortex hooks configuration is correct and functional.",
+)
+async def hooks_verify(ctx: Context = None) -> Dict[str, Any]:
+    """Verify hooks configuration."""
+    orch = _get_orch(ctx)
+    return await orch.hooks_verify()
+
+
+@mcp.tool(
+    name="hooks_doctor",
+    description="Diagnose OpenCortex system health, configuration issues, and connectivity.",
+)
+async def hooks_doctor(ctx: Context = None) -> Dict[str, Any]:
+    """Run diagnostics."""
+    orch = _get_orch(ctx)
+    return await orch.hooks_doctor()
+
+
+@mcp.tool(
+    name="hooks_export",
+    description="Export OpenCortex intelligence data (learned patterns, memories, trajectories).",
+)
+async def hooks_export(
+    format: str = "json",
+    ctx: Context = None,
+) -> Dict[str, Any]:
+    """Export intelligence data.
+
+    Args:
+        format: Export format ("json" or "markdown").
+    """
+    orch = _get_orch(ctx)
+    return await orch.hooks_export(format=format)
+
+
+@mcp.tool(
+    name="hooks_build_agents",
+    description="Generate agent configuration based on learned patterns and project structure.",
+)
+async def hooks_build_agents(ctx: Context = None) -> Dict[str, Any]:
+    """Generate agent configurations."""
+    orch = _get_orch(ctx)
+    return await orch.hooks_build_agents()
+
+
+# ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
 
@@ -423,8 +609,8 @@ def main():
     parser.add_argument(
         "--transport",
         choices=["stdio", "sse", "streamable-http"],
-        default="stdio",
-        help="Transport mode (default: stdio)",
+        default="streamable-http",
+        help="Transport mode (default: streamable-http)",
     )
     parser.add_argument(
         "--port",
@@ -448,6 +634,18 @@ def main():
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Log level (default: INFO)",
     )
+    parser.add_argument(
+        "--stateless",
+        action="store_true",
+        default=True,
+        help="Enable stateless HTTP mode (default: True)",
+    )
+    parser.add_argument(
+        "--json-response",
+        action="store_true",
+        default=True,
+        help="Return JSON responses instead of SSE streams (default: True)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -462,6 +660,10 @@ def main():
     if args.transport != "stdio":
         run_kwargs["host"] = args.host
         run_kwargs["port"] = args.port
+    if args.stateless and args.transport == "streamable-http":
+        run_kwargs["stateless_http"] = True
+    if args.json_response and args.transport == "streamable-http":
+        run_kwargs["json_response"] = True
     mcp.run(**run_kwargs)
 
 

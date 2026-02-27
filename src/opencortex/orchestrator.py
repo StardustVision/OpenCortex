@@ -101,6 +101,7 @@ class MemoryOrchestrator:
         self._retriever: Optional[HierarchicalRetriever] = None
         self._analyzer: Optional[IntentAnalyzer] = None
         self._user: Optional[UserIdentifier] = None
+        self._session_manager = None
         self._initialized = False
 
     # =========================================================================
@@ -152,14 +153,7 @@ class MemoryOrchestrator:
             self._config.embedding_dimension,
         )
 
-        # 5. Retriever
-        self._retriever = HierarchicalRetriever(
-            storage=self._storage,
-            embedder=self._embedder,
-            rerank_config=self._rerank_config,
-        )
-
-        # 6. Intent analyzer: use provided callable or auto-create from config
+        # 5. Intent analyzer: use provided callable or auto-create from config
         if self._llm_completion is None:
             try:
                 from opencortex.models.llm_factory import create_llm_completion
@@ -174,9 +168,21 @@ class MemoryOrchestrator:
         if self._llm_completion:
             self._analyzer = IntentAnalyzer(llm_completion=self._llm_completion)
 
+        # 6. Retriever (with rerank config from CortexConfig + LLM fallback)
+        rerank_cfg = self._build_rerank_config()
+        self._retriever = HierarchicalRetriever(
+            storage=self._storage,
+            embedder=self._embedder,
+            rerank_config=rerank_cfg,
+            llm_completion=self._llm_completion,
+        )
+
         # 7. RuVector hooks for native self-learning (auto-create if not provided)
         if self._hooks is None:
             self._hooks = self._create_default_hooks()
+
+        # 8. Session manager for context self-iteration
+        self._session_manager = self._create_session_manager()
 
         self._initialized = True
         logger.info(
@@ -404,6 +410,27 @@ class MemoryOrchestrator:
                 "[MemoryOrchestrator] Failed to create RuVectorHooks: %s", exc
             )
             return None
+
+    def _build_rerank_config(self) -> RerankConfig:
+        """Build RerankConfig by merging explicit rerank_config with CortexConfig fields.
+
+        Priority: explicit rerank_config > CortexConfig rerank_* fields > defaults.
+        """
+        # Start from the explicit rerank_config (if provided) or defaults
+        base = self._rerank_config or RerankConfig()
+
+        # Overlay CortexConfig rerank_* fields (only if they're set and base is default)
+        cfg = self._config
+        return RerankConfig(
+            model=base.model or cfg.rerank_model,
+            api_key=base.api_key or cfg.rerank_api_key or cfg.embedding_api_key,
+            api_base=base.api_base or cfg.rerank_api_base,
+            threshold=base.threshold or cfg.rerank_threshold,
+            provider=getattr(base, "provider", "") or cfg.rerank_provider,
+            fusion_beta=getattr(base, "fusion_beta", 0.0) or cfg.rerank_fusion_beta,
+            max_candidates=getattr(base, "max_candidates", 20),
+            use_llm_fallback=getattr(base, "use_llm_fallback", True),
+        )
 
     def _ensure_init(self) -> None:
         """Raise if not initialized."""
@@ -1096,6 +1123,264 @@ class MemoryOrchestrator:
         }
 
     # =========================================================================
+    # Hooks Integration (Route through MCP → Viking FS → RuVector)
+    # =========================================================================
+
+    async def hooks_route(
+        self,
+        task: str,
+        agents: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Route a task to the best agent based on learned patterns.
+
+        Uses memory search + Q-learning patterns to recommend the best agent.
+        """
+        self._ensure_init()
+
+        # Search for relevant memories about this task type
+        result = await self.search(query=task, limit=3)
+        context_hints = [m.abstract for m in result.memories[:3]]
+
+        # Use hooks Q-learning if available
+        best_action = None
+        if self._hooks:
+            try:
+                recall_results = await self._hooks.recall(query=task, limit=3)
+                if recall_results:
+                    context_hints.extend(
+                        r.get("content", "") for r in recall_results[:2]
+                    )
+            except Exception:
+                pass
+
+        return {
+            "task": task,
+            "agents": agents or [],
+            "context_hints": context_hints,
+            "recommended_agent": best_action,
+        }
+
+    async def hooks_init(self, project_path: str = ".") -> Dict[str, Any]:
+        """Initialize hooks configuration for a project."""
+        self._ensure_init()
+        return {
+            "status": "ok",
+            "project_path": project_path,
+            "tenant_id": self._config.tenant_id,
+            "user_id": self._config.user_id,
+            "mcp_transport": self._config.mcp_transport,
+            "mcp_port": self._config.mcp_port,
+        }
+
+    async def hooks_pretrain(self, repo_path: str = ".") -> Dict[str, Any]:
+        """Pre-train from repository content."""
+        self._ensure_init()
+
+        if self._hooks:
+            try:
+                result = await self._hooks.remember(
+                    content=f"Repository at {repo_path}",
+                    memory_type="project_structure",
+                )
+                return {"status": "ok", "repo_path": repo_path, "remember_result": result}
+            except Exception as exc:
+                return {"status": "partial", "repo_path": repo_path, "error": str(exc)}
+
+        return {"status": "ok", "repo_path": repo_path, "note": "No hooks backend, skipping pretrain"}
+
+    async def hooks_verify(self) -> Dict[str, Any]:
+        """Verify hooks configuration."""
+        self._ensure_init()
+        health = await self.health_check()
+        hooks_ok = self._hooks is not None
+        return {
+            "status": "ok" if health.get("storage") and hooks_ok else "degraded",
+            "storage": health.get("storage", False),
+            "embedder": health.get("embedder", False),
+            "llm": health.get("llm", False),
+            "hooks": hooks_ok,
+            "session_manager": self._session_manager is not None,
+        }
+
+    async def hooks_doctor(self) -> Dict[str, Any]:
+        """Run diagnostics on the OpenCortex system."""
+        self._ensure_init()
+        health = await self.health_check()
+        stats = await self.stats()
+
+        issues = []
+        if not health.get("storage"):
+            issues.append("Storage backend not reachable")
+        if not health.get("embedder"):
+            issues.append("No embedder configured — search will not work")
+        if not health.get("llm"):
+            issues.append("No LLM configured — intent analysis and session extraction disabled")
+        if not self._hooks:
+            issues.append("RuVector hooks not initialized — native self-learning disabled")
+
+        return {
+            "status": "healthy" if not issues else "issues_found",
+            "health": health,
+            "stats": stats,
+            "issues": issues,
+        }
+
+    async def hooks_export(self, format: str = "json") -> Dict[str, Any]:
+        """Export intelligence data."""
+        self._ensure_init()
+        stats = await self.stats()
+
+        hooks_stats = {}
+        if self._hooks:
+            try:
+                hooks_stats = await self.hooks_stats()
+            except Exception:
+                pass
+
+        export_data = {
+            "format": format,
+            "orchestrator_stats": stats,
+            "hooks_stats": hooks_stats,
+        }
+        return export_data
+
+    async def hooks_build_agents(self) -> Dict[str, Any]:
+        """Generate agent configurations based on learned patterns."""
+        self._ensure_init()
+
+        # Search for skill memories to inform agent configuration
+        result = await self.search(query="agent skills capabilities", context_type=None, limit=10)
+        skills = [{"uri": m.uri, "abstract": m.abstract, "score": m.score} for m in result.skills]
+
+        return {
+            "agents": [
+                {
+                    "name": "memory-agent",
+                    "description": "Manages persistent memory storage and retrieval",
+                    "tools": ["memory_store", "memory_search", "memory_feedback"],
+                },
+                {
+                    "name": "session-agent",
+                    "description": "Manages session lifecycle and memory extraction",
+                    "tools": ["session_begin", "session_message", "session_end"],
+                },
+            ],
+            "learned_skills": skills,
+        }
+
+    # =========================================================================
+    # Session Management (Context Self-Iteration)
+    # =========================================================================
+
+    def _create_session_manager(self):
+        """Create a SessionManager wired to the orchestrator's storage pipeline."""
+        from opencortex.session.manager import SessionManager
+
+        async def _store_fn(abstract: str, content: str = "", category: str = "", context_type: str = "memory"):
+            await self.add(abstract=abstract, content=content, category=category, context_type=context_type)
+
+        async def _search_fn(query: str):
+            result = await self.search(query=query, limit=3, score_threshold=0.5)
+            items = []
+            for m in result:
+                items.append({"uri": m.uri, "score": m.score, "content": m.abstract})
+            return items
+
+        async def _update_fn(uri: str, abstract: str, content: str):
+            await self.update(uri=uri, abstract=abstract, content=content)
+
+        async def _feedback_fn(uri: str, reward: float):
+            await self.feedback(uri=uri, reward=reward)
+
+        return SessionManager(
+            llm_completion=self._llm_completion,
+            store_fn=_store_fn,
+            search_fn=_search_fn,
+            update_fn=_update_fn,
+            feedback_fn=_feedback_fn,
+        )
+
+    async def session_begin(
+        self,
+        session_id: str,
+        meta: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Begin a new session for context self-iteration.
+
+        Args:
+            session_id: Unique session identifier.
+            meta: Optional metadata.
+
+        Returns:
+            Dict with session info.
+        """
+        self._ensure_init()
+        ctx = await self._session_manager.begin(
+            session_id=session_id,
+            tenant_id=self._config.tenant_id,
+            user_id=self._config.user_id,
+            meta=meta,
+        )
+        return {
+            "session_id": ctx.session_id,
+            "started_at": ctx.started_at,
+            "status": "active",
+        }
+
+    async def session_message(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        meta: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Add a message to an active session.
+
+        Args:
+            session_id: Session identifier.
+            role: Message role.
+            content: Message content.
+            meta: Optional metadata.
+
+        Returns:
+            Dict with message count.
+        """
+        self._ensure_init()
+        ok = await self._session_manager.add_message(session_id, role, content, meta)
+        ctx = self._session_manager.get_session(session_id)
+        return {
+            "added": ok,
+            "message_count": len(ctx.messages) if ctx else 0,
+        }
+
+    async def session_end(
+        self,
+        session_id: str,
+        quality_score: float = 0.5,
+    ) -> Dict[str, Any]:
+        """End a session and trigger memory extraction.
+
+        Performs LLM-driven memory analysis, deduplication, and storage.
+
+        Args:
+            session_id: Session to end.
+            quality_score: Session quality (0-1).
+
+        Returns:
+            Dict with extraction results.
+        """
+        self._ensure_init()
+        result = await self._session_manager.end(session_id, quality_score)
+        return {
+            "session_id": result.session_id,
+            "stored_count": result.stored_count,
+            "merged_count": result.merged_count,
+            "skipped_count": result.skipped_count,
+            "quality_score": result.quality_score,
+            "total_extracted": len(result.memories),
+        }
+
+    # =========================================================================
     # Lifecycle
     # =========================================================================
 
@@ -1133,12 +1418,22 @@ class MemoryOrchestrator:
         self._ensure_init()
 
         storage_stats = await self._storage.get_stats()
+        rerank_info = {"enabled": False, "mode": "disabled", "model": None, "fusion_beta": 0.0}
+        if self._retriever and self._retriever._rerank_client:
+            rc = self._retriever._rerank_client
+            rerank_info = {
+                "enabled": rc.mode != "disabled",
+                "mode": rc.mode,
+                "model": self._config.rerank_model or None,
+                "fusion_beta": rc.fusion_beta,
+            }
         return {
             "tenant_id": self._config.tenant_id,
             "user_id": self._config.user_id,
             "storage": storage_stats,
             "embedder": self._embedder.model_name if self._embedder else None,
             "has_llm": self._llm_completion is not None,
+            "rerank": rerank_info,
         }
 
     # =========================================================================

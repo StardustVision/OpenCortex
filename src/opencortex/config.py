@@ -56,6 +56,13 @@ class CortexConfig:
     # RuVector storage
     ruvector_host: str = "127.0.0.1"
     ruvector_port: int = 6921
+    # Rerank
+    rerank_provider: str = ""       # "volcengine" | "jina" | "cohere" | "llm"
+    rerank_model: str = ""          # Rerank model name
+    rerank_api_key: str = ""        # API key (defaults to embedding_api_key)
+    rerank_api_base: str = ""       # API endpoint
+    rerank_threshold: float = 0.0   # Score threshold
+    rerank_fusion_beta: float = 0.7 # Rerank weight vs SONA (0-1)
     # MCP server
     mcp_transport: str = "stdio"  # "stdio" | "sse" | "streamable-http"
     mcp_port: int = 8920

@@ -365,15 +365,40 @@ def _create_test_server():
         memory_search,
         memory_stats,
         memory_store,
+        # Session tools
+        session_begin,
+        session_message,
+        session_end,
+        # Hooks integration tools
+        hooks_route,
+        hooks_init,
+        hooks_pretrain,
+        hooks_verify,
+        hooks_doctor,
+        hooks_export,
+        hooks_build_agents,
     )
 
     server = FastMCP(name="opencortex-test", lifespan=lifespan)
+    # Core memory tools
     server.add_tool(memory_store)
     server.add_tool(memory_search)
     server.add_tool(memory_feedback)
     server.add_tool(memory_stats)
     server.add_tool(memory_decay)
     server.add_tool(memory_health)
+    # Session tools
+    server.add_tool(session_begin)
+    server.add_tool(session_message)
+    server.add_tool(session_end)
+    # Hooks integration tools
+    server.add_tool(hooks_route)
+    server.add_tool(hooks_init)
+    server.add_tool(hooks_pretrain)
+    server.add_tool(hooks_verify)
+    server.add_tool(hooks_doctor)
+    server.add_tool(hooks_export)
+    server.add_tool(hooks_build_agents)
     return server
 
 
@@ -388,17 +413,29 @@ class TestMCPServer(unittest.TestCase):
     # -----------------------------------------------------------------
 
     def test_01_list_tools(self):
-        """Server exposes all 6 tools."""
+        """Server exposes all expected tools."""
         server = _create_test_server()
 
         async def check():
             async with Client(server) as client:
                 tools = await client.list_tools()
                 names = {t.name for t in tools}
-                self.assertEqual(names, {
+                # Core memory tools
+                for expected in [
                     "memory_store", "memory_search", "memory_feedback",
                     "memory_stats", "memory_decay", "memory_health",
-                })
+                ]:
+                    self.assertIn(expected, names)
+                # Session tools
+                for expected in ["session_begin", "session_message", "session_end"]:
+                    self.assertIn(expected, names)
+                # Hooks integration tools
+                for expected in [
+                    "hooks_route", "hooks_init", "hooks_pretrain",
+                    "hooks_verify", "hooks_doctor", "hooks_export",
+                    "hooks_build_agents",
+                ]:
+                    self.assertIn(expected, names)
 
         self._run(check())
 
