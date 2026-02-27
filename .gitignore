@@ -4,6 +4,7 @@ __pycache__/
 .memcortex-dev/
 .memcortex/
 .opencortex/
+.ruvector/
 .openviking/
 opencortex.json
 .opencortex.json
