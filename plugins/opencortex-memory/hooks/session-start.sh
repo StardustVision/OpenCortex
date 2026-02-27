@@ -1,97 +1,155 @@
 #!/usr/bin/env bash
-# SessionStart hook: start RuVector + MCP server (local mode) or verify
-# connectivity (remote mode), then initialize memory session.
+# SessionStart hook: start servers (local) and initialize memory session.
+#
+# Local mode:  start HTTP server + MCP server in background, save PIDs.
+# Remote mode: verify remote HTTP server is reachable.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
-MODE="$(get_plugin_mode)"
-MCP_URL="$(get_mcp_url)"
-
-mkdir -p "$PROJECT_DIR/.opencortex"
+mkdir -p "$STATE_DIR"
 
 # ---------------------------------------------------------------------------
-# Dynamic .mcp.json generation (both modes)
-# ---------------------------------------------------------------------------
-MCP_JSON="$PLUGIN_ROOT/.mcp.json"
-cat > "$MCP_JSON" <<EOF
-{
-  "mcpServers": {
-    "opencortex": {
-      "url": "${MCP_URL}"
-    }
-  }
-}
-EOF
-
-# ---------------------------------------------------------------------------
-# Mode-specific setup
-# ---------------------------------------------------------------------------
-if [[ "$MODE" == "local" ]]; then
-  # --- Start RuVector ---
-  RUVECTOR_PORT="$(get_plugin_config "local.ruvector_port" "6921")"
-  DATA_DIR="$(get_plugin_config "local.data_dir" "data/ruvector")"
-  RUVECTOR_SCRIPT="$PLUGIN_ROOT/scripts/ruvector-server.js"
-
-  if ! curl -sf "http://127.0.0.1:${RUVECTOR_PORT}/health" >/dev/null 2>&1; then
-    if command -v node >/dev/null 2>&1 && [[ -f "$RUVECTOR_SCRIPT" ]]; then
-      pkill -f "node.*ruvector-server\\.js.*--port ${RUVECTOR_PORT}" 2>/dev/null || true
-      sleep 0.2
-
-      nohup node "$RUVECTOR_SCRIPT" \
-        --port "$RUVECTOR_PORT" \
-        --data-dir "$PROJECT_DIR/$DATA_DIR" \
-        >"$PROJECT_DIR/.opencortex/ruvector.log" 2>&1 &
-
-      for i in 1 2 3; do
-        sleep 0.3
-        curl -sf "http://127.0.0.1:${RUVECTOR_PORT}/health" >/dev/null 2>&1 && break
-      done
-    fi
-  fi
-
-  # --- Start MCP Server ---
-  MCP_PORT="$(get_plugin_config "local.mcp_port" "8920")"
-  MCP_TRANSPORT="$(get_plugin_config "local.mcp_transport" "streamable-http")"
-
-  if ! curl -sf "http://127.0.0.1:${MCP_PORT}/health" >/dev/null 2>&1; then
-    if [[ -n "$PYTHON_BIN" ]]; then
-      nohup "$PYTHON_BIN" -m opencortex.mcp_server \
-        --transport "$MCP_TRANSPORT" \
-        --port "$MCP_PORT" \
-        --config "$CONFIG_FILE" \
-        >"$PROJECT_DIR/.opencortex/mcp.log" 2>&1 &
-    fi
-  fi
-
-elif [[ "$MODE" == "remote" ]]; then
-  # --- Remote: connectivity check only ---
-  if ! curl -sf --max-time 3 "$MCP_URL" >/dev/null 2>&1; then
-    echo "[opencortex-memory] WARNING: remote MCP server not reachable at $MCP_URL" >&2
-  fi
-fi
-
-# ---------------------------------------------------------------------------
-# Initialize memory session (shared by both modes)
+# Validate config
 # ---------------------------------------------------------------------------
 if [[ -z "$CONFIG_FILE" || ! -f "$CONFIG_FILE" ]]; then
-  msg='[opencortex-memory] WARNING: config not found. Create $HOME/.opencortex/opencortex.json or run: python -c "from opencortex.config import CortexConfig; CortexConfig.ensure_default_config()"'
+  msg='[opencortex-memory] WARNING: config not found. Create opencortex.json or $HOME/.opencortex/opencortex.json'
   json_msg=$(_json_encode_str "$msg")
   echo "{\"systemMessage\": $json_msg}"
   exit 0
 fi
 
-OUT="$(run_bridge session-start 2>/dev/null || true)"
-OK="$(_json_val "$OUT" "ok" "false")"
-STATUS="$(_json_val "$OUT" "status_line" "[opencortex-memory] initialization failed")"
-ADDL="$(_json_val "$OUT" "additional_context" "")"
+MODE="$(get_plugin_mode)"
+HTTP_URL="$(get_http_url)"
 
-json_status=$(_json_encode_str "$STATUS")
+# ---------------------------------------------------------------------------
+# Local mode: start HTTP server + MCP server
+# ---------------------------------------------------------------------------
+if [[ "$MODE" == "local" ]]; then
+  HTTP_PORT="$(get_plugin_config "local.http_port" "8921")"
+  MCP_PORT="$(get_plugin_config "local.mcp_port" "8920")"
 
-if [[ "$OK" == "true" && -n "$ADDL" ]]; then
-  json_addl=$(_json_encode_str "$ADDL")
-  echo "{\"systemMessage\": $json_status, \"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": $json_addl}}"
-  exit 0
+  # Check if HTTP server is already running
+  if ! http_server_ready; then
+    # Start HTTP server
+    PYTHONPATH="${PROJECT_DIR}/src${PYTHONPATH:+:$PYTHONPATH}" \
+      nohup "$PYTHON_BIN" -m opencortex.http \
+        --config "$CONFIG_FILE" --port "$HTTP_PORT" --log-level WARNING \
+        > "$STATE_DIR/http.log" 2>&1 &
+    HTTP_PID=$!
+
+    # Wait for HTTP server to be ready (max 10s)
+    for _i in $(seq 1 10); do
+      if http_server_ready; then
+        break
+      fi
+      sleep 1
+    done
+
+    if ! http_server_ready; then
+      msg="[opencortex-memory] WARNING: HTTP server failed to start on port ${HTTP_PORT}"
+      json_msg=$(_json_encode_str "$msg")
+      echo "{\"systemMessage\": $json_msg}"
+      exit 0
+    fi
+  else
+    HTTP_PID=""
+  fi
+
+  # Check if MCP server is already running
+  MCP_ALIVE=$(curl -sf "http://127.0.0.1:${MCP_PORT}/mcp" 2>/dev/null; echo $?)
+  if [[ "$MCP_ALIVE" != "0" ]]; then
+    # Start MCP server in remote mode (forwards to HTTP server)
+    PYTHONPATH="${PROJECT_DIR}/src${PYTHONPATH:+:$PYTHONPATH}" \
+      nohup "$PYTHON_BIN" -m opencortex.mcp_server \
+        --config "$CONFIG_FILE" --transport streamable-http \
+        --port "$MCP_PORT" --mode remote --log-level WARNING \
+        > "$STATE_DIR/mcp.log" 2>&1 &
+    MCP_PID=$!
+    sleep 1
+  else
+    MCP_PID=""
+  fi
+
+  # Save state
+  CONFIG_DATA="$(cat "$CONFIG_FILE")"
+  TENANT="$(_json_val "$CONFIG_DATA" "tenant_id" "default")"
+  USER_ID="$(_json_val "$CONFIG_DATA" "user_id" "default")"
+
+  # Write session state with PIDs
+  if [[ -n "$PYTHON_BIN" ]]; then
+    "$PYTHON_BIN" -c "
+import json, time
+state = {
+    'active': True,
+    'mode': '${MODE}',
+    'project_dir': '${PROJECT_DIR}',
+    'config_path': '${CONFIG_FILE}',
+    'http_url': '${HTTP_URL}',
+    'tenant_id': '${TENANT}',
+    'user_id': '${USER_ID}',
+    'http_pid': ${HTTP_PID:-0},
+    'mcp_pid': ${MCP_PID:-0},
+    'last_turn_uuid': '',
+    'ingested_turns': 0,
+    'started_at': int(time.time()),
+}
+with open('${STATE_FILE}', 'w') as f:
+    json.dump(state, f, indent=2)
+"
+  fi
+
+  STATUS="[opencortex-memory] local mode — HTTP :${HTTP_PORT} MCP :${MCP_PORT} tenant=${TENANT} user=${USER_ID}"
+
+# ---------------------------------------------------------------------------
+# Remote mode: verify connectivity
+# ---------------------------------------------------------------------------
+else
+  REMOTE_HTTP="$(get_plugin_config "remote.http_url" "")"
+  if [[ -z "$REMOTE_HTTP" ]]; then
+    msg="[opencortex-memory] WARNING: remote.http_url not configured in config.json"
+    json_msg=$(_json_encode_str "$msg")
+    echo "{\"systemMessage\": $json_msg}"
+    exit 0
+  fi
+
+  # Test connectivity
+  if ! curl -sf "${REMOTE_HTTP}/api/v1/memory/health" >/dev/null 2>&1; then
+    msg="[opencortex-memory] WARNING: remote HTTP server unreachable at ${REMOTE_HTTP}"
+    json_msg=$(_json_encode_str "$msg")
+    echo "{\"systemMessage\": $json_msg}"
+    exit 0
+  fi
+
+  CONFIG_DATA="$(cat "$CONFIG_FILE")"
+  TENANT="$(_json_val "$CONFIG_DATA" "tenant_id" "default")"
+  USER_ID="$(_json_val "$CONFIG_DATA" "user_id" "default")"
+
+  # Write session state (no PIDs for remote mode)
+  if [[ -n "$PYTHON_BIN" ]]; then
+    "$PYTHON_BIN" -c "
+import json, time
+state = {
+    'active': True,
+    'mode': 'remote',
+    'project_dir': '${PROJECT_DIR}',
+    'config_path': '${CONFIG_FILE}',
+    'http_url': '${REMOTE_HTTP}',
+    'tenant_id': '${TENANT}',
+    'user_id': '${USER_ID}',
+    'http_pid': 0,
+    'mcp_pid': 0,
+    'last_turn_uuid': '',
+    'ingested_turns': 0,
+    'started_at': int(time.time()),
+}
+with open('${STATE_FILE}', 'w') as f:
+    json.dump(state, f, indent=2)
+"
+  fi
+
+  STATUS="[opencortex-memory] remote mode — ${REMOTE_HTTP} tenant=${TENANT} user=${USER_ID}"
 fi
 
+json_status=$(_json_encode_str "$STATUS")
 echo "{\"systemMessage\": $json_status}"

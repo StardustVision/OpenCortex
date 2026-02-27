@@ -12,24 +12,19 @@ Find the most relevant historical memories for: $ARGUMENTS
 
 ## Steps
 
-1. Resolve the memory bridge script path and config.
+1. Determine the HTTP server URL from session state.
 ```bash
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
 STATE_FILE="$PROJECT_DIR/.opencortex/memory/session_state.json"
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
-BRIDGE="${PLUGIN_ROOT}/scripts/oc_memory.py"
-
-if [ ! -f "$BRIDGE" ]; then
-  BRIDGE="$PROJECT_DIR/.claude-plugin/scripts/oc_memory.py"
-fi
-
-CONFIG="$PROJECT_DIR/opencortex.json"
-export PYTHONPATH="${PROJECT_DIR}/src${PYTHONPATH:+:$PYTHONPATH}"
+HTTP_URL=$(python3 -c "import json; print(json.load(open('$STATE_FILE')).get('http_url','http://127.0.0.1:8921'))" 2>/dev/null || echo "http://127.0.0.1:8921")
+echo "HTTP server: $HTTP_URL"
 ```
 
-2. Run memory recall search.
+2. Run memory search via HTTP API.
 ```bash
-python3 "$BRIDGE" --project-dir "$PROJECT_DIR" --state-file "$STATE_FILE" --config "$CONFIG" recall --query "$ARGUMENTS" --top-k 5
+curl -sf -X POST "$HTTP_URL/api/v1/memory/search" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "'"$ARGUMENTS"'", "limit": 5}'
 ```
 
 3. Evaluate results and keep only truly relevant memories.

@@ -56,6 +56,7 @@ class HierarchicalRetriever:
         embedder: Optional[Any],
         rerank_config: Optional[RerankConfig] = None,
         llm_completion: Optional[Any] = None,
+        rl_weight: float = 0.05,
     ):
         """Initialize hierarchical retriever with rerank_config.
 
@@ -71,6 +72,8 @@ class HierarchicalRetriever:
 
         # Use rerank threshold if available, otherwise use a default
         self.threshold = rerank_config.threshold if rerank_config else 0
+
+        self._rl_weight = rl_weight
 
         # Initialize rerank client only if config is available
         if rerank_config and rerank_config.is_available():
@@ -232,7 +235,7 @@ class HierarchicalRetriever:
         """Merge starting points with optional rerank fusion.
 
         When RerankClient is active in THINKING mode:
-          final_score = beta * rerank_score + (1-beta) * normalized_sona_score
+          final_score = beta * rerank_score + (1-beta) * retrieval_score
 
         Returns:
             List of (uri, parent_score) tuples
@@ -245,13 +248,20 @@ class HierarchicalRetriever:
             rerank_scores = await self._rerank_client.rerank(query, docs)
             beta = self._fusion_beta
             for i, r in enumerate(global_results):
-                sona_score = r.get("_score", 0.0)
-                fused = beta * rerank_scores[i] + (1 - beta) * sona_score
+                retrieval_score = r.get("_score", 0.0)
+                fused = beta * rerank_scores[i] + (1 - beta) * retrieval_score
+                reward = r.get("reward_score", 0.0)
+                if reward != 0 and self._rl_weight:
+                    fused += self._rl_weight * reward
                 points.append((r["uri"], fused))
                 seen.add(r["uri"])
         else:
             for r in global_results:
-                points.append((r["uri"], r.get("_score", 0.0)))
+                score = r.get("_score", 0.0)
+                reward = r.get("reward_score", 0.0)
+                if reward != 0 and self._rl_weight:
+                    score += self._rl_weight * reward
+                points.append((r["uri"], score))
                 seen.add(r["uri"])
 
         # Root directories as starting points
@@ -341,8 +351,8 @@ class HierarchicalRetriever:
                 rerank_scores = await self._rerank_client.rerank(query, documents)
                 beta = self._fusion_beta
                 for r, rerank_s in zip(results, rerank_scores):
-                    sona_s = r.get("_score", 0.0)
-                    query_scores.append(beta * rerank_s + (1 - beta) * sona_s)
+                    base_score = r.get("_score", 0.0)
+                    query_scores.append(beta * rerank_s + (1 - beta) * base_score)
             else:
                 for r in results:
                     query_scores.append(r.get("_score", 0))
@@ -352,6 +362,9 @@ class HierarchicalRetriever:
                 final_score = (
                     alpha * score + (1 - alpha) * current_score if current_score else score
                 )
+                reward = r.get("reward_score", 0.0)
+                if reward != 0 and self._rl_weight:
+                    final_score += self._rl_weight * reward
 
                 if not passes_threshold(final_score):
                     logger.debug(

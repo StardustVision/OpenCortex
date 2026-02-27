@@ -108,6 +108,21 @@ get_plugin_mode() {
   get_plugin_config "mode" "local"
 }
 
+# Return the HTTP server URL based on mode.
+# local  → http://127.0.0.1:{http_port}
+# remote → value from remote.http_url
+get_http_url() {
+  local mode
+  mode="$(get_plugin_mode)"
+  if [[ "$mode" == "remote" ]]; then
+    get_plugin_config "remote.http_url" "http://127.0.0.1:8921"
+  else
+    local port
+    port="$(get_plugin_config "local.http_port" "8921")"
+    printf 'http://127.0.0.1:%s' "$port"
+  fi
+}
+
 # Return the MCP URL based on mode.
 # local  → http://127.0.0.1:{mcp_port}/mcp
 # remote → value from remote.mcp_url
@@ -121,6 +136,13 @@ get_mcp_url() {
     port="$(get_plugin_config "local.mcp_port" "8920")"
     printf 'http://127.0.0.1:%s/mcp' "$port"
   fi
+}
+
+# Check if HTTP server is reachable.
+http_server_ready() {
+  local url
+  url="$(get_http_url)"
+  curl -sf "${url}/api/v1/memory/health" >/dev/null 2>&1
 }
 
 ensure_state_dir() {

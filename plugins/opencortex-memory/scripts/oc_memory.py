@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""OpenCortex memory bridge for Claude Code hooks.
+"""OpenCortex memory bridge for Claude Code hooks (HTTP client mode).
 
-This script provides a stable CLI interface for hook shell scripts:
-- session-start: initialize orchestrator, create session marker, recall context
-- ingest-stop: parse transcript last turn, summarize, store as memory
-- session-end: store final session summary, clean up
-- recall: search extracted memories for skill-based retrieval
+This script provides a stable CLI interface for hook shell scripts.
+All storage operations are forwarded to the running HTTP server via urllib.
+
+Commands:
+- session-start: validate config, write initial session state
+- ingest-stop: parse transcript last turn, summarize, POST to HTTP server
+- session-end: store session summary via HTTP, mark session inactive
+- recall: search stored memories via HTTP, print results
 
 Config is read from opencortex.json (tenant_id / user_id for isolation).
 Session state persists in {project}/.opencortex/memory/session_state.json.
@@ -14,14 +17,14 @@ Session state persists in {project}/.opencortex/memory/session_state.json.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import os
 import shutil
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -66,7 +69,52 @@ def _short(text: str, n: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Transcript parsing (adapted from reference ov_memory.py)
+# HTTP client helpers
+# ---------------------------------------------------------------------------
+
+def _http_post(url: str, data: Dict[str, Any], timeout: int = 30) -> Dict[str, Any]:
+    """POST JSON to the HTTP server and return parsed response."""
+    body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8", errors="replace") if e.fp else ""
+        raise RuntimeError(f"HTTP {e.code}: {error_body}") from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Connection failed: {e.reason}") from e
+
+
+def _http_get(url: str, timeout: int = 10) -> Dict[str, Any]:
+    """GET from the HTTP server and return parsed response."""
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8", errors="replace") if e.fp else ""
+        raise RuntimeError(f"HTTP {e.code}: {error_body}") from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Connection failed: {e.reason}") from e
+
+
+def _get_http_url(state: Dict[str, Any]) -> str:
+    """Get HTTP server URL from session state."""
+    url = state.get("http_url", "")
+    if not url:
+        # Fallback to default local URL
+        url = "http://127.0.0.1:8921"
+    return url.rstrip("/")
+
+
+# ---------------------------------------------------------------------------
+# Transcript parsing
 # ---------------------------------------------------------------------------
 
 def _extract_text_parts(content: Any) -> str:
@@ -267,29 +315,21 @@ def summarize_turn(turn: Dict[str, str]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Orchestrator access
+# Config discovery
 # ---------------------------------------------------------------------------
 
 def _find_config_path(project_dir: Path, explicit: Optional[str] = None) -> Optional[Path]:
-    """Find opencortex.json config file.
-
-    Search order:
-      1. Explicit path (--config)
-      2. Project local: ./opencortex.json or ./.opencortex.json
-      3. Global default: $HOME/.opencortex/opencortex.json
-    """
+    """Find opencortex.json config file."""
     if explicit:
         p = Path(explicit)
         if p.exists():
             return p
 
-    # Search in project dir
     for name in ["opencortex.json", ".opencortex.json"]:
         candidate = project_dir / name
         if candidate.exists():
             return candidate
 
-    # Fallback to global default
     global_config = Path.home() / ".opencortex" / "opencortex.json"
     if global_config.exists():
         return global_config
@@ -297,36 +337,12 @@ def _find_config_path(project_dir: Path, explicit: Optional[str] = None) -> Opti
     return None
 
 
-def _init_orchestrator(config_path: Path):
-    """Initialize and return a MemoryOrchestrator (sync wrapper)."""
-    # Add project src to path so opencortex can be imported
-    project_dir = config_path.parent
-    src_dir = project_dir / "src"
-    if src_dir.exists() and str(src_dir) not in sys.path:
-        sys.path.insert(0, str(src_dir))
-
-    from opencortex.config import CortexConfig, init_config
-    from opencortex.orchestrator import MemoryOrchestrator
-
-    config = CortexConfig.load(str(config_path))
-    init_config(config)
-    orch = MemoryOrchestrator(config=config)
-    return orch
-
-
-async def _get_orchestrator(config_path: Path):
-    """Get an initialized orchestrator."""
-    orch = _init_orchestrator(config_path)
-    await orch.init()
-    return orch
-
-
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
 
 def cmd_session_start(args: argparse.Namespace) -> Dict[str, Any]:
-    """Initialize session and recall context."""
+    """Initialize session state (server startup handled by session-start.sh)."""
     project_dir = Path(args.project_dir).resolve()
     state_file = Path(args.state_file)
     config_path = _find_config_path(project_dir, args.config)
@@ -342,7 +358,6 @@ def cmd_session_start(args: argparse.Namespace) -> Dict[str, Any]:
     tenant_id = config_data.get("tenant_id", "default")
     user_id = config_data.get("user_id", "default")
 
-    # Save session state
     state = {
         "active": True,
         "project_dir": str(project_dir),
@@ -360,22 +375,16 @@ def cmd_session_start(args: argparse.Namespace) -> Dict[str, Any]:
         f"tenant={tenant_id} user={user_id}"
     )
 
-    additional = (
-        "OpenCortex memory is active. "
-        "For historical context, use the memory-recall skill when needed."
-    )
-
     return {
         "ok": True,
         "tenant_id": tenant_id,
         "user_id": user_id,
         "status_line": status,
-        "additional_context": additional,
     }
 
 
 def cmd_ingest_stop(args: argparse.Namespace) -> Dict[str, Any]:
-    """Parse last transcript turn, summarize, and store as memory."""
+    """Parse last transcript turn, summarize, and store via HTTP server."""
     state_file = Path(args.state_file)
     transcript = Path(args.transcript_path)
 
@@ -385,9 +394,7 @@ def cmd_ingest_stop(args: argparse.Namespace) -> Dict[str, Any]:
     if not transcript.exists():
         return {"ok": True, "ingested": False, "reason": "transcript not found"}
 
-    config_path_str = state.get("config_path")
-    if not config_path_str or not Path(config_path_str).exists():
-        return {"ok": True, "ingested": False, "reason": "config not found"}
+    http_url = _get_http_url(state)
 
     # Parse transcript
     turn = extract_last_turn(transcript)
@@ -416,28 +423,24 @@ def cmd_ingest_stop(args: argparse.Namespace) -> Dict[str, Any]:
 
     content = "\n".join(content_parts)
 
-    # Store via orchestrator
-    config_path = Path(config_path_str)
+    # Store via HTTP server
     try:
-        async def _store():
-            orch = await _get_orchestrator(config_path)
-            try:
-                result = await orch.add(
-                    abstract=abstract,
-                    content=content,
-                    category="session",
-                    context_type="memory",
-                    meta={
-                        "turn_uuid": turn.get("turn_uuid", ""),
-                        "source": "hook:stop",
-                        "timestamp": int(time.time()),
-                    },
-                )
-                return result.uri
-            finally:
-                await orch.close()
-
-        uri = asyncio.run(_store())
+        result = _http_post(
+            f"{http_url}/api/v1/memory/store",
+            {
+                "abstract": abstract,
+                "content": content,
+                "category": "session",
+                "context_type": "memory",
+                "meta": {
+                    "turn_uuid": turn.get("turn_uuid", ""),
+                    "source": "hook:stop",
+                    "timestamp": int(time.time()),
+                },
+            },
+            timeout=30,
+        )
+        uri = result.get("uri", "")
     except Exception as exc:
         return {
             "ok": False,
@@ -461,7 +464,7 @@ def cmd_ingest_stop(args: argparse.Namespace) -> Dict[str, Any]:
 
 
 def cmd_session_end(args: argparse.Namespace) -> Dict[str, Any]:
-    """Finalize session: store session summary memory."""
+    """Finalize session: store session summary via HTTP, mark inactive."""
     state_file = Path(args.state_file)
     state = _load_state(state_file)
 
@@ -472,42 +475,38 @@ def cmd_session_end(args: argparse.Namespace) -> Dict[str, Any]:
             "status_line": "[opencortex-memory] no active session",
         }
 
-    config_path_str = state.get("config_path")
+    http_url = _get_http_url(state)
     ingested = int(state.get("ingested_turns", 0))
 
     # Store session-level summary if we ingested turns
-    if ingested > 0 and config_path_str and Path(config_path_str).exists():
-        config_path = Path(config_path_str)
+    if ingested > 0:
         started_at = state.get("started_at", 0)
         duration = int(time.time()) - started_at if started_at else 0
 
         try:
-            async def _store_session():
-                orch = await _get_orchestrator(config_path)
-                try:
-                    await orch.add(
-                        abstract=f"Session summary: {ingested} turns, {duration}s duration",
-                        content=(
-                            f"Session completed.\n"
-                            f"Tenant: {state.get('tenant_id', 'default')}\n"
-                            f"User: {state.get('user_id', 'default')}\n"
-                            f"Turns ingested: {ingested}\n"
-                            f"Duration: {duration}s\n"
-                            f"Started: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(started_at))}\n"
-                        ),
-                        category="session_summary",
-                        context_type="memory",
-                        meta={
-                            "source": "hook:session-end",
-                            "ingested_turns": ingested,
-                            "duration": duration,
-                            "timestamp": int(time.time()),
-                        },
-                    )
-                finally:
-                    await orch.close()
-
-            asyncio.run(_store_session())
+            _http_post(
+                f"{http_url}/api/v1/memory/store",
+                {
+                    "abstract": f"Session summary: {ingested} turns, {duration}s duration",
+                    "content": (
+                        f"Session completed.\n"
+                        f"Tenant: {state.get('tenant_id', 'default')}\n"
+                        f"User: {state.get('user_id', 'default')}\n"
+                        f"Turns ingested: {ingested}\n"
+                        f"Duration: {duration}s\n"
+                        f"Started: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(started_at))}\n"
+                    ),
+                    "category": "session_summary",
+                    "context_type": "memory",
+                    "meta": {
+                        "source": "hook:session-end",
+                        "ingested_turns": ingested,
+                        "duration": duration,
+                        "timestamp": int(time.time()),
+                    },
+                },
+                timeout=15,
+            )
         except Exception:
             pass  # Best-effort; don't block session end
 
@@ -516,10 +515,7 @@ def cmd_session_end(args: argparse.Namespace) -> Dict[str, Any]:
     state["ended_at"] = int(time.time())
     _save_json(state_file, state)
 
-    status = (
-        f"[opencortex-memory] session ended "
-        f"turns={ingested}"
-    )
+    status = f"[opencortex-memory] session ended turns={ingested}"
 
     return {
         "ok": True,
@@ -530,8 +526,7 @@ def cmd_session_end(args: argparse.Namespace) -> Dict[str, Any]:
 
 
 def cmd_recall(args: argparse.Namespace) -> int:
-    """Search stored memories and print results."""
-    project_dir = Path(args.project_dir).resolve()
+    """Search stored memories via HTTP server and print results."""
     state_file = Path(args.state_file)
     query = _as_text(args.query)
 
@@ -539,55 +534,38 @@ def cmd_recall(args: argparse.Namespace) -> int:
         print("No relevant memories found.")
         return 0
 
-    config_path = _find_config_path(project_dir, args.config)
-    if not config_path:
-        print("Memory unavailable: opencortex.json not found")
-        return 0
+    state = _load_state(state_file)
+    http_url = _get_http_url(state)
 
     try:
-        async def _search():
-            orch = await _get_orchestrator(config_path)
-            try:
-                result = await orch.search(
-                    query=query,
-                    limit=args.top_k,
-                )
-                return result
-            finally:
-                await orch.close()
-
-        result = asyncio.run(_search())
+        result = _http_post(
+            f"{http_url}/api/v1/memory/search",
+            {
+                "query": query,
+                "limit": args.top_k,
+            },
+            timeout=60,
+        )
     except Exception as exc:
         print(f"Memory recall failed: {exc}")
         return 1
 
-    # Collect all results
-    all_items = []
-    for item in getattr(result, "memories", []) or []:
-        all_items.append(item)
-    for item in getattr(result, "resources", []) or []:
-        all_items.append(item)
-    for item in getattr(result, "skills", []) or []:
-        all_items.append(item)
-
-    if not all_items:
+    items = result.get("results", [])
+    if not items:
         print("No relevant memories found.")
         return 0
 
     # Sort by score descending
-    all_items.sort(
-        key=lambda x: float(getattr(x, "score", 0.0) or 0.0),
-        reverse=True,
-    )
-    all_items = all_items[: args.top_k]
+    items.sort(key=lambda x: float(x.get("score") or 0.0), reverse=True)
+    items = items[: args.top_k]
 
     output_lines = [f"Relevant memories for: {query}", ""]
 
-    for i, item in enumerate(all_items, start=1):
-        uri = _as_text(getattr(item, "uri", ""))
-        score = float(getattr(item, "score", 0.0) or 0.0)
-        abstract = _as_text(getattr(item, "abstract", ""))
-        ctx_type = _as_text(getattr(item, "context_type", ""))
+    for i, item in enumerate(items, start=1):
+        uri = _as_text(item.get("uri", ""))
+        score = float(item.get("score") or 0.0)
+        abstract = _as_text(item.get("abstract", ""))
+        ctx_type = _as_text(item.get("context_type", ""))
 
         output_lines.append(f"{i}. [{score:.3f}] {uri}")
         if ctx_type:

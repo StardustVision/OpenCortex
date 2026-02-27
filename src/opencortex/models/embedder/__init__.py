@@ -11,6 +11,11 @@ from opencortex.models.embedder.base import (
     truncate_and_normalize,
 )
 
+try:
+    from opencortex.models.embedder.openai_embedder import OpenAIDenseEmbedder
+except ImportError:  # httpx not installed
+    OpenAIDenseEmbedder = None  # type: ignore[assignment,misc]
+
 __all__ = [
     "EmbedderBase",
     "DenseEmbedderBase",
@@ -19,4 +24,5 @@ __all__ = [
     "CompositeHybridEmbedder",
     "EmbedResult",
     "truncate_and_normalize",
+    "OpenAIDenseEmbedder",
 ]

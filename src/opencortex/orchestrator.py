@@ -7,7 +7,7 @@ internal components:
 
 - CortexConfig: tenant/user isolation
 - VikingFS: three-layer (L0/L1/L2) filesystem abstraction
-- VikingDBInterface (RuVectorAdapter): vector storage + SONA reinforcement
+- VikingDBInterface: vector storage (use OpenViking's native implementation)
 - HierarchicalRetriever: directory-aware recursive search
 - IntentAnalyzer: LLM-driven session-aware query planning
 - EmbedderBase: pluggable embedding
@@ -55,7 +55,6 @@ from opencortex.retrieve.types import (
     TypedQuery,
 )
 from opencortex.storage.collection_schemas import init_context_collection
-from opencortex.storage.ruvector.hooks_client import RuVectorHooks
 from opencortex.storage.viking_fs import VikingFS, init_viking_fs
 from opencortex.storage.vikingdb_interface import VikingDBInterface
 from opencortex.utils.uri import CortexURI
@@ -70,12 +69,12 @@ class MemoryOrchestrator:
     """
     Top-level orchestrator for OpenCortex memory operations.
 
-    Wires together storage, filesystem, retrieval, embedding, and SONA
-    reinforcement into a single coherent API.
+    Wires together storage, filesystem, retrieval, embedding, and
+    reinforcement learning into a single coherent API.
 
     Args:
         config: CortexConfig instance. Uses global config if not provided.
-        storage: VikingDBInterface backend. Auto-creates RuVectorAdapter if None.
+        storage: VikingDBInterface backend. Must be provided (use OpenViking's native).
         embedder: Embedding model. Required for add/search operations.
         rerank_config: Rerank configuration for retrieval scoring.
         llm_completion: Async callable for IntentAnalyzer (session-aware search).
@@ -88,7 +87,7 @@ class MemoryOrchestrator:
         embedder: Optional[EmbedderBase] = None,
         rerank_config: Optional[RerankConfig] = None,
         llm_completion: Optional[LLMCompletionCallable] = None,
-        hooks: Optional[RuVectorHooks] = None,
+        hooks: Optional[Any] = None,
     ):
         self._config = config or get_config()
         self._storage = storage
@@ -121,12 +120,20 @@ class MemoryOrchestrator:
         if self._initialized:
             return self
 
-        # 1. Storage backend
+        # 1. Storage backend (auto-create QdrantStorageAdapter if not provided)
         if self._storage is None:
-            self._storage = self._create_default_storage()
+            import os
+            from opencortex.storage.qdrant import QdrantStorageAdapter
 
-        # 1a. Startup health probe for RuVector HTTP backend
-        await self._probe_ruvector_health()
+            db_path = os.path.join(self._config.data_root, ".qdrant")
+            self._storage = QdrantStorageAdapter(
+                path=db_path,
+                embedding_dim=self._config.embedding_dimension,
+            )
+            logger.info(
+                "[MemoryOrchestrator] Auto-created QdrantStorageAdapter at %s",
+                db_path,
+            )
 
         # 1b. Embedder auto-creation
         if self._embedder is None:
@@ -177,9 +184,19 @@ class MemoryOrchestrator:
             llm_completion=self._llm_completion,
         )
 
-        # 7. RuVector hooks for native self-learning (auto-create if not provided)
+        # 7. Hooks — ACE (Agentic Context Engine) self-learning
         if self._hooks is None:
-            self._hooks = self._create_default_hooks()
+            from opencortex.ace.engine import ACEngine
+
+            self._hooks = ACEngine(
+                storage=self._storage,
+                embedder=self._embedder,
+                viking_fs=self._fs,
+                llm_fn=self._llm_completion,
+                tenant_id=self._config.tenant_id,
+                user_id=self._config.user_id,
+            )
+            await self._hooks.init()
 
         # 8. Session manager for context self-iteration
         self._session_manager = self._create_session_manager()
@@ -192,68 +209,6 @@ class MemoryOrchestrator:
         )
         return self
 
-    def _create_default_storage(self) -> VikingDBInterface:
-        """Create default RuVector storage backend from config."""
-        from opencortex.storage.ruvector import RuVectorAdapter, RuVectorConfig
-
-        rv_config = RuVectorConfig(
-            data_dir=self._config.data_root,
-            dimension=self._config.embedding_dimension,
-            server_host=self._config.ruvector_host,
-            server_port=self._config.ruvector_port,
-        )
-        return RuVectorAdapter(rv_config)
-
-    async def _probe_ruvector_health(self) -> None:
-        """Run a startup health probe if storage is a RuVectorAdapter (HTTP mode).
-
-        Logs a clear INFO message when reachable, or a WARNING when not.
-        Never raises — startup must continue regardless of probe outcome.
-        """
-        from opencortex.storage.ruvector.adapter import RuVectorAdapter
-
-        if not isinstance(self._storage, RuVectorAdapter):
-            return
-
-        config = self._storage.config
-        if not config.use_http:
-            # CLI mode — no HTTP server to probe
-            return
-
-        host = config.server_host
-        port = config.server_port
-
-        try:
-            from opencortex.storage.ruvector.http_client import check_ruvector_health
-
-            result = await check_ruvector_health(host, port)
-            if result["available"]:
-                version_info = (
-                    f"version: {result['version']}"
-                    if result["version"]
-                    else "version: unknown"
-                )
-                logger.info(
-                    "[MemoryOrchestrator] RuVector server at %s:%d is available (%s)",
-                    host,
-                    port,
-                    version_info,
-                )
-            else:
-                logger.warning(
-                    "[MemoryOrchestrator] RuVector server at %s:%d is NOT reachable: %s. "
-                    "Storage operations will fail.",
-                    host,
-                    port,
-                    result["error"] or "unknown error",
-                )
-        except Exception as exc:
-            logger.warning(
-                "[MemoryOrchestrator] RuVector health probe failed unexpectedly: %s. "
-                "Storage operations may fail.",
-                exc,
-            )
-
     def _create_default_embedder(self) -> Optional[EmbedderBase]:
         """
         Auto-create an embedder based on CortexConfig.
@@ -263,10 +218,12 @@ class MemoryOrchestrator:
            :class:`VolcengineDenseEmbedder` using config values.  The API key
            is taken from ``config.embedding_api_key`` first, then from the
            environment variable ``OPENCORTEX_EMBEDDING_API_KEY``.
-        2. If no provider is configured (or the volcengine attempt failed),
+        2. If ``embedding_provider == "openai"`` in config, create an
+           :class:`OpenAIDenseEmbedder` (works with any OpenAI-compatible API).
+        3. If no provider is configured (or the above attempts failed),
            try loading from ``~/.openviking/ov.conf`` via
            :func:`create_embedder_from_ov_conf`.
-        3. If nothing works, log a warning and return ``None`` so that tests
+        4. If nothing works, log a warning and return ``None`` so that tests
            that supply their own mock embedder are not affected.
 
         Returns:
@@ -329,6 +286,58 @@ class MemoryOrchestrator:
                 )
                 return None
 
+        if provider == "openai":
+            try:
+                from opencortex.models.embedder.openai_embedder import (
+                    OpenAIDenseEmbedder,
+                )
+
+                api_key = (
+                    self._config.embedding_api_key
+                    or os.environ.get("OPENCORTEX_EMBEDDING_API_KEY", "")
+                )
+                if not api_key:
+                    logger.warning(
+                        "[MemoryOrchestrator] embedding_provider='openai' but no "
+                        "api_key found in config or OPENCORTEX_EMBEDDING_API_KEY env var. "
+                        "Skipping auto-embedder creation."
+                    )
+                    return None
+
+                model_name = self._config.embedding_model
+                if not model_name:
+                    logger.warning(
+                        "[MemoryOrchestrator] embedding_provider='openai' but "
+                        "embedding_model is not set. Skipping auto-embedder creation."
+                    )
+                    return None
+
+                embedder = OpenAIDenseEmbedder(
+                    model_name=model_name,
+                    api_key=api_key,
+                    api_base=self._config.embedding_api_base or "https://api.openai.com/v1",
+                    dimension=self._config.embedding_dimension or None,
+                )
+                logger.info(
+                    "[MemoryOrchestrator] Auto-created OpenAIDenseEmbedder "
+                    "(model=%s)",
+                    model_name,
+                )
+                return embedder
+            except ImportError as exc:
+                logger.warning(
+                    "[MemoryOrchestrator] Cannot create OpenAI embedder — "
+                    "httpx not installed: %s",
+                    exc,
+                )
+                return None
+            except Exception as exc:
+                logger.warning(
+                    "[MemoryOrchestrator] Failed to create OpenAI embedder: %s",
+                    exc,
+                )
+                return None
+
         # No provider configured — try the ov.conf fallback
         if not provider:
             try:
@@ -374,42 +383,17 @@ class MemoryOrchestrator:
         )
         return None
 
-    def _create_default_hooks(self) -> Optional[RuVectorHooks]:
+    def _create_default_hooks(self) -> None:
         """
-        Auto-create RuVector hooks for native self-learning.
+        Hooks placeholder — will be replaced by ACE.
 
-        Uses npx ruvector hooks to provide:
-        - Semantic memory (remember/recall)
-        - Q-learning (learn/batch-learn)
-        - Trajectory tracking
-        - Error pattern learning
+        Self-learning will be replaced by ACE (Agentic Context Engine)
+        with playbook-based strategy evolution.
 
         Returns:
-            RuVectorHooks instance, or None if npx is not available.
+            None (hooks disabled).
         """
-        try:
-            from opencortex.storage.ruvector import RuVectorHooks
-
-            hooks = RuVectorHooks(
-                data_dir=self._config.data_root,
-                cli_path="npx",
-                timeout=30,
-            )
-            logger.info(
-                "[MemoryOrchestrator] Auto-created RuVectorHooks for native self-learning"
-            )
-            return hooks
-        except ImportError:
-            logger.warning(
-                "[MemoryOrchestrator] Could not import RuVectorHooks. "
-                "Native self-learning disabled."
-            )
-            return None
-        except Exception as exc:
-            logger.warning(
-                "[MemoryOrchestrator] Failed to create RuVectorHooks: %s", exc
-            )
-            return None
+        return None
 
     def _build_rerank_config(self) -> RerankConfig:
         """Build RerankConfig by merging explicit rerank_config with CortexConfig fields.
@@ -802,12 +786,12 @@ class MemoryOrchestrator:
         return result
 
     # =========================================================================
-    # SONA Reinforcement Face
+    # Reinforcement Learning
     # =========================================================================
 
     async def feedback(self, uri: str, reward: float) -> None:
         """
-        Submit a reward signal for a context (SONA reinforcement).
+        Submit a reward signal for a context (reinforcement learning).
 
         Positive rewards reinforce retrieval; negative rewards penalize it.
         The reinforced score formula:
@@ -833,7 +817,7 @@ class MemoryOrchestrator:
         if not record_id:
             return
 
-        # Send reward to SONA via RuVector adapter
+        # Send reward via storage adapter
         if hasattr(self._storage, "update_reward"):
             await self._storage.update_reward(_CONTEXT_COLLECTION, record_id, reward)
             logger.info(
@@ -843,7 +827,7 @@ class MemoryOrchestrator:
             )
         else:
             logger.debug(
-                "[MemoryOrchestrator] Storage backend does not support SONA rewards"
+                "[MemoryOrchestrator] Storage backend does not support rewards"
             )
 
         # Also update activity count
@@ -871,13 +855,13 @@ class MemoryOrchestrator:
 
     async def decay(self) -> Optional[Dict[str, Any]]:
         """
-        Trigger time-decay across all records (SONA).
+        Trigger time-decay across all records.
 
         Normal nodes decay at rate=0.95, protected nodes at rate=0.99.
         Records below threshold (0.01) may be archived.
 
         Returns:
-            Decay summary dict, or None if backend doesn't support SONA.
+            Decay summary dict, or None if backend doesn't support decay.
         """
         self._ensure_init()
 
@@ -926,7 +910,7 @@ class MemoryOrchestrator:
 
     async def get_profile(self, uri: str) -> Optional[Dict[str, Any]]:
         """
-        Get the SONA behavior profile for a context.
+        Get the reinforcement learning profile for a context.
 
         Returns:
             Profile dict with reward_score, retrieval_count, feedback counts,
@@ -960,7 +944,7 @@ class MemoryOrchestrator:
         return None
 
     # =========================================================================
-    # Native Self-Learning (RuVector Hooks)
+    # Native Self-Learning (Hooks — placeholder)
     # =========================================================================
 
     async def hooks_learn(
@@ -971,9 +955,9 @@ class MemoryOrchestrator:
         available_actions: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
-        Record a learning outcome using RuVector native hooks (Q-learning).
+        Record a learning outcome using hooks (Q-learning).
 
-        Maps OpenCortex concepts to RuVector hooks:
+        Maps OpenCortex concepts to hooks:
         - state: URI or context identifier
         - action: context_type (memory/skill/resource)
         - reward: feedback signal (-1 to 1)
@@ -1002,6 +986,8 @@ class MemoryOrchestrator:
             "state": state,
             "best_action": result.best_action,
             "message": result.message,
+            "operations_applied": result.operations_applied,
+            "reflection_key_insight": result.reflection_key_insight,
         }
 
     async def hooks_remember(
@@ -1010,7 +996,7 @@ class MemoryOrchestrator:
         memory_type: str = "general",
     ) -> Dict[str, Any]:
         """
-        Store content in RuVector semantic memory.
+        Store content in semantic memory.
 
         Args:
             content: Content to remember
@@ -1031,7 +1017,7 @@ class MemoryOrchestrator:
         limit: int = 5,
     ) -> List[Dict[str, Any]]:
         """
-        Search RuVector semantic memory.
+        Search semantic memory.
 
         Args:
             query: Search query
@@ -1108,7 +1094,7 @@ class MemoryOrchestrator:
         return await self._hooks.error_suggest(error=error)
 
     async def hooks_stats(self) -> Dict[str, Any]:
-        """Get RuVector hooks statistics."""
+        """Get hooks statistics."""
         self._ensure_init()
         if not self._hooks:
             return {"success": False, "error": "Hooks not initialized"}
@@ -1123,7 +1109,7 @@ class MemoryOrchestrator:
         }
 
     # =========================================================================
-    # Hooks Integration (Route through MCP → Viking FS → RuVector)
+    # Hooks Integration (Route through MCP → Viking FS)
     # =========================================================================
 
     async def hooks_route(
@@ -1216,7 +1202,7 @@ class MemoryOrchestrator:
         if not health.get("llm"):
             issues.append("No LLM configured — intent analysis and session extraction disabled")
         if not self._hooks:
-            issues.append("RuVector hooks not initialized — native self-learning disabled")
+            issues.append("Hooks not initialized — native self-learning disabled")
 
         return {
             "status": "healthy" if not issues else "issues_found",

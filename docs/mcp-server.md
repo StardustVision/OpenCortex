@@ -84,7 +84,7 @@ python -m opencortex.mcp_server --transport streamable-http --port 8920
 
 ### memory_feedback
 
-为记忆提交 SONA 强化学习奖励信号。正向奖励增强检索权重，负向奖励降低权重。
+为记忆提交强化学习奖励信号。正向奖励增强检索权重，负向奖励降低权重。
 
 **参数:**
 
@@ -113,7 +113,7 @@ python -m opencortex.mcp_server --transport streamable-http --port 8920
     "collections": 1,
     "total_records": 42,
     "storage_size": 0,
-    "backend": "ruvector"
+    "backend": "vector"
   },
   "embedder": "doubao-embedding-vision",
   "has_llm": false
@@ -122,7 +122,7 @@ python -m opencortex.mcp_server --transport streamable-http --port 8920
 
 ### memory_decay
 
-触发 SONA 时间衰减。不活跃的记忆有效分数逐渐降低（普通 0.95 衰减率，受保护 0.99 衰减率）。
+触发时间衰减。不活跃的记忆有效分数逐渐降低（普通 0.95 衰减率，受保护 0.99 衰减率）。
 
 **返回:**
 
@@ -212,8 +212,8 @@ SSE endpoint: http://{host}:{port}/sse
   "embedding_dimension": 1024,
   "embedding_provider": "volcengine",
   "embedding_model": "doubao-embedding-vision",
-  "ruvector_host": "127.0.0.1",
-  "ruvector_port": 6921,
+  "http_server_host": "127.0.0.1",
+  "http_server_port": 8921,
   "mcp_transport": "stdio",
   "mcp_port": 8920
 }
@@ -236,7 +236,7 @@ External Agent
 │   VikingFS  │  Embedder │
 │   (L0/L1/L2)│  (1024d)  │
 ├─────────────────────────┤
-│   RuVectorAdapter       │
-│   (VikingDBInterface)   │
+│   VikingVectorIndex     │
+│   (OpenViking 原生)     │
 └─────────────────────────┘
 ```

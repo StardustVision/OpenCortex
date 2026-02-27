@@ -81,18 +81,18 @@ class MockEmbedder(DenseEmbedderBase):
 
 
 class InMemoryStorage(VikingDBInterface):
-    """Fully in-memory VikingDBInterface implementation with SONA support.
+    """Fully in-memory VikingDBInterface implementation with RL support.
 
     Stores records as dicts in a nested {collection: {id: record}} structure.
     Supports cosine similarity search and basic filter evaluation.
-    Also provides SONA reinforcement methods (update_reward, get_profile,
+    Also provides reinforcement learning methods (update_reward, get_profile,
     apply_decay, set_protected).
     """
 
     def __init__(self):
         self._collections: Dict[str, Dict[str, Any]] = {}  # name -> schema
         self._records: Dict[str, Dict[str, Dict[str, Any]]] = {}  # col -> id -> record
-        self._sona_profiles: Dict[str, Dict[str, Any]] = {}  # col::id -> profile
+        self._rl_profiles: Dict[str, Dict[str, Any]] = {}  # col::id -> profile
         self._closed = False
 
     # ---- Collection Management ----
@@ -310,11 +310,11 @@ class InMemoryStorage(VikingDBInterface):
             "backend": "in-memory",
         }
 
-    # ---- SONA Reinforcement Face ----
+    # ---- Reinforcement Learning ----
 
     async def update_reward(self, collection: str, id: str, reward: float) -> None:
         key = f"{collection}::{id}"
-        profile = self._sona_profiles.setdefault(
+        profile = self._rl_profiles.setdefault(
             key,
             {
                 "reward_score": 0.0,
@@ -341,7 +341,7 @@ class InMemoryStorage(VikingDBInterface):
 
     async def get_profile(self, collection: str, id: str):
         key = f"{collection}::{id}"
-        data = self._sona_profiles.get(key)
+        data = self._rl_profiles.get(key)
         if not data:
             return None
         # Return a duck-type object that matches SonaProfile
@@ -350,7 +350,7 @@ class InMemoryStorage(VikingDBInterface):
     async def apply_decay(self):
         processed = 0
         decayed = 0
-        for key, profile in self._sona_profiles.items():
+        for key, profile in self._rl_profiles.items():
             processed += 1
             rate = 0.99 if profile.get("is_protected") else 0.95
             old = profile["effective_score"]
@@ -366,8 +366,8 @@ class InMemoryStorage(VikingDBInterface):
 
     async def set_protected(self, collection: str, id: str, protected: bool = True) -> None:
         key = f"{collection}::{id}"
-        if key in self._sona_profiles:
-            self._sona_profiles[key]["is_protected"] = protected
+        if key in self._rl_profiles:
+            self._rl_profiles[key]["is_protected"] = protected
 
     # ---- Internal helpers ----
 
@@ -666,7 +666,7 @@ class TestE2EPhase1(unittest.TestCase):
         self.assertEqual(len(result.memories), 0)
 
     # -----------------------------------------------------------------
-    # 4. SONA Reinforcement
+    # 4. Reinforcement Learning
     # -----------------------------------------------------------------
 
     def test_07_feedback(self):
@@ -688,14 +688,14 @@ class TestE2EPhase1(unittest.TestCase):
         )
         self.assertEqual(records[0].get("active_count"), 1)
 
-        # Verify SONA profile
+        # Verify RL profile
         profile = self._run(orch.get_profile(ctx.uri))
         self.assertIsNotNone(profile)
         self.assertEqual(profile["reward_score"], 1.0)
         self.assertEqual(profile["positive_feedback_count"], 1)
 
     def test_08_feedback_negative(self):
-        """Negative feedback decreases SONA reward score."""
+        """Negative feedback decreases reward score."""
         orch = self._init_orch()
 
         ctx = self._run(orch.add(abstract="Outdated info: use monolith"))

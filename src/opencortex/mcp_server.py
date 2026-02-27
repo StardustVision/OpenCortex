@@ -5,6 +5,12 @@ MCP Server for OpenCortex.
 Exposes MemoryOrchestrator capabilities as MCP tools for external AI agents.
 Uses PrefectHQ FastMCP (v3) for tool registration with stdio/SSE/HTTP transport.
 
+Two operational modes (controlled by ``mcp_mode`` in config):
+
+* **remote** (default) — Thin client that forwards all requests to the
+  OpenCortex HTTP Server (FastAPI) via :class:`OpenCortexClient`.
+* **local** — Embeds the MemoryOrchestrator in-process (development/testing).
+
 Usage::
 
     # stdio mode (local agent)
@@ -25,29 +31,48 @@ from typing import Any, Dict, List, Optional
 from fastmcp import Context, FastMCP
 
 from opencortex.config import get_config, init_config
-from opencortex.orchestrator import MemoryOrchestrator
-from opencortex.retrieve.types import ContextType
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Lifespan: initialize orchestrator once at startup
+# Lifespan: dual-mode initialization
 # ---------------------------------------------------------------------------
 
 @asynccontextmanager
 async def _lifespan(server: FastMCP):
-    """Initialize and teardown the MemoryOrchestrator."""
+    """Initialize orchestrator (local) or HTTP client (remote)."""
     config = get_config()
-    orch = MemoryOrchestrator(config=config)
-    await orch.init()
-    logger.info("[MCP] Orchestrator initialized (tenant=%s, user=%s)",
-                config.tenant_id, config.user_id)
-    try:
-        yield {"orchestrator": orch}
-    finally:
-        await orch.close()
-        logger.info("[MCP] Orchestrator closed")
+
+    if config.mcp_mode == "local":
+        # Development mode: in-process orchestrator
+        from opencortex.orchestrator import MemoryOrchestrator
+
+        orch = MemoryOrchestrator(config=config)
+        await orch.init()
+        logger.info(
+            "[MCP] Local mode — orchestrator initialized (tenant=%s, user=%s)",
+            config.tenant_id,
+            config.user_id,
+        )
+        try:
+            yield {"orchestrator": orch, "client": None}
+        finally:
+            await orch.close()
+            logger.info("[MCP] Orchestrator closed")
+    else:
+        # Production mode: thin HTTP client
+        from opencortex.http.client import OpenCortexClient
+
+        url = f"http://{config.http_server_host}:{config.http_server_port}"
+        client = OpenCortexClient(base_url=url)
+        await client.connect()
+        logger.info("[MCP] Remote mode — connected to %s", url)
+        try:
+            yield {"orchestrator": None, "client": client}
+        finally:
+            await client.close()
+            logger.info("[MCP] HTTP client closed")
 
 
 # ---------------------------------------------------------------------------
@@ -58,19 +83,32 @@ mcp = FastMCP(
     name="opencortex",
     instructions=(
         "OpenCortex Memory Server. "
-        "Store, search, and manage AI agent memories with SONA reinforcement learning."
+        "Store, search, and manage AI agent memories with reinforcement learning."
     ),
     lifespan=_lifespan,
 )
 
 
-def _get_orch(ctx: Context) -> MemoryOrchestrator:
-    """Extract orchestrator from the MCP lifespan context."""
+def _get_client(ctx: Context):
+    """Extract the HTTP client from lifespan context."""
+    client = ctx.lifespan_context.get("client")
+    if client is None:
+        raise RuntimeError("No HTTP client available — is mcp_mode set to 'remote'?")
+    return client
+
+
+def _get_orch(ctx: Context):
+    """Extract the orchestrator from lifespan context (local mode only)."""
     return ctx.lifespan_context["orchestrator"]
 
 
+def _is_local(ctx: Context) -> bool:
+    """Return True if running in local mode."""
+    return ctx.lifespan_context.get("orchestrator") is not None
+
+
 # ---------------------------------------------------------------------------
-# Tools
+# Tools — Core Memory
 # ---------------------------------------------------------------------------
 
 @mcp.tool(
@@ -89,31 +127,27 @@ async def memory_store(
     uri: Optional[str] = None,
     meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Store a new context in the memory system.
-
-    Args:
-        abstract: Short summary of the memory (used for vector search).
-        content: Full content (stored on filesystem as L2).
-        category: Category hint (e.g. "preferences", "entities", "patterns").
-        context_type: Type of context: "memory", "resource", or "skill".
-        uri: Explicit URI. Auto-generated if not provided.
-        meta: Additional metadata dict.
-    """
-    orch = _get_orch(ctx)
-    result = await orch.add(
-        abstract=abstract,
-        content=content,
-        category=category,
-        context_type=context_type,
-        uri=uri,
-        meta=meta,
+    """Store a new context in the memory system."""
+    if _is_local(ctx):
+        orch = _get_orch(ctx)
+        result = await orch.add(
+            abstract=abstract,
+            content=content,
+            category=category,
+            context_type=context_type,
+            uri=uri,
+            meta=meta,
+        )
+        return {
+            "uri": result.uri,
+            "context_type": result.context_type,
+            "category": result.category,
+            "abstract": result.abstract,
+        }
+    return await _get_client(ctx).memory_store(
+        abstract=abstract, content=content, category=category,
+        context_type=context_type, uri=uri, meta=meta,
     )
-    return {
-        "uri": result.uri,
-        "context_type": result.context_type,
-        "category": result.category,
-        "abstract": result.abstract,
-    }
 
 
 @mcp.tool(
@@ -130,50 +164,37 @@ async def memory_search(
     context_type: Optional[str] = None,
     category: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Search for relevant contexts.
+    """Search for relevant contexts."""
+    if _is_local(ctx):
+        from opencortex.retrieve.types import ContextType
 
-    Args:
-        query: Natural language search query.
-        limit: Maximum number of results (default 5).
-        context_type: Restrict to "memory", "resource", or "skill".
-        category: Filter by category.
-    """
-    orch = _get_orch(ctx)
-
-    ct = None
-    if context_type:
-        ct = ContextType(context_type)
-
-    metadata_filter = None
-    if category:
-        metadata_filter = {"op": "must", "field": "category", "conds": [category]}
-
-    result = await orch.search(
-        query=query,
-        limit=limit,
-        context_type=ct,
-        metadata_filter=metadata_filter,
+        orch = _get_orch(ctx)
+        ct = ContextType(context_type) if context_type else None
+        metadata_filter = None
+        if category:
+            metadata_filter = {"op": "must", "field": "category", "conds": [category]}
+        result = await orch.search(
+            query=query, limit=limit, context_type=ct,
+            metadata_filter=metadata_filter,
+        )
+        items = []
+        for matched in result:
+            items.append({
+                "uri": matched.uri,
+                "abstract": matched.abstract,
+                "context_type": str(matched.context_type),
+                "score": getattr(matched, "score", None),
+            })
+        return {"results": items, "total": result.total}
+    return await _get_client(ctx).memory_search(
+        query=query, limit=limit, context_type=context_type, category=category,
     )
-
-    items = []
-    for matched in result:
-        items.append({
-            "uri": matched.uri,
-            "abstract": matched.abstract,
-            "context_type": str(matched.context_type),
-            "score": getattr(matched, "score", None),
-        })
-
-    return {
-        "results": items,
-        "total": result.total,
-    }
 
 
 @mcp.tool(
     name="memory_feedback",
     description=(
-        "Submit reward feedback for a memory (SONA reinforcement). "
+        "Submit reward feedback for a memory (reinforcement learning). "
         "Positive rewards reinforce retrieval; negative rewards penalize it."
     ),
 )
@@ -182,15 +203,12 @@ async def memory_feedback(
     reward: float,
     ctx: Context,
 ) -> Dict[str, str]:
-    """Submit reward signal for a context.
-
-    Args:
-        uri: URI of the context to reward.
-        reward: Scalar reward value (positive = good, negative = bad).
-    """
-    orch = _get_orch(ctx)
-    await orch.feedback(uri=uri, reward=reward)
-    return {"status": "ok", "uri": uri, "reward": str(reward)}
+    """Submit reward signal for a context."""
+    if _is_local(ctx):
+        orch = _get_orch(ctx)
+        await orch.feedback(uri=uri, reward=reward)
+        return {"status": "ok", "uri": uri, "reward": str(reward)}
+    return await _get_client(ctx).memory_feedback(uri=uri, reward=reward)
 
 
 @mcp.tool(
@@ -199,22 +217,24 @@ async def memory_feedback(
 )
 async def memory_stats(ctx: Context) -> Dict[str, Any]:
     """Return orchestrator statistics."""
-    orch = _get_orch(ctx)
-    return await orch.stats()
+    if _is_local(ctx):
+        return await _get_orch(ctx).stats()
+    return await _get_client(ctx).memory_stats()
 
 
 @mcp.tool(
     name="memory_decay",
     description=(
-        "Trigger time-decay across all stored memories (SONA). "
+        "Trigger time-decay across all stored memories. "
         "Reduces effective scores of inactive memories over time."
     ),
 )
 async def memory_decay(ctx: Context) -> Dict[str, Any]:
     """Trigger time-decay across all records."""
-    orch = _get_orch(ctx)
-    result = await orch.decay()
-    return result or {}
+    if _is_local(ctx):
+        result = await _get_orch(ctx).decay()
+        return result or {}
+    return await _get_client(ctx).memory_decay()
 
 
 @mcp.tool(
@@ -223,18 +243,19 @@ async def memory_decay(ctx: Context) -> Dict[str, Any]:
 )
 async def memory_health(ctx: Context) -> Dict[str, Any]:
     """Check health of all components."""
-    orch = _get_orch(ctx)
-    return await orch.health_check()
+    if _is_local(ctx):
+        return await _get_orch(ctx).health_check()
+    return await _get_client(ctx).memory_health()
 
 
 # ---------------------------------------------------------------------------
-# RuVector Hooks Tools (Native Self-Learning)
+# Tools — Hooks Learn
 # ---------------------------------------------------------------------------
 
 @mcp.tool(
     name="memory_hooks_learn",
     description=(
-        "Record a learning outcome using RuVector native Q-learning. "
+        "Record a learning outcome using native Q-learning. "
         "Maps OpenCortex concepts to hooks: state=URI, action=context_type, reward=feedback. "
         "Returns best action recommendation based on learned patterns."
     ),
@@ -246,28 +267,24 @@ async def memory_hooks_learn(
     available_actions: str = "",
     ctx: Context = None,
 ) -> Dict[str, Any]:
-    """Record a learning outcome via RuVector hooks Q-learning.
-
-    Args:
-        state: Current state (e.g., URI, query context).
-        action: Action taken (e.g., "memory", "skill", "resource").
-        reward: Reward value (-1 to 1).
-        available_actions: Comma-separated available actions.
-    """
-    orch = _get_orch(ctx)
-    actions = available_actions.split(",") if available_actions else None
-    return await orch.hooks_learn(
-        state=state,
-        action=action,
-        reward=reward,
-        available_actions=actions,
+    """Record a learning outcome via hooks Q-learning."""
+    if _is_local(ctx):
+        orch = _get_orch(ctx)
+        actions = available_actions.split(",") if available_actions else None
+        return await orch.hooks_learn(
+            state=state, action=action, reward=reward,
+            available_actions=actions,
+        )
+    return await _get_client(ctx).hooks_learn(
+        state=state, action=action, reward=reward,
+        available_actions=available_actions,
     )
 
 
 @mcp.tool(
     name="memory_hooks_remember",
     description=(
-        "Store content in RuVector semantic memory. "
+        "Store content in semantic memory. "
         "Useful for remembering important context that should persist beyond session."
     ),
 )
@@ -276,20 +293,16 @@ async def memory_hooks_remember(
     memory_type: str = "general",
     ctx: Context = None,
 ) -> Dict[str, Any]:
-    """Store content in semantic memory.
-
-    Args:
-        content: Content to remember.
-        memory_type: Type of memory (default: general).
-    """
-    orch = _get_orch(ctx)
-    return await orch.hooks_remember(content=content, memory_type=memory_type)
+    """Store content in semantic memory."""
+    if _is_local(ctx):
+        return await _get_orch(ctx).hooks_remember(content=content, memory_type=memory_type)
+    return await _get_client(ctx).hooks_remember(content=content, memory_type=memory_type)
 
 
 @mcp.tool(
     name="memory_hooks_recall",
     description=(
-        "Search RuVector semantic memory for relevant content. "
+        "Search semantic memory for relevant content. "
         "Different from vector search - searches learned patterns and memories."
     ),
 )
@@ -298,15 +311,26 @@ async def memory_hooks_recall(
     limit: int = 5,
     ctx: Context = None,
 ) -> List[Dict[str, Any]]:
-    """Search semantic memory.
+    """Search semantic memory."""
+    if _is_local(ctx):
+        return await _get_orch(ctx).hooks_recall(query=query, limit=limit)
+    return await _get_client(ctx).hooks_recall(query=query, limit=limit)
 
-    Args:
-        query: Search query.
-        limit: Maximum results.
-    """
-    orch = _get_orch(ctx)
-    return await orch.hooks_recall(query=query, limit=limit)
 
+@mcp.tool(
+    name="memory_hooks_stats",
+    description="Get hooks intelligence statistics (Q-learning patterns, memories, trajectories, errors).",
+)
+async def memory_hooks_stats(ctx: Context) -> Dict[str, Any]:
+    """Get hooks statistics."""
+    if _is_local(ctx):
+        return await _get_orch(ctx).hooks_stats()
+    return await _get_client(ctx).hooks_stats()
+
+
+# ---------------------------------------------------------------------------
+# Tools — Trajectory
+# ---------------------------------------------------------------------------
 
 @mcp.tool(
     name="memory_hooks_trajectory_begin",
@@ -318,10 +342,12 @@ async def memory_hooks_trajectory_begin(
     ctx: Context = None,
 ) -> Dict[str, Any]:
     """Begin a learning trajectory."""
-    orch = _get_orch(ctx)
-    return await orch.hooks_trajectory_begin(
-        trajectory_id=trajectory_id,
-        initial_state=initial_state,
+    if _is_local(ctx):
+        return await _get_orch(ctx).hooks_trajectory_begin(
+            trajectory_id=trajectory_id, initial_state=initial_state,
+        )
+    return await _get_client(ctx).trajectory_begin(
+        trajectory_id=trajectory_id, initial_state=initial_state,
     )
 
 
@@ -337,12 +363,14 @@ async def memory_hooks_trajectory_step(
     ctx: Context = None,
 ) -> Dict[str, Any]:
     """Add a step to trajectory."""
-    orch = _get_orch(ctx)
-    return await orch.hooks_trajectory_step(
-        trajectory_id=trajectory_id,
-        action=action,
-        reward=reward,
-        next_state=next_state or None,
+    if _is_local(ctx):
+        return await _get_orch(ctx).hooks_trajectory_step(
+            trajectory_id=trajectory_id, action=action,
+            reward=reward, next_state=next_state or None,
+        )
+    return await _get_client(ctx).trajectory_step(
+        trajectory_id=trajectory_id, action=action,
+        reward=reward, next_state=next_state,
     )
 
 
@@ -356,12 +384,18 @@ async def memory_hooks_trajectory_end(
     ctx: Context = None,
 ) -> Dict[str, Any]:
     """End a trajectory."""
-    orch = _get_orch(ctx)
-    return await orch.hooks_trajectory_end(
-        trajectory_id=trajectory_id,
-        quality_score=quality_score,
+    if _is_local(ctx):
+        return await _get_orch(ctx).hooks_trajectory_end(
+            trajectory_id=trajectory_id, quality_score=quality_score,
+        )
+    return await _get_client(ctx).trajectory_end(
+        trajectory_id=trajectory_id, quality_score=quality_score,
     )
 
+
+# ---------------------------------------------------------------------------
+# Tools — Error
+# ---------------------------------------------------------------------------
 
 @mcp.tool(
     name="memory_hooks_error_record",
@@ -377,11 +411,12 @@ async def memory_hooks_error_record(
     ctx: Context = None,
 ) -> Dict[str, Any]:
     """Record an error and fix for learning."""
-    orch = _get_orch(ctx)
-    return await orch.hooks_error_record(
-        error=error,
-        fix=fix,
-        context=context or None,
+    if _is_local(ctx):
+        return await _get_orch(ctx).hooks_error_record(
+            error=error, fix=fix, context=context or None,
+        )
+    return await _get_client(ctx).error_record(
+        error=error, fix=fix, context=context,
     )
 
 
@@ -397,22 +432,13 @@ async def memory_hooks_error_suggest(
     ctx: Context = None,
 ) -> List[Dict[str, Any]]:
     """Get suggested fixes for an error."""
-    orch = _get_orch(ctx)
-    return await orch.hooks_error_suggest(error=error)
-
-
-@mcp.tool(
-    name="memory_hooks_stats",
-    description="Get RuVector hooks intelligence statistics (Q-learning patterns, memories, trajectories, errors).",
-)
-async def memory_hooks_stats(ctx: Context) -> Dict[str, Any]:
-    """Get hooks statistics."""
-    orch = _get_orch(ctx)
-    return await orch.hooks_stats()
+    if _is_local(ctx):
+        return await _get_orch(ctx).hooks_error_suggest(error=error)
+    return await _get_client(ctx).error_suggest(error=error)
 
 
 # ---------------------------------------------------------------------------
-# Session Management Tools (Context Self-Iteration)
+# Tools — Session Management
 # ---------------------------------------------------------------------------
 
 @mcp.tool(
@@ -426,13 +452,10 @@ async def session_begin(
     session_id: str,
     ctx: Context,
 ) -> Dict[str, Any]:
-    """Begin a new session.
-
-    Args:
-        session_id: Unique session identifier.
-    """
-    orch = _get_orch(ctx)
-    return await orch.session_begin(session_id=session_id)
+    """Begin a new session."""
+    if _is_local(ctx):
+        return await _get_orch(ctx).session_begin(session_id=session_id)
+    return await _get_client(ctx).session_begin(session_id=session_id)
 
 
 @mcp.tool(
@@ -448,18 +471,13 @@ async def session_message(
     content: str,
     ctx: Context,
 ) -> Dict[str, Any]:
-    """Add a message to a session.
-
-    Args:
-        session_id: Session identifier.
-        role: Message role ("user" or "assistant").
-        content: Message content.
-    """
-    orch = _get_orch(ctx)
-    return await orch.session_message(
-        session_id=session_id,
-        role=role,
-        content=content,
+    """Add a message to a session."""
+    if _is_local(ctx):
+        return await _get_orch(ctx).session_message(
+            session_id=session_id, role=role, content=content,
+        )
+    return await _get_client(ctx).session_message(
+        session_id=session_id, role=role, content=content,
     )
 
 
@@ -476,21 +494,18 @@ async def session_end(
     quality_score: float = 0.5,
     ctx: Context = None,
 ) -> Dict[str, Any]:
-    """End a session and extract memories.
-
-    Args:
-        session_id: Session to end.
-        quality_score: Overall session quality (0.0-1.0).
-    """
-    orch = _get_orch(ctx)
-    return await orch.session_end(
-        session_id=session_id,
-        quality_score=quality_score,
+    """End a session and extract memories."""
+    if _is_local(ctx):
+        return await _get_orch(ctx).session_end(
+            session_id=session_id, quality_score=quality_score,
+        )
+    return await _get_client(ctx).session_end(
+        session_id=session_id, quality_score=quality_score,
     )
 
 
 # ---------------------------------------------------------------------------
-# Hooks Integration Tools (Route through MCP → Viking FS → RuVector)
+# Tools — Hooks Integration
 # ---------------------------------------------------------------------------
 
 @mcp.tool(
@@ -505,15 +520,12 @@ async def hooks_route(
     agents: str = "",
     ctx: Context = None,
 ) -> Dict[str, Any]:
-    """Route task to best agent.
-
-    Args:
-        task: Task description or command.
-        agents: Comma-separated available agent names.
-    """
-    orch = _get_orch(ctx)
-    agent_list = [a.strip() for a in agents.split(",") if a.strip()] if agents else None
-    return await orch.hooks_route(task=task, agents=agent_list)
+    """Route task to best agent."""
+    if _is_local(ctx):
+        orch = _get_orch(ctx)
+        agent_list = [a.strip() for a in agents.split(",") if a.strip()] if agents else None
+        return await orch.hooks_route(task=task, agents=agent_list)
+    return await _get_client(ctx).integration_route(task=task, agents=agents)
 
 
 @mcp.tool(
@@ -524,13 +536,10 @@ async def hooks_init(
     project_path: str = ".",
     ctx: Context = None,
 ) -> Dict[str, Any]:
-    """Initialize hooks for a project.
-
-    Args:
-        project_path: Project root path.
-    """
-    orch = _get_orch(ctx)
-    return await orch.hooks_init(project_path=project_path)
+    """Initialize hooks for a project."""
+    if _is_local(ctx):
+        return await _get_orch(ctx).hooks_init(project_path=project_path)
+    return await _get_client(ctx).integration_init(project_path=project_path)
 
 
 @mcp.tool(
@@ -541,13 +550,10 @@ async def hooks_pretrain(
     repo_path: str = ".",
     ctx: Context = None,
 ) -> Dict[str, Any]:
-    """Pre-train from repository.
-
-    Args:
-        repo_path: Repository root path.
-    """
-    orch = _get_orch(ctx)
-    return await orch.hooks_pretrain(repo_path=repo_path)
+    """Pre-train from repository."""
+    if _is_local(ctx):
+        return await _get_orch(ctx).hooks_pretrain(repo_path=repo_path)
+    return await _get_client(ctx).integration_pretrain(repo_path=repo_path)
 
 
 @mcp.tool(
@@ -556,8 +562,9 @@ async def hooks_pretrain(
 )
 async def hooks_verify(ctx: Context = None) -> Dict[str, Any]:
     """Verify hooks configuration."""
-    orch = _get_orch(ctx)
-    return await orch.hooks_verify()
+    if _is_local(ctx):
+        return await _get_orch(ctx).hooks_verify()
+    return await _get_client(ctx).integration_verify()
 
 
 @mcp.tool(
@@ -566,8 +573,9 @@ async def hooks_verify(ctx: Context = None) -> Dict[str, Any]:
 )
 async def hooks_doctor(ctx: Context = None) -> Dict[str, Any]:
     """Run diagnostics."""
-    orch = _get_orch(ctx)
-    return await orch.hooks_doctor()
+    if _is_local(ctx):
+        return await _get_orch(ctx).hooks_doctor()
+    return await _get_client(ctx).integration_doctor()
 
 
 @mcp.tool(
@@ -578,13 +586,10 @@ async def hooks_export(
     format: str = "json",
     ctx: Context = None,
 ) -> Dict[str, Any]:
-    """Export intelligence data.
-
-    Args:
-        format: Export format ("json" or "markdown").
-    """
-    orch = _get_orch(ctx)
-    return await orch.hooks_export(format=format)
+    """Export intelligence data."""
+    if _is_local(ctx):
+        return await _get_orch(ctx).hooks_export(format=format)
+    return await _get_client(ctx).integration_export(format=format)
 
 
 @mcp.tool(
@@ -593,8 +598,9 @@ async def hooks_export(
 )
 async def hooks_build_agents(ctx: Context = None) -> Dict[str, Any]:
     """Generate agent configurations."""
-    orch = _get_orch(ctx)
-    return await orch.hooks_build_agents()
+    if _is_local(ctx):
+        return await _get_orch(ctx).hooks_build_agents()
+    return await _get_client(ctx).integration_build_agents()
 
 
 # ---------------------------------------------------------------------------
@@ -629,6 +635,12 @@ def main():
         help="Path to opencortex.json config file",
     )
     parser.add_argument(
+        "--mode",
+        choices=["local", "remote"],
+        default=None,
+        help="Override mcp_mode from config (local=in-process, remote=HTTP client)",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -654,7 +666,11 @@ def main():
     )
 
     # Initialize config
-    init_config(path=args.config)
+    config = init_config(path=args.config)
+
+    # CLI --mode overrides config file
+    if args.mode:
+        config.mcp_mode = args.mode
 
     run_kwargs = {"transport": args.transport}
     if args.transport != "stdio":

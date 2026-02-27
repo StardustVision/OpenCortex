@@ -69,7 +69,7 @@ class InMemoryStorage(VikingDBInterface):
     def __init__(self):
         self._collections: Dict[str, Dict[str, Any]] = {}
         self._records: Dict[str, Dict[str, Dict[str, Any]]] = {}
-        self._sona_profiles: Dict[str, Dict[str, Any]] = {}
+        self._rl_profiles: Dict[str, Dict[str, Any]] = {}
         self._closed = False
 
     async def create_collection(self, name, schema):
@@ -221,10 +221,10 @@ class InMemoryStorage(VikingDBInterface):
         return {"collections": len(self._collections), "total_records": total,
                 "storage_size": 0, "backend": "in-memory"}
 
-    # SONA
+    # Reinforcement Learning
     async def update_reward(self, collection, id, reward):
         key = f"{collection}::{id}"
-        p = self._sona_profiles.setdefault(key, {
+        p = self._rl_profiles.setdefault(key, {
             "reward_score": 0.0, "retrieval_count": 0,
             "positive_feedback_count": 0, "negative_feedback_count": 0,
             "effective_score": 0.0, "is_protected": False,
@@ -239,14 +239,14 @@ class InMemoryStorage(VikingDBInterface):
 
     async def get_profile(self, collection, id):
         key = f"{collection}::{id}"
-        data = self._sona_profiles.get(key)
+        data = self._rl_profiles.get(key)
         if not data:
             return None
         return _SimpleProfile(id=id, **data)
 
     async def apply_decay(self):
         processed = decayed = 0
-        for p in self._sona_profiles.values():
+        for p in self._rl_profiles.values():
             processed += 1
             rate = 0.99 if p.get("is_protected") else 0.95
             old = p["effective_score"]
@@ -257,8 +257,8 @@ class InMemoryStorage(VikingDBInterface):
 
     async def set_protected(self, collection, id, protected=True):
         key = f"{collection}::{id}"
-        if key in self._sona_profiles:
-            self._sona_profiles[key]["is_protected"] = protected
+        if key in self._rl_profiles:
+            self._rl_profiles[key]["is_protected"] = protected
 
     def _ensure(self, collection):
         if collection not in self._collections:
@@ -550,7 +550,7 @@ class TestMCPServer(unittest.TestCase):
 
         async def check():
             async with Client(server) as client:
-                # Store + feedback to create SONA profile
+                # Store + feedback to create RL profile
                 store_result = await client.call_tool("memory_store", {
                     "abstract": "Decaying memory",
                 })

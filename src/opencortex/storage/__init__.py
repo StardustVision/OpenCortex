@@ -20,13 +20,7 @@ from opencortex.storage.vikingdb_interface import (
 )
 from opencortex.storage.local_agfs import LocalAGFS
 from opencortex.storage.viking_fs import VikingFS, init_viking_fs, get_viking_fs
-from opencortex.storage.ruvector import (
-    RuVectorAdapter,
-    RuVectorCLI,
-    RuVectorConfig,
-    SonaProfile,
-    DecayResult,
-)
+from opencortex.storage.qdrant import QdrantStorageAdapter
 
 __all__ = [
     # Abstract interface & exceptions
@@ -43,10 +37,6 @@ __all__ = [
     "VikingFS",
     "init_viking_fs",
     "get_viking_fs",
-    # RuVector backend
-    "RuVectorAdapter",
-    "RuVectorCLI",
-    "RuVectorConfig",
-    "SonaProfile",
-    "DecayResult",
+    # Storage backends
+    "QdrantStorageAdapter",
 ]

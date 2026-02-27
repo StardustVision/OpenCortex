@@ -314,7 +314,7 @@ async def test_e2e_real_embedding(embedder):
                 print(f"    [{m.score:.4f}] {m.abstract[:50]}...")
 
         # Feedback
-        print("\n[4.4] SONA feedback...")
+        print("\n[4.4] RL feedback...")
         if memories:
             await orch.feedback(memories[0].uri, reward=2.0)
             profile = await orch.get_profile(memories[0].uri)
@@ -379,7 +379,6 @@ def main():
     if not server_url:
         print("\n⚠ OpenViking VectorDB Server 未运行。")
         print("  启动方式: openviking-server")
-        print("  RuVector (rvf) 未安装在此系统上。")
         print("  当前测试使用 InMemoryStorage 替代。")
 
 

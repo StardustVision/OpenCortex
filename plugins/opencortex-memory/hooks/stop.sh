@@ -22,6 +22,9 @@ if [[ -z "$TRANSCRIPT_PATH" || ! -f "$TRANSCRIPT_PATH" ]]; then
   exit 0
 fi
 
-run_bridge ingest-stop --transcript-path "$TRANSCRIPT_PATH" >/dev/null 2>&1 || true
+# Fork ingest to background so the hook returns immediately.
+# This prevents blocking Claude Code for 10-50s per turn
+# (embedding + summarization latency).
+(run_bridge ingest-stop --transcript-path "$TRANSCRIPT_PATH" >/dev/null 2>&1 || true) &
 
 echo '{}'

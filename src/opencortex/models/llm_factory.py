@@ -6,10 +6,10 @@ LLM completion callable factory for OpenCortex.
 Produces an `async def(prompt: str) -> str` callable for use with IntentAnalyzer.
 
 Backend selection priority:
-1. Volcengine Ark SDK  — if volcenginesdkarkruntime is installed and an API key
-   is available (via config.llm_api_key, OPENCORTEX_LLM_API_KEY env var, or
-   config.embedding_api_key).
-2. OpenAI-compatible   — if the OPENAI_API_KEY env var is set.
+1. Volcengine Ark SDK  — if volcenginesdkarkruntime is installed AND the
+   effective base URL contains "volces.com".
+2. OpenAI-compatible   — if an API key is available from config (llm_api_key /
+   embedding_api_key) or the OPENAI_API_KEY env var.
 3. None                — if no backend is available (IntentAnalyzer won't run).
 
 All SDK/library imports are lazy so the module can be imported without any
@@ -35,8 +35,8 @@ def create_llm_completion(config) -> Optional[Callable[[str], Awaitable[str]]]:
     """Create an LLM completion callable from CortexConfig.
 
     Selects the best available backend in priority order:
-      1. Volcengine Ark SDK (if installed and API key present)
-      2. OpenAI-compatible via httpx (if OPENAI_API_KEY env var is set)
+      1. Volcengine Ark SDK (if installed and base URL is volces.com)
+      2. OpenAI-compatible via httpx (config key or OPENAI_API_KEY env var)
       3. None (no backend available)
 
     Args:
@@ -60,8 +60,10 @@ def create_llm_completion(config) -> Optional[Callable[[str], Awaitable[str]]]:
 
     # ------------------------------------------------------------------
     # Backend 1: Volcengine Ark SDK
+    # Only when the SDK is installed AND the base URL points to Volcengine.
     # ------------------------------------------------------------------
-    if effective_api_key:
+    _is_volcengine = "volces.com" in (effective_base or _DEFAULT_ARK_BASE_URL)
+    if effective_api_key and _is_volcengine:
         try:
             import volcenginesdkarkruntime  # noqa: F401 — lazy availability check
             callable_ = _make_ark_callable(
@@ -83,9 +85,12 @@ def create_llm_completion(config) -> Optional[Callable[[str], Awaitable[str]]]:
             )
 
     # ------------------------------------------------------------------
-    # Backend 2: OpenAI-compatible via httpx
+    # Backend 2: OpenAI-compatible via httpx (config key or env var)
     # ------------------------------------------------------------------
-    openai_api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    openai_api_key = (
+        effective_api_key
+        or os.environ.get("OPENAI_API_KEY", "").strip()
+    )
     if openai_api_key:
         try:
             import httpx  # noqa: F401 — lazy availability check

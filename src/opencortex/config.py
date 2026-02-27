@@ -53,19 +53,20 @@ class CortexConfig:
     llm_model: str = ""           # LLM model name for intent analysis
     llm_api_key: str = ""         # LLM API key (defaults to embedding_api_key if empty)
     llm_api_base: str = ""        # LLM API base URL
-    # RuVector storage
-    ruvector_host: str = "127.0.0.1"
-    ruvector_port: int = 6921
     # Rerank
     rerank_provider: str = ""       # "volcengine" | "jina" | "cohere" | "llm"
     rerank_model: str = ""          # Rerank model name
     rerank_api_key: str = ""        # API key (defaults to embedding_api_key)
     rerank_api_base: str = ""       # API endpoint
     rerank_threshold: float = 0.0   # Score threshold
-    rerank_fusion_beta: float = 0.7 # Rerank weight vs SONA (0-1)
+    rerank_fusion_beta: float = 0.7 # Rerank vs retrieval score weight (0-1)
     # MCP server
     mcp_transport: str = "stdio"  # "stdio" | "sse" | "streamable-http"
     mcp_port: int = 8920
+    mcp_mode: str = "remote"  # "remote" (thin client) | "local" (in-process orchestrator)
+    # OpenCortex HTTP Server (FastAPI)
+    http_server_host: str = "127.0.0.1"
+    http_server_port: int = 8921
 
     def tenant_prefix(self) -> str:
         """Return the tenant URI prefix: opencortex://tenant/{tenant_id}"""

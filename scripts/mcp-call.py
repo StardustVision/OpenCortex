@@ -3,7 +3,7 @@
 Lightweight MCP HTTP client for OpenCortex hooks.
 
 Calls MCP tools via streamable-http transport. Designed to be invoked
-from Claude Code hooks (settings.json) as a replacement for npx ruvector.
+from Claude Code hooks (settings.json).
 
 Usage:
     uv run python scripts/mcp-call.py <tool_name> '<json_args>'
