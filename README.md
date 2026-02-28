@@ -14,7 +14,7 @@
 
 English documentation is in this file.
 
-- Chinese version: [README_CN](README_CN)
+- Chinese version: [README_CN](README_CN.md)
 - Architecture details: [docs/architecture.md](docs/architecture.md)
 - MCP server docs: [docs/mcp-server.md](docs/mcp-server.md)
 - ACE design docs: [docs/ace-design.md](docs/ace-design.md)
