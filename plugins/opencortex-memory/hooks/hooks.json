@@ -1,13 +1,13 @@
 {
   "description": "OpenCortex memory hooks for Claude Code (cross-platform)",
-  "note": "Default commands use bash. On Windows without bash, run 'python install.py' to register PowerShell (.ps1) hooks into .claude/settings.json.",
+  "note": "hook_runner.py auto-detects platform: bash (.sh) on macOS/Linux, PowerShell (.ps1) on Windows.",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/hook_runner.py session-start",
             "timeout": 12
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/user-prompt-submit.sh",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/hook_runner.py user-prompt-submit",
             "timeout": 15
           }
         ]
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/stop.sh",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/hook_runner.py stop",
             "async": true,
             "timeout": 120
           }
@@ -41,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/session-end.sh",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/hook_runner.py session-end",
             "timeout": 20
           }
         ]
