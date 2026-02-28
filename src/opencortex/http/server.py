@@ -8,7 +8,7 @@ a thin client that forwards requests here.
 
 Usage::
 
-    python -m opencortex.http --host 127.0.0.1 --port 8921 --config opencortex.json
+    python -m opencortex.http --host 127.0.0.1 --port 8921 --config server.json
 """
 
 import logging

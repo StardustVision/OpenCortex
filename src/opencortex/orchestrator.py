@@ -36,6 +36,7 @@ Typical usage::
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 from uuid import uuid4
 
@@ -128,10 +129,9 @@ class MemoryOrchestrator:
 
         # 1. Storage backend (auto-create QdrantStorageAdapter if not provided)
         if self._storage is None:
-            import os
             from opencortex.storage.qdrant import QdrantStorageAdapter
 
-            db_path = os.path.join(self._config.data_root, ".qdrant")
+            db_path = str(Path(self._config.data_root) / ".qdrant")
             self._storage = QdrantStorageAdapter(
                 path=db_path,
                 embedding_dim=self._config.embedding_dimension,
@@ -1283,8 +1283,8 @@ class MemoryOrchestrator:
             "project_path": project_path,
             "tenant_id": tid,
             "user_id": uid,
-            "mcp_transport": self._config.mcp_transport,
-            "mcp_port": self._config.mcp_port,
+            "http_server_host": self._config.http_server_host,
+            "http_server_port": self._config.http_server_port,
         }
 
     async def hooks_pretrain(self, repo_path: str = ".") -> Dict[str, Any]:
