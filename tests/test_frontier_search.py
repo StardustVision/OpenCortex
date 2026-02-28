@@ -97,5 +97,42 @@ class TestShouldRerankScoreKey(unittest.TestCase):
         self.assertFalse(retriever._should_rerank([{"_score": 0.9}]))
 
 
+class TestDiverseTruncate(unittest.TestCase):
+    """Test _diverse_truncate frontier balancing."""
+
+    def test_balances_three_branches(self):
+        """3 root branches x 40 items, truncated to 64 → each branch >= 20."""
+        frontier = []
+        for branch in ["opencortex://t/shared/memories",
+                        "opencortex://t/shared/resources",
+                        "opencortex://t/shared/skills"]:
+            for i in range(40):
+                frontier.append((f"{branch}/node_{i}", 0.5 + i * 0.01))
+
+        result = HierarchicalRetriever._diverse_truncate(frontier, 64)
+        self.assertEqual(len(result), 64)
+
+        # Count per branch
+        counts = defaultdict(int)
+        for uri, _ in result:
+            root = "/".join(uri.split("/")[:5])
+            counts[root] += 1
+
+        for branch_count in counts.values():
+            self.assertGreaterEqual(branch_count, 20)
+
+    def test_no_truncation_when_under_limit(self):
+        """Frontier under limit → returned unchanged."""
+        frontier = [("uri_1", 0.5), ("uri_2", 0.3)]
+        result = HierarchicalRetriever._diverse_truncate(frontier, 64)
+        self.assertEqual(len(result), 2)
+
+    def test_single_branch_gets_all(self):
+        """Single branch → gets all slots."""
+        frontier = [(f"opencortex://t/shared/mem/node_{i}", 0.1 * i) for i in range(100)]
+        result = HierarchicalRetriever._diverse_truncate(frontier, 64)
+        self.assertEqual(len(result), 64)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -551,6 +551,45 @@ class HierarchicalRetriever:
         results = await asyncio.gather(*[_build_one(c) for c in candidates])
         return list(results)
 
+    @staticmethod
+    def _diverse_truncate(
+        frontier: List[Tuple[str, float]],
+        max_size: int,
+    ) -> List[Tuple[str, float]]:
+        """Truncate frontier with diversity across root branches.
+
+        Buckets by URI prefix (root branch), sorts each bucket by score desc,
+        then round-robin fills to max_size.
+        """
+        if len(frontier) <= max_size:
+            return frontier
+
+        buckets: Dict[str, List[Tuple[str, float]]] = {}
+        for uri, score in frontier:
+            parts = uri.split("/")
+            root = "/".join(parts[:5]) if len(parts) >= 5 else uri
+            if root not in buckets:
+                buckets[root] = []
+            buckets[root].append((uri, score))
+
+        for b in buckets.values():
+            b.sort(key=lambda x: x[1], reverse=True)
+
+        result: List[Tuple[str, float]] = []
+        iters = [iter(b) for b in buckets.values()]
+        while len(result) < max_size and iters:
+            next_round = []
+            for it in iters:
+                if len(result) >= max_size:
+                    break
+                item = next(it, None)
+                if item is not None:
+                    result.append(item)
+                    next_round.append(it)
+            iters = next_round
+
+        return result[:max_size]
+
     def _get_root_uris_for_type(self, context_type: ContextType) -> List[str]:
         """Return starting directory URI list based on context_type.
 
