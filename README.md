@@ -47,22 +47,28 @@ fused_score = similarity + rl_weight × reward_score
 ### 三阶检索管线
 
 ```
-Embedding 召回 (top 20)
+Embedding 召回 (top-k)
        ↓
-Rerank 精排 (cross-encoder / LLM listwise scoring)
+Score Gap 检测 → top1-top2 差距 > 0.15 → 跳过 Rerank，直接融合
+       ↓
+Rerank 精排 (top 5 candidates, cross-encoder / LLM listwise scoring)
        ↓
 Score Fusion: final = β × rerank + (1-β) × retrieval + rl_weight × reward
        ↓
 层级传播 + 收敛检测 → 返回 Top K
 ```
 
+**无 Embedding 降级**：未配置 `embedding_provider` 时，自动退化为 Qdrant filter/scroll 纯字段检索，RL 分数融合仍然生效。
+
 ### 上下文自迭代
 
 每次对话结束时，Stop Hook 自动提取对话记忆：
 
 ```
-Stop Hook → 解析 Transcript → LLM 摘要 → POST HTTP Server → Qdrant 存储
+Stop Hook → 解析 Transcript → 条件摘要 → POST HTTP Server → Qdrant 存储
 ```
+
+**条件摘要**：短对话（< 500 字符）跳过 LLM 调用，直接使用本地 fallback（提取 tool-use 动作）；长对话才调用 Haiku 摘要，节省 ~90% 的摘要 Token 开销。
 
 无需手动整理，Agent 的知识库自动增长。
 
@@ -163,12 +169,16 @@ EmbedderBase (ABC)
   └── CompositeHybridEmbedder  → 组合任意 Dense + Sparse
 ```
 
-支持 Volcengine doubao-embedding、OpenAI text-embedding 等多种嵌入模型。
+支持 Volcengine doubao-embedding、OpenAI text-embedding 等多种嵌入模型。未配置时自动降级为无语义检索。
 
-**Rerank 三模式降级**
+**Rerank 智能降级**
 1. **API 模式** — 专用 Rerank API (Volcengine / Jina / Cohere)
 2. **LLM 模式** — 用 LLM completion 做 listwise rerank (降级方案)
 3. **Disabled** — 纯 embedding + RL fusion，零额外开销
+
+成本控制：
+- `max_candidates=5` — 只发送 top 5 给 rerank（75% Token 节省）
+- `score_gap_threshold=0.15` — top1 领先明显时跳过 rerank（零开销）
 
 ---
 
@@ -198,6 +208,16 @@ uv pip install -e .
   "http_server_port": 8921,
   "mcp_transport": "streamable-http",
   "mcp_port": 8920
+}
+```
+
+**无 Embedding 模式**：省略 `embedding_*` 字段或设置 `"embedding_provider": "none"`，系统退化为纯字段检索（filter/scroll），RL 反馈排序仍可用。
+
+```json
+{
+  "tenant_id": "my-team",
+  "user_id": "my-name",
+  "http_server_port": 8921
 }
 ```
 
@@ -294,7 +314,7 @@ UserPromptSubmit (每次用户输入)
   ▼
 Stop (每次 Agent 响应完成)
   │  → 解析 Transcript 最后一轮
-  │  → Claude Haiku 摘要
+  │  → 条件摘要 (短轮 → fallback / 长轮 → Haiku LLM)
   │  → POST /api/v1/memory/store (后台执行)
   ▼
 SessionEnd (手动/卸载时)
