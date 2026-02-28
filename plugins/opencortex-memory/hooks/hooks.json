@@ -1,12 +1,14 @@
 {
-  "description": "OpenCortex memory hooks for Claude Code",
+  "description": "OpenCortex memory hooks for Claude Code (cross-platform)",
+  "note": "Bash (.sh) hooks are used on macOS/Linux; PowerShell (.ps1) hooks on Windows. The install.py installer auto-detects and registers the correct variant.",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh",
+            "command_bash": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh",
+            "command_powershell": "powershell -NoProfile -ExecutionPolicy Bypass -File ${CLAUDE_PLUGIN_ROOT}/hooks/session-start.ps1",
             "timeout": 12
           }
         ]
@@ -17,7 +19,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/user-prompt-submit.sh",
+            "command_bash": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/user-prompt-submit.sh",
+            "command_powershell": "powershell -NoProfile -ExecutionPolicy Bypass -File ${CLAUDE_PLUGIN_ROOT}/hooks/user-prompt-submit.ps1",
             "timeout": 15
           }
         ]
@@ -28,7 +31,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/stop.sh",
+            "command_bash": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/stop.sh",
+            "command_powershell": "powershell -NoProfile -ExecutionPolicy Bypass -File ${CLAUDE_PLUGIN_ROOT}/hooks/stop.ps1",
             "async": true,
             "timeout": 120
           }
@@ -40,7 +44,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/session-end.sh",
+            "command_bash": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/session-end.sh",
+            "command_powershell": "powershell -NoProfile -ExecutionPolicy Bypass -File ${CLAUDE_PLUGIN_ROOT}/hooks/session-end.ps1",
             "timeout": 20
           }
         ]

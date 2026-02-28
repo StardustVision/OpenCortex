@@ -1,199 +1,125 @@
 <p align="center">
   <h1 align="center">OpenCortex</h1>
-  <p align="center">AI Agent 的记忆与上下文管理系统</p>
+  <p align="center">Memory and context management for AI agents</p>
   <p align="center">
-    <a href="#快速开始">快速开始</a> · <a href="#架构设计">架构</a> · <a href="#插件系统">插件</a> · <a href="#mcp-tools">MCP Tools</a> · <a href="#sona-自学习排序">SONA</a> · <a href="docs/architecture.md">详细文档</a>
+    <a href="#quick-start">Quick Start</a> ·
+    <a href="#architecture">Architecture</a> ·
+    <a href="#plugin-system">Plugin</a> ·
+    <a href="#mcp-tools">MCP Tools</a> ·
+    <a href="#evaluation-and-testing">Evaluation</a>
   </p>
 </p>
 
 ---
 
-## 为什么需要 OpenCortex
+English documentation is in this file.
 
-大模型 Agent 的上下文窗口是有限的。每次对话结束，Agent 遗忘一切。
+- Chinese version: [README_CN](README_CN)
+- Architecture details: [docs/architecture.md](docs/architecture.md)
+- MCP server docs: [docs/mcp-server.md](docs/mcp-server.md)
+- ACE design docs: [docs/ace-design.md](docs/ace-design.md)
 
-OpenCortex 让 Agent 拥有**持久记忆**——跨会话的、可检索的、会自我进化的记忆系统：
+## Why OpenCortex
 
-- 对话中学到的用户偏好，下次自动召回
-- 踩过的坑和修复方案，再遇到时立刻给出建议
-- 重要代码模式和架构决策，始终保持上下文
+LLM agents have limited context windows and usually forget everything after a session ends.
 
-不是简单的 key-value 存储，而是一个**三层摘要 + 强化学习排序 + 语义精排**的完整记忆引擎。
+OpenCortex adds persistent, retrievable, and evolving memory to agent workflows:
 
----
+- Recall user preferences across sessions
+- Reuse known fixes for repeated errors
+- Keep architecture and code decisions available as context
 
-## 核心能力
+It is not a simple key-value store. It is a complete memory engine with layered summaries, semantic retrieval, and reinforcement-driven ranking.
 
-### 三层摘要 (L0 / L1 / L2)
+## Core Capabilities
 
-```
-L0 摘要  →  一句话描述，用于向量检索             ← 极低 Token
-L1 概要  →  段落级概要，用于初步判断             ← 低 Token (自动生成)
-L2 全文  →  完整内容，按需加载                   ← 高 Token
-```
+### 1. Three-Layer Summaries (L0 / L1 / L2)
 
-`add()` 时自动生成 L1 概要：短内容直接复用，长内容由 LLM 摘要（无 LLM 时截断）。L1 存入 Qdrant payload + 文件系统，检索时零 I/O 加载。
+- L0: one-line abstract, optimized for vector retrieval
+- L1: paragraph-level overview, optimized for low-token reasoning
+- L2: full content, loaded only when needed
 
-检索时 Intent Router 根据查询意图自动选择层级——确认性查询只返回 L0，分析性查询加载到 L2。**90% 的场景只需 L0/L1**，极大节省 Token。
+`add()` automatically generates L1 overview:
 
-### SONA 自学习排序
+- short content: reused directly
+- long content: summarized by LLM (or truncated fallback without LLM)
 
-强化学习驱动的记忆排序——高价值记忆自然上浮，低价值记忆自然衰减：
+### 2. Intent-Aware Retrieval
 
-```
-fused_score = similarity + rl_weight × reward_score
-```
+Intent Router dynamically selects retrieval strategy (top-k, detail level, time scope):
 
-正反馈 → 分数增强 → 下次优先召回。长期不用 → 自然衰减 → 腾出空间给新记忆。
+- quick lookup: low-cost L0 retrieval
+- recent recall: medium-depth L1 retrieval
+- deep analysis: L2 retrieval with richer context
+- summarize: larger top-k aggregation
 
-### Intent Router 智能检索
+### 3. SONA Reinforcement Ranking
 
-三层意图分析，动态调整检索策略——不同查询自动匹配不同的 Top-K、detail_level 和时间范围：
+Memory ranking integrates semantic similarity and RL feedback:
 
-```
-Query
-  |
-  v
-┌───────────────────────────────────────────────────────┐
-│                    Intent Router                      │
-│                                                       │
-│  Layer 1: Keyword Extraction  (zero LLM cost)         │
-│    time-words    -> time_scope = recent               │
-│    "summarize"   -> intent = summarize, top_k up      │
-│    "confirm"     -> intent = quick_lookup             │
-│                                                       │
-│  Layer 2: LLM Classification  (query >= 30 chars)     │
-│    output: intent_type + top_k + detail_level         │
-│                                                       │
-│  Layer 3: Memory Trigger  (agent reflection)          │
-│    "how should I"  -> preferences, goals              │
-│    "how to fix"    -> error_fixes                     │
-│    "write a ..."   -> code_style                      │
-└─────────────────────────┬─────────────────────────────┘
-                          |
-                          v  SearchIntent
-                  top_k + detail_level + queries
-                          |
-                          v
-              HierarchicalRetriever
+```text
+fused_score = similarity + rl_weight * reward_score
 ```
 
-| Intent 类型 | 触发条件 | Top-K | Detail Level | 示例 |
-|-------------|---------|-------|-------------|------|
-| `quick_lookup` | 确认性短查询 | 3 | L0 | "用户喜欢暗色主题吗？" |
-| `recent_recall` | 时间指示词 | 5 | L1 | "上次讨论了什么？" |
-| `deep_analysis` | 需要完整上下文 | 10 | L2 | "详细回顾认证系统设计" |
-| `summarize` | "总结/回顾/梳理" | 30 | L1 | "总结最近的架构变更" |
-| `personalized` | Agent 需要元数据 | 10 | L1 | "我该怎么做？" |
+- positive feedback: memory moves up
+- stale/unused memory: decays over time
 
-**Memory Trigger**：当检测到 Agent 反思意图时，自动追加额外类别查询（preferences / goals / patterns / error_fixes 等），主动提供个性化上下文。
+### 4. ACE Self-Learning Loop
 
-### 三阶检索管线
+OpenCortex includes ACE (Agentic Context Engine):
 
-```
-Embedding 召回 (top-k)
-       ↓
-Score Gap 检测 → top1-top2 差距 > 0.15 → 跳过 Rerank，直接融合
-       ↓
-Rerank 精排 (top 5 candidates, cross-encoder / LLM listwise scoring)
-       ↓
-Score Fusion: final = β × rerank + (1-β) × retrieval + rl_weight × reward
-       ↓
-层级传播 + 收敛检测 → 返回 Top K
-```
+- RuleExtractor: zero-LLM extraction of reusable skills
+- Skillbook: persistence + retrieval of operational skills
+- Feedback loop: helpful/harmful tags improve future selection
 
-**无 Embedding 降级**：未配置 `embedding_provider` 时，自动退化为 Qdrant filter/scroll 纯字段检索，RL 分数融合仍然生效。
+### 5. Session Self-Iteration
 
-### ACE 自学习闭环
+On session end, hooks can automatically:
 
-零 LLM 成本的自动规则提取 + Skill 融合搜索：
+1. parse transcript
+2. summarize the turn
+3. store reusable memory
 
-```
-memory_store (Orchestrator.add)
-  │  → 存储记忆到 Qdrant (已有)
-  │  → 异步: RuleExtractor 提取 skill → Skillbook 持久化 (零 LLM)
-  │
-memory_search (Orchestrator.search)
-  │  → 搜索 contexts 集合 (已有)
-  │  → 并行搜索 skillbooks 集合 (新增)
-  │  → 混合排序 + URI 去重返回
-  │
-memory_feedback (Orchestrator.feedback)
-  │  → 更新 RL reward (已有)
-  │  → 如果 target 是 skill → 更新 Skillbook tag (helpful/harmful/neutral)
-```
+### 6. Tenant/User Isolation
 
-**RuleExtractor** 从存储内容中自动提取三类可执行策略：
+URI namespace supports multi-tenant and per-user isolation:
 
-| 模式       | 检测方式                   | 示例                                              |
-|-----------|--------------------------|--------------------------------------------------|
-| Error→Fix | 正则: error/traceback + fix | "当遇到 UTF-8 错误时，先用 chardet 检测编码再解码"  |
-| 用户偏好   | 关键词: always/never/必须   | "必须使用 black 格式化所有 Python 代码"             |
-| 工具链     | 连续 ≥3 步有序操作          | "lint → test → build → push 四步部署流程"          |
-
-### 上下文自迭代
-
-每次对话结束时，Stop Hook 自动提取对话记忆：
-
-```
-Stop Hook → 解析 Transcript → 条件摘要 → POST HTTP Server → Qdrant 存储
-```
-
-**条件摘要**：短对话（< 500 字符）跳过 LLM 调用，直接使用本地 fallback（提取 tool-use 动作）；长对话才调用 Haiku 摘要，节省 ~90% 的摘要 Token 开销。
-
-无需手动整理，Agent 的知识库自动增长。
-
-### 租户级隔离
-
-```
+```text
 opencortex://{team}/user/{uid}/{type}/{category}/{node_id}
 ```
 
-多团队、多用户，URI 命名空间完全隔离。团队级资源共享，用户级记忆私有。
+## Architecture
 
----
-
-## 架构设计
-
-```
- Claude Code / Cursor / Custom Agent
-              |
-              |  Hook triggers (SessionStart / Stop)
-              v
-┌─────────────────────────────────────────────────────────────────┐
-│  opencortex-memory Plugin                                       │
-│  hooks/ | scripts/oc_memory.py | skills/memory-*                │
-├─────────────────────────────────────────────────────────────────┤
-│  oc_memory.py  -->  POST /api/v1/memory/*                       │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   ┌─────────────────────────────────────────────────────────┐   │
-│   │  FastAPI Server (:8921)  +  FastMCP Server (:8920)      │   │
-│   ├─────────────────────────────────────────────────────────┤   │
-│   │  MemoryOrchestrator                                     │   │
-│   │  add | search | feedback | decay | session_*            │   │
-│   ├─────────────────────────────────────────────────────────┤   │
-│   │  Embed | IntentRouter | Rerank | SessionManager         │   │
-│   ├─────────────────────────────────────────────────────────┤   │
-│   │  CortexFS (L0/L1/L2)  +  HierarchicalRetriever          │   │
-│   ├─────────────────────────────────────────────────────────┤   │
-│   │  ACE: RuleExtractor -> Skillbook -> Fusion Search       │   │
-│   ├─────────────────────────────────────────────────────────┤   │
-│   │  VikingDBInterface  ->  QdrantAdapter  ->  Qdrant       │   │
-│   └─────────────────────────────────────────────────────────┘   │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+```text
+Agent (Claude/Cursor/Custom)
+        |
+        v
+opencortex-memory plugin hooks
+        |
+        v
+HTTP Server (FastAPI, :8921)  <->  MCP Server (FastMCP, :8920)
+        |
+        v
+MemoryOrchestrator
+(add/search/feedback/decay/session)
+        |
+        v
+IntentRouter + Retriever + ACE + SessionManager
+        |
+        v
+CortexFS (L0/L1/L2) + Qdrant adapter
 ```
 
-### 双模式部署
+## Deployment Modes
 
-| 模式 | 说明 | 适用场景 |
-|------|------|---------|
-| **Local** (默认) | SessionStart 自动启动 HTTP + MCP 服务，SessionEnd 自动关闭 | 个人开发，单机使用 |
-| **Remote** | 配置远程 HTTP 服务器地址，Hook 直接调用远程 API | 团队共享，服务器部署 |
+OpenCortex supports two MCP modes:
+
+- `local`: in-process orchestrator (good for development)
+- `remote`: MCP server as thin client to HTTP server (good for shared deployment)
+
+Example `plugins/opencortex-memory/config.json`:
 
 ```json
-// plugins/opencortex-memory/config.json
 {
   "mode": "local",
   "local": { "http_port": 8921, "mcp_port": 8920 },
@@ -201,55 +127,9 @@ opencortex://{team}/user/{uid}/{type}/{category}/{node_id}
 }
 ```
 
-### 关键设计
+## Quick Start
 
-**HTTP Server 为核心 (Single Source of Truth)**
-
-所有记忆操作统一经过 HTTP Server → Orchestrator → Qdrant。Hook 脚本不直接导入 Python 模块，而是通过 urllib 发 HTTP 请求。这保证了：
-- 单一 Orchestrator 实例管理所有状态
-- Hook 脚本轻量、快速、无 Python 环境依赖冲突
-- Local/Remote 模式切换只需改 URL
-
-**双面适配器 (Dual-Faced Adapter)**
-
-QdrantStorageAdapter 同时实现 VikingDBInterface 标准面 (25 async 方法) 和 RL 强化面 (update_reward / get_profile / apply_decay / set_protected)。Orchestrator 通过 `hasattr` 检测是否支持 RL，做到对存储后端零侵入。
-
-**可插拔嵌入层**
-```
-EmbedderBase (ABC)
-  ├── DenseEmbedderBase        → dense_vector (List[float])
-  ├── SparseEmbedderBase       → sparse_vector (Dict[str, float])
-  ├── HybridEmbedderBase       → dense + sparse
-  └── CompositeHybridEmbedder  → 组合任意 Dense + Sparse
-```
-
-支持 Volcengine doubao-embedding、OpenAI text-embedding 等多种嵌入模型。未配置时自动降级为无语义检索。
-
-**Rerank 智能降级**
-1. **API 模式** — 专用 Rerank API (Volcengine / Jina / Cohere)
-2. **LLM 模式** — 用 LLM completion 做 listwise rerank (降级方案)
-3. **Disabled** — 纯 embedding + RL fusion，零额外开销
-
-成本控制：
-- `max_candidates=5` — 只发送 top 5 给 rerank（75% Token 节省）
-- `score_gap_threshold=0.15` — top1 领先明显时跳过 rerank（零开销）
-
-**性能设计**
-
-| 优化点 | 方案 | 效果 |
-|--------|------|------|
-| Sparse 向量哈希 | `hashlib.md5` 替代 `hash()`，跨进程确定性哈希 | 消除 `PYTHONHASHSEED` 随机化导致的索引漂移 |
-| Embedding 不阻塞事件循环 | 所有 `embedder.embed()` 调用通过 `run_in_executor` 分派到线程池 | async 主链路不再被同步网络调用阻塞 |
-| HTTP 连接池复用 | LLM / Rerank 的 `httpx.AsyncClient` 在闭包/实例级创建一次 | 避免每次请求新建+销毁连接，TCP 握手开销降至零 |
-| 并发 I/O | `read_batch` 使用 `asyncio.gather`；候选结果的 relations 获取跨 candidate 并发 | N 次串行 await → 1 次并发 gather |
-| Decay 批量更新 | 按 reward 值分组，单次 `set_payload` 批量写入 | 省去逐条 update 的冗余 retrieve + 减少 API 调用数 |
-| 聚合去重 | `_aggregate_results` 按 URI 去重 | 多 QueryResult 合并时不返回重复记忆 |
-
----
-
-## 快速开始
-
-### 1. 安装
+### 1. Install
 
 ```bash
 git clone https://github.com/StardustVision/OpenCortex.git
@@ -257,9 +137,9 @@ cd OpenCortex
 uv pip install -e .
 ```
 
-### 2. 配置
+### 2. Configure
 
-创建 `opencortex.json`：
+Create `opencortex.json` in your project root (or `$HOME/.opencortex/opencortex.json` for global config):
 
 ```json
 {
@@ -276,51 +156,100 @@ uv pip install -e .
 }
 ```
 
-**无 Embedding 模式**：省略 `embedding_*` 字段或设置 `"embedding_provider": "none"`，系统退化为纯字段检索（filter/scroll），RL 反馈排序仍可用。
+No-embedding mode is also supported (filter/scroll fallback):
 
 ```json
 {
   "tenant_id": "my-team",
   "user_id": "my-name",
+  "embedding_provider": "none",
   "http_server_port": 8921
 }
 ```
 
-### 3. 安装 Claude Code 插件
+### 3. Install Claude Code Plugin
+
+The installer is cross-platform and auto-detects your OS:
+
+- **macOS / Linux** — registers bash hook scripts (`.sh`)
+- **Windows** — registers PowerShell hook scripts (`.ps1`)
+
+#### Option A: Python installer (recommended, works on all platforms)
+
+```bash
+python3 plugins/opencortex-memory/install.py
+```
+
+On Windows (PowerShell / cmd):
+
+```powershell
+python plugins\opencortex-memory\install.py
+```
+
+#### Option B: Bash installer (macOS / Linux only)
 
 ```bash
 bash plugins/opencortex-memory/install.sh
 ```
 
-安装后，Claude Code 会话自动触发记忆采集与召回。卸载：
+> **Note:** `install.sh` automatically delegates to `install.py` when `python3` is available. The bash fallback is only used if Python is not installed.
+
+#### What the installer does
+
+1. Detects the current platform (`sys.platform`)
+2. Removes any previously registered OpenCortex hooks (from either platform)
+3. Registers hooks for the current platform into `.claude/settings.json`:
+
+| Hook Event | macOS / Linux | Windows |
+|---|---|---|
+| `SessionStart` | `bash .../session-start.sh` | `powershell -NoProfile -ExecutionPolicy Bypass -File .../session-start.ps1` |
+| `UserPromptSubmit` | `bash .../user-prompt-submit.sh` | `powershell -NoProfile -ExecutionPolicy Bypass -File .../user-prompt-submit.ps1` |
+| `Stop` | `bash .../stop.sh` | `powershell -NoProfile -ExecutionPolicy Bypass -File .../stop.ps1` |
+| `SubagentStop` | `bash .../stop.sh` | `powershell -NoProfile -ExecutionPolicy Bypass -File .../stop.ps1` |
+
+The installer is idempotent — safe to run multiple times.
+
+#### Uninstall
 
 ```bash
 bash plugins/opencortex-memory/uninstall.sh
 ```
 
-### 4. 手动启动服务 (可选)
+### 4. Optional Manual Startup
 
-插件在 Local 模式下会自动管理服务生命周期。如需手动启动：
+The plugin hooks auto-start servers when a Claude Code session begins. For manual startup:
 
 ```bash
 # HTTP Server
 PYTHONPATH=src python -m opencortex.http --config opencortex.json --port 8921
 
-# MCP Server (streamable-http 模式，连接 HTTP Server)
+# MCP Server (remote mode against HTTP server)
 PYTHONPATH=src python -m opencortex.mcp_server --config opencortex.json \
   --transport streamable-http --port 8920 --mode remote
 ```
 
-### 5. Claude Code 集成 (其他项目)
+On Windows (PowerShell):
 
-**方式一：MCP 连接**
+```powershell
+$env:PYTHONPATH = "src"
+python -m opencortex.http --config opencortex.json --port 8921
+
+# In another terminal:
+$env:PYTHONPATH = "src"
+python -m opencortex.mcp_server --config opencortex.json `
+  --transport streamable-http --port 8920 --mode remote
+```
+
+### 5. Claude Code Integration (Other Projects)
+
+Option A: `claude mcp add`
 
 ```bash
 claude mcp add opencortex -s user -- python -m opencortex.mcp_server \
   --transport stdio --config ~/.opencortex/opencortex.json
 ```
 
-**方式二：`.mcp.json`**
+Option B: `.mcp.json`
 
 ```json
 {
@@ -333,443 +262,160 @@ claude mcp add opencortex -s user -- python -m opencortex.mcp_server \
 }
 ```
 
----
+## Plugin System
 
-## 插件系统
+`plugins/opencortex-memory` combines hooks (passive memory) and skills (active memory tools).
 
-### opencortex-memory Plugin
+Each hook has both a bash (`.sh`) and PowerShell (`.ps1`) implementation. The installer registers the correct variant for your platform.
 
-插件通过 Claude Code Hooks 实现**被动记忆**（自动采集 + 自动召回），通过 Skills 实现**主动记忆**（Agent 按需调用）。
+| Hook | Bash | PowerShell | Purpose |
+|------|------|-----------|---------|
+| SessionStart | `session-start.sh` | `session-start.ps1` | Start servers, initialize session state |
+| UserPromptSubmit | `user-prompt-submit.sh` | `user-prompt-submit.ps1` | Inject memory recall prompt |
+| Stop | `stop.sh` | `stop.ps1` | Ingest latest turn (fire-and-forget) |
+| SessionEnd | `session-end.sh` | `session-end.ps1` | Flush summary, stop local servers |
 
-```
-plugins/opencortex-memory/
-├── .claude-plugin/plugin.json  # 插件清单
-├── config.json                 # 模式配置 (local/remote)
-├── install.sh                  # 安装 (注册 Hooks)
-├── uninstall.sh                # 卸载 (移除 Hooks + 清理状态)
-├── hooks/
-│   ├── common.sh               # 共享工具函数
-│   ├── session-start.sh        # SessionStart: 启动 HTTP+MCP 服务
-│   ├── user-prompt-submit.sh   # UserPromptSubmit: 自动召回记忆
-│   ├── stop.sh                 # Stop: 自动摘要 + 存储当前对话轮
-│   └── session-end.sh          # 手动调用: 存储摘要 + 关闭服务
-├── scripts/
-│   └── oc_memory.py            # HTTP client bridge
-└── skills/
-    ├── memory-recall/          # 搜索历史记忆
-    ├── memory-store/           # 存储新记忆
-    ├── memory-feedback/        # RL 反馈
-    ├── memory-stats/           # 系统统计
-    ├── memory-decay/           # 奖励衰减
-    └── memory-health/          # 健康检查
-```
+Shared helpers: `common.sh` / `common.ps1`
 
-### Hook 生命周期
-
-```
-SessionStart
-  │  → 启动 HTTP Server + MCP Server (local 模式)
-  │  → 验证远程连接 (remote 模式)
-  │  → 写入 session_state.json
-  ▼
-UserPromptSubmit (每次用户输入)
-  │  → 提取用户 prompt
-  │  → POST /api/v1/memory/search (自动召回)
-  │  → 注入 systemMessage 到模型上下文
-  ▼
-Stop (每次 Agent 响应完成)
-  │  → 解析 Transcript 最后一轮
-  │  → 条件摘要 (短轮 → fallback / 长轮 → Haiku LLM)
-  │  → POST /api/v1/memory/store (后台执行)
-  ▼
-SessionEnd (手动/卸载时)
-  │  → POST session summary
-  │  → Kill HTTP + MCP PIDs
-  └  → 标记 session inactive
-```
-
-### Skills
-
-| Skill | 说明 | API |
-|-------|------|-----|
-| `memory-recall` | 搜索历史记忆 | POST /api/v1/memory/search |
-| `memory-store` | 存储新记忆 | POST /api/v1/memory/store |
-| `memory-feedback` | RL 正/负反馈 | POST /api/v1/memory/feedback |
-| `memory-stats` | 系统统计 | GET /api/v1/memory/stats |
-| `memory-decay` | 全局奖励衰减 | POST /api/v1/memory/decay |
-| `memory-health` | 健康检查 | GET /api/v1/memory/health |
-
----
+Bridge script: `scripts/oc_memory.py` (cross-platform Python, used by both shell variants)
 
 ## MCP Tools
 
-### 核心记忆工具
+### Core Memory
 
-| Tool | 说明 |
-|------|------|
-| `memory_store` | 存储新记忆（自动 embedding + L1 生成 + URI 生成 + L0/L1/L2 写入） |
-| `memory_search` | 智能检索（Intent Router → embedding 召回 → rerank 精排 → RL fusion） |
-| `memory_feedback` | SONA 正/负反馈（正值增强召回优先级，负值抑制） |
-| `memory_stats` | 存储统计 + rerank 状态 + SONA 配置 |
-| `memory_decay` | 触发全局时间衰减（普通 0.95，受保护 0.99） |
-| `memory_health` | 组件健康检查（storage / embedder / LLM / hooks） |
+- `memory_store`
+- `memory_search`
+- `memory_feedback`
+- `memory_stats`
+- `memory_decay`
+- `memory_health`
 
-### 会话管理工具
+### Session
 
-| Tool | 说明 |
-|------|------|
-| `session_begin` | 开始新会话，缓冲消息用于结束时提取记忆 |
-| `session_message` | 向活跃会话添加消息 |
-| `session_end` | 结束会话 → LLM 分析 → 提取记忆 → 语义去重 → 自动存储 |
+- `session_begin`
+- `session_message`
+- `session_end`
 
-### Hooks 集成工具
+### Hooks/Integration
 
-| Tool | 说明 |
-|------|------|
-| `hooks_route` | 基于学习模式将任务路由到最佳 Agent |
-| `hooks_learn` | 记录 state-action-reward 用于策略学习 |
-| `hooks_remember` | 存储通用记忆 |
-| `hooks_recall` | 检索相关经验 |
-| `hooks_init` / `hooks_pretrain` | 初始化 + 预训练 |
-| `hooks_verify` / `hooks_doctor` | 验证 + 诊断 |
-| `hooks_export` / `hooks_build_agents` | 导出 + 生成 Agent 配置 |
-
----
-
-## SONA 自学习排序
-
-### 工作原理
-
-```
-                 ┌──────────────┐
-                 │  Agent 交互   │
-                 └──────┬───────┘
-                        │
-              ┌─────────▼─────────┐
-              │  memory_feedback   │
-              │  uri + reward      │
-              └─────────┬─────────┘
-                        │
-          ┌─────────────▼──────────────┐
-          │  Qdrant RL Layer            │
-          │  (QdrantStorageAdapter)     │
-          │                             │
-          │  update_reward:             │
-          │    reward_score += reward   │
-          │    positive_count++         │
-          │    negative_count++         │
-          │                             │
-          │  get_profile → Profile:     │
-          │    reward_score             │
-          │    retrieval_count          │
-          │    positive/negative_count  │
-          │    effective_score          │
-          │    is_protected             │
-          └─────────────┬──────────────┘
-                        │
-         ┌──────────────▼───────────────┐
-         │  HierarchicalRetriever       │
-         │  Score Fusion:               │
-         │                              │
-         │  fused = β × rerank          │
-         │        + (1-β) × retrieval   │
-         │        + rl_weight × reward  │
-         │                              │
-         │  rl_weight = 0.05 (保守)     │
-         │  reward=1 → +0.05 分         │
-         │  reward=-2 → -0.10 分        │
-         └──────────────┬───────────────┘
-                        │
-           ┌────────────▼────────────┐
-           │  高价值记忆上浮           │
-           │  低价值记忆自然衰减       │
-           └─────────────────────────┘
-```
-
-### API
-
-```python
-# 正反馈 → 增强召回优先级
-await orch.feedback(uri="opencortex://...", reward=1.0)
-
-# 负反馈 → 降低优先级
-await orch.feedback(uri="opencortex://...", reward=-0.5)
-
-# 时间衰减 (普通 0.95, 保护 0.99)
-result = await orch.decay()
-# → DecayResult(records_processed=60, records_decayed=12, ...)
-
-# 保护重要记忆（衰减率降低）
-await orch.protect(uri="opencortex://...", protected=True)
-
-# 查看 SONA 行为画像
-profile = await orch.get_profile(uri="opencortex://...")
-# → Profile(reward_score=3.0, retrieval_count=5, is_protected=True, ...)
-```
-
-### Qdrant RL 字段
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `reward_score` | float | 累计奖励分数 |
-| `positive_feedback_count` | int64 | 正反馈次数 |
-| `negative_feedback_count` | int64 | 负反馈次数 |
-| `protected` | bool | 是否受保护（衰减更慢） |
-
----
+- `memory_hooks_learn`
+- `memory_hooks_remember`
+- `memory_hooks_recall`
+- `memory_hooks_stats`
+- trajectory / error / integration endpoints
 
 ## HTTP Server REST API
 
-HTTP Server 是系统的核心入口，所有操作通过 REST API 暴露。
+### Core Memory
 
-### 核心记忆
+- `POST /api/v1/memory/store`
+- `POST /api/v1/memory/search`
+- `POST /api/v1/memory/feedback`
+- `GET /api/v1/memory/stats`
+- `POST /api/v1/memory/decay`
+- `GET /api/v1/memory/health`
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | `/api/v1/memory/store` | 存储记忆 |
-| POST | `/api/v1/memory/search` | 语义搜索 |
-| POST | `/api/v1/memory/feedback` | RL 反馈 |
-| GET | `/api/v1/memory/stats` | 统计信息 |
-| POST | `/api/v1/memory/decay` | 奖励衰减 |
-| GET | `/api/v1/memory/health` | 健康检查 |
+### Session
 
-### 会话
+- `POST /api/v1/session/begin`
+- `POST /api/v1/session/message`
+- `POST /api/v1/session/end`
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | `/api/v1/session/begin` | 开始会话 |
-| POST | `/api/v1/session/message` | 添加消息 |
-| POST | `/api/v1/session/end` | 结束会话 + 提取记忆 |
+### Hooks and Integration
 
-### Hooks 集成
+- `POST /api/v1/hooks/*`
+- `POST/GET /api/v1/integration/*`
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | `/api/v1/hooks/learn` | 记录学习事件 |
-| POST | `/api/v1/hooks/remember` | 存储记忆 |
-| POST | `/api/v1/hooks/recall` | 检索经验 |
-| GET | `/api/v1/hooks/stats` | 学习统计 |
-| POST | `/api/v1/hooks/trajectory/begin` | 开始轨迹 |
-| POST | `/api/v1/hooks/trajectory/step` | 轨迹步骤 |
-| POST | `/api/v1/hooks/trajectory/end` | 结束轨迹 |
-| POST | `/api/v1/hooks/error/record` | 记录错误修复 |
-| POST | `/api/v1/hooks/error/suggest` | 错误建议 |
-| POST | `/api/v1/integration/route` | 任务路由 |
-| POST | `/api/v1/integration/init` | 初始化 |
-| GET | `/api/v1/integration/verify` | 验证 |
-| GET | `/api/v1/integration/doctor` | 诊断 |
-| POST | `/api/v1/integration/export` | 导出 |
-| GET | `/api/v1/integration/build-agents` | 生成 Agent 配置 |
-
----
-
-## Python API
+## Python API Example
 
 ```python
 from opencortex import MemoryOrchestrator, CortexConfig, init_config
 
-# 初始化
 init_config(CortexConfig(tenant_id="myteam", user_id="alice"))
 orch = MemoryOrchestrator(embedder=my_embedder)
 await orch.init()
 
-# 存储 (自动生成 L1 overview)
 ctx = await orch.add(
-    abstract="用户偏好暗色主题",
-    content="所有编辑器和终端使用暗色主题，包括 VS Code、Vim、iTerm2。",
+    abstract="User prefers dark theme",
+    content="Use dark theme in VS Code, terminal, and browser tools.",
     category="preferences",
 )
-# ctx.overview 自动生成：短内容直接复用，长内容 LLM 摘要
 
-# 搜索 (Intent Router → 三阶管线)
-result = await orch.search("用户喜欢什么主题？")
-# Intent Router 自动判定: quick_lookup, top_k=3, detail_level=l0
+result = await orch.search("What theme does the user prefer?")
 for m in result.memories:
-    print(f"{m.uri}: {m.abstract} (score={m.score:.3f})")
+    print(m.uri, m.abstract, m.score)
 
-# 搜索 — 自动选择检索策略
-result = await orch.search("总结最近的架构变更")
-# Intent Router: summarize, top_k=30, detail_level=l1
-print(f"Intent: {result.search_intent.intent_type}")
-
-result = await orch.search("详细分析认证系统的设计决策过程")
-# Intent Router: deep_analysis, top_k=10, detail_level=l2
-for m in result.memories:
-    print(f"{m.abstract}")
-    if m.overview:
-        print(f"  Overview: {m.overview}")
-    if m.content:
-        print(f"  Content: {m.content[:200]}...")
-
-# 反馈 + 衰减
 await orch.feedback(uri=ctx.uri, reward=1.0)
 await orch.decay()
-
-# 会话自迭代
-await orch.session_begin(session_id="s1")
-await orch.session_message("s1", "user", "帮我修复这个 bug")
-await orch.session_message("s1", "assistant", "问题是...")
-result = await orch.session_end("s1", quality_score=0.9)
-# → 自动提取并存储记忆
-
 await orch.close()
 ```
 
----
+## Repository Layout
 
-## 项目结构
-
-```
+```text
 src/opencortex/
-├── config.py                      # CortexConfig 全局配置
-├── orchestrator.py                # MemoryOrchestrator 顶层编排 (1500+ 行)
-├── mcp_server.py                  # FastMCP Server (16 tools, 双模式)
-│
-├── http/                          # HTTP Server
-│   ├── server.py                  # FastAPI 应用 + REST routes
-│   ├── client.py                  # OpenCortexClient (异步 HTTP 客户端)
-│   └── models.py                  # Pydantic 请求模型
-│
-├── core/                          # 核心数据模型
-│   ├── context.py                 # Context 统一上下文 (L0/L1/L2)
-│   ├── message.py                 # Message
-│   └── user_id.py                 # UserIdentifier 租户隔离
-│
-├── models/                        # 模型层
-│   ├── embedder/
-│   │   ├── base.py                # EmbedderBase / Dense / Sparse / Hybrid
-│   │   ├── volcengine_embedders.py # 火山引擎 doubao-embedding-vision
-│   │   └── openai_embedder.py     # OpenAI compatible embedding
-│   └── llm_factory.py             # LLM completion 工厂 (Ark / OpenAI)
-│
-├── retrieve/                      # 检索层
-│   ├── hierarchical_retriever.py  # 三阶管线: Embedding → Rerank → RL Fusion
-│   ├── intent_router.py           # Intent Router (关键词 + LLM + Memory Trigger)
-│   ├── intent_analyzer.py         # LLM 意图分析 → QueryPlan
-│   ├── rerank_client.py           # RerankClient (API / LLM / disabled)
-│   ├── rerank_config.py           # RerankConfig
-│   └── types.py                   # TypedQuery / SearchIntent / FindResult / DetailLevel
-│
-├── session/                       # 会话管理
-│   ├── manager.py                 # SessionManager (begin/message/end)
-│   ├── extractor.py               # MemoryExtractor (LLM 驱动)
-│   └── types.py                   # SessionContext / ExtractedMemory
-│
-├── ace/                           # ACE 自学习引擎
-│   ├── engine.py                  # ACEngine (Skillbook + Reflector + SkillManager)
-│   ├── skillbook.py               # Skillbook CRUD + 向量搜索 + CortexFS 三层持久化
-│   ├── rule_extractor.py          # RuleExtractor 零 LLM 规则提取 (error→fix / 偏好 / 工作流)
-│   ├── reflector.py               # LLM 反思 (可选)
-│   ├── skill_manager.py           # LLM 策略管理 (可选)
-│   ├── types.py                   # Skill / Learning / UpdateOperation
-│   └── prompts.py                 # ACE prompt 模板
-│
-├── storage/                       # 存储层
-│   ├── vikingdb_interface.py      # 抽象接口 (25 async methods)
-│   ├── cortex_fs.py               # CortexFS 三层文件系统 (原 VikingFS)
-│   ├── collection_schemas.py      # 集合 Schema (含 RL 字段)
-│   └── qdrant/                    # Qdrant 嵌入式后端
-│       ├── adapter.py             # QdrantStorageAdapter (标准 + RL)
-│       ├── filter_translator.py   # VikingDB DSL → Qdrant Filter
-│       └── rl_types.py            # Profile / DecayResult dataclass
-│
-└── utils/
-    ├── uri.py                     # CortexURI 租户隔离 URI 体系
-    ├── time_utils.py              # 时间工具
-    └── json_parse.py              # LLM 响应 JSON 提取 (平衡括号计数)
-
-plugins/opencortex-memory/         # Claude Code 插件
-├── config.json                    # 模式配置 (local/remote)
-├── install.sh / uninstall.sh      # 安装/卸载 Hooks
-├── hooks/                         # 4 个 Hook 脚本
-├── scripts/oc_memory.py           # HTTP client bridge
-└── skills/                        # 6 个 Skill 定义
-
-tests/
-├── test_e2e_phase1.py             # 24 个 E2E 测试
-├── test_mcp_server.py             # 8 个 MCP 测试 (InMemory)
-├── test_ace_phase1.py             # 21 个 ACE Skillbook/Engine 测试
-├── test_ace_phase2.py             # 17 个 Reflector/SkillManager 测试
-├── test_rule_extractor.py         # 20 个 RuleExtractor 零 LLM 提取测试
-├── test_skill_search_fusion.py    # 11 个 Skill 融合搜索 + Feedback 测试
-├── test_integration_skill_pipeline.py  # 10 个 Qdrant 集成测试 (真实存储)
-├── test_qdrant_adapter.py         # Qdrant 适配器测试
-├── test_rl_integration.py         # 8 个 RL 端到端测试
-├── test_mcp_qdrant.py             # 6 个 MCP + Qdrant 测试
-├── test_http_server.py            # HTTP Server 测试
-├── test_live_servers.py           # 16 个 Live Server 回归测试
-└── test_openai_models.py          # OpenAI 嵌入模型测试
+  orchestrator.py          # top-level orchestration
+  mcp_server.py            # MCP server
+  http/                    # FastAPI server and HTTP client
+  retrieve/                # router, retriever, rerank
+  session/                 # extraction and session lifecycle
+  ace/                     # self-learning engine
+  storage/                 # CortexFS + Qdrant adapter
+  models/                  # embedders and llm factory
+plugins/opencortex-memory/ # Claude Code plugin hooks/skills
+tests/                     # unit, integration, and live tests
 ```
 
----
+## Evaluation and Testing
 
-## 运行测试
+### Memory Retrieval Evaluation
+
+Use the built-in evaluation script:
 
 ```bash
-# 核心测试 (InMemory, 无外部依赖, 111 tests)
-uv run python3 -m unittest tests.test_e2e_phase1 tests.test_mcp_server \
-  tests.test_ace_phase1 tests.test_ace_phase2 \
-  tests.test_rule_extractor tests.test_skill_search_fusion \
-  tests.test_integration_skill_pipeline -v
-
-# Qdrant + 真实嵌入 API 测试
-uv run python3 -m unittest tests.test_qdrant_adapter tests.test_rl_integration -v
-
-# MCP + Qdrant 集成测试
-uv run python3 -m unittest tests.test_mcp_qdrant -v
-
-# HTTP Server 测试
-uv run python3 -m unittest tests.test_http_server -v
-
-# Live Server 回归 (需先启动 HTTP + MCP)
-uv run python3 -m unittest tests.test_live_servers -v
-
-# 全量回归
-uv run python3 -m unittest discover -s tests -v
+PYTHONPATH=src python3 scripts/eval_memory.py \
+  --dataset examples/memory_eval_dataset.sample.json \
+  --base-url http://127.0.0.1:8921 \
+  --k 1,3,5 \
+  --output _bmad-output/memory-eval-report.json
 ```
 
----
+Reported metrics include:
 
-## 技术栈
+- `recall@k`
+- `precision@k`
+- `accuracy@k` / `hit_rate@k`
+- `mrr`
+- token comparison (`tokens_with_memory` vs `tokens_without_memory`)
 
-| 组件 | 技术 |
-|------|------|
-| 语言 | Python 3.10+, async-first |
-| 向量存储 | Qdrant (嵌入式本地模式，零外部进程) |
-| Embedding | 火山引擎 doubao-embedding-vision (1024 dim) / OpenAI compatible |
-| Rerank | Volcengine / Jina / Cohere API 或 LLM fallback |
-| LLM | 火山引擎 Ark SDK (doubao-seed) / OpenAI compatible |
-| HTTP | FastAPI + uvicorn |
-| MCP | PrefectHQ FastMCP v3 (streamable-http / sse / stdio) |
-| 包管理 | uv |
+See full plan: [docs/memory-test-plan.md](docs/memory-test-plan.md)
 
----
+### Run Tests
+
+```bash
+# full regression
+uv run python3 -m unittest discover -s tests -v
+
+# evaluation unit tests
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest tests.test_memory_eval -v
+```
+
+## Tech Stack
+
+- Python 3.10+
+- FastAPI + uvicorn
+- FastMCP v3
+- Qdrant (embedded local mode)
+- Volcengine/OpenAI-compatible embedding + LLM backends
+- `uv` for package management
 
 ## License
 
 [Apache-2.0](LICENSE)
 
----
+## Acknowledgements
 
-## 致谢
+OpenCortex is ported and evolved from these projects:
 
-OpenCortex 从以下开源项目移植并重构，在此致以诚挚感谢：
-
-### [OpenViking](https://github.com/volcengine/openviking)
-
-火山引擎开源的 AI Agent 上下文管理框架。OpenCortex 的核心架构直接源自 OpenViking：
-
-- **CortexFS 三层文件系统** — L0/L1/L2 摘要体系的原始设计 (源自 VikingFS)
-- **层级递归检索算法** — HierarchicalRetriever 的分数传播与收敛检测机制
-- **VikingDBInterface** — 25 个 async 方法的存储抽象接口
-- **IntentAnalyzer** — LLM 驱动的会话意图分析与查询规划
-
-### [Agentic Context Engine (ACE)](https://github.com/kayba-ai/agentic-context-engine)
-
-Kayba AI 开源的 Agent 自学习上下文引擎。OpenCortex 的 ACE 模块设计受其启发：
-
-- **Skillbook 技能库** — 从对话轨迹中提取可复用技能的核心理念
-- **Reflector 反思机制** — LLM 驱动的轨迹分析与技能提炼
-- **Trajectory 轨迹管理** — state-action-reward 序列记录与评估
-
-感谢 OpenViking 和 ACE 团队，OpenCortex 站在巨人的肩膀上。
+- [OpenViking](https://github.com/volcengine/openviking)
+- [Agentic Context Engine (ACE)](https://github.com/kayba-ai/agentic-context-engine)

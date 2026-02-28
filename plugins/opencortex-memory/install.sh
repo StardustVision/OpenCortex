@@ -12,6 +12,13 @@ set -euo pipefail
 
 # Resolve paths
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Delegate to cross-platform Python installer if python3 is available
+if command -v python3 >/dev/null 2>&1; then
+  exec python3 "$SCRIPT_DIR/install.py"
+fi
+
+# Fallback: bash-only installer (macOS/Linux without python3)
 PLUGIN_ROOT="$SCRIPT_DIR"
 PROJECT_DIR="$(cd "$PLUGIN_ROOT/../.." && pwd)"
 SETTINGS="$PROJECT_DIR/.claude/settings.json"
