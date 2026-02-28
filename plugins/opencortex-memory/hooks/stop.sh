@@ -22,9 +22,16 @@ if [[ -z "$TRANSCRIPT_PATH" || ! -f "$TRANSCRIPT_PATH" ]]; then
   exit 0
 fi
 
-# Fork ingest to background so the hook returns immediately.
-# This prevents blocking Claude Code for 10-50s per turn
-# (embedding + summarization latency).
-(run_bridge ingest-stop --transcript-path "$TRANSCRIPT_PATH" >/dev/null 2>&1 || true) &
+# Fork ingest to a fully detached process so the hook returns immediately.
+# nohup + disown + fd redirects ensure Claude Code doesn't wait on child processes.
+# LLM summarization has been removed from the ingest path, so this finishes in <2s.
+PYTHONPATH="${PROJECT_DIR}/src${PYTHONPATH:+:$PYTHONPATH}" \
+  nohup "$PYTHON_BIN" "$BRIDGE" \
+    --project-dir "$PROJECT_DIR" \
+    --state-file "$STATE_FILE" \
+    --config "$CONFIG_FILE" \
+    ingest-stop --transcript-path "$TRANSCRIPT_PATH" \
+    </dev/null >/dev/null 2>&1 &
+disown
 
 echo '{}'

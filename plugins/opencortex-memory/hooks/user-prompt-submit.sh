@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# UserPromptSubmit hook: auto-recall memories on every prompt.
-# Results are injected into model context AND printed to terminal (stderr).
+# UserPromptSubmit hook: inject systemMessage prompting Claude to use
+# memory_search MCP tool when context recall would be helpful.
+# This hook is intentionally lightweight (< 50ms) — no subprocess calls,
+# no HTTP requests. The actual recall decision is delegated to Claude itself.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
@@ -11,24 +13,17 @@ if [[ -z "$PROMPT" ]]; then
   exit 0
 fi
 
-if [[ ! -f "$CONFIG_FILE" || ! -f "$STATE_FILE" ]]; then
+# Only inject if session is active (config + state exist)
+if [[ ! -f "$CONFIG_FILE" ]] || [[ ! -f "$STATE_FILE" ]]; then
   echo '{}'
   exit 0
 fi
 
-# Auto-recall: search memories using the user prompt as query
-RECALL_OUTPUT="$(run_bridge recall --query "$PROMPT" --top-k 5 2>/dev/null || true)"
-
-if [[ -n "$RECALL_OUTPUT" && "$RECALL_OUTPUT" != "No relevant memories found." ]]; then
-  # Print to terminal so user can see recall results
-  echo -e "\033[36m[opencortex-recall]\033[0m" >&2
-  echo "$RECALL_OUTPUT" >&2
-  echo "" >&2
-
-  # Also inject into model context
-  RECALL_JSON=$(_json_encode_str "[opencortex-memory] Auto-recall results:
-$RECALL_OUTPUT")
-  echo "{\"systemMessage\": $RECALL_JSON}"
-else
-  echo '{"systemMessage":"[opencortex-memory] No relevant memories found for this prompt."}'
+# Check session is active
+ACTIVE="$(_json_val "$(cat "$STATE_FILE")" "active" "false")"
+if [[ "$ACTIVE" != "true" ]]; then
+  echo '{}'
+  exit 0
 fi
+
+echo '{"systemMessage": "[opencortex-memory] Memory system active. If this query could benefit from past context, preferences, or learned patterns, use the memory_search MCP tool."}'

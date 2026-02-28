@@ -101,3 +101,24 @@ python -m opencortex.http --host 127.0.0.1 --port 8921
 
 已完成: 核心框架 + MCP Server + HTTP Server + ACE 自学习闭环 + 111 测试
 待实现: 真实 Embedding 接入, 远程同步, Session End LLM 反思 (config 控制)
+
+## 记忆召回策略
+
+当 OpenCortex 记忆系统可用时（由 hook systemMessage 提示），遵循以下策略：
+
+**何时调用 `memory_search`**：
+- 用户提到过去的决定、偏好、约定
+- 任务需要项目上下文或历史信息
+- 遇到之前解决过的类似问题
+- 用户显式要求回忆/查找之前的内容
+
+**何时不调用**：
+- 简单问候、闲聊、确认
+- 纯粹的代码生成（无需历史上下文）
+- 用户已提供完整上下文
+
+**使用方式**：
+- 工具: `memory_search(query="...", limit=5)`
+- 可选过滤: `context_type` ("memory"/"resource"/"skill"), `category`
+- 结果中 score > 0.7 的记忆优先参考
+- 有用的记忆可用 `memory_feedback(uri="...", reward=1.0)` 正向反馈

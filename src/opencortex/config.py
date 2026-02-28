@@ -107,12 +107,12 @@ class CortexConfig:
         if path:
             return cls._load_from_file(path)
 
-        # Search for config file in CWD
+        # Search for config file in CWD (project-local overrides global)
         for name in _CONFIG_FILE_NAMES:
             if os.path.exists(name):
                 return cls._load_from_file(name)
 
-        # Fallback to global default: $HOME/.opencortex/opencortex.json
+        # Default: $HOME/.opencortex/opencortex.json
         if DEFAULT_CONFIG_PATH.exists():
             return cls._load_from_file(str(DEFAULT_CONFIG_PATH))
 

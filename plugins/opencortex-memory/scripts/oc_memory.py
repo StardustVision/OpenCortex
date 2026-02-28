@@ -259,7 +259,19 @@ def extract_last_turn(transcript_path: Path) -> Optional[Dict[str, str]]:
 # ---------------------------------------------------------------------------
 
 def _summarize_with_claude(raw: str) -> str:
-    """Use claude CLI to summarize a conversation turn."""
+    """Use claude CLI to summarize a conversation turn.
+
+    .. deprecated::
+        Spawning ``claude -p --model haiku`` adds 10-45s per turn, making the
+        Stop hook unacceptably slow. Use ``_fallback_summary`` instead.
+        Retained for manual/offline use only.
+    """
+    import warnings
+    warnings.warn(
+        "_summarize_with_claude is deprecated; use _fallback_summary instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     if not shutil.which("claude"):
         return ""
     system_prompt = (
@@ -321,22 +333,11 @@ _SUMMARIZE_MIN_LENGTH = 500
 
 
 def summarize_turn(turn: Dict[str, str]) -> str:
-    user_text = turn.get("user_text", "")
-    assistant_text = turn.get("assistant_text", "")
-    combined_len = len(user_text) + len(assistant_text)
+    """Summarize a conversation turn for memory storage.
 
-    # Short turns: fallback is sufficient, skip LLM call
-    if combined_len < _SUMMARIZE_MIN_LENGTH:
-        return _fallback_summary(turn)
-
-    raw = (
-        "Summarize this conversation turn for long-term engineering memory.\n\n"
-        f"User:\n{user_text}\n\n"
-        f"Assistant:\n{assistant_text}\n"
-    )
-    summary = _summarize_with_claude(raw)
-    if summary:
-        return summary
+    Always uses the fast fallback summary (no LLM subprocess). This keeps the
+    Stop hook ingest path under 2s instead of 10-45s with claude CLI.
+    """
     return _fallback_summary(turn)
 
 
@@ -554,9 +555,22 @@ def cmd_session_end(args: argparse.Namespace) -> Dict[str, Any]:
 def _classify_recall_intent(query: str) -> Optional[bool]:
     """Use Claude CLI (haiku) to classify whether a query needs memory recall.
 
+    .. deprecated::
+        No longer used by cmd_recall(). Recall intent classification is now
+        delegated to Claude itself via the MCP tool flow. This function is
+        retained for backward compatibility but may be removed in a future
+        release.
+
     Returns:
         True if recall is needed, False if not, None if classification failed.
     """
+    import warnings
+    warnings.warn(
+        "_classify_recall_intent is deprecated; recall gating is now handled "
+        "by Claude via MCP tool invocation",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     if not shutil.which("claude"):
         return None
     system_prompt = (
@@ -606,17 +620,16 @@ def _classify_recall_intent(query: str) -> Optional[bool]:
 
 
 def cmd_recall(args: argparse.Namespace) -> int:
-    """Search stored memories via HTTP server and print results."""
+    """Search stored memories via HTTP server and print results.
+
+    Note: LLM-based intent classification (_classify_recall_intent) has been
+    removed from this path. Recall gating is now handled by Claude itself via
+    the MCP tool flow. This CLI command always performs the HTTP search directly.
+    """
     state_file = Path(args.state_file)
     query = _as_text(args.query)
 
     if not query:
-        print("No relevant memories found.")
-        return 0
-
-    # Client-side LLM intent classification: skip HTTP call if not needed
-    should_recall = _classify_recall_intent(query)
-    if should_recall is False:
         print("No relevant memories found.")
         return 0
 
