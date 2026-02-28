@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Cross-platform installer for OpenCortex memory plugin.
 
-Detects the current platform and registers the appropriate hook scripts
-(bash on macOS/Linux, PowerShell on Windows) into .claude/settings.json.
+Registers node-based hook commands into .claude/settings.json.
+All hooks use `node hook_runner.mjs <name>` which auto-dispatches
+to bash (.sh) on macOS/Linux or PowerShell (.ps1) on Windows.
 
 Safe to run multiple times (idempotent).
 
@@ -16,17 +17,9 @@ import sys
 from pathlib import Path
 
 
-def detect_platform():
-    """Return (shell_cmd, ext) for the current platform."""
-    if sys.platform == "win32":
-        return "powershell -NoProfile -ExecutionPolicy Bypass -File", ".ps1"
-    else:
-        return "bash", ".sh"
-
-
-def build_hook_command(shell_cmd: str, plugin_rel: str, script: str) -> str:
-    """Build the full hook command string."""
-    return f"{shell_cmd} {plugin_rel}/hooks/{script}"
+def build_hook_command(plugin_rel: str, hook_name: str) -> str:
+    """Build the node hook command string."""
+    return f"node {plugin_rel}/hooks/hook_runner.mjs {hook_name}"
 
 
 def main():
@@ -37,11 +30,7 @@ def main():
     settings_path = project_dir / ".claude" / "settings.json"
     plugin_rel = "plugins/opencortex-memory"
 
-    shell_cmd, ext = detect_platform()
-
     print(f"[opencortex-memory] Installing plugin hooks (platform: {sys.platform})...")
-    print(f"  shell: {shell_cmd}")
-    print(f"  ext:   {ext}")
 
     # Ensure .claude/ exists
     settings_path.parent.mkdir(parents=True, exist_ok=True)
@@ -54,35 +43,37 @@ def main():
 
     hooks = settings.setdefault("hooks", {})
 
-    # Markers for identifying our hooks (both platforms) for clean replacement
+    # Markers for identifying our hooks (all variants) for clean replacement
     MARKERS = (
+        f"node {plugin_rel}/hooks/hook_runner.mjs",
         f"bash {plugin_rel}/hooks/",
         f"powershell -NoProfile -ExecutionPolicy Bypass -File {plugin_rel}/hooks/",
+        f"python3 {plugin_rel}/hooks/hook_runner.py",
     )
 
     def is_our_hook(command: str) -> bool:
         return any(marker in command for marker in MARKERS)
 
-    # Define hooks to register
+    # Define hooks to register (all use node dispatcher)
     plugin_hooks = {
         "SessionStart": {
             "type": "command",
-            "command": build_hook_command(shell_cmd, plugin_rel, f"session-start{ext}"),
+            "command": build_hook_command(plugin_rel, "session-start"),
             "timeout": 12000,
         },
         "UserPromptSubmit": {
             "type": "command",
-            "command": build_hook_command(shell_cmd, plugin_rel, f"user-prompt-submit{ext}"),
+            "command": build_hook_command(plugin_rel, "user-prompt-submit"),
             "timeout": 15000,
         },
         "Stop": {
             "type": "command",
-            "command": build_hook_command(shell_cmd, plugin_rel, f"stop{ext}"),
+            "command": build_hook_command(plugin_rel, "stop"),
             "timeout": 120000,
         },
         "SubagentStop": {
             "type": "command",
-            "command": build_hook_command(shell_cmd, plugin_rel, f"stop{ext}"),
+            "command": build_hook_command(plugin_rel, "stop"),
             "timeout": 120000,
         },
     }
@@ -100,7 +91,7 @@ def main():
         if already_correct:
             continue
 
-        # Remove any existing opencortex hooks (from either platform)
+        # Remove any existing opencortex hooks (old bash/powershell/python variants)
         new_entries = []
         for entry in entries:
             entry_hooks = entry.get("hooks", [])
@@ -109,7 +100,7 @@ def main():
                 entry["hooks"] = filtered
                 new_entries.append(entry)
 
-        # Add current platform hook
+        # Add node hook
         new_entries.append({"hooks": [hook_def]})
         hooks[event] = new_entries
         changed = True

@@ -1,13 +1,13 @@
 {
   "description": "OpenCortex memory hooks for Claude Code (cross-platform)",
-  "note": "hook_runner.py auto-detects platform: bash (.sh) on macOS/Linux, PowerShell (.ps1) on Windows.",
+  "note": "Uses node (guaranteed by Claude Code) to dispatch to bash (.sh) on macOS/Linux or PowerShell (.ps1) on Windows.",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/hook_runner.py session-start",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/hook_runner.mjs session-start",
             "timeout": 12
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/hook_runner.py user-prompt-submit",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/hook_runner.mjs user-prompt-submit",
             "timeout": 15
           }
         ]
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/hook_runner.py stop",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/hook_runner.mjs stop",
             "async": true,
             "timeout": 120
           }
@@ -41,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/hook_runner.py session-end",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/hook_runner.mjs session-end",
             "timeout": 20
           }
         ]
