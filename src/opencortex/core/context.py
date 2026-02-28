@@ -51,6 +51,7 @@ class Context:
         parent_uri: Optional[str] = None,
         is_leaf: bool = False,
         abstract: str = "",
+        overview: str = "",
         context_type: Optional[str] = None,
         category: Optional[str] = None,
         created_at: Optional[datetime] = None,
@@ -70,6 +71,7 @@ class Context:
         self.parent_uri = parent_uri
         self.is_leaf = is_leaf
         self.abstract = abstract
+        self.overview = overview
         self.context_type = context_type or self._derive_context_type()
         self.category = category or self._derive_category()
         self.created_at = created_at or datetime.now(timezone.utc)
@@ -150,6 +152,7 @@ class Context:
             "parent_uri": self.parent_uri,
             "is_leaf": self.is_leaf,
             "abstract": self.abstract,
+            "overview": self.overview,
             "context_type": self.context_type,
             "category": self.category,
             "created_at": created_at_str,
@@ -179,6 +182,7 @@ class Context:
             parent_uri=data.get("parent_uri"),
             is_leaf=data.get("is_leaf", False),
             abstract=data.get("abstract", ""),
+            overview=data.get("overview", ""),
             context_type=data.get("context_type"),
             category=data.get("category"),
             created_at=(

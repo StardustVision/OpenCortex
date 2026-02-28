@@ -107,6 +107,7 @@ class OpenCortexClient:
         self,
         abstract: str,
         content: str = "",
+        overview: str = "",
         category: str = "",
         context_type: str = "memory",
         uri: Optional[str] = None,
@@ -116,6 +117,8 @@ class OpenCortexClient:
             "abstract": abstract, "content": content,
             "category": category, "context_type": context_type,
         }
+        if overview:
+            payload["overview"] = overview
         if uri is not None:
             payload["uri"] = uri
         if meta is not None:
@@ -128,8 +131,9 @@ class OpenCortexClient:
         limit: int = 5,
         context_type: Optional[str] = None,
         category: Optional[str] = None,
+        detail_level: str = "l1",
     ) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {"query": query, "limit": limit}
+        payload: Dict[str, Any] = {"query": query, "limit": limit, "detail_level": detail_level}
         if context_type is not None:
             payload["context_type"] = context_type
         if category is not None:

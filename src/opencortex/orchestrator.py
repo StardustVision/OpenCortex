@@ -47,11 +47,14 @@ from opencortex.models.embedder.base import EmbedderBase
 from opencortex.retrieve.hierarchical_retriever import HierarchicalRetriever
 from opencortex.retrieve.intent_analyzer import IntentAnalyzer, LLMCompletionCallable
 from opencortex.retrieve.rerank_config import RerankConfig
+from opencortex.retrieve.intent_router import IntentRouter
 from opencortex.retrieve.types import (
     ContextType,
+    DetailLevel,
     FindResult,
     MatchedContext,
     QueryResult,
+    SearchIntent,
     TypedQuery,
 )
 from opencortex.storage.collection_schemas import init_context_collection
@@ -396,6 +399,45 @@ class MemoryOrchestrator:
             use_llm_fallback=getattr(base, "use_llm_fallback", True),
         )
 
+    async def _generate_overview(self, abstract: str, content: str) -> str:
+        """Generate L1 overview from content.
+
+        Strategy:
+        - No content -> empty
+        - Short content (<=500 chars) -> use content as-is
+        - Long content + LLM available -> LLM summarization
+        - Long content + no LLM -> truncated paragraphs
+        """
+        if not content:
+            return ""
+        if len(content) <= 500:
+            return content
+        if self._llm_completion:
+            prompt = (
+                "Generate a concise paragraph overview (3-8 sentences) "
+                "of the following content. Focus on key facts, decisions, "
+                "and actionable details.\n\n"
+                f"Title: {abstract}\n\nContent:\n{content[:4000]}\n\nOverview:"
+            )
+            try:
+                overview = await self._llm_completion(prompt)
+                if overview and len(overview.strip()) > 10:
+                    return overview.strip()
+            except Exception as e:
+                logger.warning("[Orchestrator] L1 generation failed: %s", e)
+        # Fallback: truncate by paragraphs
+        paragraphs = content.split("\n\n")
+        truncated, total = [], 0
+        for p in paragraphs:
+            p = p.strip()
+            if not p:
+                continue
+            if total + len(p) > 500:
+                break
+            truncated.append(p)
+            total += len(p)
+        return "\n\n".join(truncated) if truncated else content[:500] + "..."
+
     def _ensure_init(self) -> None:
         """Raise if not initialized."""
         if not self._initialized:
@@ -434,6 +476,7 @@ class MemoryOrchestrator:
         self,
         abstract: str,
         content: str = "",
+        overview: str = "",
         category: str = "",
         parent_uri: Optional[str] = None,
         uri: Optional[str] = None,
@@ -475,12 +518,17 @@ class MemoryOrchestrator:
         if not parent_uri:
             parent_uri = self._derive_parent_uri(uri)
 
+        # Generate L1 overview if not provided and content exists
+        if not overview and content and is_leaf:
+            overview = await self._generate_overview(abstract, content)
+
         # Create context object
         ctx = Context(
             uri=uri,
             parent_uri=parent_uri,
             is_leaf=is_leaf,
             abstract=abstract,
+            overview=overview,
             context_type=context_type,
             category=category,
             related_uri=related_uri or [],
@@ -504,11 +552,12 @@ class MemoryOrchestrator:
             record["vector"] = ctx.vector
         await self._storage.upsert(_CONTEXT_COLLECTION, record)
 
-        # Write to filesystem (L0 abstract + L2 content)
+        # Write to filesystem (L0 abstract + L1 overview + L2 content)
         await self._fs.write_context(
             uri=uri,
             content=content,
             abstract=abstract,
+            overview=overview,
             is_leaf=is_leaf,
         )
 
@@ -624,12 +673,13 @@ class MemoryOrchestrator:
         limit: int = 5,
         score_threshold: Optional[float] = None,
         metadata_filter: Optional[Dict[str, Any]] = None,
+        detail_level: str = "l1",
     ) -> FindResult:
         """
         Search for relevant contexts.
 
-        Performs hierarchical retrieval across memory/resource/skill types.
-        If a specific context_type or target_uri is given, narrows the scope.
+        Uses IntentRouter to determine retrieval strategy (top_k, detail_level,
+        time_scope, trigger categories) based on the query.
 
         Args:
             query: Natural language query.
@@ -638,39 +688,59 @@ class MemoryOrchestrator:
             limit: Maximum results per type.
             score_threshold: Minimum relevance score.
             metadata_filter: Additional filter conditions.
+            detail_level: Fallback detail level if router doesn't override.
 
         Returns:
             FindResult with memories, resources, and skills.
         """
         self._ensure_init()
 
-        if context_type:
-            types_to_search = [context_type]
-        elif target_uri:
-            types_to_search = [self._infer_context_type(target_uri)]
-        else:
-            types_to_search = [
-                ContextType.MEMORY,
-                ContextType.RESOURCE,
-                ContextType.SKILL,
+        # Intent Router determines retrieval strategy
+        router = IntentRouter(llm_completion=self._llm_completion)
+        intent = await router.route(query, context_type)
+
+        # Use intent to determine effective limit
+        effective_limit = max(limit, intent.top_k)
+
+        typed_queries = intent.queries
+
+        # Fallback: if router produced no queries, build them manually
+        if not typed_queries:
+            if context_type:
+                types_to_search = [context_type]
+            elif target_uri:
+                types_to_search = [self._infer_context_type(target_uri)]
+            else:
+                types_to_search = [
+                    ContextType.MEMORY,
+                    ContextType.RESOURCE,
+                    ContextType.SKILL,
+                ]
+
+            dl = DetailLevel(detail_level)
+            typed_queries = [
+                TypedQuery(
+                    query=query,
+                    context_type=ct,
+                    intent="",
+                    priority=1,
+                    target_directories=[target_uri] if target_uri else [],
+                    detail_level=dl,
+                )
+                for ct in types_to_search
             ]
 
-        typed_queries = [
-            TypedQuery(
-                query=query,
-                context_type=ct,
-                intent="",
-                priority=1,
-                target_directories=[target_uri] if target_uri else [],
-            )
-            for ct in types_to_search
-        ]
+        # Set target directories on queries if specified
+        if target_uri:
+            for tq in typed_queries:
+                if not tq.target_directories:
+                    tq.target_directories = [target_uri]
 
         query_results = await asyncio.gather(
             *[
                 self._retriever.retrieve(
                     tq,
-                    limit=limit,
+                    limit=effective_limit,
                     score_threshold=score_threshold,
                     metadata_filter=metadata_filter,
                 )
@@ -678,7 +748,9 @@ class MemoryOrchestrator:
             ]
         )
 
-        return self._aggregate_results(query_results)
+        result = self._aggregate_results(query_results)
+        result.search_intent = intent
+        return result
 
     async def session_search(
         self,

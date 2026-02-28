@@ -20,6 +20,14 @@ class ContextType(str, Enum):
     SKILL = "skill"
 
 
+class DetailLevel(str, Enum):
+    """Detail level for retrieval results."""
+
+    L0 = "l0"  # abstract only
+    L1 = "l1"  # abstract + overview
+    L2 = "l2"  # abstract + overview + full content
+
+
 class TraceEventType(str, Enum):
     """Types of trace events for retrieval process visualization."""
 
@@ -252,6 +260,7 @@ class TypedQuery:
     intent: str
     priority: int = 3
     target_directories: List[str] = field(default_factory=list)
+    detail_level: DetailLevel = DetailLevel.L1
 
 
 @dataclass
@@ -271,6 +280,19 @@ class QueryPlan:
 
 
 @dataclass
+class SearchIntent:
+    """Intent Router output that drives retrieval behavior."""
+
+    intent_type: str = "quick_lookup"
+    top_k: int = 5
+    detail_level: DetailLevel = DetailLevel.L1
+    time_scope: str = "all"  # recent | session | all
+    need_rerank: bool = True
+    trigger_categories: List[str] = field(default_factory=list)
+    queries: List[TypedQuery] = field(default_factory=list)
+
+
+@dataclass
 class RelatedContext:
     """Related context with summary."""
 
@@ -287,6 +309,7 @@ class MatchedContext:
     is_leaf: bool = False
     abstract: str = ""
     overview: Optional[str] = None
+    content: Optional[str] = None
     category: str = ""
     score: float = 0.0
     match_reason: str = ""
@@ -335,6 +358,7 @@ class FindResult:
     skills: List[MatchedContext]
     query_plan: Optional[QueryPlan] = None
     query_results: Optional[List[QueryResult]] = None
+    search_intent: Optional[SearchIntent] = None
     total: int = 0
 
     def __iter__(self):
@@ -361,11 +385,21 @@ class FindResult:
                 "queries": [self._query_to_dict(q) for q in self.query_plan.queries],
             }
 
+        if self.search_intent:
+            result["search_intent"] = {
+                "intent_type": self.search_intent.intent_type,
+                "top_k": self.search_intent.top_k,
+                "detail_level": self.search_intent.detail_level.value,
+                "time_scope": self.search_intent.time_scope,
+                "need_rerank": self.search_intent.need_rerank,
+                "trigger_categories": self.search_intent.trigger_categories,
+            }
+
         return result
 
     def _context_to_dict(self, ctx: MatchedContext) -> Dict[str, Any]:
         """Convert MatchedContext to dict."""
-        return {
+        d: Dict[str, Any] = {
             "context_type": ctx.context_type.value,
             "uri": ctx.uri,
             "is_leaf": ctx.is_leaf,
@@ -376,6 +410,9 @@ class FindResult:
             "abstract": ctx.abstract,
             "overview": ctx.overview,
         }
+        if ctx.content is not None:
+            d["content"] = ctx.content
+        return d
 
     def _query_to_dict(self, q: TypedQuery) -> Dict[str, Any]:
         """Convert TypedQuery to dict."""
@@ -397,6 +434,7 @@ class FindResult:
                 is_leaf=d.get("is_leaf", False),
                 abstract=d.get("abstract", ""),
                 overview=d.get("overview"),
+                content=d.get("content"),
                 category=d.get("category", ""),
                 score=d.get("score", 0.0),
                 match_reason=d.get("match_reason", ""),

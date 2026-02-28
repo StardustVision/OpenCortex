@@ -16,6 +16,7 @@ from opencortex.models.embedder.base import EmbedResult
 from opencortex.retrieve.rerank_config import RerankConfig
 from opencortex.retrieve.types import (
     ContextType,
+    DetailLevel,
     MatchedContext,
     QueryResult,
     RelatedContext,
@@ -183,7 +184,9 @@ class HierarchicalRetriever:
                 if reward != 0 and self._rl_weight:
                     r["_score"] = r.get("_score", 0.0) + self._rl_weight * reward
             results.sort(key=lambda r: r.get("_score", 0.0), reverse=True)
-            matched = await self._convert_to_matched_contexts(results[:limit], query.context_type)
+            matched = await self._convert_to_matched_contexts(
+                results[:limit], query.context_type, query.detail_level,
+            )
             return QueryResult(
                 query=query,
                 matched_contexts=matched,
@@ -217,7 +220,9 @@ class HierarchicalRetriever:
         )
 
         # Step 6: Convert results
-        matched = await self._convert_to_matched_contexts(candidates, query.context_type)
+        matched = await self._convert_to_matched_contexts(
+            candidates, query.context_type, query.detail_level,
+        )
 
         return QueryResult(
             query=query,
@@ -465,14 +470,24 @@ class HierarchicalRetriever:
         self,
         candidates: List[Dict[str, Any]],
         context_type: ContextType,
+        detail_level: DetailLevel = DetailLevel.L1,
     ) -> List[MatchedContext]:
-        """Convert candidate results to MatchedContext list."""
+        """Convert candidate results to MatchedContext list.
+
+        Args:
+            candidates: Raw candidate dicts from vector search
+            context_type: Type of context
+            detail_level: Controls what data to load:
+                L0: abstract only (from Qdrant payload)
+                L1: abstract + overview (from Qdrant payload, zero I/O)
+                L2: abstract + overview + content (filesystem read)
+        """
         results = []
+        viking_fs = _get_viking_fs()
 
         for c in candidates:
             # Read related contexts and get summaries
             relations = []
-            viking_fs = _get_viking_fs()
             if viking_fs:
                 related_uris = await viking_fs.get_relations(c.get("uri", ""))
                 if related_uris:
@@ -484,12 +499,32 @@ class HierarchicalRetriever:
                         if abstract:
                             relations.append(RelatedContext(uri=uri, abstract=abstract))
 
+            # L0: always from Qdrant payload
+            abstract = c.get("abstract", "")
+
+            # L1: overview from Qdrant payload (zero I/O)
+            overview = None
+            if detail_level in (DetailLevel.L1, DetailLevel.L2):
+                overview = c.get("overview", "") or None
+
+            # L2: content from filesystem (on-demand)
+            content = None
+            if detail_level == DetailLevel.L2 and viking_fs:
+                node_uri = c.get("uri", "")
+                try:
+                    raw = await viking_fs.read(node_uri + "/content.md")
+                    content = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+                except Exception:
+                    pass
+
             results.append(
                 MatchedContext(
                     uri=c.get("uri", ""),
                     context_type=context_type,
                     is_leaf=c.get("is_leaf", False),
-                    abstract=c.get("abstract", ""),
+                    abstract=abstract,
+                    overview=overview,
+                    content=content,
                     category=c.get("category", ""),
                     score=c.get("_final_score", c.get("_score", 0.0)),
                     relations=relations,

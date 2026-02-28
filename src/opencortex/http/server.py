@@ -99,17 +99,21 @@ def _register_routes(app: FastAPI) -> None:
         result = await _orchestrator.add(
             abstract=req.abstract,
             content=req.content,
+            overview=req.overview,
             category=req.category,
             context_type=req.context_type,
             uri=req.uri,
             meta=req.meta,
         )
-        return {
+        resp: Dict[str, Any] = {
             "uri": result.uri,
             "context_type": result.context_type,
             "category": result.category,
             "abstract": result.abstract,
         }
+        if result.overview:
+            resp["overview"] = result.overview
+        return resp
 
     @app.post("/api/v1/memory/search")
     async def memory_search(req: MemorySearchRequest) -> Dict[str, Any]:
@@ -123,16 +127,30 @@ def _register_routes(app: FastAPI) -> None:
             limit=req.limit,
             context_type=ct,
             metadata_filter=metadata_filter,
+            detail_level=req.detail_level,
         )
         items = []
         for matched in result:
-            items.append({
+            item: Dict[str, Any] = {
                 "uri": matched.uri,
                 "abstract": matched.abstract,
                 "context_type": str(matched.context_type),
                 "score": getattr(matched, "score", None),
-            })
-        return {"results": items, "total": result.total}
+            }
+            if matched.overview is not None:
+                item["overview"] = matched.overview
+            if matched.content is not None:
+                item["content"] = matched.content
+            items.append(item)
+        resp: Dict[str, Any] = {"results": items, "total": result.total}
+        if result.search_intent:
+            resp["search_intent"] = {
+                "intent_type": result.search_intent.intent_type,
+                "top_k": result.search_intent.top_k,
+                "detail_level": result.search_intent.detail_level.value,
+                "time_scope": result.search_intent.time_scope,
+            }
+        return resp
 
     @app.post("/api/v1/memory/feedback")
     async def memory_feedback(req: MemoryFeedbackRequest) -> Dict[str, str]:

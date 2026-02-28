@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 class MemoryStoreRequest(BaseModel):
     abstract: str
     content: str = ""
+    overview: str = ""
     category: str = ""
     context_type: str = "memory"
     uri: Optional[str] = None
@@ -29,6 +30,7 @@ class MemorySearchRequest(BaseModel):
     limit: int = 5
     context_type: Optional[str] = None
     category: Optional[str] = None
+    detail_level: str = "l1"
 
 
 class MemoryFeedbackRequest(BaseModel):

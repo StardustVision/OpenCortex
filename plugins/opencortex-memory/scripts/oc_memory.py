@@ -587,10 +587,19 @@ def cmd_recall(args: argparse.Namespace) -> int:
 
     output_lines = [f"Relevant memories for: {query}", ""]
 
+    # Show intent type if available
+    search_intent = result.get("search_intent")
+    if search_intent:
+        output_lines.append(f"Intent: {search_intent.get('intent_type', '?')} "
+                            f"(detail={search_intent.get('detail_level', '?')}, "
+                            f"scope={search_intent.get('time_scope', '?')})")
+        output_lines.append("")
+
     for i, item in enumerate(items, start=1):
         uri = _as_text(item.get("uri", ""))
         score = float(item.get("score") or 0.0)
         abstract = _as_text(item.get("abstract", ""))
+        overview = _as_text(item.get("overview", ""))
         ctx_type = _as_text(item.get("context_type", ""))
 
         output_lines.append(f"{i}. [{score:.3f}] {uri}")
@@ -598,6 +607,8 @@ def cmd_recall(args: argparse.Namespace) -> int:
             output_lines.append(f"   type: {ctx_type}")
         if abstract:
             output_lines.append(f"   abstract: {_short(abstract, 220)}")
+        if overview:
+            output_lines.append(f"   overview: {_short(overview, 300)}")
         output_lines.append("")
 
     print("\n".join(output_lines).strip())
