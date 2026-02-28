@@ -1,13 +1,12 @@
 {
-  "description": "OpenCortex memory hooks for Claude Code (cross-platform)",
-  "note": "Uses node (guaranteed by Claude Code) to dispatch to bash (.sh) on macOS/Linux or PowerShell (.ps1) on Windows.",
+  "description": "OpenCortex memory hooks for Claude Code (pure Node.js, zero external deps)",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/hook_runner.mjs session-start",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/run.mjs session-start",
             "timeout": 12
           }
         ]
@@ -18,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/hook_runner.mjs user-prompt-submit",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/run.mjs user-prompt-submit",
             "timeout": 15
           }
         ]
@@ -29,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/hook_runner.mjs stop",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/run.mjs stop",
             "async": true,
             "timeout": 120
           }
@@ -41,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/hook_runner.mjs session-end",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/run.mjs session-end",
             "timeout": 20
           }
         ]

@@ -156,47 +156,41 @@ opencortex://{team}/user/{uid}/{type}/{category}/{node_id}
 ## 架构设计
 
 ```
- Claude Code / Cursor / Custom Agent
-              |
-              |  Hook triggers (SessionStart / Stop)
-              v
-┌─────────────────────────────────────────────────────────────────┐
-│  opencortex-memory Plugin                                       │
-│  hooks/ | scripts/oc_memory.py | skills/memory-*                │
-├─────────────────────────────────────────────────────────────────┤
-│  oc_memory.py  -->  POST /api/v1/memory/*                       │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   ┌─────────────────────────────────────────────────────────┐   │
-│   │  FastAPI Server (:8921)  +  FastMCP Server (:8920)      │   │
-│   ├─────────────────────────────────────────────────────────┤   │
-│   │  MemoryOrchestrator                                     │   │
-│   │  add | search | feedback | decay | session_*            │   │
-│   ├─────────────────────────────────────────────────────────┤   │
-│   │  Embed | IntentRouter | Rerank | SessionManager         │   │
-│   ├─────────────────────────────────────────────────────────┤   │
-│   │  CortexFS (L0/L1/L2)  +  HierarchicalRetriever          │   │
-│   ├─────────────────────────────────────────────────────────┤   │
-│   │  ACE: RuleExtractor -> Skillbook -> Fusion Search       │   │
-│   ├─────────────────────────────────────────────────────────┤   │
-│   │  VikingDBInterface  ->  QdrantAdapter  ->  Qdrant       │   │
-│   └─────────────────────────────────────────────────────────┘   │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+Agent (Claude Code / Cursor / Custom)
+  │
+  ├─ MCP tools ──→ node mcp-server.mjs (stdio) ──→ fetch ──→ HTTP Server (FastAPI :8921)
+  │                                                              │
+  │                                                              v
+  │                                                        MemoryOrchestrator
+  │                                                        (add/search/feedback/decay/session)
+  │                                                              │
+  │                                                              v
+  │                                                        IntentRouter + Retriever + ACE + SessionManager
+  │                                                              │
+  │                                                              v
+  │                                                        CortexFS (L0/L1/L2) + Qdrant adapter
+  │
+  └─ Hooks ──→ node run.mjs <hook-name>
+                  ├─ session-start   → 启动 HTTP server (local) / 检查连接 (remote)
+                  ├─ user-prompt-submit → 注入记忆召回提示
+                  ├─ stop            → 解析 transcript, 摘要存储
+                  └─ session-end     → 存储会话摘要, 停止 HTTP server
 ```
+
+插件的 Hook 和 MCP Server 均为纯 Node.js (.mjs) 实现，零外部依赖。仅 HTTP Server 后端需要 Python 环境。
 
 ### 双模式部署
 
 | 模式 | 说明 | 适用场景 |
 |------|------|---------|
-| **Local** (默认) | SessionStart 自动启动 HTTP + MCP 服务，SessionEnd 自动关闭 | 个人开发，单机使用 |
-| **Remote** | 配置远程 HTTP 服务器地址，Hook 直接调用远程 API | 团队共享，服务器部署 |
+| **Local** (默认) | SessionStart 自动启动 HTTP 服务，MCP 由 Claude Code 管理 | 个人开发，单机使用 |
+| **Remote** | 配置远程 HTTP 服务器地址，客户端无需 Python | 团队共享，服务器部署 |
 
 ```json
 // plugins/opencortex-memory/config.json
 {
   "mode": "local",
-  "local": { "http_port": 8921, "mcp_port": 8920 },
+  "local": { "http_port": 8921 },
   "remote": { "http_url": "http://your-server:8921" }
 }
 ```
@@ -205,9 +199,9 @@ opencortex://{team}/user/{uid}/{type}/{category}/{node_id}
 
 **HTTP Server 为核心 (Single Source of Truth)**
 
-所有记忆操作统一经过 HTTP Server → Orchestrator → Qdrant。Hook 脚本不直接导入 Python 模块，而是通过 urllib 发 HTTP 请求。这保证了：
+所有记忆操作统一经过 HTTP Server → Orchestrator → Qdrant。Hook 和 MCP Server 均通过 Node.js native fetch 发 HTTP 请求。这保证了：
 - 单一 Orchestrator 实例管理所有状态
-- Hook 脚本轻量、快速、无 Python 环境依赖冲突
+- Hook 和 MCP Server 纯 Node.js，零 Python 依赖
 - Local/Remote 模式切换只需改 URL
 
 **双面适配器 (Dual-Faced Adapter)**
@@ -288,94 +282,31 @@ uv pip install -e .
 
 ### 3. 安装 Claude Code 插件
 
-安装器自动检测平台，注册对应的 Hook 脚本：
-
-- **macOS / Linux** — 注册 bash 脚本 (`.sh`)
-- **Windows** — 注册 PowerShell 脚本 (`.ps1`)
-
-#### 方式一：Python 安装器（推荐，全平台通用）
-
 ```bash
-python3 plugins/opencortex-memory/install.py
+/plugin install
 ```
 
-Windows (PowerShell / cmd)：
-
-```powershell
-python plugins\opencortex-memory\install.py
-```
-
-#### 方式二：Bash 安装器（仅 macOS / Linux）
-
-```bash
-bash plugins/opencortex-memory/install.sh
-```
-
-> **说明：** `install.sh` 检测到 `python3` 可用时会自动委托给 `install.py`。仅在 Python 未安装时使用 bash fallback。
-
-#### 安装器做了什么
-
-1. 检测当前平台 (`sys.platform`)
-2. 移除已有的 OpenCortex Hook 注册（无论 bash 还是 powershell）
-3. 为当前平台注册 Hook 到 `.claude/settings.json`：
-
-| Hook 事件 | macOS / Linux | Windows |
-|---|---|---|
-| `SessionStart` | `bash .../session-start.sh` | `powershell -NoProfile -ExecutionPolicy Bypass -File .../session-start.ps1` |
-| `UserPromptSubmit` | `bash .../user-prompt-submit.sh` | `powershell -NoProfile -ExecutionPolicy Bypass -File .../user-prompt-submit.ps1` |
-| `Stop` | `bash .../stop.sh` | `powershell -NoProfile -ExecutionPolicy Bypass -File .../stop.ps1` |
-| `SubagentStop` | `bash .../stop.sh` | `powershell -NoProfile -ExecutionPolicy Bypass -File .../stop.ps1` |
-
-安装器幂等——可重复运行，不会重复注册。
-
-#### 卸载
-
-```bash
-bash plugins/opencortex-memory/uninstall.sh
-```
+选择 `opencortex-memory`。Claude Code 自动从 `hooks/hooks.json` 注册 Hook，从 `.mcp.json` 启动 MCP Server。
 
 ### 4. 手动启动服务 (可选)
 
-插件在 Local 模式下会自动管理服务生命周期。如需手动启动：
+插件在 Local 模式下会自动管理 HTTP Server 生命周期，MCP Server 由 Claude Code 管理。如需手动启动：
 
 ```bash
-# HTTP Server
-PYTHONPATH=src python -m opencortex.http --config opencortex.json --port 8921
-
-# MCP Server (streamable-http 模式，连接 HTTP Server)
-PYTHONPATH=src python -m opencortex.mcp_server --config opencortex.json \
-  --transport streamable-http --port 8920 --mode remote
-```
-
-Windows (PowerShell)：
-
-```powershell
-$env:PYTHONPATH = "src"
-python -m opencortex.http --config opencortex.json --port 8921
-
-# 另一个终端：
-$env:PYTHONPATH = "src"
-python -m opencortex.mcp_server --config opencortex.json `
-  --transport streamable-http --port 8920 --mode remote
+# 仅启动 HTTP Server（MCP Server 由 Claude Code 自动管理）
+uv run python3 -m opencortex.http --config opencortex.json --port 8921
 ```
 
 ### 5. Claude Code 集成 (其他项目)
 
-**方式一：MCP 连接**
-
-```bash
-claude mcp add opencortex -s user -- python -m opencortex.mcp_server \
-  --transport stdio --config ~/.opencortex/opencortex.json
-```
-
-**方式二：`.mcp.json`**
+在项目根目录创建 `.mcp.json`：
 
 ```json
 {
   "mcpServers": {
     "opencortex": {
-      "type": "streamable-http",
-      "url": "http://127.0.0.1:8920/mcp"
+      "command": "node",
+      "args": ["path/to/plugins/opencortex-memory/lib/mcp-server.mjs"]
     }
   }
 }
@@ -387,25 +318,30 @@ claude mcp add opencortex -s user -- python -m opencortex.mcp_server \
 
 ### opencortex-memory Plugin
 
-插件通过 Claude Code Hooks 实现**被动记忆**（自动采集 + 自动召回），通过 Skills 实现**主动记忆**（Agent 按需调用）。
+插件通过 Claude Code Hooks 实现**被动记忆**（自动采集 + 自动召回），通过 MCP Server 提供**工具调用**（25 个 MCP tools），通过 Skills 实现**主动记忆**（Agent 按需调用）。
 
-每个 Hook 同时提供 bash (`.sh`) 和 PowerShell (`.ps1`) 实现，安装器根据平台自动注册对应版本。
+全部使用纯 Node.js (.mjs) 实现，零外部依赖，跨平台兼容。
 
 ```
 plugins/opencortex-memory/
 ├── .claude-plugin/plugin.json  # 插件清单
+├── .mcp.json                   # MCP Server 注册 (Claude Code 自动启动)
 ├── config.json                 # 模式配置 (local/remote)
-├── install.py                  # 跨平台安装器 (自动检测 bash/powershell)
-├── install.sh                  # Bash 安装器 (委托 install.py，保留 fallback)
-├── uninstall.sh                # 卸载 (移除 Hooks + 清理状态)
 ├── hooks/
-│   ├── common.sh / common.ps1             # 共享工具函数
-│   ├── session-start.sh / .ps1            # SessionStart: 启动 HTTP+MCP 服务
-│   ├── user-prompt-submit.sh / .ps1       # UserPromptSubmit: 注入记忆召回提示
-│   ├── stop.sh / .ps1                     # Stop: 自动摘要 + 存储当前对话轮
-│   └── session-end.sh / .ps1              # SessionEnd: 存储摘要 + 关闭服务
-├── scripts/
-│   └── oc_memory.py            # HTTP client bridge (跨平台 Python)
+│   ├── hooks.json              # Hook 注册
+│   ├── run.mjs                 # 统一入口
+│   └── handlers/
+│       ├── session-start.mjs   # 启动 HTTP 服务, 初始化状态
+│       ├── user-prompt-submit.mjs  # 注入记忆召回提示
+│       ├── stop.mjs            # 解析 transcript, 摘要存储
+│       └── session-end.mjs     # 存储摘要, 停止服务
+├── lib/
+│   ├── common.mjs              # 配置发现, 状态管理, 路径解析
+│   ├── http-client.mjs         # native fetch 封装
+│   ├── transcript.mjs          # JSONL 解析 + 无 LLM 摘要
+│   └── mcp-server.mjs          # MCP stdio server (25 tools → HTTP API)
+├── bin/
+│   └── oc-cli.mjs              # CLI: health, status, recall, store
 └── skills/
     ├── memory-recall/          # 搜索历史记忆
     ├── memory-store/           # 存储新记忆
@@ -418,24 +354,23 @@ plugins/opencortex-memory/
 ### Hook 生命周期
 
 ```
-SessionStart
-  │  → 启动 HTTP Server + MCP Server (local 模式)
+SessionStart (node run.mjs session-start)
+  │  → 启动 HTTP Server (local 模式)
   │  → 验证远程连接 (remote 模式)
   │  → 写入 session_state.json
   ▼
-UserPromptSubmit (每次用户输入)
-  │  → 提取用户 prompt
-  │  → POST /api/v1/memory/search (自动召回)
+UserPromptSubmit (node run.mjs user-prompt-submit)
+  │  → 检查会话状态
   │  → 注入 systemMessage 到模型上下文
   ▼
-Stop (每次 Agent 响应完成)
-  │  → 解析 Transcript 最后一轮
-  │  → 条件摘要 (短轮 → fallback / 长轮 → Haiku LLM)
-  │  → POST /api/v1/memory/store (后台执行)
+Stop (node run.mjs stop, async)
+  │  → 解析 Transcript 最后一轮 (JSONL)
+  │  → 无 LLM 摘要 (提取 tool-use 动作)
+  │  → POST /api/v1/memory/store
   ▼
-SessionEnd (手动/卸载时)
+SessionEnd (node run.mjs session-end)
   │  → POST session summary
-  │  → Kill HTTP + MCP PIDs
+  │  → Kill HTTP Server PID (local 模式)
   └  → 标记 session inactive
 ```
 
@@ -674,7 +609,6 @@ await orch.close()
 src/opencortex/
 ├── config.py                      # CortexConfig 全局配置
 ├── orchestrator.py                # MemoryOrchestrator 顶层编排 (1500+ 行)
-├── mcp_server.py                  # FastMCP Server (16 tools, 双模式)
 │
 ├── http/                          # HTTP Server
 │   ├── server.py                  # FastAPI 应用 + REST routes
@@ -729,16 +663,16 @@ src/opencortex/
     ├── time_utils.py              # 时间工具
     └── json_parse.py              # LLM 响应 JSON 提取 (平衡括号计数)
 
-plugins/opencortex-memory/         # Claude Code 插件
+plugins/opencortex-memory/         # Claude Code 插件 (纯 Node.js)
 ├── config.json                    # 模式配置 (local/remote)
-├── install.sh / uninstall.sh      # 安装/卸载 Hooks
-├── hooks/                         # 4 个 Hook 脚本
-├── scripts/oc_memory.py           # HTTP client bridge
+├── hooks/                         # 4 个 Hook 处理器 (.mjs)
+├── lib/                           # 核心库 + MCP Server (.mjs)
+├── bin/                           # CLI 工具 (.mjs)
 └── skills/                        # 6 个 Skill 定义
 
 tests/
 ├── test_e2e_phase1.py             # 24 个 E2E 测试
-├── test_mcp_server.py             # 8 个 MCP 测试 (InMemory)
+├── test_mcp_server.mjs            # 8 个 MCP 测试 (Node.js stdio proxy)
 ├── test_ace_phase1.py             # 21 个 ACE Skillbook/Engine 测试
 ├── test_ace_phase2.py             # 17 个 Reflector/SkillManager 测试
 ├── test_rule_extractor.py         # 20 个 RuleExtractor 零 LLM 提取测试
@@ -757,11 +691,14 @@ tests/
 ## 运行测试
 
 ```bash
-# 核心测试 (InMemory, 无外部依赖, 111 tests)
-uv run python3 -m unittest tests.test_e2e_phase1 tests.test_mcp_server \
+# Python 核心测试 (InMemory, 无外部依赖, 103 tests)
+uv run python3 -m unittest tests.test_e2e_phase1 \
   tests.test_ace_phase1 tests.test_ace_phase2 \
   tests.test_rule_extractor tests.test_skill_search_fusion \
   tests.test_integration_skill_pipeline -v
+
+# Node.js MCP Server 测试 (需 HTTP Server, 8 tests)
+node --test tests/test_mcp_server.mjs
 
 # Qdrant + 真实嵌入 API 测试
 uv run python3 -m unittest tests.test_qdrant_adapter tests.test_rl_integration -v
@@ -785,14 +722,15 @@ uv run python3 -m unittest discover -s tests -v
 
 | 组件 | 技术 |
 |------|------|
-| 语言 | Python 3.10+, async-first |
+| 后端 | Python 3.10+, async-first |
+| 插件/MCP | Node.js >= 18, 纯 .mjs, 零外部依赖 |
 | 向量存储 | Qdrant (嵌入式本地模式，零外部进程) |
 | Embedding | 火山引擎 doubao-embedding-vision (1024 dim) / OpenAI compatible |
 | Rerank | Volcengine / Jina / Cohere API 或 LLM fallback |
 | LLM | 火山引擎 Ark SDK (doubao-seed) / OpenAI compatible |
 | HTTP | FastAPI + uvicorn |
-| MCP | PrefectHQ FastMCP v3 (streamable-http / sse / stdio) |
-| 包管理 | uv |
+| MCP | Node.js stdio proxy (25 tools → HTTP API) |
+| 包管理 | uv (Python) |
 
 ---
 
