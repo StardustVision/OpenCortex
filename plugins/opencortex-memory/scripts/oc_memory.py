@@ -290,23 +290,49 @@ def _summarize_with_claude(raw: str) -> str:
 
 
 def _fallback_summary(turn: Dict[str, str]) -> str:
-    user = _short(turn.get("user_text", ""), 200)
-    assistant = _short(turn.get("assistant_text", ""), 360)
+    user = _short(turn.get("user_text", ""), 300)
+    assistant_raw = turn.get("assistant_text", "")
+
+    # Extract key signals from assistant text
     lines = []
     if user:
-        lines.append(f"- User request: {user}")
-    if assistant:
-        lines.append(f"- Assistant response: {assistant}")
+        lines.append(f"- User: {user}")
+
+    if assistant_raw:
+        # Extract tool-use actions (most informative for engineering memory)
+        tool_uses = [
+            l.strip() for l in assistant_raw.split("\n")
+            if l.strip().startswith("[tool-use]")
+        ]
+        if tool_uses:
+            for t in tool_uses[:5]:
+                lines.append(f"- {_short(t, 200)}")
+        else:
+            lines.append(f"- Assistant: {_short(assistant_raw, 400)}")
+
     if not lines:
         lines.append("- Captured a conversation turn.")
     return "\n".join(lines)
 
 
+# Minimum combined text length to justify an LLM summarization call.
+# Below this threshold, fallback (truncated original text) is used directly.
+_SUMMARIZE_MIN_LENGTH = 500
+
+
 def summarize_turn(turn: Dict[str, str]) -> str:
+    user_text = turn.get("user_text", "")
+    assistant_text = turn.get("assistant_text", "")
+    combined_len = len(user_text) + len(assistant_text)
+
+    # Short turns: fallback is sufficient, skip LLM call
+    if combined_len < _SUMMARIZE_MIN_LENGTH:
+        return _fallback_summary(turn)
+
     raw = (
         "Summarize this conversation turn for long-term engineering memory.\n\n"
-        f"User:\n{turn.get('user_text', '')}\n\n"
-        f"Assistant:\n{turn.get('assistant_text', '')}\n"
+        f"User:\n{user_text}\n\n"
+        f"Assistant:\n{assistant_text}\n"
     )
     summary = _summarize_with_claude(raw)
     if summary:
