@@ -52,7 +52,10 @@ def main():
     )
 
     # Initialize config before importing the app (so lifespan sees it)
-    from opencortex.config import init_config
+    from opencortex.config import CortexConfig, init_config
+    if not args.config:
+        # Auto-create $HOME/.opencortex/server.json if it doesn't exist
+        CortexConfig.ensure_default_config()
     init_config(path=args.config)
 
     import uvicorn
