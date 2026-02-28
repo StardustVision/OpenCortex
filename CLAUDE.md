@@ -94,7 +94,7 @@ MCP Server 为纯 Node.js stdio 代理，由 Claude Code 通过 .mcp.json 自动
 ## HTTP Server
 
 ```bash
-python -m opencortex.http --host 127.0.0.1 --port 8921
+uv run opencortex-server --host 127.0.0.1 --port 8921
 ```
 
 ## 当前状态

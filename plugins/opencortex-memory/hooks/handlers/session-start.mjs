@@ -3,7 +3,7 @@ import { openSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   PROJECT_DIR, ensureStateDir, saveState,
-  getMcpConfig, getHttpUrl, findPython, ensureDefaultConfig,
+  getMcpConfig, getHttpUrl, findUv, findPython, ensureDefaultConfig,
 } from '../../lib/common.mjs';
 import { healthCheck } from '../../lib/http-client.mjs';
 
@@ -27,17 +27,18 @@ export default async function sessionStart(ctx) {
     // Start HTTP server if not running (MCP is managed by Claude Code via .mcp.json)
     let ready = await healthCheck(httpUrl);
     if (!ready) {
-      const python = findPython();
       const httpPort = getMcpConfig('local.http_port', 8921);
       ensureStateDir();
       const logPath = join(PROJECT_DIR, '.opencortex', 'memory', 'http_server.log');
       const logFd = openSync(logPath, 'a');
-      const child = spawn(python, [
-        '-m', 'opencortex.http',
-        '--host', '127.0.0.1',
-        '--port', String(httpPort),
-        '--log-level', 'WARNING',
-      ], {
+
+      // Prefer uv (handles venv + editable install automatically), fallback to python
+      const uv = findUv();
+      const spawnCmd = uv
+        ? [uv, ['run', 'opencortex-server', '--host', '127.0.0.1', '--port', String(httpPort), '--log-level', 'WARNING']]
+        : [findPython(), ['-m', 'opencortex.http', '--host', '127.0.0.1', '--port', String(httpPort), '--log-level', 'WARNING']];
+
+      const child = spawn(spawnCmd[0], spawnCmd[1], {
         cwd: PROJECT_DIR,
         detached: true,
         stdio: ['ignore', logFd, logFd],

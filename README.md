@@ -183,7 +183,7 @@ The plugin hooks auto-start the HTTP server when a Claude Code session begins. F
 
 ```bash
 # HTTP Server only (MCP server is managed by Claude Code)
-uv run python3 -m opencortex.http --config opencortex.json --port 8921
+uv run opencortex-server --port 8921
 ```
 
 ### 5. Claude Code Integration (Other Projects)

@@ -4,7 +4,7 @@ CLI entry point for the OpenCortex HTTP Server.
 
 Usage::
 
-    python -m opencortex.http --host 127.0.0.1 --port 8921 --config server.json
+    uv run opencortex-server --host 127.0.0.1 --port 8921 --config server.json
 """
 
 import argparse

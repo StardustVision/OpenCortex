@@ -19,3 +19,4 @@ plugins/opencortex-memory/.mcp.json
 .ruvector/
 ruvector.db
 data_e2e_demo/
+.worktrees/

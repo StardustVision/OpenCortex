@@ -1,9 +1,9 @@
 // HTTP client using native fetch (Node.js >= 18)
 
-export async function httpPost(url, data, timeoutMs = 10000) {
+export async function httpPost(url, data, timeoutMs = 10000, extraHeaders = {}) {
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...extraHeaders },
     body: JSON.stringify(data),
     signal: AbortSignal.timeout(timeoutMs),
   });

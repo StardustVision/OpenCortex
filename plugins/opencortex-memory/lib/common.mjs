@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, accessSync, constan
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { execSync } from 'node:child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -201,7 +202,25 @@ export function saveState(state) {
   writeFileSync(STATE_FILE, JSON.stringify(state, null, 2) + '\n');
 }
 
-// ── python discovery (local mode server start) ─────────────────────────
+// ── uv / python discovery (local mode server start) ─────────────────────
+export function findUv() {
+  const candidates = process.platform === 'win32'
+    ? [join(homedir(), '.local', 'bin', 'uv.exe'), join(homedir(), '.cargo', 'bin', 'uv.exe'), 'uv']
+    : [join(homedir(), '.local', 'bin', 'uv'), join(homedir(), '.cargo', 'bin', 'uv'), 'uv'];
+  for (const c of candidates) {
+    try {
+      if (c.includes('/') || c.includes('\\')) {
+        accessSync(c, constants.X_OK);
+        return c;
+      }
+      // bare name — verify it exists on PATH
+      execSync(process.platform === 'win32' ? `where ${c}` : `which ${c}`, { stdio: 'ignore' });
+      return c;
+    } catch { /* next */ }
+  }
+  return null;
+}
+
 export function findPython() {
   const candidates = process.platform === 'win32'
     ? [join(PROJECT_DIR, '.venv', 'Scripts', 'python.exe'), 'python3', 'python']
