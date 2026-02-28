@@ -1,0 +1,26 @@
+[
+  {
+    "query": "用户喜欢什么主题",
+    "expected_uris": [
+      "opencortex://default/user/default/memories/preferences/theme"
+    ],
+    "category": "preferences",
+    "difficulty": "easy",
+    "context_type": "memory",
+    "detail_level": "l1",
+    "tokens_with_memory": 420,
+    "tokens_without_memory": 760
+  },
+  {
+    "query": "上次怎么修复timeout问题",
+    "expected_uris": [
+      "opencortex://default/user/default/memories/errors/timeout-fix"
+    ],
+    "category": "errors",
+    "difficulty": "medium",
+    "context_type": "memory",
+    "detail_level": "l1",
+    "tokens_with_memory": 510,
+    "tokens_without_memory": 980
+  }
+]
