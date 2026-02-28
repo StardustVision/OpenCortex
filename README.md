@@ -91,38 +91,40 @@ opencortex://{team}/user/{uid}/{type}/{category}/{node_id}
 ## Architecture
 
 ```text
-Agent (Claude/Cursor/Custom)
-        |
-        v
-opencortex-memory plugin hooks
-        |
-        v
-HTTP Server (FastAPI, :8921)  <->  MCP Server (FastMCP, :8920)
-        |
-        v
-MemoryOrchestrator
-(add/search/feedback/decay/session)
-        |
-        v
-IntentRouter + Retriever + ACE + SessionManager
-        |
-        v
-CortexFS (L0/L1/L2) + Qdrant adapter
+Agent (Claude Code / Cursor / Custom)
+  │
+  ├─ MCP tools ──→ node mcp-server.mjs (stdio) ──→ fetch ──→ HTTP Server (FastAPI :8921)
+  │                                                              │
+  │                                                              v
+  │                                                        MemoryOrchestrator
+  │                                                        (add/search/feedback/decay/session)
+  │                                                              │
+  │                                                              v
+  │                                                        IntentRouter + Retriever + ACE + SessionManager
+  │                                                              │
+  │                                                              v
+  │                                                        CortexFS (L0/L1/L2) + Qdrant adapter
+  │
+  └─ Hooks ──→ node run.mjs <hook-name>
+                  ├─ session-start   → start HTTP server (local) / health check (remote)
+                  ├─ user-prompt-submit → inject memory recall prompt
+                  ├─ stop            → ingest transcript turn via HTTP
+                  └─ session-end     → store session summary, stop HTTP server
 ```
+
+The plugin hooks and MCP server are pure Node.js (.mjs) with zero external dependencies. Only the HTTP server backend requires Python.
 
 ## Deployment Modes
 
-OpenCortex supports two MCP modes:
-
-- `local`: in-process orchestrator (good for development)
-- `remote`: MCP server as thin client to HTTP server (good for shared deployment)
+- **Local** (default): SessionStart hook auto-starts the HTTP server; MCP server is managed by Claude Code via `.mcp.json`
+- **Remote**: connect to a pre-deployed HTTP server; no Python needed on the client
 
 Example `plugins/opencortex-memory/config.json`:
 
 ```json
 {
   "mode": "local",
-  "local": { "http_port": 8921, "mcp_port": 8920 },
+  "local": { "http_port": 8921 },
   "remote": { "http_url": "http://your-server:8921" }
 }
 ```
@@ -169,94 +171,31 @@ No-embedding mode is also supported (filter/scroll fallback):
 
 ### 3. Install Claude Code Plugin
 
-The installer is cross-platform and auto-detects your OS:
-
-- **macOS / Linux** — registers bash hook scripts (`.sh`)
-- **Windows** — registers PowerShell hook scripts (`.ps1`)
-
-#### Option A: Python installer (recommended, works on all platforms)
-
 ```bash
-python3 plugins/opencortex-memory/install.py
+/plugin install
 ```
 
-On Windows (PowerShell / cmd):
-
-```powershell
-python plugins\opencortex-memory\install.py
-```
-
-#### Option B: Bash installer (macOS / Linux only)
-
-```bash
-bash plugins/opencortex-memory/install.sh
-```
-
-> **Note:** `install.sh` automatically delegates to `install.py` when `python3` is available. The bash fallback is only used if Python is not installed.
-
-#### What the installer does
-
-1. Detects the current platform (`sys.platform`)
-2. Removes any previously registered OpenCortex hooks (from either platform)
-3. Registers hooks for the current platform into `.claude/settings.json`:
-
-| Hook Event | macOS / Linux | Windows |
-|---|---|---|
-| `SessionStart` | `bash .../session-start.sh` | `powershell -NoProfile -ExecutionPolicy Bypass -File .../session-start.ps1` |
-| `UserPromptSubmit` | `bash .../user-prompt-submit.sh` | `powershell -NoProfile -ExecutionPolicy Bypass -File .../user-prompt-submit.ps1` |
-| `Stop` | `bash .../stop.sh` | `powershell -NoProfile -ExecutionPolicy Bypass -File .../stop.ps1` |
-| `SubagentStop` | `bash .../stop.sh` | `powershell -NoProfile -ExecutionPolicy Bypass -File .../stop.ps1` |
-
-The installer is idempotent — safe to run multiple times.
-
-#### Uninstall
-
-```bash
-bash plugins/opencortex-memory/uninstall.sh
-```
+Select `opencortex-memory` from the plugin list. Claude Code automatically registers hooks from `hooks/hooks.json` and the MCP server from `.mcp.json`.
 
 ### 4. Optional Manual Startup
 
-The plugin hooks auto-start servers when a Claude Code session begins. For manual startup:
+The plugin hooks auto-start the HTTP server when a Claude Code session begins. For manual startup:
 
 ```bash
-# HTTP Server
-PYTHONPATH=src python -m opencortex.http --config opencortex.json --port 8921
-
-# MCP Server (remote mode against HTTP server)
-PYTHONPATH=src python -m opencortex.mcp_server --config opencortex.json \
-  --transport streamable-http --port 8920 --mode remote
-```
-
-On Windows (PowerShell):
-
-```powershell
-$env:PYTHONPATH = "src"
-python -m opencortex.http --config opencortex.json --port 8921
-
-# In another terminal:
-$env:PYTHONPATH = "src"
-python -m opencortex.mcp_server --config opencortex.json `
-  --transport streamable-http --port 8920 --mode remote
+# HTTP Server only (MCP server is managed by Claude Code)
+uv run python3 -m opencortex.http --config opencortex.json --port 8921
 ```
 
 ### 5. Claude Code Integration (Other Projects)
 
-Option A: `claude mcp add`
-
-```bash
-claude mcp add opencortex -s user -- python -m opencortex.mcp_server \
-  --transport stdio --config ~/.opencortex/opencortex.json
-```
-
-Option B: `.mcp.json`
+Add `.mcp.json` to your project root:
 
 ```json
 {
   "mcpServers": {
     "opencortex": {
-      "type": "streamable-http",
-      "url": "http://127.0.0.1:8920/mcp"
+      "command": "node",
+      "args": ["path/to/plugins/opencortex-memory/lib/mcp-server.mjs"]
     }
   }
 }
@@ -264,20 +203,37 @@ Option B: `.mcp.json`
 
 ## Plugin System
 
-`plugins/opencortex-memory` combines hooks (passive memory) and skills (active memory tools).
+`plugins/opencortex-memory` combines hooks (passive memory), MCP server (tool proxy), and skills (active memory tools).
 
-Each hook has both a bash (`.sh`) and PowerShell (`.ps1`) implementation. The installer registers the correct variant for your platform.
+All hooks and the MCP server are implemented in pure Node.js (.mjs) — no bash, PowerShell, or Python dependencies.
 
-| Hook | Bash | PowerShell | Purpose |
-|------|------|-----------|---------|
-| SessionStart | `session-start.sh` | `session-start.ps1` | Start servers, initialize session state |
-| UserPromptSubmit | `user-prompt-submit.sh` | `user-prompt-submit.ps1` | Inject memory recall prompt |
-| Stop | `stop.sh` | `stop.ps1` | Ingest latest turn (fire-and-forget) |
-| SessionEnd | `session-end.sh` | `session-end.ps1` | Flush summary, stop local servers |
+```
+plugins/opencortex-memory/
+├── hooks/
+│   ├── hooks.json                    # Hook registration
+│   ├── run.mjs                       # Unified entry point
+│   └── handlers/
+│       ├── session-start.mjs         # Start HTTP server, init state
+│       ├── user-prompt-submit.mjs    # Inject memory recall prompt
+│       ├── stop.mjs                  # Ingest transcript turn
+│       └── session-end.mjs           # Store summary, stop server
+├── lib/
+│   ├── common.mjs                    # Config, state, path resolution
+│   ├── http-client.mjs               # Native fetch wrapper
+│   ├── transcript.mjs                # JSONL parsing + summarization
+│   └── mcp-server.mjs               # MCP stdio server (25 tools)
+├── bin/
+│   └── oc-cli.mjs                    # CLI: health, status, recall, store
+├── skills/                           # Skill definitions
+└── config.json                       # Mode config (local/remote)
+```
 
-Shared helpers: `common.sh` / `common.ps1`
-
-Bridge script: `scripts/oc_memory.py` (cross-platform Python, used by both shell variants)
+| Hook | Handler | Purpose |
+|------|---------|---------|
+| SessionStart | `session-start.mjs` | Start HTTP server (local), verify connectivity (remote) |
+| UserPromptSubmit | `user-prompt-submit.mjs` | Inject memory recall system message |
+| Stop | `stop.mjs` | Parse transcript, ingest turn (async, fire-and-forget) |
+| SessionEnd | `session-end.mjs` | Store session summary, kill HTTP server |
 
 ## MCP Tools
 
@@ -355,14 +311,13 @@ await orch.close()
 ```text
 src/opencortex/
   orchestrator.py          # top-level orchestration
-  mcp_server.py            # MCP server
   http/                    # FastAPI server and HTTP client
   retrieve/                # router, retriever, rerank
   session/                 # extraction and session lifecycle
   ace/                     # self-learning engine
   storage/                 # CortexFS + Qdrant adapter
   models/                  # embedders and llm factory
-plugins/opencortex-memory/ # Claude Code plugin hooks/skills
+plugins/opencortex-memory/ # Claude Code plugin (Node.js hooks + MCP server + skills)
 tests/                     # unit, integration, and live tests
 ```
 
@@ -402,12 +357,12 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest tests.test_memory_e
 
 ## Tech Stack
 
-- Python 3.10+
+- Python 3.10+ (HTTP server backend)
+- Node.js >= 18 (MCP server + plugin hooks, zero external deps)
 - FastAPI + uvicorn
-- FastMCP v3
 - Qdrant (embedded local mode)
 - Volcengine/OpenAI-compatible embedding + LLM backends
-- `uv` for package management
+- `uv` for Python package management
 
 ## License
 
