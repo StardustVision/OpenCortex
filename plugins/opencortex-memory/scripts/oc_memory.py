@@ -551,12 +551,72 @@ def cmd_session_end(args: argparse.Namespace) -> Dict[str, Any]:
     }
 
 
+def _classify_recall_intent(query: str) -> Optional[bool]:
+    """Use Claude CLI (haiku) to classify whether a query needs memory recall.
+
+    Returns:
+        True if recall is needed, False if not, None if classification failed.
+    """
+    if not shutil.which("claude"):
+        return None
+    system_prompt = (
+        "You are a memory recall classifier. Determine if the user query needs "
+        "to retrieve past memories/context. Output ONLY valid JSON.\n"
+        "Return {\"should_recall\": false} for greetings, farewells, simple "
+        "acknowledgments, or chitchat.\n"
+        "Return {\"should_recall\": true} for any query that could benefit from "
+        "past context or stored knowledge."
+    )
+    try:
+        proc = subprocess.run(
+            [
+                "claude", "-p",
+                "--model", "haiku",
+                "--no-session-persistence",
+                "--no-chrome",
+                "--system-prompt", system_prompt,
+            ],
+            input=query,
+            text=True,
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    output = proc.stdout.strip()
+    # Parse JSON from response
+    try:
+        data = json.loads(output)
+        return bool(data.get("should_recall", True))
+    except (json.JSONDecodeError, TypeError):
+        pass
+    # Try extracting JSON from markdown blocks
+    import re
+    match = re.search(r"\{[^}]*\}", output)
+    if match:
+        try:
+            data = json.loads(match.group(0))
+            return bool(data.get("should_recall", True))
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return None
+
+
 def cmd_recall(args: argparse.Namespace) -> int:
     """Search stored memories via HTTP server and print results."""
     state_file = Path(args.state_file)
     query = _as_text(args.query)
 
     if not query:
+        print("No relevant memories found.")
+        return 0
+
+    # Client-side LLM intent classification: skip HTTP call if not needed
+    should_recall = _classify_recall_intent(query)
+    if should_recall is False:
         print("No relevant memories found.")
         return 0
 

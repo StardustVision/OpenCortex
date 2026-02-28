@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
 PROMPT="$(_json_val "$INPUT" "prompt" "")"
-if [[ -z "$PROMPT" || ${#PROMPT} -lt 10 ]]; then
+if [[ -z "$PROMPT" ]]; then
   echo '{}'
   exit 0
 fi

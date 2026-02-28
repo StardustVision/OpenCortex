@@ -30,7 +30,7 @@ class Skillbook:
         self._storage = storage
         self._embedder = embedder
         self._fs = cortex_fs
-        self._prefix = prefix  # "opencortex://tenant/{t}/user/{u}/skillbooks"
+        self._prefix = prefix  # "opencortex://{t}/user/{u}/skillbooks"
         self._dim = embedding_dim
         self._counters: Dict[str, int] = {}  # section -> next id number
 

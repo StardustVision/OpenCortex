@@ -288,6 +288,7 @@ class SearchIntent:
     detail_level: DetailLevel = DetailLevel.L1
     time_scope: str = "all"  # recent | session | all
     need_rerank: bool = True
+    should_recall: bool = True
     trigger_categories: List[str] = field(default_factory=list)
     queries: List[TypedQuery] = field(default_factory=list)
 
@@ -392,6 +393,7 @@ class FindResult:
                 "detail_level": self.search_intent.detail_level.value,
                 "time_scope": self.search_intent.time_scope,
                 "need_rerank": self.search_intent.need_rerank,
+                "should_recall": self.search_intent.should_recall,
                 "trigger_categories": self.search_intent.trigger_categories,
             }
 

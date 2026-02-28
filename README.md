@@ -146,7 +146,7 @@ Stop Hook → 解析 Transcript → 条件摘要 → POST HTTP Server → Qdrant
 ### 租户级隔离
 
 ```
-opencortex://tenant/{team}/user/{uid}/{type}/{category}/{node_id}
+opencortex://{team}/user/{uid}/{type}/{category}/{node_id}
 ```
 
 多团队、多用户，URI 命名空间完全隔离。团队级资源共享，用户级记忆私有。

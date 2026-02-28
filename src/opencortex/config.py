@@ -69,12 +69,12 @@ class CortexConfig:
     http_server_port: int = 8921
 
     def tenant_prefix(self) -> str:
-        """Return the tenant URI prefix: opencortex://tenant/{tenant_id}"""
-        return f"opencortex://tenant/{self.tenant_id}"
+        """Return the tenant URI prefix: opencortex://{tenant_id}"""
+        return f"opencortex://{self.tenant_id}"
 
     def user_prefix(self) -> str:
-        """Return the user URI prefix: opencortex://tenant/{tenant_id}/user/{user_id}"""
-        return f"opencortex://tenant/{self.tenant_id}/user/{self.user_id}"
+        """Return the user URI prefix: opencortex://{tenant_id}/user/{user_id}"""
+        return f"opencortex://{self.tenant_id}/user/{self.user_id}"
 
     def to_dict(self) -> dict:
         return asdict(self)

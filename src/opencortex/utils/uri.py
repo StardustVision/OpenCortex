@@ -5,22 +5,22 @@
 URI utilities for OpenCortex.
 
 All context objects in OpenCortex are identified by URIs in the format:
-opencortex://tenant/{team_id}/{sub_scope}/...
+opencortex://{team_id}/{sub_scope}/...
 
 The tenant-based URI structure supports multi-team, multi-user isolation:
 
   Shared (team-level):
-    opencortex://tenant/{team_id}/resources/...
-    opencortex://tenant/{team_id}/agent/skills/...
-    opencortex://tenant/{team_id}/agent/memories/patterns/...
+    opencortex://{team_id}/resources/...
+    opencortex://{team_id}/agent/skills/...
+    opencortex://{team_id}/agent/memories/patterns/...
 
   Private (user-level):
-    opencortex://tenant/{team_id}/user/{user_id}/memories/...
-    opencortex://tenant/{team_id}/user/{user_id}/reinforcement/...
-    opencortex://tenant/{team_id}/user/{user_id}/feedback/...
-    opencortex://tenant/{team_id}/user/{user_id}/workspace/...
-    opencortex://tenant/{team_id}/user/{user_id}/session/...
-    opencortex://tenant/{team_id}/user/{user_id}/agent/memories/cases/...
+    opencortex://{team_id}/user/{user_id}/memories/...
+    opencortex://{team_id}/user/{user_id}/reinforcement/...
+    opencortex://{team_id}/user/{user_id}/feedback/...
+    opencortex://{team_id}/user/{user_id}/workspace/...
+    opencortex://{team_id}/user/{user_id}/session/...
+    opencortex://{team_id}/user/{user_id}/agent/memories/cases/...
 """
 
 import re
@@ -31,34 +31,31 @@ class CortexURI:
     """
     OpenCortex URI handler with tenant-based isolation.
 
-    URI Format: opencortex://tenant/{team_id}/{sub_scope}/...
+    URI Format: opencortex://{team_id}/{sub_scope}/...
 
-    Top-level scope is always "tenant". Sub-scopes define data categories:
+    Sub-scopes define data categories:
 
     Shared sub-scopes (team-level, no user_id):
-    - resources: Team resources (opencortex://tenant/{tid}/resources/...)
-    - agent: Agent skills & shared patterns (opencortex://tenant/{tid}/agent/...)
-    - queue: Internal queue (opencortex://tenant/{tid}/queue/...)
-    - temp: Temporary data (opencortex://tenant/{tid}/temp/...)
+    - resources: Team resources (opencortex://{tid}/resources/...)
+    - agent: Agent skills & shared patterns (opencortex://{tid}/agent/...)
+    - queue: Internal queue (opencortex://{tid}/queue/...)
+    - temp: Temporary data (opencortex://{tid}/temp/...)
 
     Private sub-scopes (require user_id via /user/{uid}/ prefix):
-    - memories: User memories (opencortex://tenant/{tid}/user/{uid}/memories/...)
-    - reinforcement: HRCM data (opencortex://tenant/{tid}/user/{uid}/reinforcement/...)
-    - feedback: Feedback data (opencortex://tenant/{tid}/user/{uid}/feedback/...)
-    - workspace: Workspace (opencortex://tenant/{tid}/user/{uid}/workspace/...)
-    - session: Session data (opencortex://tenant/{tid}/user/{uid}/session/...)
-    - agent/memories/cases: Private cases (opencortex://tenant/{tid}/user/{uid}/agent/memories/cases/...)
+    - memories: User memories (opencortex://{tid}/user/{uid}/memories/...)
+    - reinforcement: HRCM data (opencortex://{tid}/user/{uid}/reinforcement/...)
+    - feedback: Feedback data (opencortex://{tid}/user/{uid}/feedback/...)
+    - workspace: Workspace (opencortex://{tid}/user/{uid}/workspace/...)
+    - session: Session data (opencortex://{tid}/user/{uid}/session/...)
+    - agent/memories/cases: Private cases (opencortex://{tid}/user/{uid}/agent/memories/cases/...)
     """
 
     SCHEME = "opencortex"
 
-    # The only valid top-level scope
-    TOP_SCOPE = "tenant"
-
-    # Sub-scopes that exist directly under tenant/{team_id}/
+    # Sub-scopes that exist directly under {team_id}/
     SHARED_SUB_SCOPES = {"resources", "agent", "queue", "temp"}
 
-    # Sub-scopes that exist under tenant/{team_id}/user/{user_id}/
+    # Sub-scopes that exist under {team_id}/user/{user_id}/
     PRIVATE_SUB_SCOPES = {"memories", "reinforcement", "feedback", "workspace", "session"}
 
     # All recognized sub-scopes (for validation of the path component after tenant_id or user_id)
@@ -69,7 +66,7 @@ class CortexURI:
         Initialize URI handler.
 
         Args:
-            uri: URI string (e.g., "opencortex://tenant/default/resources/...")
+            uri: URI string (e.g., "opencortex://default/resources/...")
         """
         self.uri = uri
         self._parsed = self._parse()
@@ -96,27 +93,20 @@ class CortexURI:
         if len(parts) < 1:
             raise ValueError(f"Invalid URI format: {self.uri}")
 
-        # First part must be "tenant"
-        if parts[0] != self.TOP_SCOPE:
-            raise ValueError(
-                f"URI must start with '{prefix}{self.TOP_SCOPE}/'. Got: {self.uri}"
-            )
-
-        tenant_id = parts[1] if len(parts) > 1 else ""
-        if not tenant_id:
-            raise ValueError(f"Missing tenant_id in URI: {self.uri}")
+        # First part is tenant_id directly
+        tenant_id = parts[0]
 
         # Determine sub_scope and user_id
         sub_scope = ""
         user_id = ""
-        if len(parts) > 2:
-            if parts[2] == "user":
-                # Private path: tenant/{tid}/user/{uid}/...
-                user_id = parts[3] if len(parts) > 3 else ""
-                sub_scope = parts[4] if len(parts) > 4 else "user"
+        if len(parts) > 1:
+            if parts[1] == "user":
+                # Private path: {tid}/user/{uid}/...
+                user_id = parts[2] if len(parts) > 2 else ""
+                sub_scope = parts[3] if len(parts) > 3 else "user"
             else:
-                # Shared path: tenant/{tid}/{sub_scope}/...
-                sub_scope = parts[2]
+                # Shared path: {tid}/{sub_scope}/...
+                sub_scope = parts[1]
 
         return {
             "scheme": self.SCHEME,
@@ -202,9 +192,9 @@ class CortexURI:
             return None
 
         after_scheme = uri[scheme_end + len(scheme_sep):]
-        # Don't go above tenant/{tid}
+        # Don't go above {tid}
         parts = after_scheme.split("/")
-        if len(parts) <= 2:  # "tenant" and "{tid}" are minimum
+        if len(parts) <= 1:  # "{tid}" is the minimum
             return None
 
         last_slash = uri.rfind("/")
@@ -239,9 +229,9 @@ class CortexURI:
 
         Example:
             CortexURI.build_shared("myteam", "resources", "project1", "docs")
-            -> "opencortex://tenant/myteam/resources/project1/docs"
+            -> "opencortex://myteam/resources/project1/docs"
         """
-        parts = [CortexURI.TOP_SCOPE, tenant_id, sub_scope] + list(path_parts)
+        parts = [tenant_id, sub_scope] + list(path_parts)
         parts = [p for p in parts if p]
         return f"{CortexURI.SCHEME}://{'/'.join(parts)}"
 
@@ -261,9 +251,9 @@ class CortexURI:
 
         Example:
             CortexURI.build_private("myteam", "alice", "memories", "preferences")
-            -> "opencortex://tenant/myteam/user/alice/memories/preferences"
+            -> "opencortex://myteam/user/alice/memories/preferences"
         """
-        parts = [CortexURI.TOP_SCOPE, tenant_id, "user", user_id, sub_scope] + list(path_parts)
+        parts = [tenant_id, "user", user_id, sub_scope] + list(path_parts)
         parts = [p for p in parts if p]
         return f"{CortexURI.SCHEME}://{'/'.join(parts)}"
 
@@ -316,8 +306,8 @@ class CortexURI:
         Normalize URI by ensuring it has the opencortex:// scheme.
 
         Examples:
-            "tenant/default/resources" -> "opencortex://tenant/default/resources"
-            "opencortex://tenant/default/resources" -> "opencortex://tenant/default/resources"
+            "default/resources" -> "opencortex://default/resources"
+            "opencortex://default/resources" -> "opencortex://default/resources"
         """
         prefix = f"{CortexURI.SCHEME}://"
         if uri.startswith(prefix):
@@ -361,7 +351,7 @@ class CortexURI:
         Extract the path component immediately after a given segment.
 
         Example:
-            uri = CortexURI("opencortex://tenant/t1/user/alice/memories/prefs")
+            uri = CortexURI("opencortex://t1/user/alice/memories/prefs")
             uri.extract_after("user")  -> "alice"
             uri.extract_after("memories")  -> "prefs"
         """

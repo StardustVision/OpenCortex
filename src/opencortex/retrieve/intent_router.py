@@ -43,6 +43,20 @@ _INTENT_KEYWORDS: Dict[str, List[str]] = {
                       "is it", "does it", "do we", "confirm"],
 }
 
+# Patterns that indicate no memory recall is needed (greetings, farewells, thanks)
+_NO_RECALL_PATTERNS: List[str] = [
+    # Chinese
+    "你好", "您好", "嗨", "早上好", "下午好", "晚上好",
+    "再见", "拜拜", "下次见", "回头见",
+    "谢谢", "感谢", "多谢", "辛苦了",
+    "好的", "可以", "明白", "知道了", "收到",
+    # English
+    "hello", "hi", "hey", "good morning", "good afternoon", "good evening",
+    "goodbye", "bye", "see you", "later",
+    "thanks", "thank you", "thx",
+    "ok", "okay", "got it", "understood", "sure",
+]
+
 # Intent -> default parameters
 _INTENT_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "quick_lookup":  {"top_k": 3,  "detail_level": "l0", "need_rerank": False},
@@ -58,14 +72,18 @@ _INTENT_DEFAULTS: Dict[str, Dict[str, Any]] = {
 
 _ROUTER_PROMPT_TEMPLATE = """You are OpenCortex's Intent Router. Analyze the user query and determine:
 
-1. **Intent Type**: What kind of retrieval is needed?
+1. **Should Recall**: Does this query need memory retrieval at all?
+   - Set false for greetings, farewells, simple acknowledgments, or chitchat
+   - Set true for any query that could benefit from past context or stored knowledge
+
+2. **Intent Type**: What kind of retrieval is needed?
    - quick_lookup: Simple confirmation or fact check (top_k=3, l0)
    - recent_recall: Recent context recall (top_k=5, l1)
    - deep_analysis: Detailed analysis needing full content (top_k=10, l2)
    - summarize: Aggregation over many memories (top_k=30, l1)
    - personalized: Agent needs user metadata to give personalized advice (top_k=10, l1)
 
-2. **Memory Triggers**: What additional context does the Agent need to answer well?
+3. **Memory Triggers**: What additional context does the Agent need to answer well?
    Think from the Agent's perspective — what background information would help
    provide a better answer? Return categories to proactively fetch:
    - preferences: User preferences, habits, style
@@ -80,6 +98,7 @@ _ROUTER_PROMPT_TEMPLATE = """You are OpenCortex's Intent Router. Analyze the use
 
 Output JSON only:
 {{
+    "should_recall": true,
     "intent_type": "...",
     "top_k": N,
     "detail_level": "l0|l1|l2",
@@ -162,6 +181,19 @@ class IntentRouter:
 
     def _keyword_extract(self, query: str) -> SearchIntent:
         """Layer 1: keyword matching for initial intent."""
+        # Check no-recall patterns: short queries that exactly match
+        query_stripped = query.strip()
+        query_lower = query_stripped.lower()
+        if query_lower in _NO_RECALL_PATTERNS or query_stripped in _NO_RECALL_PATTERNS:
+            return SearchIntent(
+                intent_type="quick_lookup",
+                top_k=0,
+                detail_level=DetailLevel.L0,
+                time_scope="all",
+                need_rerank=False,
+                should_recall=False,
+            )
+
         intent_type = "recent_recall"  # default
         time_scope = "all"
 
@@ -219,12 +251,17 @@ class IntentRouter:
         if not isinstance(trigger_categories, list):
             trigger_categories = []
 
+        should_recall = parsed.get("should_recall", True)
+        if not isinstance(should_recall, bool):
+            should_recall = True
+
         return SearchIntent(
             intent_type=itype,
             top_k=top_k,
             detail_level=dl,
             time_scope=time_scope,
             need_rerank=_INTENT_DEFAULTS.get(itype, {}).get("need_rerank", True),
+            should_recall=should_recall,
             trigger_categories=trigger_categories,
         )
 
@@ -236,6 +273,7 @@ class IntentRouter:
             detail_level=llm_intent.detail_level,
             time_scope=llm_intent.time_scope,
             need_rerank=llm_intent.need_rerank,
+            should_recall=llm_intent.should_recall,
             trigger_categories=llm_intent.trigger_categories,
         )
 

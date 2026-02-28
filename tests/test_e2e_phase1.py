@@ -567,7 +567,7 @@ class TestE2EPhase1(unittest.TestCase):
         # Verify filesystem (L0 abstract written)
         abstract_path = os.path.join(
             self.temp_dir,
-            "tenant", "testteam", "user", "alice", "memories", "preferences",
+            "testteam", "user", "alice", "memories", "preferences",
             ctx.uri.split("/")[-1],
             ".abstract.md",
         )
@@ -807,7 +807,7 @@ class TestE2EPhase1(unittest.TestCase):
         """Update returns False for non-existent URI."""
         orch = self._init_orch()
 
-        success = self._run(orch.update("opencortex://tenant/testteam/user/alice/memories/nonexistent", abstract="x"))
+        success = self._run(orch.update("opencortex://testteam/user/alice/memories/nonexistent", abstract="x"))
         self.assertFalse(success)
 
     # -----------------------------------------------------------------
@@ -880,13 +880,13 @@ class TestE2EPhase1(unittest.TestCase):
         user = UserIdentifier("myteam", "bob", "assistant")
 
         mem_uri = user.memory_space_uri()
-        self.assertEqual(mem_uri, "opencortex://tenant/myteam/user/bob/memories")
+        self.assertEqual(mem_uri, "opencortex://myteam/user/bob/memories")
 
         cases_uri = user.agent_cases_uri()
-        self.assertEqual(cases_uri, "opencortex://tenant/myteam/user/bob/agent/memories/cases")
+        self.assertEqual(cases_uri, "opencortex://myteam/user/bob/agent/memories/cases")
 
         ws_uri = user.workspace_uri("proj1")
-        self.assertEqual(ws_uri, "opencortex://tenant/myteam/user/bob/workspace/proj1")
+        self.assertEqual(ws_uri, "opencortex://myteam/user/bob/workspace/proj1")
 
     # -----------------------------------------------------------------
     # 10. Context Type Derivation
@@ -894,21 +894,21 @@ class TestE2EPhase1(unittest.TestCase):
 
     def test_17_context_type_derivation(self):
         """Context correctly derives type and category from URI."""
-        mem_ctx = Context(uri="opencortex://tenant/t1/user/u1/memories/preferences/node1")
+        mem_ctx = Context(uri="opencortex://t1/user/u1/memories/preferences/node1")
         self.assertEqual(mem_ctx.context_type, "memory")
         self.assertEqual(mem_ctx.category, "preferences")
 
-        skill_ctx = Context(uri="opencortex://tenant/t1/agent/skills/convert_doc")
+        skill_ctx = Context(uri="opencortex://t1/agent/skills/convert_doc")
         self.assertEqual(skill_ctx.context_type, "skill")
 
-        res_ctx = Context(uri="opencortex://tenant/t1/resources/docs/api_guide")
+        res_ctx = Context(uri="opencortex://t1/resources/docs/api_guide")
         self.assertEqual(res_ctx.context_type, "resource")
 
-        pattern_ctx = Context(uri="opencortex://tenant/t1/agent/memories/patterns/retry")
+        pattern_ctx = Context(uri="opencortex://t1/agent/memories/patterns/retry")
         self.assertEqual(pattern_ctx.context_type, "memory")
         self.assertEqual(pattern_ctx.category, "patterns")
 
-        cases_ctx = Context(uri="opencortex://tenant/t1/user/u1/agent/memories/cases/c1")
+        cases_ctx = Context(uri="opencortex://t1/user/u1/agent/memories/cases/c1")
         self.assertEqual(cases_ctx.context_type, "memory")
         self.assertEqual(cases_ctx.category, "cases")
 
@@ -919,10 +919,10 @@ class TestE2EPhase1(unittest.TestCase):
     def test_18_uri_builders(self):
         """CortexURI builders produce valid, parseable URIs."""
         shared = CortexURI.build_shared("t1", "resources", "docs")
-        self.assertEqual(shared, "opencortex://tenant/t1/resources/docs")
+        self.assertEqual(shared, "opencortex://t1/resources/docs")
 
         private = CortexURI.build_private("t1", "u1", "memories", "events")
-        self.assertEqual(private, "opencortex://tenant/t1/user/u1/memories/events")
+        self.assertEqual(private, "opencortex://t1/user/u1/memories/events")
 
         parsed = CortexURI(private)
         self.assertEqual(parsed.tenant_id, "t1")
@@ -1081,7 +1081,7 @@ class TestE2EPhase1(unittest.TestCase):
         """Feedback on non-existent URI is a no-op (no crash)."""
         orch = self._init_orch()
         # Should not raise
-        self._run(orch.feedback("opencortex://tenant/testteam/user/alice/memories/ghost", 1.0))
+        self._run(orch.feedback("opencortex://testteam/user/alice/memories/ghost", 1.0))
 
     # -----------------------------------------------------------------
     # Helper

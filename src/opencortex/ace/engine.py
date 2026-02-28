@@ -35,7 +35,7 @@ class ACEngine:
         user_id: str = "default",
     ):
         dim = embedder.get_dimension() if hasattr(embedder, "get_dimension") else 1024
-        prefix = f"opencortex://tenant/{tenant_id}/user/{user_id}/skillbooks"
+        prefix = f"opencortex://{tenant_id}/user/{user_id}/skillbooks"
         self._skillbook = Skillbook(
             storage=storage,
             embedder=embedder,

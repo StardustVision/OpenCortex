@@ -329,7 +329,7 @@ class TestSkillbookCRUD(unittest.TestCase):
         self.storage = InMemoryStorage()
         self.embedder = MockEmbedder()
         self.fs = CortexFS(data_root=self.temp_dir, vector_store=self.storage)
-        self.prefix = "opencortex://tenant/test/user/alice/skillbooks"
+        self.prefix = "opencortex://test/user/alice/skillbooks"
         self.sb = Skillbook(
             storage=self.storage,
             embedder=self.embedder,
@@ -363,7 +363,7 @@ class TestSkillbookCRUD(unittest.TestCase):
         # Check CortexFS abstract file
         abstract_path = os.path.join(
             self.temp_dir,
-            "tenant", "test", "user", "alice", "skillbooks",
+            "test", "user", "alice", "skillbooks",
             "strategies", skill.id, ".abstract.md",
         )
         self.assertTrue(os.path.exists(abstract_path), f"Abstract file should exist at {abstract_path}")
@@ -561,7 +561,7 @@ class TestCortexFSIntegration(unittest.TestCase):
         self.storage = InMemoryStorage()
         self.embedder = MockEmbedder()
         self.fs = CortexFS(data_root=self.temp_dir, vector_store=self.storage)
-        self.prefix = "opencortex://tenant/test/user/alice/skillbooks"
+        self.prefix = "opencortex://test/user/alice/skillbooks"
         self.sb = Skillbook(
             storage=self.storage,
             embedder=self.embedder,
@@ -588,7 +588,7 @@ class TestCortexFSIntegration(unittest.TestCase):
 
         base = os.path.join(
             self.temp_dir,
-            "tenant", "test", "user", "alice", "skillbooks",
+            "test", "user", "alice", "skillbooks",
             "patterns", skill.id,
         )
 
@@ -621,7 +621,7 @@ class TestCortexFSIntegration(unittest.TestCase):
 
         section_base = os.path.join(
             self.temp_dir,
-            "tenant", "test", "user", "alice", "skillbooks",
+            "test", "user", "alice", "skillbooks",
             "strategies",
         )
 

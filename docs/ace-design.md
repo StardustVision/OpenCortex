@@ -123,7 +123,7 @@ class Skillbook:
 **URI 结构:**
 
 ```
-opencortex://tenant/{t}/user/{u}/skillbooks/
+opencortex://{t}/user/{u}/skillbooks/
   strategies/
     .abstract.md             ← Section L0: "12 条策略技能，覆盖 API、错误处理、验证"
     .overview.md             ← Section L1: "## 快速导航\n- API (5 条)\n- 错误处理 (4 条)..."
@@ -365,8 +365,8 @@ ACEngine 实现现有的 `_hooks` 协议，映射到 Skillbook 操作:
 class ACEngine:
     def __init__(self, storage, embedder, viking_fs, llm_fn=None,
                  tenant_id="default", user_id="default"):
-        # opencortex://tenant/{t}/user/{u}/skillbooks/
-        prefix = f"opencortex://tenant/{tenant_id}/user/{user_id}/skillbooks"
+        # opencortex://{t}/user/{u}/skillbooks/
+        prefix = f"opencortex://{tenant_id}/user/{user_id}/skillbooks"
         self._skillbook = Skillbook(storage, embedder, viking_fs, prefix)
         self._reflector = Reflector(llm_fn) if llm_fn else None
         self._skill_manager = SkillManager(llm_fn) if llm_fn else None

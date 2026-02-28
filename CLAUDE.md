@@ -61,7 +61,7 @@ docs/architecture.md       # 架构设计文档
 ## 开发约定
 
 - 所有存储操作通过 `VikingDBInterface` 抽象，方法均为 `async`
-- URI 格式: `opencortex://tenant/{team}/user/{uid}/{type}/{category}/{node_id}`
+- URI 格式: `opencortex://{team}/user/{uid}/{type}/{category}/{node_id}`
 - 配置优先从 `opencortex.json` 加载
 - 强化学习方法 (update_reward/get_profile/apply_decay/set_protected) 不在接口中，通过 `hasattr` 检测
 - 包管理使用 `uv` (不用 pip)

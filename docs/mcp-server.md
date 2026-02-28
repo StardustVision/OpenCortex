@@ -46,7 +46,7 @@ python -m opencortex.mcp_server --transport streamable-http --port 8920
 
 ```json
 {
-  "uri": "opencortex://tenant/default/user/default/memories/preferences/a1b2c3d4e5f6",
+  "uri": "opencortex://default/user/default/memories/preferences/a1b2c3d4e5f6",
   "context_type": "memory",
   "category": "preferences",
   "abstract": "User prefers dark theme"

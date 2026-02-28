@@ -664,7 +664,7 @@ class CortexFS:
     def _uri_to_path(self, uri: str) -> str:
         """Convert opencortex:// URI to local AGFS path.
 
-        opencortex://tenant/myteam/resources/proj -> /local/tenant/myteam/resources/proj
+        opencortex://myteam/resources/proj -> /local/myteam/resources/proj
         """
         remainder = uri[len("opencortex://"):].strip("/")
         if not remainder:
@@ -677,7 +677,7 @@ class CortexFS:
     def _path_to_uri(self, path: str) -> str:
         """Convert local AGFS path to opencortex:// URI.
 
-        /local/tenant/myteam/resources/proj -> opencortex://tenant/myteam/resources/proj
+        /local/myteam/resources/proj -> opencortex://myteam/resources/proj
         """
         if path.startswith("opencortex://"):
             return path

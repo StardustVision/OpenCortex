@@ -722,6 +722,14 @@ class MemoryOrchestrator:
         router = IntentRouter(llm_completion=self._llm_completion)
         intent = await router.route(query, context_type)
 
+        # Gate: skip retrieval if intent says no recall needed
+        if not intent.should_recall:
+            logger.debug("[search] should_recall=False, returning empty result")
+            return FindResult(
+                memories=[], resources=[], skills=[],
+                search_intent=intent,
+            )
+
         # Use intent to determine effective limit
         effective_limit = max(limit, intent.top_k)
 

@@ -149,6 +149,7 @@ def _register_routes(app: FastAPI) -> None:
                 "top_k": result.search_intent.top_k,
                 "detail_level": result.search_intent.detail_level.value,
                 "time_scope": result.search_intent.time_scope,
+                "should_recall": result.search_intent.should_recall,
             }
         return resp
 
