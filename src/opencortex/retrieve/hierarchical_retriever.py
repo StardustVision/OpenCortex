@@ -590,6 +590,35 @@ class HierarchicalRetriever:
 
         return result[:max_size]
 
+    @staticmethod
+    def _per_parent_fair_select(
+        children_by_parent: Dict[str, List[Dict[str, Any]]],
+        min_quota: int,
+        total_budget: int,
+    ) -> List[Dict[str, Any]]:
+        """Fair select: each parent gets min_quota first, rest compete globally.
+
+        Args:
+            children_by_parent: {parent_uri: [child_dicts]} with '_final_score' set.
+            min_quota: Minimum children guaranteed per parent.
+            total_budget: Maximum total children to return.
+        """
+        selected: List[Dict[str, Any]] = []
+        remaining: List[Dict[str, Any]] = []
+
+        for children in children_by_parent.values():
+            sorted_children = sorted(
+                children, key=lambda x: x.get("_final_score", 0.0), reverse=True
+            )
+            selected.extend(sorted_children[:min_quota])
+            remaining.extend(sorted_children[min_quota:])
+
+        if len(selected) < total_budget:
+            remaining.sort(key=lambda x: x.get("_final_score", 0.0), reverse=True)
+            selected.extend(remaining[: total_budget - len(selected)])
+
+        return selected[:total_budget]
+
     def _get_root_uris_for_type(self, context_type: ContextType) -> List[str]:
         """Return starting directory URI list based on context_type.
 

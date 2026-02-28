@@ -134,5 +134,47 @@ class TestDiverseTruncate(unittest.TestCase):
         self.assertEqual(len(result), 64)
 
 
+class TestFairSelect(unittest.TestCase):
+    """Test _per_parent_fair_select quota enforcement."""
+
+    def test_protects_cold_parents(self):
+        """Hot parent with 20 children, cold parent with 2 → cold gets all 2."""
+        children_by_parent = {
+            "hot_dir": [{"uri": f"hot_{i}", "_final_score": 0.9 - i * 0.01}
+                        for i in range(20)],
+            "cold_dir": [{"uri": f"cold_{i}", "_final_score": 0.3 + i * 0.01}
+                         for i in range(2)],
+        }
+        selected = HierarchicalRetriever._per_parent_fair_select(
+            children_by_parent, min_quota=2, total_budget=10
+        )
+        cold_uris = {s["uri"] for s in selected if s["uri"].startswith("cold_")}
+        self.assertEqual(cold_uris, {"cold_0", "cold_1"})
+
+    def test_budget_cap_respected(self):
+        """Total selected does not exceed budget."""
+        children_by_parent = {
+            f"dir_{i}": [{"uri": f"dir_{i}_child_{j}", "_final_score": 0.5}
+                         for j in range(10)]
+            for i in range(5)
+        }
+        selected = HierarchicalRetriever._per_parent_fair_select(
+            children_by_parent, min_quota=2, total_budget=15
+        )
+        self.assertLessEqual(len(selected), 15)
+
+    def test_min_quota_with_fewer_children(self):
+        """Parent with fewer children than min_quota → takes all it has."""
+        children_by_parent = {
+            "dir_a": [{"uri": "a_0", "_final_score": 0.9}],  # only 1 child
+            "dir_b": [{"uri": f"b_{i}", "_final_score": 0.5} for i in range(10)],
+        }
+        selected = HierarchicalRetriever._per_parent_fair_select(
+            children_by_parent, min_quota=3, total_budget=8
+        )
+        a_uris = {s["uri"] for s in selected if s["uri"].startswith("a_")}
+        self.assertEqual(a_uris, {"a_0"})  # gets its only child
+
+
 if __name__ == "__main__":
     unittest.main()
