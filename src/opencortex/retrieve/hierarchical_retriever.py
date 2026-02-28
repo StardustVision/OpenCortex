@@ -221,19 +221,33 @@ class HierarchicalRetriever:
         # Step 3: Merge starting points
         starting_points = await self._merge_starting_points(query.query, root_uris, global_results)
 
-        # Step 4: Recursive search
-        candidates = await self._recursive_search(
-            query=query.query,
-            collection=collection,
-            query_vector=query_vector,
-            sparse_query_vector=sparse_query_vector,
-            starting_points=starting_points,
-            limit=limit,
-            mode=mode,
-            threshold=effective_threshold,
-            score_gte=score_gte,
-            metadata_filter=final_metadata_filter,
-        )
+        # Step 4: Search (frontier batching or recursive fallback)
+        if self._use_frontier_batching:
+            candidates = await self._frontier_search(
+                query=query.query,
+                collection=collection,
+                query_vector=query_vector,
+                sparse_query_vector=sparse_query_vector,
+                starting_points=starting_points,
+                limit=limit,
+                mode=mode,
+                threshold=effective_threshold,
+                score_gte=score_gte,
+                metadata_filter=final_metadata_filter,
+            )
+        else:
+            candidates = await self._recursive_search(
+                query=query.query,
+                collection=collection,
+                query_vector=query_vector,
+                sparse_query_vector=sparse_query_vector,
+                starting_points=starting_points,
+                limit=limit,
+                mode=mode,
+                threshold=effective_threshold,
+                score_gte=score_gte,
+                metadata_filter=final_metadata_filter,
+            )
 
         # Step 6: Convert results
         matched = await self._convert_to_matched_contexts(
@@ -485,6 +499,261 @@ class HierarchicalRetriever:
 
         collected.sort(key=lambda x: x.get("_final_score", 0), reverse=True)
         return collected[:limit]
+
+    async def _frontier_search(
+        self,
+        query: str,
+        collection: str,
+        query_vector: Optional[List[float]],
+        sparse_query_vector: Optional[Dict[str, float]],
+        starting_points: List[Tuple[str, float]],
+        limit: int,
+        mode: str,
+        threshold: Optional[float] = None,
+        score_gte: bool = False,
+        metadata_filter: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Frontier search with auto-fallback to recursive on error."""
+        try:
+            return await self._frontier_search_impl(
+                query=query, collection=collection,
+                query_vector=query_vector, sparse_query_vector=sparse_query_vector,
+                starting_points=starting_points, limit=limit, mode=mode,
+                threshold=threshold, score_gte=score_gte,
+                metadata_filter=metadata_filter,
+            )
+        except Exception as e:
+            logger.error("[FrontierSearch] Fallback to recursive: %s", e)
+            return await self._recursive_search(
+                query=query, collection=collection,
+                query_vector=query_vector, sparse_query_vector=sparse_query_vector,
+                starting_points=starting_points, limit=limit, mode=mode,
+                threshold=threshold, score_gte=score_gte,
+                metadata_filter=metadata_filter,
+            )
+
+    async def _frontier_search_impl(
+        self,
+        query: str,
+        collection: str,
+        query_vector: Optional[List[float]],
+        sparse_query_vector: Optional[Dict[str, float]],
+        starting_points: List[Tuple[str, float]],
+        limit: int,
+        mode: str,
+        threshold: Optional[float] = None,
+        score_gte: bool = False,
+        metadata_filter: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Wave-based frontier batching search.
+
+        Replaces per-directory heapq search with batch queries per wave.
+        See docs/plans/2026-02-28-frontier-batching-design.md for algorithm.
+        """
+        effective_threshold = threshold if threshold is not None else self.threshold
+
+        def passes_threshold(score: float) -> bool:
+            if score_gte:
+                return score >= effective_threshold
+            return score > effective_threshold
+
+        def merge_filter(base_filter: Dict, extra_filter: Optional[Dict]) -> Dict:
+            if not extra_filter:
+                return base_filter
+            return {"op": "and", "conds": [base_filter, extra_filter]}
+
+        sparse_query_vector = sparse_query_vector or None
+        alpha = self.SCORE_PROPAGATION_ALPHA
+
+        # collected: uri -> dict (O(1) dedup, no index invalidation)
+        collected: Dict[str, Dict[str, Any]] = {}
+        visited_dirs: set = set()
+        convergence_rounds = 0
+        prev_topk_uris: set = set()
+
+        frontier: List[Tuple[str, float]] = list(starting_points)
+
+        for wave_idx in range(self._max_waves):
+            if not frontier:
+                break
+
+            # 1. Frontier truncation (diversity-aware)
+            if len(frontier) > self.MAX_FRONTIER_SIZE:
+                frontier = self._diverse_truncate(frontier, self.MAX_FRONTIER_SIZE)
+
+            # 2. Batch query
+            per_wave_limit = max(
+                limit * 3,
+                len(frontier) * self.MIN_CHILDREN_PER_DIR * 2,
+                30,
+            )
+            parent_uris = [uri for uri, _ in frontier]
+            frontier_scores = {uri: score for uri, score in frontier}
+
+            batch_filter = merge_filter(
+                {"op": "must", "field": "parent_uri", "conds": parent_uris},
+                metadata_filter,
+            )
+            results = await self.storage.search(
+                collection=collection,
+                query_vector=query_vector,
+                sparse_query_vector=sparse_query_vector,
+                filter=batch_filter,
+                limit=per_wave_limit,
+            )
+
+            # 3. Group by parent + score propagation
+            children_by_parent: Dict[str, List[Dict[str, Any]]] = {}
+            for r in results:
+                p_uri = r.get("parent_uri", "")
+                if p_uri not in children_by_parent:
+                    children_by_parent[p_uri] = []
+                children_by_parent[p_uri].append(r)
+
+            for p_uri, children in children_by_parent.items():
+                parent_score = frontier_scores.get(p_uri, 0.0)
+                for child in children:
+                    raw_score = child.get("_score", 0.0)
+                    child["_final_score"] = (
+                        alpha * raw_score + (1 - alpha) * parent_score
+                        if parent_score
+                        else raw_score
+                    )
+                    reward = child.get("reward_score", 0.0)
+                    if reward != 0 and self._rl_weight:
+                        child["_final_score"] += self._rl_weight * reward
+
+            # 4. Compensation query (starved parents)
+            starved = [
+                uri for uri in parent_uris
+                if len(children_by_parent.get(uri, [])) < self.MIN_CHILDREN_PER_DIR
+                and uri not in visited_dirs
+            ]
+            if starved:
+                comp_filter = merge_filter(
+                    {"op": "must", "field": "parent_uri", "conds": starved},
+                    metadata_filter,
+                )
+                comp_results = await self.storage.search(
+                    collection=collection,
+                    query_vector=query_vector,
+                    sparse_query_vector=sparse_query_vector,
+                    filter=comp_filter,
+                    limit=len(starved) * self.MIN_CHILDREN_PER_DIR,
+                )
+                for r in comp_results:
+                    p_uri = r.get("parent_uri", "")
+                    if p_uri not in children_by_parent:
+                        children_by_parent[p_uri] = []
+                    if not any(c.get("uri") == r.get("uri") for c in children_by_parent[p_uri]):
+                        parent_score = frontier_scores.get(p_uri, 0.0)
+                        raw_score = r.get("_score", 0.0)
+                        r["_final_score"] = (
+                            alpha * raw_score + (1 - alpha) * parent_score
+                            if parent_score else raw_score
+                        )
+                        reward = r.get("reward_score", 0.0)
+                        if reward != 0 and self._rl_weight:
+                            r["_final_score"] += self._rl_weight * reward
+                        children_by_parent[p_uri].append(r)
+
+                # Tiny queries for still-starved parents
+                still_starved = [
+                    uri for uri in starved
+                    if len(children_by_parent.get(uri, [])) < self.MIN_CHILDREN_PER_DIR
+                ]
+                for s_uri in still_starved:
+                    tiny_filter = merge_filter(
+                        {"op": "must", "field": "parent_uri", "conds": [s_uri]},
+                        metadata_filter,
+                    )
+                    tiny_results = await self.storage.search(
+                        collection=collection,
+                        query_vector=query_vector,
+                        sparse_query_vector=sparse_query_vector,
+                        filter=tiny_filter,
+                        limit=self.MIN_CHILDREN_PER_DIR,
+                    )
+                    for r in tiny_results:
+                        if not any(c.get("uri") == r.get("uri") for c in children_by_parent.get(s_uri, [])):
+                            parent_score = frontier_scores.get(s_uri, 0.0)
+                            raw_score = r.get("_score", 0.0)
+                            r["_final_score"] = (
+                                alpha * raw_score + (1 - alpha) * parent_score
+                                if parent_score else raw_score
+                            )
+                            reward = r.get("reward_score", 0.0)
+                            if reward != 0 and self._rl_weight:
+                                r["_final_score"] += self._rl_weight * reward
+                            if s_uri not in children_by_parent:
+                                children_by_parent[s_uri] = []
+                            children_by_parent[s_uri].append(r)
+
+            # 5. Fair select
+            selected = self._per_parent_fair_select(
+                children_by_parent,
+                min_quota=self.MIN_CHILDREN_PER_DIR,
+                total_budget=per_wave_limit,
+            )
+
+            # 6. Triage + cycle prevention
+            next_frontier: Dict[str, float] = {}
+            for child in selected:
+                final_score = child.get("_final_score", 0.0)
+                if not passes_threshold(final_score):
+                    continue
+                uri = child.get("uri", "")
+                if uri in collected:
+                    if final_score > collected[uri].get("_final_score", 0.0):
+                        collected[uri] = child
+                else:
+                    collected[uri] = child
+                if not child.get("is_leaf", False) and uri not in visited_dirs:
+                    old_score = next_frontier.get(uri, -1.0)
+                    if final_score > old_score:
+                        next_frontier[uri] = final_score
+
+            visited_dirs.update(uri for uri, _ in frontier)
+
+            # 7. Convergence check
+            top_k_items = heapq.nlargest(
+                limit, collected.values(),
+                key=lambda x: x.get("_final_score", 0.0),
+            )
+            current_topk_uris = {c.get("uri", "") for c in top_k_items}
+            if current_topk_uris == prev_topk_uris and len(collected) >= limit:
+                convergence_rounds += 1
+                if convergence_rounds >= self.MAX_CONVERGENCE_ROUNDS:
+                    logger.info("[FrontierSearch] Converged after %d waves", wave_idx + 1)
+                    break
+            else:
+                convergence_rounds = 0
+                prev_topk_uris = current_topk_uris
+
+            frontier = [(uri, score) for uri, score in next_frontier.items()]
+
+        # 8. Late Rerank
+        all_candidates = sorted(
+            collected.values(),
+            key=lambda x: x.get("_final_score", 0.0),
+            reverse=True,
+        )
+        rerank_count = min(self.LATE_RERANK_CAP, limit * self.LATE_RERANK_FACTOR)
+        top_m = all_candidates[:rerank_count]
+
+        if (
+            self._rerank_client
+            and mode == RetrieverMode.THINKING
+            and self._should_rerank(top_m, score_key="_final_score")
+        ):
+            docs = [c.get("abstract", "") for c in top_m]
+            rerank_scores = await self._rerank_client.rerank(query, docs)
+            beta = self._fusion_beta
+            for c, rs in zip(top_m, rerank_scores):
+                c["_final_score"] = beta * rs + (1 - beta) * c.get("_final_score", 0.0)
+            top_m.sort(key=lambda x: x.get("_final_score", 0.0), reverse=True)
+
+        return top_m[:limit]
 
     async def _convert_to_matched_contexts(
         self,

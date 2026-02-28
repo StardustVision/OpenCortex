@@ -176,5 +176,115 @@ class TestFairSelect(unittest.TestCase):
         self.assertEqual(a_uris, {"a_0"})  # gets its only child
 
 
+class FrontierSearchTestBase(unittest.TestCase):
+    """Base class with real Qdrant setup and tree-building helpers."""
+
+    COLLECTION = "context"
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.qdrant_dir = os.path.join(self.temp_dir, ".qdrant")
+        self.config = CortexConfig(
+            tenant_id="test_frontier",
+            user_id="tester",
+            data_root=self.temp_dir,
+            embedding_provider="none",
+            embedding_dimension=128,
+        )
+        init_config(self.config)
+        self.embedder = MockEmbedder()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    async def _create_storage(self) -> StorageSpy:
+        storage = StorageSpy(path=self.qdrant_dir, embedding_dim=128)
+        if not await storage.collection_exists(self.COLLECTION):
+            schema = {
+                "CollectionName": self.COLLECTION,
+                "Description": "Test collection for frontier search",
+                "Fields": [
+                    {"FieldName": "id", "FieldType": "string", "IsPrimaryKey": True},
+                    {"FieldName": "uri", "FieldType": "path"},
+                    {"FieldName": "parent_uri", "FieldType": "path"},
+                    {"FieldName": "context_type", "FieldType": "string"},
+                    {"FieldName": "category", "FieldType": "string"},
+                    {"FieldName": "abstract", "FieldType": "string"},
+                    {"FieldName": "is_leaf", "FieldType": "bool"},
+                    {"FieldName": "reward_score", "FieldType": "float"},
+                    {"FieldName": "vector", "FieldType": "vector", "Dim": 128},
+                ],
+                "ScalarIndex": [
+                    "uri", "parent_uri", "context_type", "is_leaf", "category",
+                ],
+            }
+            await storage.create_collection(self.COLLECTION, schema)
+        return storage
+
+    async def _upsert_node(self, storage, uri, parent_uri, abstract, is_leaf=True,
+                           context_type="memory", category="test"):
+        """Upsert a single node into Qdrant with real vectors."""
+        vector = self.embedder.embed(abstract).dense_vector
+        await storage.upsert(
+            collection=self.COLLECTION,
+            data={
+                "id": uri,
+                "vector": vector,
+                "uri": uri,
+                "parent_uri": parent_uri,
+                "abstract": abstract,
+                "is_leaf": is_leaf,
+                "context_type": context_type,
+                "category": category,
+                "reward_score": 0.0,
+            },
+        )
+
+    async def _build_flat_tree(self, storage, root_uri, leaf_count=5):
+        """Build a 1-level flat tree: root with N leaves."""
+        await self._upsert_node(storage, root_uri, "", f"root {root_uri}", is_leaf=False)
+        for i in range(leaf_count):
+            leaf_uri = f"{root_uri}/leaf_{i}"
+            await self._upsert_node(storage, leaf_uri, root_uri, f"leaf {i} content about topic {i}")
+
+    def _make_query(self, text, target_dirs=None):
+        return TypedQuery(
+            query=text,
+            context_type=ContextType.MEMORY,
+            intent="test query",
+            detail_level=DetailLevel.L0,
+            target_directories=target_dirs,
+        )
+
+
+class TestFrontierSingleWave(FrontierSearchTestBase):
+    """Flat tree completes in 1 wave."""
+
+    def test_frontier_single_wave(self):
+        async def _test():
+            storage = await self._create_storage()
+            root = "opencortex://test_frontier/user/tester/memories"
+            await self._build_flat_tree(storage, root, leaf_count=5)
+
+            retriever = HierarchicalRetriever(
+                storage=storage, embedder=self.embedder,
+                use_frontier_batching=True, max_waves=8,
+            )
+            storage.reset_counts()
+
+            result = await retriever.retrieve(
+                self._make_query("leaf content", target_dirs=[root]),
+                limit=5,
+            )
+            self.assertGreater(len(result.matched_contexts), 0)
+            # 1 global search + 1 wave batch + possibly compensation = <= 4
+            self.assertLessEqual(storage.call_counts["search"], 4)
+
+        self._run(_test())
+
+
 if __name__ == "__main__":
     unittest.main()
