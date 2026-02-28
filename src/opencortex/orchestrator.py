@@ -347,42 +347,13 @@ class MemoryOrchestrator:
                 )
                 return None
 
-        # No provider configured — try the ov.conf fallback
+        # No provider configured — run without embedder (filter/scroll only)
         if not provider:
-            try:
-                from pathlib import Path
-
-                conf_path = Path.home() / ".openviking" / "ov.conf"
-                if not conf_path.exists():
-                    logger.debug(
-                        "[MemoryOrchestrator] No embedding_provider configured and "
-                        "%s not found. No embedder will be auto-created.",
-                        conf_path,
-                    )
-                    return None
-
-                from opencortex.models.embedder.volcengine_embedders import (
-                    create_embedder_from_ov_conf,
-                )
-
-                embedder = create_embedder_from_ov_conf(str(conf_path))
-                logger.info(
-                    "[MemoryOrchestrator] Auto-created embedder from %s", conf_path
-                )
-                return embedder
-            except ImportError as exc:
-                logger.warning(
-                    "[MemoryOrchestrator] Cannot create embedder from ov.conf — "
-                    "volcenginesdkarkruntime not installed: %s",
-                    exc,
-                )
-                return None
-            except Exception as exc:
-                logger.warning(
-                    "[MemoryOrchestrator] Failed to create embedder from ov.conf: %s",
-                    exc,
-                )
-                return None
+            logger.info(
+                "[MemoryOrchestrator] No embedding_provider configured. "
+                "Running without embedder (filter/scroll search only)."
+            )
+            return None
 
         # Unknown / unsupported provider
         logger.warning(
