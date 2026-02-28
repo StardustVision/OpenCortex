@@ -46,6 +46,9 @@ class ACEngine:
         self._llm_fn = llm_fn
         self._reflector = Reflector(llm_fn) if llm_fn else None
         self._skill_manager = SkillManager(llm_fn) if llm_fn else None
+        # Default identity (used when no per-request identity is provided)
+        self._default_tenant_id = tenant_id
+        self._default_user_id = user_id
         # In-memory trajectory buffer
         self._trajectories: Dict[str, dict] = {}
 
@@ -67,31 +70,44 @@ class ACEngine:
         action: str,
         reward: float,
         available_actions: Optional[List[str]] = None,
+        tenant_id: str = "",
+        user_id: str = "",
     ) -> LearnResult:
         """Learn from execution feedback.
 
         With LLM: full Reflector → SkillManager → Apply pipeline.
         Without LLM: simple TAG-based learning (reward > 0 → helpful, < 0 → harmful).
         """
+        tid = tenant_id or self._default_tenant_id
+        uid = user_id or self._default_user_id
         question, reasoning, answer, feedback = self._parse_state(state, reward)
 
         if self._reflector is None or self._skill_manager is None:
-            return await self._learn_simple(question, reward)
+            return await self._learn_simple(question, reward, tenant_id=tid, user_id=uid)
 
         try:
-            return await self._learn_full(question, reasoning, answer, feedback)
+            return await self._learn_full(
+                question, reasoning, answer, feedback, tenant_id=tid, user_id=uid,
+            )
         except Exception as e:
             logger.warning(f"[ACEngine] Full learn failed, falling back to simple: {e}")
-            return await self._learn_simple(question, reward)
+            return await self._learn_simple(question, reward, tenant_id=tid, user_id=uid)
 
     async def remember(
         self,
         content: str,
         memory_type: str = "general",
+        tenant_id: str = "",
+        user_id: str = "",
     ) -> Dict[str, Any]:
         """Store content in the Skillbook as a skill."""
-        skill = await self._skillbook.add_skill(section=memory_type, content=content)
-        uri = f"{self._skillbook._prefix}/{skill.section}/{skill.id}"
+        tid = tenant_id or self._default_tenant_id
+        uid = user_id or self._default_user_id
+        skill = await self._skillbook.add_skill(
+            section=memory_type, content=content, tenant_id=tid, user_id=uid,
+        )
+        prefix = self._skillbook._resolve_prefix(tid, uid)
+        uri = f"{prefix}/{skill.section}/{skill.id}"
         return {
             "success": True,
             "uri": uri,
@@ -103,9 +119,15 @@ class ACEngine:
         self,
         query: str,
         limit: int = 5,
+        tenant_id: str = "",
+        user_id: str = "",
     ) -> List[Dict[str, Any]]:
         """Search the Skillbook for relevant skills."""
-        skills = await self._skillbook.search(query=query, limit=limit)
+        tid = tenant_id or self._default_tenant_id
+        uid = user_id or self._default_user_id
+        skills = await self._skillbook.search(
+            query=query, limit=limit, tenant_id=tid, user_id=uid,
+        )
         return [
             {
                 "content": s.content,
@@ -113,7 +135,7 @@ class ACEngine:
                 "section": s.section,
                 "helpful": s.helpful,
                 "harmful": s.harmful,
-                "uri": f"{self._skillbook._prefix}/{s.section}/{s.id}",
+                "uri": f"{self._skillbook._resolve_prefix(tid, uid)}/{s.section}/{s.id}",
                 "score": getattr(s, "_score", 0.0),
             }
             for s in skills
@@ -155,6 +177,8 @@ class ACEngine:
         self,
         trajectory_id: str,
         quality_score: float,
+        tenant_id: str = "",
+        user_id: str = "",
     ) -> Dict[str, Any]:
         """End a trajectory with quality score. Triggers learn if steps exist."""
         traj = self._trajectories.get(trajectory_id)
@@ -175,7 +199,10 @@ class ACEngine:
             state = self._trajectory_to_state(traj)
             actions = ", ".join(s["action"] for s in traj["steps"])
             reward = (quality_score * 2) - 1  # Map [0,1] → [-1,1]
-            learn_result = await self.learn(state=state, action=actions, reward=reward)
+            learn_result = await self.learn(
+                state=state, action=actions, reward=reward,
+                tenant_id=tenant_id, user_id=user_id,
+            )
             result["learn_result"] = {
                 "success": learn_result.success,
                 "operations_applied": learn_result.operations_applied,
@@ -189,13 +216,19 @@ class ACEngine:
         error: str,
         fix: str,
         context: Optional[str] = None,
+        tenant_id: str = "",
+        user_id: str = "",
     ) -> Dict[str, Any]:
         """Record an error pattern and its fix as a skill."""
+        tid = tenant_id or self._default_tenant_id
+        uid = user_id or self._default_user_id
         skill = await self._skillbook.add_skill(
             section="error_fixes",
             content=fix,
             evidence=error,
             justification=context,
+            tenant_id=tid,
+            user_id=uid,
         )
         return {
             "success": True,
@@ -206,10 +239,15 @@ class ACEngine:
     async def error_suggest(
         self,
         error: str,
+        tenant_id: str = "",
+        user_id: str = "",
     ) -> List[Dict[str, Any]]:
         """Get suggested fixes for an error from learned patterns."""
+        tid = tenant_id or self._default_tenant_id
+        uid = user_id or self._default_user_id
         skills = await self._skillbook.search(
-            query=error, limit=5, section="error_fixes"
+            query=error, limit=5, section="error_fixes",
+            tenant_id=tid, user_id=uid,
         )
         return [
             {
@@ -222,9 +260,92 @@ class ACEngine:
             for s in skills
         ]
 
-    async def stats(self) -> HooksStats:
+    async def list_candidates(
+        self,
+        tenant_id: str = "",
+    ) -> List[Dict[str, Any]]:
+        """List candidate skills awaiting review."""
+        tid = tenant_id or self._default_tenant_id
+        skills = await self._skillbook.list_candidates(tenant_id=tid)
+        return [
+            {
+                "skill_id": s.id,
+                "content": s.content,
+                "section": s.section,
+                "owner_user_id": s.owner_user_id,
+                "share_score": s.share_score,
+                "share_reason": s.share_reason,
+            }
+            for s in skills
+        ]
+
+    async def review_skill(
+        self,
+        skill_id: str,
+        decision: str,
+        tenant_id: str = "",
+        user_id: str = "",
+    ) -> Dict[str, Any]:
+        """Approve or reject a candidate skill."""
+        skill = await self._skillbook.review_skill(
+            skill_id=skill_id,
+            decision=decision,
+            reviewer_user_id=user_id,
+            tenant_id=tenant_id,
+        )
+        return {
+            "success": True,
+            "skill_id": skill.id,
+            "scope": skill.scope,
+            "share_status": skill.share_status,
+            "share_reason": skill.share_reason,
+        }
+
+    async def demote_skill(
+        self,
+        skill_id: str,
+        reason: str = "",
+        tenant_id: str = "",
+        user_id: str = "",
+    ) -> Dict[str, Any]:
+        """Demote a shared skill back to private."""
+        tid = tenant_id or self._default_tenant_id
+        uid = user_id or self._default_user_id
+        skill = await self._skillbook.demote_skill(
+            skill_id=skill_id,
+            reason=reason,
+            tenant_id=tid,
+            user_id=uid,
+        )
+        return {
+            "success": True,
+            "skill_id": skill.id,
+            "scope": skill.scope,
+            "share_status": skill.share_status,
+            "share_reason": skill.share_reason,
+        }
+
+    async def migrate_legacy_skills(
+        self,
+        tenant_id: str = "",
+        user_id: str = "",
+    ) -> Dict[str, Any]:
+        """Migrate legacy skills that lack scope fields."""
+        tid = tenant_id or self._default_tenant_id
+        uid = user_id or self._default_user_id
+        return await self._skillbook.migrate_legacy_skills(
+            tenant_id=tid, owner_user_id=uid,
+        )
+
+    async def stats(
+        self,
+        tenant_id: str = "",
+        user_id: str = "",
+    ) -> HooksStats:
         """Return HooksStats based on Skillbook statistics."""
-        sb_stats = await self._skillbook.stats()
+        tid = tenant_id or self._default_tenant_id
+        uid = user_id or self._default_user_id
+        sb_stats = await self._skillbook.stats(tenant_id=tid, user_id=uid)
         by_section = sb_stats.get("by_section", {})
         return HooksStats(
             q_learning_patterns=by_section.get("strategies", 0) + by_section.get("patterns", 0),
@@ -256,7 +377,13 @@ class ACEngine:
         feedback = "positive" if reward > 0 else ("negative" if reward < 0 else "neutral")
         return state, "", "", feedback
 
-    async def _learn_simple(self, question: str, reward: float) -> LearnResult:
+    async def _learn_simple(
+        self,
+        question: str,
+        reward: float,
+        tenant_id: str = "",
+        user_id: str = "",
+    ) -> LearnResult:
         """Simple TAG-based learning without LLM.
 
         Tags existing relevant skills based on reward sign.
@@ -265,7 +392,9 @@ class ACEngine:
         ops_applied = 0
 
         try:
-            skills = await self._skillbook.search(query=question, limit=5)
+            skills = await self._skillbook.search(
+                query=question, limit=5, tenant_id=tenant_id, user_id=user_id,
+            )
             for skill in skills:
                 op = UpdateOperation(
                     type="TAG",
@@ -273,7 +402,7 @@ class ACEngine:
                     skill_id=skill.id,
                     metadata={tag: 1},
                 )
-                await self._skillbook.apply(op)
+                await self._skillbook.apply(op, tenant_id=tenant_id, user_id=user_id)
                 ops_applied += 1
         except Exception as e:
             logger.debug(f"[ACEngine] Simple learn tagging failed: {e}")
@@ -291,10 +420,14 @@ class ACEngine:
         reasoning: str,
         answer: str,
         feedback: str,
+        tenant_id: str = "",
+        user_id: str = "",
     ) -> LearnResult:
         """Full LLM-driven learn pipeline: Reflector → SkillManager → Apply."""
         # 1. Search for relevant skills
-        skills = await self._skillbook.search(query=question, limit=10)
+        skills = await self._skillbook.search(
+            query=question, limit=10, tenant_id=tenant_id, user_id=user_id,
+        )
 
         # 2. Reflect
         reflection = await self._reflector.reflect(
@@ -306,7 +439,9 @@ class ACEngine:
         )
 
         # 3. Get skillbook state for SkillManager
-        skillbook_state = await self._skillbook.as_prompt()
+        skillbook_state = await self._skillbook.as_prompt(
+            tenant_id=tenant_id, user_id=user_id,
+        )
 
         # 4. Decide operations
         context = f"Question: {question}\nFeedback: {feedback}"
@@ -323,7 +458,9 @@ class ACEngine:
 
         for op in operations:
             try:
-                result = await self._skillbook.apply(op, trace=trace)
+                result = await self._skillbook.apply(
+                    op, trace=trace, tenant_id=tenant_id, user_id=user_id,
+                )
                 ops_applied += 1
                 # Track sections for summary update
                 if op.section:
@@ -336,7 +473,9 @@ class ACEngine:
         # 6. Update affected section summaries
         for section in affected_sections:
             try:
-                await self._skillbook.update_section_summary(section)
+                await self._skillbook.update_section_summary(
+                    section, tenant_id=tenant_id, user_id=user_id,
+                )
             except Exception as e:
                 logger.debug(f"[ACEngine] Failed to update section summary for {section}: {e}")
 

@@ -108,6 +108,13 @@ class CollectionSchemas:
                 {"FieldName": "harmful", "FieldType": "int64"},
                 {"FieldName": "neutral", "FieldType": "int64"},
                 {"FieldName": "status", "FieldType": "string"},
+                # Multi-tenant scope fields
+                {"FieldName": "tenant_id", "FieldType": "string"},
+                {"FieldName": "owner_user_id", "FieldType": "string"},
+                {"FieldName": "scope", "FieldType": "string"},
+                {"FieldName": "share_status", "FieldType": "string"},
+                {"FieldName": "share_score", "FieldType": "float"},
+                {"FieldName": "share_reason", "FieldType": "string"},
             ],
             "ScalarIndex": [
                 "uri",
@@ -121,6 +128,11 @@ class CollectionSchemas:
                 "harmful",
                 "neutral",
                 "status",
+                # Multi-tenant scope indexes
+                "tenant_id",
+                "owner_user_id",
+                "scope",
+                "share_status",
             ],
         }
 
