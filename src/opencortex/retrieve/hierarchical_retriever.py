@@ -272,16 +272,20 @@ class HierarchicalRetriever:
         )
         return results
 
-    def _should_rerank(self, results: List[Dict[str, Any]]) -> bool:
+    def _should_rerank(self, results: List[Dict[str, Any]], score_key: str = "_score") -> bool:
         """Decide whether rerank is worth the cost.
 
         Skip rerank when the top result has a clear score lead over the
         second result — reranking is unlikely to change the ordering.
+
+        Args:
+            results: List of result dicts.
+            score_key: Which score field to use ('_score' or '_final_score').
         """
         if len(results) < 2:
             return False
         scores = sorted(
-            [r.get("_score", 0.0) for r in results], reverse=True
+            [r.get(score_key, 0.0) for r in results], reverse=True
         )
         gap = scores[0] - scores[1]
         if gap > self._score_gap_threshold:
