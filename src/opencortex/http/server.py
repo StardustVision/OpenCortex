@@ -15,9 +15,11 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from opencortex.config import get_config
+from opencortex.http.request_context import reset_request_identity, set_request_identity
 from opencortex.http.models import (
     ErrorRecordRequest,
     ErrorSuggestRequest,
@@ -45,6 +47,31 @@ logger = logging.getLogger(__name__)
 
 # Module-level orchestrator, initialized in lifespan
 _orchestrator: Optional[MemoryOrchestrator] = None
+
+
+# ---------------------------------------------------------------------------
+# Tenant Identity Middleware
+# ---------------------------------------------------------------------------
+
+class TenantIdentityMiddleware(BaseHTTPMiddleware):
+    """Extract per-request tenant/user identity from HTTP headers.
+
+    Headers:
+        X-Tenant-ID — overrides config tenant_id for this request
+        X-User-ID   — overrides config user_id for this request
+
+    Falls back to CortexConfig defaults when headers are absent.
+    """
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        config = get_config()
+        tenant_id = request.headers.get("x-tenant-id", config.tenant_id)
+        user_id = request.headers.get("x-user-id", config.user_id)
+        tokens = set_request_identity(tenant_id, user_id)
+        try:
+            return await call_next(request)
+        finally:
+            reset_request_identity(tokens)
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +106,7 @@ def create_app() -> FastAPI:
         version="0.2.0",
         lifespan=_lifespan,
     )
+    app.add_middleware(TenantIdentityMiddleware)
     _register_routes(app)
     return app
 

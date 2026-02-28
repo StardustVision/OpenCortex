@@ -4,7 +4,7 @@
  * Thin proxy: MCP JSON-RPC ↔ HTTP REST API.
  * Zero external dependencies.
  */
-import { getHttpUrl } from './common.mjs';
+import { getHttpUrl, getProjectConfig } from './common.mjs';
 
 // ── Tool definitions ───────────────────────────────────────────────────
 // Each entry: [httpMethod, httpPath, description, parameters]
@@ -170,11 +170,18 @@ async function callTool(name, args) {
     }
   }
 
+  // Build headers with optional tenant/user identity from project config
+  const hdrs = {};
+  const projCfg = getProjectConfig();
+  if (projCfg?.tenant_id) hdrs['X-Tenant-ID'] = projCfg.tenant_id;
+  if (projCfg?.user_id)   hdrs['X-User-ID']   = projCfg.user_id;
+
   const opts = { method, signal: AbortSignal.timeout(30000) };
   if (method === 'POST') {
-    opts.headers = { 'Content-Type': 'application/json' };
+    hdrs['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
   }
+  opts.headers = hdrs;
 
   const res = await fetch(url, opts);
   const text = await res.text();

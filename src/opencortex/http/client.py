@@ -35,9 +35,13 @@ class OpenCortexClient:
         self,
         base_url: str = "http://127.0.0.1:8921",
         timeout: float = _DEFAULT_TIMEOUT,
+        tenant_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
+        self._tenant_id = tenant_id
+        self._user_id = user_id
         self._client: Optional[httpx.AsyncClient] = None
 
     async def connect(self) -> None:
@@ -67,16 +71,26 @@ class OpenCortexClient:
         """GET with retry logic."""
         return await self._request("GET", path)
 
+    def _identity_headers(self) -> Dict[str, str]:
+        """Build X-Tenant-ID / X-User-ID headers if configured."""
+        hdrs: Dict[str, str] = {}
+        if self._tenant_id:
+            hdrs["X-Tenant-ID"] = self._tenant_id
+        if self._user_id:
+            hdrs["X-User-ID"] = self._user_id
+        return hdrs
+
     async def _request(
         self, method: str, path: str, json: Optional[Dict[str, Any]] = None
     ) -> Any:
         if not self._client:
             raise OpenCortexClientError("Client not connected — call connect() first")
 
+        headers = self._identity_headers()
         last_exc: Optional[Exception] = None
         for attempt in range(_MAX_RETRIES + 1):
             try:
-                resp = await self._client.request(method, path, json=json)
+                resp = await self._client.request(method, path, json=json, headers=headers)
                 resp.raise_for_status()
                 return resp.json()
             except httpx.HTTPStatusError as exc:

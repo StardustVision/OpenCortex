@@ -40,6 +40,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 from uuid import uuid4
 
 from opencortex.config import CortexConfig, get_config
+from opencortex.http.request_context import get_effective_identity
 from opencortex.core.context import Context, ContextType as CoreContextType
 from opencortex.core.message import Message
 from opencortex.core.user_id import UserIdentifier
@@ -524,6 +525,10 @@ class MemoryOrchestrator:
         if not overview and content and is_leaf:
             overview = await self._generate_overview(abstract, content)
 
+        # Build effective user identity (per-request or config default)
+        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
+        effective_user = UserIdentifier(tid, uid)
+
         # Create context object
         ctx = Context(
             uri=uri,
@@ -536,7 +541,7 @@ class MemoryOrchestrator:
             related_uri=related_uri or [],
             meta=meta or {},
             session_id=session_id,
-            user=self._user,
+            user=effective_user,
         )
 
         # Embed (offload sync embedder to thread so we don't block the loop)
@@ -1272,11 +1277,12 @@ class MemoryOrchestrator:
     async def hooks_init(self, project_path: str = ".") -> Dict[str, Any]:
         """Initialize hooks configuration for a project."""
         self._ensure_init()
+        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
         return {
             "status": "ok",
             "project_path": project_path,
-            "tenant_id": self._config.tenant_id,
-            "user_id": self._config.user_id,
+            "tenant_id": tid,
+            "user_id": uid,
             "mcp_transport": self._config.mcp_transport,
             "mcp_port": self._config.mcp_port,
         }
@@ -1424,10 +1430,11 @@ class MemoryOrchestrator:
             Dict with session info.
         """
         self._ensure_init()
+        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
         ctx = await self._session_manager.begin(
             session_id=session_id,
-            tenant_id=self._config.tenant_id,
-            user_id=self._config.user_id,
+            tenant_id=tid,
+            user_id=uid,
             meta=meta,
         )
         return {
@@ -1536,9 +1543,10 @@ class MemoryOrchestrator:
                 "model": self._config.rerank_model or None,
                 "fusion_beta": rc.fusion_beta,
             }
+        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
         return {
-            "tenant_id": self._config.tenant_id,
-            "user_id": self._config.user_id,
+            "tenant_id": tid,
+            "user_id": uid,
             "storage": storage_stats,
             "embedder": self._embedder.model_name if self._embedder else None,
             "has_llm": self._llm_completion is not None,
@@ -1551,8 +1559,7 @@ class MemoryOrchestrator:
 
     def _auto_uri(self, context_type: str, category: str) -> str:
         """Generate a URI based on context type and category."""
-        tid = self._config.tenant_id
-        uid = self._config.user_id
+        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
         node_id = uuid4().hex[:12]
 
         if context_type == "memory":
@@ -1627,6 +1634,10 @@ class MemoryOrchestrator:
                 break
             uri = str(parent)
 
+        # Build effective user identity (per-request or config default)
+        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
+        effective_user = UserIdentifier(tid, uid)
+
         # Create directory records from top down (so parent_uri links are valid)
         for dir_uri in reversed(to_create):
             dir_parent = self._derive_parent_uri(dir_uri)
@@ -1635,7 +1646,7 @@ class MemoryOrchestrator:
                 parent_uri=dir_parent,
                 is_leaf=False,
                 abstract="",
-                user=self._user,
+                user=effective_user,
             )
 
             # Embed the directory name as a minimal vector

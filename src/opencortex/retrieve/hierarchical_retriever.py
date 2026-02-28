@@ -891,15 +891,13 @@ class HierarchicalRetriever:
     def _get_root_uris_for_type(self, context_type: ContextType) -> List[str]:
         """Return starting directory URI list based on context_type.
 
-        Uses global config for tenant_id and user_id to construct correct
-        tenant-based URIs with user isolation.
+        Uses per-request identity (contextvar) when available, falling back
+        to global config for tenant_id and user_id.
         """
-        from opencortex.config import get_config
+        from opencortex.http.request_context import get_effective_identity
         from opencortex.utils.uri import CortexURI
 
-        cfg = get_config()
-        tid = cfg.tenant_id
-        uid = cfg.user_id
+        tid, uid = get_effective_identity()
 
         if context_type == ContextType.MEMORY:
             return [
