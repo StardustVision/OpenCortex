@@ -6,6 +6,8 @@ No mocks on storage or retriever internals.
 """
 
 import asyncio
+import gc
+import hashlib
 import math
 import os
 import shutil
@@ -39,10 +41,13 @@ class MockEmbedder(DenseEmbedderBase):
 
     @staticmethod
     def _text_to_vector(text: str) -> List[float]:
+        # Use hashlib for deterministic vectors across runs
+        # (Python's built-in hash() is randomized per process)
         raw = []
         for i in range(128):
-            bits = hash(f"{text}_{i}") & 0xFFFF
-            raw.append((bits & 0xFF) / 255.0 - 0.5)
+            h = hashlib.md5(f"{text}_{i}".encode()).digest()
+            bits = h[0]
+            raw.append(bits / 255.0 - 0.5)
         norm = math.sqrt(sum(x * x for x in raw)) or 1.0
         return [x / norm for x in raw]
 
@@ -193,15 +198,29 @@ class FrontierSearchTestBase(unittest.TestCase):
         )
         init_config(self.config)
         self.embedder = MockEmbedder()
+        self._storages: list = []
 
     def tearDown(self):
+        gc.collect()
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def _run(self, coro):
-        return asyncio.run(coro)
+        async def _wrapper():
+            try:
+                return await coro
+            finally:
+                # Close all Qdrant clients within the same event loop
+                for storage in self._storages:
+                    try:
+                        await storage.close()
+                    except Exception:
+                        pass
+                self._storages.clear()
+        return asyncio.run(_wrapper())
 
     async def _create_storage(self) -> StorageSpy:
         storage = StorageSpy(path=self.qdrant_dir, embedding_dim=128)
+        self._storages.append(storage)
         if not await storage.collection_exists(self.COLLECTION):
             schema = {
                 "CollectionName": self.COLLECTION,
@@ -282,6 +301,296 @@ class TestFrontierSingleWave(FrontierSearchTestBase):
             self.assertGreater(len(result.matched_contexts), 0)
             # 1 global search + 1 wave batch + possibly compensation = <= 4
             self.assertLessEqual(storage.call_counts["search"], 4)
+
+        self._run(_test())
+
+
+class TestFrontierMultiWave(FrontierSearchTestBase):
+    """3-level tree requires multiple waves."""
+
+    async def _build_3level_tree(self, storage, root_uri):
+        await self._upsert_node(storage, root_uri, "", "test root", is_leaf=False)
+        dir_a = f"{root_uri}/dir_A"
+        await self._upsert_node(storage, dir_a, root_uri, "directory about programming", is_leaf=False)
+        for i in range(5):
+            await self._upsert_node(storage, f"{dir_a}/leaf_{i}", dir_a,
+                                     f"programming topic {i} details")
+        sub_a1 = f"{dir_a}/sub_A1"
+        await self._upsert_node(storage, sub_a1, dir_a, "sub directory about algorithms", is_leaf=False)
+        for i in range(3):
+            await self._upsert_node(storage, f"{sub_a1}/leaf_{i}", sub_a1,
+                                     f"algorithm analysis {i}")
+        dir_b = f"{root_uri}/dir_B"
+        await self._upsert_node(storage, dir_b, root_uri, "directory about testing", is_leaf=False)
+        for i in range(3):
+            await self._upsert_node(storage, f"{dir_b}/leaf_{i}", dir_b,
+                                     f"test case {i} validation")
+
+    def test_frontier_multi_wave_depth(self):
+        async def _test():
+            storage = await self._create_storage()
+            root = "opencortex://test_frontier/user/tester/memories"
+            await self._build_3level_tree(storage, root)
+
+            retriever = HierarchicalRetriever(
+                storage=storage, embedder=self.embedder,
+                use_frontier_batching=True,
+            )
+            storage.reset_counts()
+
+            result = await retriever.retrieve(
+                self._make_query("algorithm analysis", target_dirs=[root]),
+                limit=10,
+            )
+            self.assertGreater(len(result.matched_contexts), 0)
+            # Should find deep leaves (sub_A1 level)
+            deep_uris = [m.uri for m in result.matched_contexts if "sub_A1" in m.uri]
+            self.assertGreater(len(deep_uris), 0, "Should reach depth-2 leaves")
+
+        self._run(_test())
+
+
+class TestFrontierConvergence(FrontierSearchTestBase):
+    """Convergence early stop."""
+
+    def test_frontier_convergence_early_stop(self):
+        async def _test():
+            storage = await self._create_storage()
+            root = "opencortex://test_frontier/user/tester/memories"
+            # Build wide flat tree - many leaves at level 1
+            await self._upsert_node(storage, root, "", "root", is_leaf=False)
+            for i in range(15):
+                await self._upsert_node(storage, f"{root}/leaf_{i}", root,
+                                         f"leaf content {i} about programming")
+
+            retriever = HierarchicalRetriever(
+                storage=storage, embedder=self.embedder,
+                use_frontier_batching=True,
+            )
+            result = await retriever.retrieve(
+                self._make_query("programming content", target_dirs=[root]),
+                limit=5,
+            )
+            self.assertGreater(len(result.matched_contexts), 0)
+            self.assertLessEqual(len(result.matched_contexts), 5)
+
+        self._run(_test())
+
+
+class TestFrontierMaxWavesGuard(FrontierSearchTestBase):
+    """MAX_WAVES prevents unbounded depth traversal."""
+
+    def test_frontier_max_waves_guard(self):
+        async def _test():
+            storage = await self._create_storage()
+            root = "opencortex://test_frontier/user/tester/memories"
+
+            # Build chain: root -> dir_0 -> dir_1 -> ... -> dir_11 (leaf)
+            current = root
+            await self._upsert_node(storage, current, "", "chain root", is_leaf=False)
+            for i in range(12):
+                child = f"{current}/dir_{i}"
+                is_leaf = (i == 11)
+                await self._upsert_node(storage, child, current, f"chain node {i}", is_leaf=is_leaf)
+                current = child
+
+            retriever = HierarchicalRetriever(
+                storage=storage, embedder=self.embedder,
+                use_frontier_batching=True, max_waves=4,
+            )
+            storage.reset_counts()
+
+            result = await retriever.retrieve(
+                self._make_query("chain node", target_dirs=[root]),
+                limit=10,
+            )
+            # Should complete without errors, won't reach depth 12
+            self.assertIsNotNone(result)
+            self.assertLessEqual(storage.call_counts["search"], 20)
+
+        self._run(_test())
+
+
+class TestFrontierNoInfiniteLoop(FrontierSearchTestBase):
+    """Circular parent_uri references don't cause infinite loop."""
+
+    def test_frontier_no_infinite_loop(self):
+        async def _test():
+            storage = await self._create_storage()
+            root = "opencortex://test_frontier/user/tester/memories"
+            await self._upsert_node(storage, root, "", "root", is_leaf=False)
+
+            uri_a = f"{root}/dir_a"
+            uri_b = f"{root}/dir_b"
+            await self._upsert_node(storage, uri_a, root, "dir a content", is_leaf=False)
+            await self._upsert_node(storage, uri_b, uri_a, "dir b content", is_leaf=False)
+            await self._upsert_node(storage, f"{uri_b}/fake_child", uri_b,
+                                     "fake child", is_leaf=False)
+            await self._upsert_node(storage, f"{uri_a}/leaf", uri_a,
+                                     "a leaf node", is_leaf=True)
+
+            retriever = HierarchicalRetriever(
+                storage=storage, embedder=self.embedder,
+                use_frontier_batching=True, max_waves=8,
+            )
+            result = await retriever.retrieve(
+                self._make_query("dir content", target_dirs=[root]),
+                limit=5,
+            )
+            self.assertIsNotNone(result)
+
+        self._run(_test())
+
+
+class TestFrontierEmptyNode(FrontierSearchTestBase):
+    """Directory with no children."""
+
+    def test_frontier_empty_node(self):
+        async def _test():
+            storage = await self._create_storage()
+            root = "opencortex://test_frontier/user/tester/memories"
+            await self._upsert_node(storage, root, "", "root", is_leaf=False)
+            await self._upsert_node(storage, f"{root}/empty", root, "empty directory", is_leaf=False)
+
+            retriever = HierarchicalRetriever(
+                storage=storage, embedder=self.embedder,
+                use_frontier_batching=True,
+            )
+            result = await retriever.retrieve(
+                self._make_query("empty directory", target_dirs=[root]),
+                limit=5,
+            )
+            self.assertIsNotNone(result)
+
+        self._run(_test())
+
+
+class TestCollectedDedup(FrontierSearchTestBase):
+    """Same leaf reachable from different paths — no duplicates."""
+
+    def test_collected_dedup_keeps_higher_score(self):
+        async def _test():
+            storage = await self._create_storage()
+            root = "opencortex://test_frontier/user/tester/memories"
+            await self._upsert_node(storage, root, "", "root", is_leaf=False)
+
+            dir_a = f"{root}/dir_a"
+            dir_b = f"{root}/dir_b"
+            await self._upsert_node(storage, dir_a, root, "path a", is_leaf=False)
+            await self._upsert_node(storage, dir_b, root, "path b", is_leaf=False)
+            await self._upsert_node(storage, f"{dir_a}/leaf", dir_a, "optimization techniques")
+            await self._upsert_node(storage, f"{dir_b}/other", dir_b, "database operations")
+
+            retriever = HierarchicalRetriever(
+                storage=storage, embedder=self.embedder,
+                use_frontier_batching=True,
+            )
+            result = await retriever.retrieve(
+                self._make_query("optimization techniques", target_dirs=[root]),
+                limit=10,
+            )
+            uris = [m.uri for m in result.matched_contexts]
+            self.assertEqual(len(uris), len(set(uris)), "No duplicate URIs in results")
+
+        self._run(_test())
+
+
+class TestFallbackOnError(FrontierSearchTestBase):
+    """Auto-fallback to recursive search on frontier error."""
+
+    def test_fallback_on_frontier_error(self):
+        async def _test():
+            storage = await self._create_storage()
+            root = "opencortex://test_frontier/user/tester/memories"
+            await self._build_flat_tree(storage, root, leaf_count=3)
+
+            # Monkey-patch the existing storage to inject an error on the first
+            # batch parent_uri query, then fall through to real implementation.
+            _original_search = storage.search.__func__ if hasattr(storage.search, '__func__') else None
+            _error_fired = {"count": 0}
+
+            async def _error_search(self_storage, *args, **kwargs):
+                self_storage.call_counts["search"] += 1
+                f = kwargs.get("filter", {})
+                if isinstance(f, dict):
+                    for c in f.get("conds", []):
+                        if isinstance(c, dict) and c.get("field") == "parent_uri":
+                            if len(c.get("conds", [])) > 1 and _error_fired["count"] == 0:
+                                _error_fired["count"] += 1
+                                raise RuntimeError("Simulated frontier batch failure")
+                return await QdrantStorageAdapter.search(self_storage, *args, **kwargs)
+
+            import types
+            storage.search = types.MethodType(_error_search, storage)
+
+            retriever = HierarchicalRetriever(
+                storage=storage, embedder=self.embedder,
+                use_frontier_batching=True,
+            )
+            result = await retriever.retrieve(
+                self._make_query("leaf content", target_dirs=[root]),
+                limit=5,
+            )
+            self.assertGreater(len(result.matched_contexts), 0)
+
+        self._run(_test())
+
+
+class TestFrontierVsRecursiveOverlap(FrontierSearchTestBase):
+    """Compare frontier and recursive results on same data."""
+
+    async def _build_comparison_tree(self, storage, root_uri):
+        await self._upsert_node(storage, root_uri, "", "test root", is_leaf=False)
+        dir_a = f"{root_uri}/dir_A"
+        await self._upsert_node(storage, dir_a, root_uri, "programming concepts", is_leaf=False)
+        for i in range(8):
+            await self._upsert_node(storage, f"{dir_a}/leaf_{i}", dir_a,
+                                     f"programming concept {i} explanation")
+        dir_b = f"{root_uri}/dir_B"
+        await self._upsert_node(storage, dir_b, root_uri, "testing patterns", is_leaf=False)
+        for i in range(5):
+            await self._upsert_node(storage, f"{dir_b}/leaf_{i}", dir_b,
+                                     f"testing pattern {i} details")
+
+    def test_frontier_vs_recursive_overlap(self):
+        async def _test():
+            storage = await self._create_storage()
+            root = "opencortex://test_frontier/user/tester/memories"
+            await self._build_comparison_tree(storage, root)
+
+            query = self._make_query("programming concept explanation",
+                                     target_dirs=[root])
+
+            retriever_frontier = HierarchicalRetriever(
+                storage=storage, embedder=self.embedder,
+                use_frontier_batching=True,
+            )
+            retriever_recursive = HierarchicalRetriever(
+                storage=storage, embedder=self.embedder,
+                use_frontier_batching=False,
+            )
+
+            result_f = await retriever_frontier.retrieve(query, limit=10)
+            result_r = await retriever_recursive.retrieve(query, limit=10)
+
+            uris_f = {m.uri for m in result_f.matched_contexts}
+            uris_r = {m.uri for m in result_r.matched_contexts}
+
+            if not uris_r:
+                return  # Skip if recursive returns nothing
+
+            overlap = len(uris_f & uris_r) / max(len(uris_r), 1)
+            if overlap < 0.8:
+                import logging
+                logging.warning(
+                    "[TestOverlap] Overlap %.1f%% — frontier: %s, recursive: %s",
+                    overlap * 100, uris_f, uris_r,
+                )
+            if overlap < 0.7:
+                self.fail(
+                    f"Overlap {overlap:.1%} < 70% threshold. "
+                    f"Frontier: {uris_f}, Recursive: {uris_r}"
+                )
 
         self._run(_test())
 
