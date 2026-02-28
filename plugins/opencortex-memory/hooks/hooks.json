@@ -1,14 +1,13 @@
 {
   "description": "OpenCortex memory hooks for Claude Code (cross-platform)",
-  "note": "Bash (.sh) hooks are used on macOS/Linux; PowerShell (.ps1) hooks on Windows. The install.py installer auto-detects and registers the correct variant.",
+  "note": "Default commands use bash. On Windows without bash, run 'python install.py' to register PowerShell (.ps1) hooks into .claude/settings.json.",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command_bash": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh",
-            "command_powershell": "powershell -NoProfile -ExecutionPolicy Bypass -File ${CLAUDE_PLUGIN_ROOT}/hooks/session-start.ps1",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh",
             "timeout": 12
           }
         ]
@@ -19,8 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command_bash": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/user-prompt-submit.sh",
-            "command_powershell": "powershell -NoProfile -ExecutionPolicy Bypass -File ${CLAUDE_PLUGIN_ROOT}/hooks/user-prompt-submit.ps1",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/user-prompt-submit.sh",
             "timeout": 15
           }
         ]
@@ -31,8 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command_bash": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/stop.sh",
-            "command_powershell": "powershell -NoProfile -ExecutionPolicy Bypass -File ${CLAUDE_PLUGIN_ROOT}/hooks/stop.ps1",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/stop.sh",
             "async": true,
             "timeout": 120
           }
@@ -44,8 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command_bash": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/session-end.sh",
-            "command_powershell": "powershell -NoProfile -ExecutionPolicy Bypass -File ${CLAUDE_PLUGIN_ROOT}/hooks/session-end.ps1",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/session-end.sh",
             "timeout": 20
           }
         ]
