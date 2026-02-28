@@ -53,6 +53,13 @@ class HierarchicalRetriever:
     DIRECTORY_DOMINANCE_RATIO = 1.2  # Directory score must exceed max child score
     GLOBAL_SEARCH_TOPK = 3  # Global retrieval count
 
+    # Frontier batching constants
+    MAX_FRONTIER_SIZE = 64          # Max directories per wave (prevents oversized IN)
+    MIN_CHILDREN_PER_DIR = 2        # Min guaranteed children per parent directory
+    LATE_RERANK_FACTOR = 5          # Late rerank candidate multiplier
+    LATE_RERANK_CAP = 50            # Late rerank candidate cap
+    DEFAULT_MAX_WAVES = 8           # Default max wave iterations
+
     def __init__(
         self,
         storage: VikingDBInterface,
@@ -60,6 +67,8 @@ class HierarchicalRetriever:
         rerank_config: Optional[RerankConfig] = None,
         llm_completion: Optional[Any] = None,
         rl_weight: float = 0.05,
+        use_frontier_batching: bool = True,
+        max_waves: int = 8,
     ):
         """Initialize hierarchical retriever with rerank_config.
 
@@ -77,6 +86,8 @@ class HierarchicalRetriever:
         self.threshold = rerank_config.threshold if rerank_config else 0
 
         self._rl_weight = rl_weight
+        self._use_frontier_batching = use_frontier_batching
+        self._max_waves = max_waves
 
         # Initialize rerank client only if config is available
         if rerank_config and rerank_config.is_available():
