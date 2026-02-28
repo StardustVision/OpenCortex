@@ -37,6 +37,8 @@ class RerankClient:
         self._config = config
         self._llm_completion = llm_completion
         self._mode = self._detect_mode()
+        # Reusable HTTP client for connection pooling (lazy-created on first API call)
+        self._http_client: Optional[Any] = None
         logger.info("[RerankClient] Initialized in '%s' mode", self._mode)
 
     @property
@@ -85,6 +87,13 @@ class RerankClient:
 
         return scores
 
+    def _get_http_client(self):
+        """Return a reusable httpx.AsyncClient (lazy-created)."""
+        if self._http_client is None:
+            import httpx
+            self._http_client = httpx.AsyncClient(timeout=30.0)
+        return self._http_client
+
     async def _rerank_via_api(self, query: str, documents: List[str]) -> List[float]:
         """Call Rerank API (Volcengine/Jina/Cohere compatible).
 
@@ -94,8 +103,6 @@ class RerankClient:
             response: {"results": [{"index": 0, "relevance_score": 0.95}, ...]}
         """
         try:
-            import httpx
-
             api_base = self._config.api_base.rstrip("/")
             url = f"{api_base}/rerank"
             headers = {
@@ -108,10 +115,10 @@ class RerankClient:
                 "model": self._config.model,
             }
 
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(url, headers=headers, json=payload)
-                resp.raise_for_status()
-                data = resp.json()
+            client = self._get_http_client()
+            resp = await client.post(url, headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
 
             # Parse results — API returns [{index, relevance_score}]
             results = data.get("results", [])

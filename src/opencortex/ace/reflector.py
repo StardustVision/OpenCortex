@@ -1,49 +1,18 @@
 # SPDX-License-Identifier: Apache-2.0
 """Reflector — LLM-driven execution analysis and learning extraction."""
 
-import json
 import logging
-import re
 from typing import Awaitable, Callable, List, Optional
 
 from opencortex.ace.prompts import build_reflector_prompt, format_skills_excerpt
 from opencortex.ace.types import Learning, ReflectorOutput, Skill, SkillTag
+from opencortex.utils.json_parse import parse_json_from_response as _parse_json_from_response
 
 logger = logging.getLogger(__name__)
 
 LLMCompletionCallable = Callable[[str], Awaitable[str]]
 
 _VALID_TAGS = {"helpful", "harmful", "neutral"}
-
-
-def _parse_json_from_response(response: str) -> Optional[dict]:
-    """Parse JSON from an LLM response string.
-
-    Handles: pure JSON, ```json code blocks, embedded {...}.
-    """
-    if not response:
-        return None
-
-    try:
-        return json.loads(response.strip())
-    except json.JSONDecodeError:
-        pass
-
-    match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", response, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group(1).strip())
-        except json.JSONDecodeError:
-            pass
-
-    match = re.search(r"\{.*\}", response, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group(0))
-        except json.JSONDecodeError:
-            pass
-
-    return None
 
 
 class Reflector:

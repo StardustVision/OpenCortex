@@ -874,19 +874,22 @@ class CortexFS:
     # ========== Batch Read (backward compatible) ==========
 
     async def read_batch(self, uris: List[str], level: str = "l0") -> Dict[str, str]:
-        """Batch read content from multiple URIs."""
-        results = {}
-        for uri in uris:
+        """Batch read content from multiple URIs (concurrent)."""
+
+        async def _read_one(uri: str) -> tuple:
             try:
-                content = ""
                 if level == "l0":
                     content = await self.abstract(uri)
                 elif level == "l1":
                     content = await self.overview(uri)
-                results[uri] = content
+                else:
+                    content = ""
+                return uri, content
             except Exception:
-                pass
-        return results
+                return uri, ""
+
+        pairs = await asyncio.gather(*[_read_one(u) for u in uris])
+        return {uri: content for uri, content in pairs if content}
 
     # ========== Other Preserved Methods ==========
 

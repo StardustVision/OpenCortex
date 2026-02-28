@@ -8,6 +8,8 @@ Implements directory-based hierarchical retrieval with recursive search
 and rerank-based relevance scoring.
 """
 
+import asyncio
+
 import heapq
 import logging
 from typing import Any, Dict, List, Optional, Tuple
@@ -160,7 +162,10 @@ class HierarchicalRetriever:
         query_vector = None
         sparse_query_vector = None
         if self.embedder:
-            result: EmbedResult = self.embedder.embed(query.query)
+            loop = asyncio.get_event_loop()
+            result: EmbedResult = await loop.run_in_executor(
+                None, self.embedder.embed, query.query
+            )
             query_vector = result.dense_vector
             sparse_query_vector = result.sparse_vector
 
@@ -482,12 +487,11 @@ class HierarchicalRetriever:
                 L1: abstract + overview (from Qdrant payload, zero I/O)
                 L2: abstract + overview + content (filesystem read)
         """
-        results = []
         viking_fs = _get_cortex_fs()
 
-        for c in candidates:
-            # Read related contexts and get summaries
-            relations = []
+        async def _build_one(c: Dict[str, Any]) -> MatchedContext:
+            # Fetch relations concurrently
+            relations: list = []
             if viking_fs:
                 related_uris = await viking_fs.get_relations(c.get("uri", ""))
                 if related_uris:
@@ -517,21 +521,20 @@ class HierarchicalRetriever:
                 except Exception:
                     pass
 
-            results.append(
-                MatchedContext(
-                    uri=c.get("uri", ""),
-                    context_type=context_type,
-                    is_leaf=c.get("is_leaf", False),
-                    abstract=abstract,
-                    overview=overview,
-                    content=content,
-                    category=c.get("category", ""),
-                    score=c.get("_final_score", c.get("_score", 0.0)),
-                    relations=relations,
-                )
+            return MatchedContext(
+                uri=c.get("uri", ""),
+                context_type=context_type,
+                is_leaf=c.get("is_leaf", False),
+                abstract=abstract,
+                overview=overview,
+                content=content,
+                category=c.get("category", ""),
+                score=c.get("_final_score", c.get("_score", 0.0)),
+                relations=relations,
             )
 
-        return results
+        results = await asyncio.gather(*[_build_one(c) for c in candidates])
+        return list(results)
 
     def _get_root_uris_for_type(self, context_type: ContextType) -> List[str]:
         """Return starting directory URI list based on context_type.

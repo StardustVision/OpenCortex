@@ -7,9 +7,7 @@ Layer 2: LLM semantic classification (whenever LLM is available)
 Layer 3: Memory Trigger (Agent reflection intent, output alongside LLM)
 """
 
-import json
 import logging
-import re
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from opencortex.retrieve.types import (
@@ -18,6 +16,7 @@ from opencortex.retrieve.types import (
     SearchIntent,
     TypedQuery,
 )
+from opencortex.utils.json_parse import parse_json_from_response as _parse_json_from_response
 
 logger = logging.getLogger(__name__)
 
@@ -112,31 +111,6 @@ def _build_router_prompt(query: str, context_type: Optional[ContextType] = None)
     if context_type:
         scope_section = f"Context type restriction: {context_type.value}\n\n"
     return _ROUTER_PROMPT_TEMPLATE.format(query=query, scope_section=scope_section)
-
-
-def _parse_json_from_response(response: str) -> Optional[dict]:
-    """Parse JSON from an LLM response string."""
-    if not response:
-        return None
-    try:
-        return json.loads(response.strip())
-    except json.JSONDecodeError:
-        pass
-    # Try markdown code block
-    match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", response, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group(1).strip())
-        except json.JSONDecodeError:
-            pass
-    # Try first {...} block
-    match = re.search(r"\{.*\}", response, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group(0))
-        except json.JSONDecodeError:
-            pass
-    return None
 
 
 # =========================================================================

@@ -9,6 +9,7 @@ Architecture:
     Orchestrator → VikingDBInterface → QdrantStorageAdapter → AsyncQdrantClient
 """
 
+import hashlib
 import logging
 import os
 import uuid
@@ -648,8 +649,8 @@ class QdrantStorageAdapter(VikingDBInterface):
         indices = []
         values = []
         for key, val in sparse_dict.items():
-            # Hash the string key to an integer index
-            idx = hash(key) % (2**31)
+            # Deterministic hash — immune to PYTHONHASHSEED randomisation
+            idx = int(hashlib.md5(key.encode("utf-8")).hexdigest(), 16) % (2**31)
             indices.append(idx)
             values.append(float(val))
         return models.SparseVector(indices=indices, values=values)
@@ -739,7 +740,11 @@ class QdrantStorageAdapter(VikingDBInterface):
         protected_rate: float = 0.99,
         threshold: float = 0.01,
     ):
-        """Apply time-decay to reward_score across all collections."""
+        """Apply time-decay to reward_score across all collections.
+
+        Batches set_payload calls per scroll page to avoid N individual
+        update round-trips (each of which would also do a redundant retrieve).
+        """
         from opencortex.storage.qdrant.rl_types import DecayResult
 
         result = DecayResult()
@@ -751,6 +756,8 @@ class QdrantStorageAdapter(VikingDBInterface):
             cursor = None
             while True:
                 points, cursor = await self.scroll(coll_name, limit=100, cursor=cursor)
+                # Collect updates for this batch
+                batch_updates: list = []  # (point_id, new_reward)
                 for record in points:
                     result.records_processed += 1
                     reward = record.get("reward_score", 0.0)
@@ -764,7 +771,22 @@ class QdrantStorageAdapter(VikingDBInterface):
                         result.records_below_threshold += 1
                     result.records_decayed += 1
                     record_id = record.get("id", "")
-                    await self.update(coll_name, record_id, {"reward_score": new_reward})
+                    batch_updates.append((self._to_point_id(record_id), new_reward))
+
+                # Flush batch — one set_payload per distinct reward value
+                if batch_updates:
+                    # Group by new_reward to minimise API calls
+                    from collections import defaultdict
+                    by_value: dict = defaultdict(list)
+                    for pid, val in batch_updates:
+                        by_value[val].append(pid)
+                    for val, pids in by_value.items():
+                        await client.set_payload(
+                            collection_name=coll_name,
+                            payload={"reward_score": val},
+                            points=pids,
+                        )
+
                 if cursor is None:
                     break
         return result

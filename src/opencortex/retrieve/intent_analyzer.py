@@ -7,64 +7,18 @@ Intent analyzer for OpenCortex retrieval.
 Analyzes session context to generate query plans.
 """
 
-import json
 import logging
-import re
 from typing import Awaitable, Callable, List, Optional
 
 from opencortex.core.message import Message
 from opencortex.retrieve.types import ContextType, QueryPlan, TypedQuery
+from opencortex.utils.json_parse import parse_json_from_response as _parse_json_from_response
 
 logger = logging.getLogger(__name__)
 
 # Type alias for the LLM completion callable
 # Takes a prompt string and returns the completion string (async)
 LLMCompletionCallable = Callable[[str], Awaitable[str]]
-
-
-def _parse_json_from_response(response: str) -> Optional[dict]:
-    """
-    Parse JSON from an LLM response string.
-
-    Handles common LLM output patterns:
-    - Pure JSON
-    - JSON wrapped in markdown code blocks (```json ... ```)
-    - JSON embedded in surrounding text
-
-    Args:
-        response: Raw LLM response string
-
-    Returns:
-        Parsed dict, or None if parsing fails
-    """
-    if not response:
-        return None
-
-    # Try direct parse first
-    try:
-        return json.loads(response.strip())
-    except json.JSONDecodeError:
-        pass
-
-    # Try extracting from markdown code block
-    code_block_pattern = re.compile(r"```(?:json)?\s*\n?(.*?)\n?```", re.DOTALL)
-    match = code_block_pattern.search(response)
-    if match:
-        try:
-            return json.loads(match.group(1).strip())
-        except json.JSONDecodeError:
-            pass
-
-    # Try extracting first {...} block
-    brace_pattern = re.compile(r"\{.*\}", re.DOTALL)
-    match = brace_pattern.search(response)
-    if match:
-        try:
-            return json.loads(match.group(0))
-        except json.JSONDecodeError:
-            pass
-
-    return None
 
 
 def _build_intent_analysis_prompt(

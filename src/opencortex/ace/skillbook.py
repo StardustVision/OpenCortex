@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Skillbook — CRUD + vector search + CortexFS three-layer persistence."""
 
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -177,7 +178,10 @@ class Skillbook:
         Returns:
             List of matching Skills
         """
-        embed_result = self._embedder.embed(query)
+        loop = asyncio.get_event_loop()
+        embed_result = await loop.run_in_executor(
+            None, self._embedder.embed, query
+        )
         filter_cond: Dict[str, Any] = {
             "op": "must",
             "field": "context_type",
@@ -366,7 +370,10 @@ class Skillbook:
         )
 
         # Qdrant vector write
-        embed_result = self._embedder.embed(skill.content)
+        loop = asyncio.get_event_loop()
+        embed_result = await loop.run_in_executor(
+            None, self._embedder.embed, skill.content
+        )
         await self._storage.upsert(
             self.COLLECTION,
             {

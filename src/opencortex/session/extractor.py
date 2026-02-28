@@ -5,12 +5,11 @@ Memory extractor for OpenCortex session analysis.
 LLM-driven analysis of session conversations to extract persistent memories.
 """
 
-import json
 import logging
-import re
 from typing import Awaitable, Callable, List, Optional
 
 from opencortex.session.types import ExtractedMemory, Message
+from opencortex.utils.json_parse import parse_json_from_response
 
 logger = logging.getLogger(__name__)
 
@@ -110,34 +109,9 @@ Memories:"""
 
     def _parse_extraction_response(self, response: str) -> List[ExtractedMemory]:
         """Parse LLM response into ExtractedMemory list."""
-        # Try direct JSON parse
-        try:
-            data = json.loads(response.strip())
-            if isinstance(data, list):
-                return self._convert_to_memories(data)
-        except json.JSONDecodeError:
-            pass
-
-        # Try extracting JSON array from markdown code block
-        match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", response, re.DOTALL)
-        if match:
-            try:
-                data = json.loads(match.group(1))
-                if isinstance(data, list):
-                    return self._convert_to_memories(data)
-            except json.JSONDecodeError:
-                pass
-
-        # Try finding JSON array in response
-        match = re.search(r"\[.*\]", response, re.DOTALL)
-        if match:
-            try:
-                data = json.loads(match.group())
-                if isinstance(data, list):
-                    return self._convert_to_memories(data)
-            except json.JSONDecodeError:
-                pass
-
+        data = parse_json_from_response(response, expect_array=True)
+        if isinstance(data, list):
+            return self._convert_to_memories(data)
         logger.warning("[MemoryExtractor] Could not parse extraction response")
         return []
 

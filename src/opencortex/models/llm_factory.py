@@ -147,25 +147,26 @@ def _make_ark_callable(api_key: str, model: str, base_url: str) -> Callable[[str
 
 def _make_openai_callable(api_key: str, model: str, base_url: str) -> Callable[[str], Awaitable[str]]:
     """Return an async callable that calls an OpenAI-compatible chat endpoint."""
+    import httpx
+
+    # Create the client once; reuse across all invocations for connection pooling.
+    _client = httpx.AsyncClient(timeout=60.0)
+    _url = base_url.rstrip("/") + "/chat/completions"
+    _headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
 
     async def _openai_completion(prompt: str) -> str:
         try:
-            import httpx
-
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            }
             payload = {
                 "model": model,
                 "messages": [{"role": "user", "content": prompt}],
             }
-            url = base_url.rstrip("/") + "/chat/completions"
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                resp = await client.post(url, headers=headers, json=payload)
-                resp.raise_for_status()
-                data = resp.json()
-                return data["choices"][0]["message"]["content"] or ""
+            resp = await _client.post(_url, headers=_headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            return data["choices"][0]["message"]["content"] or ""
         except Exception as exc:
             logger.warning("[llm_factory] OpenAI completion error: %s", exc)
             raise

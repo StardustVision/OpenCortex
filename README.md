@@ -234,6 +234,17 @@ EmbedderBase (ABC)
 - `max_candidates=5` — 只发送 top 5 给 rerank（75% Token 节省）
 - `score_gap_threshold=0.15` — top1 领先明显时跳过 rerank（零开销）
 
+**性能设计**
+
+| 优化点 | 方案 | 效果 |
+|--------|------|------|
+| Sparse 向量哈希 | `hashlib.md5` 替代 `hash()`，跨进程确定性哈希 | 消除 `PYTHONHASHSEED` 随机化导致的索引漂移 |
+| Embedding 不阻塞事件循环 | 所有 `embedder.embed()` 调用通过 `run_in_executor` 分派到线程池 | async 主链路不再被同步网络调用阻塞 |
+| HTTP 连接池复用 | LLM / Rerank 的 `httpx.AsyncClient` 在闭包/实例级创建一次 | 避免每次请求新建+销毁连接，TCP 握手开销降至零 |
+| 并发 I/O | `read_batch` 使用 `asyncio.gather`；候选结果的 relations 获取跨 candidate 并发 | N 次串行 await → 1 次并发 gather |
+| Decay 批量更新 | 按 reward 值分组，单次 `set_payload` 批量写入 | 省去逐条 update 的冗余 retrieve + 减少 API 调用数 |
+| 聚合去重 | `_aggregate_results` 按 URI 去重 | 多 QueryResult 合并时不返回重复记忆 |
+
 ---
 
 ## 快速开始
@@ -664,7 +675,8 @@ src/opencortex/
 │
 └── utils/
     ├── uri.py                     # CortexURI 租户隔离 URI 体系
-    └── time_utils.py              # 时间工具
+    ├── time_utils.py              # 时间工具
+    └── json_parse.py              # LLM 响应 JSON 提取 (平衡括号计数)
 
 plugins/opencortex-memory/         # Claude Code 插件
 ├── config.json                    # 模式配置 (local/remote)

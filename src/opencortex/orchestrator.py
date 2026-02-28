@@ -539,9 +539,12 @@ class MemoryOrchestrator:
             user=self._user,
         )
 
-        # Embed
+        # Embed (offload sync embedder to thread so we don't block the loop)
         if self._embedder:
-            result = self._embedder.embed(ctx.get_vectorization_text())
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None, self._embedder.embed, ctx.get_vectorization_text()
+            )
             ctx.vector = result.dense_vector
 
         # Ensure parent directory records exist in vector DB
@@ -629,7 +632,10 @@ class MemoryOrchestrator:
             update_data["abstract"] = abstract
             # Re-embed
             if self._embedder:
-                result = self._embedder.embed(abstract)
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(
+                    None, self._embedder.embed, abstract
+                )
                 update_data["vector"] = result.dense_vector
 
         if meta:
@@ -1635,7 +1641,10 @@ class MemoryOrchestrator:
             # Embed the directory name as a minimal vector
             dir_name = dir_uri.rstrip("/").rsplit("/", 1)[-1]
             if self._embedder and dir_name:
-                embed_result = self._embedder.embed(dir_name)
+                loop = asyncio.get_event_loop()
+                embed_result = await loop.run_in_executor(
+                    None, self._embedder.embed, dir_name
+                )
                 dir_ctx.vector = embed_result.dense_vector
 
             record = dir_ctx.to_dict()
@@ -1670,11 +1679,15 @@ class MemoryOrchestrator:
     def _aggregate_results(
         self, query_results: List[QueryResult]
     ) -> FindResult:
-        """Aggregate multiple QueryResults into a single FindResult."""
+        """Aggregate multiple QueryResults into a single FindResult (deduped by URI)."""
         memories, resources, skills = [], [], []
+        seen_uris: set = set()
 
         for result in query_results:
             for ctx in result.matched_contexts:
+                if ctx.uri in seen_uris:
+                    continue
+                seen_uris.add(ctx.uri)
                 if ctx.context_type == ContextType.MEMORY:
                     memories.append(ctx)
                 elif ctx.context_type == ContextType.RESOURCE:
