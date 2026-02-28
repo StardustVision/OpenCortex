@@ -64,13 +64,13 @@ def get_viking_rel_path_from_zip(zip_path: str) -> str:
 
 
 async def import_ovpack(
-    viking_fs, file_path: str, parent: str, force: bool = False, vectorize: bool = False
+    cortex_fs, file_path: str, parent: str, force: bool = False, vectorize: bool = False
 ) -> str:
     """
     Import .ovpack file to the specified parent path.
 
     Args:
-        viking_fs: VikingFS instance
+        cortex_fs: CortexFS instance
         file_path: Local .ovpack file path
         parent: Target parent URI (e.g., opencortex://resources/...)
         force: Whether to force overwrite existing resource (default: False)
@@ -85,10 +85,10 @@ async def import_ovpack(
     parent = parent.strip().rstrip("/")
 
     try:
-        await viking_fs.stat(parent)
+        await cortex_fs.stat(parent)
     except Exception:
         # Parent directory does not exist, create it
-        await viking_fs.mkdir(parent)
+        await cortex_fs.mkdir(parent)
 
     with zipfile.ZipFile(file_path, "r") as zf:
         # 1. Get root directory name from ZIP and perform initial validation
@@ -106,7 +106,7 @@ async def import_ovpack(
 
         # 2. Conflict check
         try:
-            await viking_fs.ls(root_uri)
+            await cortex_fs.ls(root_uri)
             if not force:
                 raise FileExistsError(
                     f"Resource already exists at {root_uri}. Use force=True to overwrite."
@@ -142,7 +142,7 @@ async def import_ovpack(
             if zip_path.endswith("/"):
                 rel_path = get_viking_rel_path_from_zip(zip_path.rstrip("/"))
                 target_dir_uri = f"{root_uri}/{rel_path}" if rel_path else root_uri
-                await viking_fs.mkdir(target_dir_uri, exist_ok=True)
+                await cortex_fs.mkdir(target_dir_uri, exist_ok=True)
                 continue
 
             # Handle file entries
@@ -151,7 +151,7 @@ async def import_ovpack(
 
             try:
                 data = zf.read(zip_path)
-                await viking_fs.write_file_bytes(target_file_uri, data)
+                await cortex_fs.write_file_bytes(target_file_uri, data)
             except Exception as e:
                 logger.error(f"Failed to import {zip_path} to {target_file_uri}: {e}")
                 if not force:  # In non-force mode, stop on error
@@ -162,12 +162,12 @@ async def import_ovpack(
     return root_uri
 
 
-async def export_ovpack(viking_fs, uri: str, to: str) -> str:
+async def export_ovpack(cortex_fs, uri: str, to: str) -> str:
     """
     Export the specified context path as a .ovpack file.
 
     Args:
-        viking_fs: VikingFS instance
+        cortex_fs: CortexFS instance
         uri: OpenCortex URI
         to: Target file path (can be an existing directory or a path ending with .ovpack)
 
@@ -185,7 +185,7 @@ async def export_ovpack(viking_fs, uri: str, to: str) -> str:
 
     ensure_dir_exists(to)
 
-    entries = await viking_fs.tree(uri)
+    entries = await cortex_fs.tree(uri)
 
     with zipfile.ZipFile(to, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
         # Write root directory entry
@@ -200,7 +200,7 @@ async def export_ovpack(viking_fs, uri: str, to: str) -> str:
             else:
                 full_uri = f"{uri}/{rel_path}"
                 try:
-                    data = await viking_fs.read_file_bytes(full_uri)
+                    data = await cortex_fs.read_file_bytes(full_uri)
                     zf.writestr(zip_path, data)
                 except Exception as e:
                     logger.warning(f"Failed to export file {full_uri}: {e}")

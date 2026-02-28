@@ -1,5 +1,5 @@
 """
-ACE Phase 1 tests — Skillbook CRUD, ACEngine HooksProtocol, VikingFS integration.
+ACE Phase 1 tests — Skillbook CRUD, ACEngine HooksProtocol, CortexFS integration.
 
 Uses in-memory mocks (no external binary or network calls needed).
 """
@@ -20,7 +20,7 @@ from opencortex.ace.engine import ACEngine
 from opencortex.ace.skillbook import Skillbook
 from opencortex.ace.types import HooksStats, LearnResult, Skill, UpdateOperation
 from opencortex.models.embedder.base import DenseEmbedderBase, EmbedResult
-from opencortex.storage.viking_fs import VikingFS
+from opencortex.storage.cortex_fs import CortexFS
 from opencortex.storage.vikingdb_interface import (
     CollectionNotFoundError,
     VikingDBInterface,
@@ -328,12 +328,12 @@ class TestSkillbookCRUD(unittest.TestCase):
         self.temp_dir = tempfile.mkdtemp(prefix="ace_test_")
         self.storage = InMemoryStorage()
         self.embedder = MockEmbedder()
-        self.fs = VikingFS(data_root=self.temp_dir, vector_store=self.storage)
+        self.fs = CortexFS(data_root=self.temp_dir, vector_store=self.storage)
         self.prefix = "opencortex://tenant/test/user/alice/skillbooks"
         self.sb = Skillbook(
             storage=self.storage,
             embedder=self.embedder,
-            viking_fs=self.fs,
+            cortex_fs=self.fs,
             prefix=self.prefix,
             embedding_dim=MockEmbedder.DIMENSION,
         )
@@ -347,7 +347,7 @@ class TestSkillbookCRUD(unittest.TestCase):
         self.assertTrue(_run(self.storage.collection_exists("skillbooks")))
 
     def test_02_add_skill(self):
-        """add_skill creates a record in storage and writes VikingFS files."""
+        """add_skill creates a record in storage and writes CortexFS files."""
         skill = _run(self.sb.add_skill(section="strategies", content="Always use type hints"))
         self.assertIsInstance(skill, Skill)
         self.assertEqual(skill.section, "strategies")
@@ -360,7 +360,7 @@ class TestSkillbookCRUD(unittest.TestCase):
         self.assertEqual(records[0]["abstract"], "Always use type hints")
         self.assertEqual(records[0]["context_type"], "ace_skill")
 
-        # Check VikingFS abstract file
+        # Check CortexFS abstract file
         abstract_path = os.path.join(
             self.temp_dir,
             "tenant", "test", "user", "alice", "skillbooks",
@@ -473,11 +473,11 @@ class TestACEngineHooks(unittest.TestCase):
         self.temp_dir = tempfile.mkdtemp(prefix="ace_engine_test_")
         self.storage = InMemoryStorage()
         self.embedder = MockEmbedder()
-        self.fs = VikingFS(data_root=self.temp_dir, vector_store=self.storage)
+        self.fs = CortexFS(data_root=self.temp_dir, vector_store=self.storage)
         self.engine = ACEngine(
             storage=self.storage,
             embedder=self.embedder,
-            viking_fs=self.fs,
+            cortex_fs=self.fs,
             tenant_id="test",
             user_id="alice",
         )
@@ -549,23 +549,23 @@ class TestACEngineHooks(unittest.TestCase):
 
 
 # =============================================================================
-# VikingFS Three-Layer Tests
+# CortexFS Three-Layer Tests
 # =============================================================================
 
 
-class TestVikingFSIntegration(unittest.TestCase):
-    """Test VikingFS three-layer write from Skillbook."""
+class TestCortexFSIntegration(unittest.TestCase):
+    """Test CortexFS three-layer write from Skillbook."""
 
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp(prefix="ace_fs_test_")
         self.storage = InMemoryStorage()
         self.embedder = MockEmbedder()
-        self.fs = VikingFS(data_root=self.temp_dir, vector_store=self.storage)
+        self.fs = CortexFS(data_root=self.temp_dir, vector_store=self.storage)
         self.prefix = "opencortex://tenant/test/user/alice/skillbooks"
         self.sb = Skillbook(
             storage=self.storage,
             embedder=self.embedder,
-            viking_fs=self.fs,
+            cortex_fs=self.fs,
             prefix=self.prefix,
             embedding_dim=MockEmbedder.DIMENSION,
         )
@@ -575,7 +575,7 @@ class TestVikingFSIntegration(unittest.TestCase):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_17_persist_writes_l0_l1_l2(self):
-        """VikingFS writes L0 (abstract), L1 (overview), L2 (content/trace) files."""
+        """CortexFS writes L0 (abstract), L1 (overview), L2 (content/trace) files."""
         skill = _run(
             self.sb.add_skill(
                 section="patterns",

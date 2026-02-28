@@ -27,12 +27,12 @@ from opencortex.storage import VikingDBInterface
 logger = logging.getLogger(__name__)
 
 
-def _get_viking_fs():
-    """Lazily import get_viking_fs to avoid circular imports and allow parallel porting."""
+def _get_cortex_fs():
+    """Lazily import get_cortex_fs to avoid circular imports and allow parallel porting."""
     try:
-        from opencortex.storage.viking_fs import get_viking_fs
+        from opencortex.storage.cortex_fs import get_cortex_fs
 
-        return get_viking_fs()
+        return get_cortex_fs()
     except (ImportError, RuntimeError):
         return None
 
@@ -483,7 +483,7 @@ class HierarchicalRetriever:
                 L2: abstract + overview + content (filesystem read)
         """
         results = []
-        viking_fs = _get_viking_fs()
+        viking_fs = _get_cortex_fs()
 
         for c in candidates:
             # Read related contexts and get summaries

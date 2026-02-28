@@ -55,7 +55,7 @@ class LocalAGFS:
     """
     Local filesystem adapter that replaces pyagfs.AGFSClient.
 
-    All paths use the /local/<path> convention from VikingFS, which is mapped
+    All paths use the /local/<path> convention from CortexFS, which is mapped
     to {data_root}/<path> on the real filesystem.
 
     Args:

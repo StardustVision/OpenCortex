@@ -31,7 +31,7 @@ from opencortex.ace.types import (
     UpdateOperation,
 )
 from opencortex.models.embedder.base import DenseEmbedderBase, EmbedResult
-from opencortex.storage.viking_fs import VikingFS
+from opencortex.storage.cortex_fs import CortexFS
 from opencortex.storage.vikingdb_interface import (
     CollectionNotFoundError,
     VikingDBInterface,
@@ -654,7 +654,7 @@ class TestLearnPipeline(unittest.TestCase):
         self.temp_dir = tempfile.mkdtemp(prefix="ace_learn_test_")
         self.storage = InMemoryStorage()
         self.embedder = MockEmbedder()
-        self.fs = VikingFS(data_root=self.temp_dir, vector_store=self.storage)
+        self.fs = CortexFS(data_root=self.temp_dir, vector_store=self.storage)
 
     def tearDown(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
@@ -663,7 +663,7 @@ class TestLearnPipeline(unittest.TestCase):
         engine = ACEngine(
             storage=self.storage,
             embedder=self.embedder,
-            viking_fs=self.fs,
+            cortex_fs=self.fs,
             llm_fn=llm_fn,
             tenant_id="test",
             user_id="alice",
@@ -746,7 +746,7 @@ class TestTrajectoryLearn(unittest.TestCase):
         self.temp_dir = tempfile.mkdtemp(prefix="ace_traj_test_")
         self.storage = InMemoryStorage()
         self.embedder = MockEmbedder()
-        self.fs = VikingFS(data_root=self.temp_dir, vector_store=self.storage)
+        self.fs = CortexFS(data_root=self.temp_dir, vector_store=self.storage)
 
     def tearDown(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
@@ -755,7 +755,7 @@ class TestTrajectoryLearn(unittest.TestCase):
         engine = ACEngine(
             storage=self.storage,
             embedder=self.embedder,
-            viking_fs=self.fs,
+            cortex_fs=self.fs,
             llm_fn=llm_fn,
             tenant_id="test",
             user_id="alice",

@@ -10,7 +10,7 @@ from opencortex.ace.skill_manager import SkillManager
 from opencortex.ace.skillbook import Skillbook
 from opencortex.ace.types import HooksStats, LearnResult, ReflectorOutput, UpdateOperation
 from opencortex.models.embedder.base import EmbedderBase
-from opencortex.storage.viking_fs import VikingFS
+from opencortex.storage.cortex_fs import CortexFS
 from opencortex.storage.vikingdb_interface import VikingDBInterface
 
 logger = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ class ACEngine:
         self,
         storage: VikingDBInterface,
         embedder: EmbedderBase,
-        viking_fs: VikingFS,
+        cortex_fs: CortexFS,
         llm_fn: Optional[Callable] = None,
         tenant_id: str = "default",
         user_id: str = "default",
@@ -39,7 +39,7 @@ class ACEngine:
         self._skillbook = Skillbook(
             storage=storage,
             embedder=embedder,
-            viking_fs=viking_fs,
+            cortex_fs=cortex_fs,
             prefix=prefix,
             embedding_dim=dim,
         )
@@ -113,6 +113,8 @@ class ACEngine:
                 "section": s.section,
                 "helpful": s.helpful,
                 "harmful": s.harmful,
+                "uri": f"{self._skillbook._prefix}/{s.section}/{s.id}",
+                "score": getattr(s, "_score", 0.0),
             }
             for s in skills
         ]

@@ -4,7 +4,7 @@
 """
 OpenCortex storage module.
 
-Provides the abstract VikingDBInterface, VikingFS filesystem abstraction,
+Provides the abstract VikingDBInterface, CortexFS filesystem abstraction,
 LocalAGFS adapter, and all storage exception classes.
 """
 
@@ -19,7 +19,15 @@ from opencortex.storage.vikingdb_interface import (
     VikingDBInterface,
 )
 from opencortex.storage.local_agfs import LocalAGFS
-from opencortex.storage.viking_fs import VikingFS, init_viking_fs, get_viking_fs
+from opencortex.storage.cortex_fs import (
+    CortexFS,
+    init_cortex_fs,
+    get_cortex_fs,
+    # Backward-compatible aliases
+    VikingFS,
+    init_viking_fs,
+    get_viking_fs,
+)
 from opencortex.storage.qdrant import QdrantStorageAdapter
 
 __all__ = [
@@ -34,6 +42,10 @@ __all__ = [
     "SchemaError",
     # Filesystem abstractions
     "LocalAGFS",
+    "CortexFS",
+    "init_cortex_fs",
+    "get_cortex_fs",
+    # Backward-compatible aliases
     "VikingFS",
     "init_viking_fs",
     "get_viking_fs",

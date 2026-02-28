@@ -6,7 +6,7 @@ The orchestrator is the primary user-facing API that wires together all
 internal components:
 
 - CortexConfig: tenant/user isolation
-- VikingFS: three-layer (L0/L1/L2) filesystem abstraction
+- CortexFS: three-layer (L0/L1/L2) filesystem abstraction
 - VikingDBInterface: vector storage (use OpenViking's native implementation)
 - HierarchicalRetriever: directory-aware recursive search
 - IntentAnalyzer: LLM-driven session-aware query planning
@@ -57,8 +57,9 @@ from opencortex.retrieve.types import (
     SearchIntent,
     TypedQuery,
 )
+from opencortex.ace.rule_extractor import RuleExtractor
 from opencortex.storage.collection_schemas import init_context_collection
-from opencortex.storage.viking_fs import VikingFS, init_viking_fs
+from opencortex.storage.cortex_fs import CortexFS, init_cortex_fs
 from opencortex.storage.vikingdb_interface import VikingDBInterface
 from opencortex.utils.uri import CortexURI
 
@@ -99,11 +100,12 @@ class MemoryOrchestrator:
         self._llm_completion = llm_completion
         self._hooks = hooks
 
-        self._fs: Optional[VikingFS] = None
+        self._fs: Optional[CortexFS] = None
         self._retriever: Optional[HierarchicalRetriever] = None
         self._analyzer: Optional[IntentAnalyzer] = None
         self._user: Optional[UserIdentifier] = None
         self._session_manager = None
+        self._rule_extractor: Optional[RuleExtractor] = RuleExtractor()
         self._initialized = False
 
     # =========================================================================
@@ -114,7 +116,7 @@ class MemoryOrchestrator:
         """
         Initialize all internal components.
 
-        Creates the storage backend (if not provided), initializes VikingFS,
+        Creates the storage backend (if not provided), initializes CortexFS,
         sets up the context collection, and wires up the retriever.
 
         Returns:
@@ -148,8 +150,8 @@ class MemoryOrchestrator:
             self._config.user_id,
         )
 
-        # 3. VikingFS
-        self._fs = init_viking_fs(
+        # 3. CortexFS
+        self._fs = init_cortex_fs(
             data_root=self._config.data_root,
             query_embedder=self._embedder,
             rerank_config=self._rerank_config,
@@ -194,7 +196,7 @@ class MemoryOrchestrator:
             self._hooks = ACEngine(
                 storage=self._storage,
                 embedder=self._embedder,
-                viking_fs=self._fs,
+                cortex_fs=self._fs,
                 llm_fn=self._llm_completion,
                 tenant_id=self._config.tenant_id,
                 user_id=self._config.user_id,
@@ -459,7 +461,7 @@ class MemoryOrchestrator:
         return self._storage
 
     @property
-    def fs(self) -> VikingFS:
+    def fs(self) -> CortexFS:
         self._ensure_init()
         return self._fs
 
@@ -561,8 +563,29 @@ class MemoryOrchestrator:
             is_leaf=is_leaf,
         )
 
+        # Async skill extraction (non-blocking)
+        if self._rule_extractor and self._hooks and content:
+            asyncio.create_task(self._try_extract_skills(abstract, content))
+
         logger.info("[MemoryOrchestrator] Added context: %s", uri)
         return ctx
+
+    async def _try_extract_skills(self, abstract: str, content: str) -> None:
+        """Background skill extraction from stored content. Failures are silent."""
+        try:
+            skills = self._rule_extractor.extract(abstract, content)
+            for skill in skills:
+                # Dedup: check if a similar skill already exists
+                existing = await self._hooks.recall(skill.content, limit=1)
+                if existing and existing[0].get("score", 0) > 0.85:
+                    continue
+                await self._hooks.remember(skill.content, skill.section)
+                logger.debug(
+                    "[Orchestrator] Extracted skill: %s → %s",
+                    skill.section, skill.content[:60],
+                )
+        except Exception:
+            logger.debug("[Orchestrator] Skill extraction failed silently")
 
     async def update(
         self,
@@ -736,19 +759,39 @@ class MemoryOrchestrator:
                 if not tq.target_directories:
                     tq.target_directories = [target_uri]
 
-        query_results = await asyncio.gather(
-            *[
-                self._retriever.retrieve(
-                    tq,
-                    limit=effective_limit,
-                    score_threshold=score_threshold,
-                    metadata_filter=metadata_filter,
-                )
-                for tq in typed_queries
-            ]
-        )
+        # Build retrieval coroutines
+        retrieval_coros = [
+            self._retriever.retrieve(
+                tq,
+                limit=effective_limit,
+                score_threshold=score_threshold,
+                metadata_filter=metadata_filter,
+            )
+            for tq in typed_queries
+        ]
+
+        # Parallel skillbook search (if hooks available)
+        skill_search_coro = self._search_skillbook(query, limit=3) if self._hooks else None
+
+        if skill_search_coro:
+            all_results = await asyncio.gather(*retrieval_coros, skill_search_coro)
+            query_results = list(all_results[:-1])
+            skill_contexts = all_results[-1]
+        else:
+            query_results = list(await asyncio.gather(*retrieval_coros))
+            skill_contexts = []
 
         result = self._aggregate_results(query_results)
+
+        # Merge skillbook results (deduplicate by URI)
+        if skill_contexts:
+            existing_uris = {s.uri for s in result.skills}
+            for sc in skill_contexts:
+                if sc.uri not in existing_uris:
+                    result.skills.append(sc)
+                    existing_uris.add(sc.uri)
+            result.total = len(result.memories) + len(result.resources) + len(result.skills)
+
         result.search_intent = intent
         return result
 
@@ -855,7 +898,21 @@ class MemoryOrchestrator:
         """
         self._ensure_init()
 
-        # Find the record ID for this URI
+        # If URI points to a skillbook entry, update skill tag directly
+        if "/skillbooks/" in uri and self._hooks:
+            skill_id = uri.rsplit("/", 1)[-1]
+            tag = "helpful" if reward > 0 else ("harmful" if reward < 0 else "neutral")
+            try:
+                await self._hooks.skillbook.tag_skill(skill_id, tag)
+                logger.info(
+                    "[MemoryOrchestrator] Skillbook feedback: skill=%s, tag=%s",
+                    skill_id, tag,
+                )
+            except Exception:
+                logger.debug("[Orchestrator] Skillbook tag update failed for %s", uri)
+            return
+
+        # Find the record ID for this URI in context collection
         records = await self._storage.filter(
             _CONTEXT_COLLECTION,
             {"op": "must", "field": "uri", "conds": [uri]},
@@ -1161,7 +1218,7 @@ class MemoryOrchestrator:
         }
 
     # =========================================================================
-    # Hooks Integration (Route through MCP → Viking FS)
+    # Hooks Integration (Route through MCP → CortexFS)
     # =========================================================================
 
     async def hooks_route(
@@ -1578,6 +1635,29 @@ class MemoryOrchestrator:
                 record["vector"] = dir_ctx.vector
             await self._storage.upsert(_CONTEXT_COLLECTION, record)
             logger.debug("[MemoryOrchestrator] Created directory record: %s", dir_uri)
+
+    async def _search_skillbook(self, query: str, limit: int = 3) -> List[MatchedContext]:
+        """Search ACE Skillbook for relevant skills.
+
+        Returns MatchedContext list for merging into FindResult.
+        """
+        try:
+            raw_skills = await self._hooks.recall(query, limit=limit)
+            results = []
+            for s in raw_skills:
+                results.append(MatchedContext(
+                    uri=s.get("uri", f"skillbook://{s.get('skill_id', '')}"),
+                    context_type=ContextType.SKILL,
+                    is_leaf=True,
+                    abstract=s.get("content", ""),
+                    score=s.get("score", 0.0),
+                    category=s.get("section", ""),
+                    match_reason="skillbook",
+                ))
+            return results
+        except Exception:
+            logger.debug("[Orchestrator] Skillbook search failed silently")
+            return []
 
     def _aggregate_results(
         self, query_results: List[QueryResult]

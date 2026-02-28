@@ -931,11 +931,11 @@ class TestE2EPhase1(unittest.TestCase):
         self.assertTrue(parsed.is_private)
 
     # -----------------------------------------------------------------
-    # 12. VikingFS Filesystem Layer
+    # 12. CortexFS Filesystem Layer
     # -----------------------------------------------------------------
 
     def test_19_vikingfs_write_and_read(self):
-        """VikingFS correctly writes and reads L0/L1/L2 content."""
+        """CortexFS correctly writes and reads L0/L1/L2 content."""
         orch = self._init_orch()
 
         uri = CortexURI.build_private("testteam", "alice", "memories", "test_node")

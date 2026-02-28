@@ -51,31 +51,31 @@ fused_score = similarity + rl_weight × reward_score
 三层意图分析，动态调整检索策略——不同查询自动匹配不同的 Top-K、detail_level 和时间范围：
 
 ```
-用户 Query
-    │
-    ▼
-┌─────────────────────────────────────────────────┐
-│              Intent Router                       │
-│                                                  │
-│  Layer 1: 关键词提取 (零 LLM 开销)              │
-│    "上次" "刚才" → time_scope=recent             │
-│    "总结" "回顾" → intent=summarize, top_k↑      │
-│    "是不是" "确认" → intent=quick_lookup          │
-│                                                  │
-│  Layer 2: LLM 语义分类 (条件触发: query≥30字符)  │
-│    输出: intent_type + top_k + detail_level      │
-│                                                  │
-│  Layer 3: Memory Trigger (Agent 反思意图)         │
-│    "我该怎么做？" → 触发: preferences, goals     │
-│    "这个 bug 怎么修？" → 触发: error_fixes       │
-│    "帮我写一个..." → 触发: code_style            │
-└──────────────┬──────────────────────────────────┘
-               │
-               ▼  SearchIntent
-       动态 top_k + detail_level + queries
-               │
-               ▼
-       HierarchicalRetriever (按 SearchIntent 执行)
+Query
+  |
+  v
+┌───────────────────────────────────────────────────────┐
+│                    Intent Router                      │
+│                                                       │
+│  Layer 1: Keyword Extraction  (zero LLM cost)         │
+│    time-words    -> time_scope = recent               │
+│    "summarize"   -> intent = summarize, top_k up      │
+│    "confirm"     -> intent = quick_lookup             │
+│                                                       │
+│  Layer 2: LLM Classification  (query >= 30 chars)     │
+│    output: intent_type + top_k + detail_level         │
+│                                                       │
+│  Layer 3: Memory Trigger  (agent reflection)          │
+│    "how should I"  -> preferences, goals              │
+│    "how to fix"    -> error_fixes                     │
+│    "write a ..."   -> code_style                      │
+└─────────────────────────┬─────────────────────────────┘
+                          |
+                          v  SearchIntent
+                  top_k + detail_level + queries
+                          |
+                          v
+              HierarchicalRetriever
 ```
 
 | Intent 类型 | 触发条件 | Top-K | Detail Level | 示例 |
@@ -104,6 +104,33 @@ Score Fusion: final = β × rerank + (1-β) × retrieval + rl_weight × reward
 
 **无 Embedding 降级**：未配置 `embedding_provider` 时，自动退化为 Qdrant filter/scroll 纯字段检索，RL 分数融合仍然生效。
 
+### ACE 自学习闭环
+
+零 LLM 成本的自动规则提取 + Skill 融合搜索：
+
+```
+memory_store (Orchestrator.add)
+  │  → 存储记忆到 Qdrant (已有)
+  │  → 异步: RuleExtractor 提取 skill → Skillbook 持久化 (零 LLM)
+  │
+memory_search (Orchestrator.search)
+  │  → 搜索 contexts 集合 (已有)
+  │  → 并行搜索 skillbooks 集合 (新增)
+  │  → 混合排序 + URI 去重返回
+  │
+memory_feedback (Orchestrator.feedback)
+  │  → 更新 RL reward (已有)
+  │  → 如果 target 是 skill → 更新 Skillbook tag (helpful/harmful/neutral)
+```
+
+**RuleExtractor** 从存储内容中自动提取三类可执行策略：
+
+| 模式       | 检测方式                   | 示例                                              |
+|-----------|--------------------------|--------------------------------------------------|
+| Error→Fix | 正则: error/traceback + fix | "当遇到 UTF-8 错误时，先用 chardet 检测编码再解码"  |
+| 用户偏好   | 关键词: always/never/必须   | "必须使用 black 格式化所有 Python 代码"             |
+| 工具链     | 连续 ≥3 步有序操作          | "lint → test → build → push 四步部署流程"          |
+
 ### 上下文自迭代
 
 每次对话结束时，Stop Hook 自动提取对话记忆：
@@ -129,50 +156,33 @@ opencortex://tenant/{team}/user/{uid}/{type}/{category}/{node_id}
 ## 架构设计
 
 ```
- Claude Code / Cursor / 自定义 Agent
-          │
-          │  Hook 自动触发 (SessionStart / UserPromptSubmit / Stop)
-          ▼
-┌───────────────────────────────────────────────────────────────┐
-│            opencortex-memory Plugin                           │
-│  hooks/: session-start.sh | user-prompt-submit.sh | stop.sh  │
-│  scripts/: oc_memory.py (HTTP client bridge)                  │
-│  skills/: memory-recall | memory-store | memory-feedback ...  │
-├───────────────────────────────────────────────────────────────┤
-│  oc_memory.py → urllib HTTP calls                             │
-│    ingest-stop → POST /api/v1/memory/store                    │
-│    recall → POST /api/v1/memory/search                        │
-│    session-end → POST /api/v1/memory/store                    │
-├───────────────────────────────────────────────────────────────┤
-│                                                               │
-│    ┌──────────────────────────────────────────────────┐       │
-│    │          FastAPI HTTP Server (:8921)              │       │
-│    │  REST endpoints: /api/v1/memory/* /session/* ...  │       │
-│    ├──────────────────────────────────────────────────┤       │
-│    │          FastMCP Server (:8920/mcp)               │       │
-│    │  16 tools: memory_* / session_* / hooks_*         │       │
-│    │  transport: streamable-http / sse / stdio          │       │
-│    ├──────────────────────────────────────────────────┤       │
-│    │          MemoryOrchestrator                       │       │
-│    │  统一 API: add / search / feedback / decay / ...  │       │
-│    ├──────┬───────────┬───────────┬──────────────────┤       │
-│    │Embed │IntentRouter│ RerankCli │  SessionManager  │       │
-│    │(可插拔)│(3层意图路由)│ (API/LLM) │ (生命周期+提取)  │       │
-│    ├──────┴─────┬─────┴───────────┴──────────────────┤       │
-│    │            │                                     │       │
-│    │  VikingFS  │  HierarchicalRetriever              │       │
-│    │  L0/L1/L2  │  Intent→Embedding→Rerank→RL Fusion  │       │
-│    ├────────────┴─────────────────────────────────────┤       │
-│    │         VikingDBInterface (25 async methods)      │       │
-│    ├──────────────────┬───────────────────────────────┤       │
-│    │ QdrantAdapter    │     InMemoryStorage (测试)      │       │
-│    │ Standard: 25方法  │                                │       │
-│    │ RL: reward/decay/ │                                │       │
-│    │    profile/protect│                                │       │
-│    ├──────────────────┴───────────────────────────────┤       │
-│    │  Qdrant (嵌入式)  ←  零外部进程，单进程内存模式    │       │
-│    └──────────────────────────────────────────────────┘       │
-└───────────────────────────────────────────────────────────────┘
+ Claude Code / Cursor / Custom Agent
+              |
+              |  Hook triggers (SessionStart / Stop)
+              v
+┌─────────────────────────────────────────────────────────────────┐
+│  opencortex-memory Plugin                                       │
+│  hooks/ | scripts/oc_memory.py | skills/memory-*                │
+├─────────────────────────────────────────────────────────────────┤
+│  oc_memory.py  -->  POST /api/v1/memory/*                       │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │  FastAPI Server (:8921)  +  FastMCP Server (:8920)      │   │
+│   ├─────────────────────────────────────────────────────────┤   │
+│   │  MemoryOrchestrator                                     │   │
+│   │  add | search | feedback | decay | session_*            │   │
+│   ├─────────────────────────────────────────────────────────┤   │
+│   │  Embed | IntentRouter | Rerank | SessionManager         │   │
+│   ├─────────────────────────────────────────────────────────┤   │
+│   │  CortexFS (L0/L1/L2)  +  HierarchicalRetriever          │   │
+│   ├─────────────────────────────────────────────────────────┤   │
+│   │  ACE: RuleExtractor -> Skillbook -> Fusion Search       │   │
+│   ├─────────────────────────────────────────────────────────┤   │
+│   │  VikingDBInterface  ->  QdrantAdapter  ->  Qdrant       │   │
+│   └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ### 双模式部署
@@ -634,9 +644,18 @@ src/opencortex/
 │   ├── extractor.py               # MemoryExtractor (LLM 驱动)
 │   └── types.py                   # SessionContext / ExtractedMemory
 │
+├── ace/                           # ACE 自学习引擎
+│   ├── engine.py                  # ACEngine (Skillbook + Reflector + SkillManager)
+│   ├── skillbook.py               # Skillbook CRUD + 向量搜索 + CortexFS 三层持久化
+│   ├── rule_extractor.py          # RuleExtractor 零 LLM 规则提取 (error→fix / 偏好 / 工作流)
+│   ├── reflector.py               # LLM 反思 (可选)
+│   ├── skill_manager.py           # LLM 策略管理 (可选)
+│   ├── types.py                   # Skill / Learning / UpdateOperation
+│   └── prompts.py                 # ACE prompt 模板
+│
 ├── storage/                       # 存储层
 │   ├── vikingdb_interface.py      # 抽象接口 (25 async methods)
-│   ├── viking_fs.py               # VikingFS 三层文件系统
+│   ├── cortex_fs.py               # CortexFS 三层文件系统 (原 VikingFS)
 │   ├── collection_schemas.py      # 集合 Schema (含 RL 字段)
 │   └── qdrant/                    # Qdrant 嵌入式后端
 │       ├── adapter.py             # QdrantStorageAdapter (标准 + RL)
@@ -657,13 +676,17 @@ plugins/opencortex-memory/         # Claude Code 插件
 tests/
 ├── test_e2e_phase1.py             # 24 个 E2E 测试
 ├── test_mcp_server.py             # 8 个 MCP 测试 (InMemory)
+├── test_ace_phase1.py             # 21 个 ACE Skillbook/Engine 测试
+├── test_ace_phase2.py             # 17 个 Reflector/SkillManager 测试
+├── test_rule_extractor.py         # 20 个 RuleExtractor 零 LLM 提取测试
+├── test_skill_search_fusion.py    # 11 个 Skill 融合搜索 + Feedback 测试
+├── test_integration_skill_pipeline.py  # 10 个 Qdrant 集成测试 (真实存储)
 ├── test_qdrant_adapter.py         # Qdrant 适配器测试
 ├── test_rl_integration.py         # 8 个 RL 端到端测试
 ├── test_mcp_qdrant.py             # 6 个 MCP + Qdrant 测试
 ├── test_http_server.py            # HTTP Server 测试
 ├── test_live_servers.py           # 16 个 Live Server 回归测试
-├── test_openai_models.py          # OpenAI 嵌入模型测试
-└── test_ace_phase{1,2,3}.py       # ACE 自学习引擎测试
+└── test_openai_models.py          # OpenAI 嵌入模型测试
 ```
 
 ---
@@ -671,23 +694,26 @@ tests/
 ## 运行测试
 
 ```bash
-# 核心测试 (InMemory, 无外部依赖)
-PYTHONPATH=src python3 -m unittest tests.test_e2e_phase1 tests.test_mcp_server -v
+# 核心测试 (InMemory, 无外部依赖, 111 tests)
+uv run python3 -m unittest tests.test_e2e_phase1 tests.test_mcp_server \
+  tests.test_ace_phase1 tests.test_ace_phase2 \
+  tests.test_rule_extractor tests.test_skill_search_fusion \
+  tests.test_integration_skill_pipeline -v
 
 # Qdrant + 真实嵌入 API 测试
-PYTHONPATH=src python3 -m unittest tests.test_qdrant_adapter tests.test_rl_integration -v
+uv run python3 -m unittest tests.test_qdrant_adapter tests.test_rl_integration -v
 
 # MCP + Qdrant 集成测试
-PYTHONPATH=src python3 -m unittest tests.test_mcp_qdrant -v
+uv run python3 -m unittest tests.test_mcp_qdrant -v
 
 # HTTP Server 测试
-PYTHONPATH=src python3 -m unittest tests.test_http_server -v
+uv run python3 -m unittest tests.test_http_server -v
 
 # Live Server 回归 (需先启动 HTTP + MCP)
-PYTHONPATH=src python3 -m unittest tests.test_live_servers -v
+uv run python3 -m unittest tests.test_live_servers -v
 
 # 全量回归
-PYTHONPATH=src python3 -m unittest discover -s tests -v
+uv run python3 -m unittest discover -s tests -v
 ```
 
 ---
@@ -721,7 +747,7 @@ OpenCortex 从以下开源项目移植并重构，在此致以诚挚感谢：
 
 火山引擎开源的 AI Agent 上下文管理框架。OpenCortex 的核心架构直接源自 OpenViking：
 
-- **VikingFS 三层文件系统** — L0/L1/L2 摘要体系的原始设计
+- **CortexFS 三层文件系统** — L0/L1/L2 摘要体系的原始设计 (源自 VikingFS)
 - **层级递归检索算法** — HierarchicalRetriever 的分数传播与收敛检测机制
 - **VikingDBInterface** — 25 个 async 方法的存储抽象接口
 - **IntentAnalyzer** — LLM 驱动的会话意图分析与查询规划

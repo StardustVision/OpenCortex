@@ -5,7 +5,7 @@
 Collection schema definitions for OpenCortex.
 
 Provides centralized schema definitions and factory functions for creating collections,
-similar to how init_viking_fs encapsulates VikingFS initialization.
+similar to how init_cortex_fs encapsulates CortexFS initialization.
 """
 
 import logging

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Skillbook — CRUD + vector search + VikingFS three-layer persistence."""
+"""Skillbook — CRUD + vector search + CortexFS three-layer persistence."""
 
 import logging
 from typing import Any, Dict, List, Optional
@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 from opencortex.ace.types import Skill, UpdateOperation
 from opencortex.models.embedder.base import EmbedderBase
 from opencortex.storage.collection_schemas import init_skillbook_collection
-from opencortex.storage.viking_fs import VikingFS
+from opencortex.storage.cortex_fs import CortexFS
 from opencortex.storage.vikingdb_interface import VikingDBInterface
 from opencortex.utils.time_utils import get_current_timestamp
 
@@ -23,13 +23,13 @@ class Skillbook:
         self,
         storage: VikingDBInterface,
         embedder: EmbedderBase,
-        viking_fs: VikingFS,
+        cortex_fs: CortexFS,
         prefix: str,
         embedding_dim: int = 1024,
     ):
         self._storage = storage
         self._embedder = embedder
-        self._fs = viking_fs
+        self._fs = cortex_fs
         self._prefix = prefix  # "opencortex://tenant/{t}/user/{u}/skillbooks"
         self._dim = embedding_dim
         self._counters: Dict[str, int] = {}  # section -> next id number
@@ -198,7 +198,13 @@ class Skillbook:
             filter=filter_cond,
             limit=limit,
         )
-        return [Skill.from_dict(r) for r in results]
+        skills = []
+        for r in results:
+            skill = Skill.from_dict(r)
+            # Preserve vector search score for downstream use
+            skill._score = r.get("_score", 0.0)
+            skills.append(skill)
+        return skills
 
     async def get_by_section(self, section: str) -> List[Skill]:
         """Get all skills in a section.
