@@ -369,14 +369,17 @@ class TestSkillbookCRUD(unittest.TestCase):
         self.assertTrue(os.path.exists(abstract_path), f"Abstract file should exist at {abstract_path}")
 
     def test_03_add_skill_auto_id(self):
-        """ID auto-generates with correct format: {prefix}-{N:05d}."""
+        """ID auto-generates as globally unique uuid4."""
+        import uuid as _uuid
         s1 = _run(self.sb.add_skill(section="strategies", content="skill 1"))
         s2 = _run(self.sb.add_skill(section="strategies", content="skill 2"))
         s3 = _run(self.sb.add_skill(section="error_fixes", content="fix 1"))
 
-        self.assertEqual(s1.id, "strat-00001")
-        self.assertEqual(s2.id, "strat-00002")
-        self.assertEqual(s3.id, "error-00001")
+        # All IDs should be valid uuid4 format
+        for s in (s1, s2, s3):
+            _uuid.UUID(s.id)  # Raises ValueError if invalid
+        # All IDs should be unique
+        self.assertEqual(len({s1.id, s2.id, s3.id}), 3)
 
     def test_04_update_skill_content(self):
         """update_skill changes content and re-embeds."""

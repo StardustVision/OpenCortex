@@ -3,20 +3,23 @@ import { openSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   PROJECT_DIR, ensureStateDir, saveState,
-  getPluginConfig, getHttpUrl, findPython,
+  getMcpConfig, getHttpUrl, findPython, ensureDefaultConfig,
 } from '../../lib/common.mjs';
 import { healthCheck } from '../../lib/http-client.mjs';
 
 export default async function sessionStart(ctx) {
+  // Ensure mcp.json exists (auto-create or migrate from legacy opencortex.json)
+  ensureDefaultConfig();
+
   const configPath = ctx.configPath;
   if (!configPath) {
-    return { systemMessage: '[opencortex-memory] WARNING: no opencortex.json found — memory disabled' };
+    return { systemMessage: '[opencortex-memory] WARNING: no config found — memory disabled' };
   }
 
   const mode = ctx.mode;
   const httpUrl = ctx.httpUrl;
-  const tenantId = getPluginConfig('tenant_id') || 'default';
-  const userId = getPluginConfig('user_id') || 'default';
+  const tenantId = getMcpConfig('tenant_id', 'default');
+  const userId = getMcpConfig('user_id', 'default');
 
   let httpPid = 0;
 
@@ -25,17 +28,14 @@ export default async function sessionStart(ctx) {
     let ready = await healthCheck(httpUrl);
     if (!ready) {
       const python = findPython();
-      const httpPort = getPluginConfig('local.http_port', 8921);
-      const dataDir = getPluginConfig('local.data_dir', 'data/vector');
+      const httpPort = getMcpConfig('local.http_port', 8921);
       ensureStateDir();
       const logPath = join(PROJECT_DIR, '.opencortex', 'memory', 'http_server.log');
       const logFd = openSync(logPath, 'a');
       const child = spawn(python, [
         '-m', 'opencortex.http',
-        '--config', configPath,
         '--host', '127.0.0.1',
         '--port', String(httpPort),
-        '--data-dir', dataDir,
         '--log-level', 'WARNING',
       ], {
         cwd: PROJECT_DIR,
@@ -80,7 +80,7 @@ export default async function sessionStart(ctx) {
   saveState(state);
 
   const portInfo = mode === 'local'
-    ? `HTTP :${getPluginConfig('local.http_port', 8921)}`
+    ? `HTTP :${getMcpConfig('local.http_port', 8921)}`
     : httpUrl;
 
   return {

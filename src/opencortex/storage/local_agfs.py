@@ -15,30 +15,30 @@ import re
 import shutil
 import stat
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List
 
 
-def _modtime_iso(path: str) -> str:
+def _modtime_iso(path: Path) -> str:
     """Return mtime as ISO 8601 UTC string."""
-    mtime = os.path.getmtime(path)
+    mtime = path.stat().st_mtime
     dt = datetime.fromtimestamp(mtime, tz=timezone.utc)
     return dt.isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
-def _file_mode(path: str) -> int:
+def _file_mode(path: Path) -> int:
     """Return file mode as integer."""
     try:
-        return os.stat(path).st_mode
+        return path.stat().st_mode
     except OSError:
         return 0
 
 
-def _entry_dict(full_path: str, name: str) -> Dict[str, Any]:
+def _entry_dict(full_path: Path, name: str) -> Dict[str, Any]:
     """Build an AGFS-style entry dict for a single filesystem entry."""
-    is_dir = os.path.isdir(full_path)
+    is_dir = full_path.is_dir()
     try:
-        size = 0 if is_dir else os.path.getsize(full_path)
+        size = 0 if is_dir else full_path.stat().st_size
     except OSError:
         size = 0
     return {
@@ -63,14 +63,14 @@ class LocalAGFS:
     """
 
     def __init__(self, data_root: str = "./data"):
-        self.data_root = os.path.abspath(data_root)
-        os.makedirs(self.data_root, exist_ok=True)
+        self.data_root = Path(data_root).resolve()
+        self.data_root.mkdir(parents=True, exist_ok=True)
 
     # -------------------------------------------------------------------------
     # Internal path helpers
     # -------------------------------------------------------------------------
 
-    def _resolve(self, path: str) -> str:
+    def _resolve(self, path: str) -> Path:
         """Translate a /local/<...> path to an absolute filesystem path.
 
         /local/user/memories  ->  {data_root}/user/memories
@@ -86,16 +86,16 @@ class LocalAGFS:
         remainder = remainder.lstrip("/")
 
         if remainder:
-            resolved = os.path.join(self.data_root, remainder)
+            resolved = self.data_root / remainder
         else:
             resolved = self.data_root
 
-        return os.path.normpath(resolved)
+        return resolved.resolve()
 
-    def _safe_resolve(self, path: str) -> str:
+    def _safe_resolve(self, path: str) -> Path:
         """Resolve path and ensure it stays within data_root (path traversal guard)."""
         resolved = self._resolve(path)
-        if not resolved.startswith(self.data_root):
+        if not resolved.is_relative_to(self.data_root):
             raise ValueError(
                 f"Path '{path}' resolves outside data_root '{self.data_root}'"
             )
@@ -120,7 +120,7 @@ class LocalAGFS:
             FileNotFoundError: If the file does not exist.
         """
         fspath = self._safe_resolve(path)
-        if not os.path.isfile(fspath):
+        if not fspath.is_file():
             raise FileNotFoundError(f"No such file: {path!r} (resolved: {fspath!r})")
         with open(fspath, "rb") as f:
             if offset:
@@ -140,10 +140,10 @@ class LocalAGFS:
             The resolved filesystem path of the written file.
         """
         fspath = self._safe_resolve(path)
-        os.makedirs(os.path.dirname(fspath), exist_ok=True)
+        fspath.parent.mkdir(parents=True, exist_ok=True)
         with open(fspath, "wb") as f:
             f.write(data)
-        return fspath
+        return str(fspath)
 
     def mkdir(self, path: str) -> None:
         """Create a directory (and all missing parents).
@@ -155,9 +155,9 @@ class LocalAGFS:
             FileExistsError: If path already exists and is not a directory.
         """
         fspath = self._safe_resolve(path)
-        if os.path.isfile(fspath):
+        if fspath.is_file():
             raise FileExistsError(f"Path exists as file: {path!r}")
-        os.makedirs(fspath, exist_ok=True)
+        fspath.mkdir(parents=True, exist_ok=True)
 
     def rm(self, path: str, recursive: bool = False) -> Dict[str, Any]:
         """Remove a file or directory.
@@ -173,16 +173,16 @@ class LocalAGFS:
             FileNotFoundError: If path does not exist.
         """
         fspath = self._safe_resolve(path)
-        if not os.path.exists(fspath):
+        if not fspath.exists():
             raise FileNotFoundError(f"No such file or directory: {path!r}")
 
-        if os.path.isdir(fspath):
+        if fspath.is_dir():
             if recursive:
                 shutil.rmtree(fspath)
             else:
-                os.rmdir(fspath)  # raises OSError if not empty
+                fspath.rmdir()  # raises OSError if not empty
         else:
-            os.remove(fspath)
+            fspath.unlink()
 
         return {"path": path, "removed": True}
 
@@ -202,11 +202,11 @@ class LocalAGFS:
         old_fspath = self._safe_resolve(old_path)
         new_fspath = self._safe_resolve(new_path)
 
-        if not os.path.exists(old_fspath):
+        if not old_fspath.exists():
             raise FileNotFoundError(f"No such file or directory: {old_path!r}")
 
-        os.makedirs(os.path.dirname(new_fspath), exist_ok=True)
-        shutil.move(old_fspath, new_fspath)
+        new_fspath.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(old_fspath), str(new_fspath))
         return {"from": old_path, "to": new_path, "moved": True}
 
     def ls(self, path: str) -> List[Dict[str, Any]]:
@@ -222,9 +222,9 @@ class LocalAGFS:
             FileNotFoundError: If path does not exist or is not a directory.
         """
         fspath = self._safe_resolve(path)
-        if not os.path.exists(fspath):
+        if not fspath.exists():
             raise FileNotFoundError(f"No such directory: {path!r}")
-        if not os.path.isdir(fspath):
+        if not fspath.is_dir():
             raise NotADirectoryError(f"Not a directory: {path!r}")
 
         entries = []
@@ -234,7 +234,7 @@ class LocalAGFS:
             raise PermissionError(f"Permission denied: {path!r}") from e
 
         for name in sorted(names):
-            full = os.path.join(fspath, name)
+            full = fspath / name
             entries.append(_entry_dict(full, name))
 
         return entries
@@ -252,10 +252,9 @@ class LocalAGFS:
             FileNotFoundError: If path does not exist.
         """
         fspath = self._safe_resolve(path)
-        if not os.path.exists(fspath):
+        if not fspath.exists():
             raise FileNotFoundError(f"No such file or directory: {path!r}")
-        name = os.path.basename(fspath)
-        return _entry_dict(fspath, name)
+        return _entry_dict(fspath, fspath.name)
 
     def grep(
         self,
@@ -293,7 +292,7 @@ class LocalAGFS:
 
         matches: List[Dict[str, Any]] = []
 
-        def _search_file(file_fspath: str, local_path: str) -> None:
+        def _search_file(file_fspath: Path, local_path: str) -> None:
             try:
                 with open(file_fspath, "r", encoding="utf-8", errors="replace") as f:
                     for lineno, line in enumerate(f, start=1):
@@ -308,24 +307,24 @@ class LocalAGFS:
             except (OSError, UnicodeDecodeError):
                 pass
 
-        def _local_path(full: str) -> str:
+        def _local_path(full: Path) -> str:
             """Convert resolved filesystem path back to /local/... form."""
-            rel = os.path.relpath(full, self.data_root)
-            return "/local/" + rel.replace(os.sep, "/")
+            rel = full.relative_to(self.data_root)
+            return "/local/" + PurePosixPath(rel).as_posix()
 
-        if os.path.isfile(fspath):
+        if fspath.is_file():
             _search_file(fspath, _local_path(fspath))
-        elif os.path.isdir(fspath):
+        elif fspath.is_dir():
             if recursive:
                 for dirpath, dirnames, filenames in os.walk(fspath):
                     dirnames.sort()
                     for fname in sorted(filenames):
-                        full = os.path.join(dirpath, fname)
+                        full = Path(dirpath) / fname
                         _search_file(full, _local_path(full))
             else:
                 for fname in sorted(os.listdir(fspath)):
-                    full = os.path.join(fspath, fname)
-                    if os.path.isfile(full):
+                    full = fspath / fname
+                    if full.is_file():
                         _search_file(full, _local_path(full))
 
         return {"matches": matches, "count": len(matches)}

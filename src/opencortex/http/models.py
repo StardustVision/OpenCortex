@@ -132,3 +132,17 @@ class HooksPretrainRequest(BaseModel):
 
 class HooksExportRequest(BaseModel):
     format: str = "json"
+
+
+# =========================================================================
+# Skill Approval & Demotion
+# =========================================================================
+
+class SkillReviewRequest(BaseModel):
+    skill_id: str
+    decision: str  # "approve" | "reject"
+
+
+class SkillDemoteRequest(BaseModel):
+    skill_id: str
+    reason: str = ""

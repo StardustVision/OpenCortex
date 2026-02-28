@@ -12,6 +12,15 @@ export const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const STATE_DIR = join(PROJECT_DIR, '.opencortex', 'memory');
 export const STATE_FILE = join(STATE_DIR, 'session_state.json');
 
+// ── Default MCP config ──────────────────────────────────────────────────
+const DEFAULT_MCP_CONFIG = {
+  mode: 'local',
+  tenant_id: 'default',
+  user_id: 'default',
+  local: { http_port: 8921 },
+  remote: { http_url: 'http://127.0.0.1:8921' },
+};
+
 // ── stdin ──────────────────────────────────────────────────────────────
 export async function readStdin() {
   const chunks = [];
@@ -26,11 +35,18 @@ export function output(obj) {
   process.stdout.write(JSON.stringify(obj) + '\n');
 }
 
-// ── config discovery ───────────────────────────────────────────────────
-function findConfigFile() {
+// ── MCP config discovery ──────────────────────────────────────────────
+/**
+ * Search order:
+ *   CWD/mcp.json → CWD/opencortex.json → CWD/.opencortex.json
+ *   → $HOME/.opencortex/mcp.json → $HOME/.opencortex/opencortex.json
+ */
+function findMcpConfig() {
   const candidates = [
+    join(PROJECT_DIR, 'mcp.json'),
     join(PROJECT_DIR, 'opencortex.json'),
     join(PROJECT_DIR, '.opencortex.json'),
+    join(homedir(), '.opencortex', 'mcp.json'),
     join(homedir(), '.opencortex', 'opencortex.json'),
   ];
   for (const p of candidates) {
@@ -39,30 +55,97 @@ function findConfigFile() {
   return null;
 }
 
-let _projectConfig = undefined;
-export function getProjectConfig() {
-  if (_projectConfig !== undefined) return _projectConfig;
-  const p = findConfigFile();
-  if (!p) { _projectConfig = null; return null; }
-  try { _projectConfig = JSON.parse(readFileSync(p, 'utf-8')); } catch { _projectConfig = null; }
-  return _projectConfig;
+/**
+ * Migrate legacy $HOME/.opencortex/opencortex.json → mcp.json
+ * Extracts MCP-related fields from the legacy config.
+ */
+function _migrateLegacyConfig(legacyData) {
+  const mcp = { ...DEFAULT_MCP_CONFIG };
+  // Direct fields
+  if (legacyData.tenant_id) mcp.tenant_id = legacyData.tenant_id;
+  if (legacyData.user_id) mcp.user_id = legacyData.user_id;
+  if (legacyData.mcp_mode) mcp.mode = legacyData.mcp_mode;
+  // Port from various sources
+  const port = legacyData.mcp_port || legacyData.http_server_port;
+  if (port) mcp.local.http_port = port;
+  // Remote URL
+  if (legacyData.http_server_host || legacyData.http_server_port) {
+    const host = legacyData.http_server_host || '127.0.0.1';
+    const p = legacyData.http_server_port || 8921;
+    mcp.remote.http_url = `http://${host}:${p}`;
+  }
+  return mcp;
 }
 
-export function getConfigPath() {
-  return findConfigFile();
+/**
+ * Ensure $HOME/.opencortex/mcp.json exists.
+ * If not, attempt migration from legacy opencortex.json, otherwise create defaults.
+ */
+export function ensureDefaultConfig() {
+  const configDir = join(homedir(), '.opencortex');
+  const mcpPath = join(configDir, 'mcp.json');
+
+  if (existsSync(mcpPath)) return mcpPath;
+
+  mkdirSync(configDir, { recursive: true });
+
+  // Check for legacy opencortex.json to migrate from
+  const legacyPath = join(configDir, 'opencortex.json');
+  let mcpData = DEFAULT_MCP_CONFIG;
+
+  if (existsSync(legacyPath)) {
+    try {
+      const legacy = JSON.parse(readFileSync(legacyPath, 'utf-8'));
+      mcpData = _migrateLegacyConfig(legacy);
+    } catch {
+      // Fall through to defaults
+    }
+  }
+
+  writeFileSync(mcpPath, JSON.stringify(mcpData, null, 2) + '\n');
+  _mcpConfig = undefined; // Invalidate cache so next getMcpConfig() reads the new file
+  return mcpPath;
 }
 
-// ── plugin config (config.json) ────────────────────────────────────────
-let _pluginConfig = undefined;
-function loadPluginConfig() {
-  if (_pluginConfig !== undefined) return _pluginConfig;
-  const p = join(PLUGIN_ROOT, 'config.json');
-  try { _pluginConfig = JSON.parse(readFileSync(p, 'utf-8')); } catch { _pluginConfig = {}; }
-  return _pluginConfig;
+// ── Cached MCP config ─────────────────────────────────────────────────
+let _mcpConfig = undefined;
+
+function _loadMcpConfig() {
+  if (_mcpConfig !== undefined) return _mcpConfig;
+  const p = findMcpConfig();
+  if (!p) { _mcpConfig = { ...DEFAULT_MCP_CONFIG }; return _mcpConfig; }
+  try {
+    const raw = JSON.parse(readFileSync(p, 'utf-8'));
+    _mcpConfig = { ...DEFAULT_MCP_CONFIG, ...raw };
+    // Merge nested objects
+    if (raw.local) _mcpConfig.local = { ...DEFAULT_MCP_CONFIG.local, ...raw.local };
+    if (raw.remote) _mcpConfig.remote = { ...DEFAULT_MCP_CONFIG.remote, ...raw.remote };
+  } catch {
+    _mcpConfig = { ...DEFAULT_MCP_CONFIG };
+  }
+  // Apply environment variable overrides
+  _applyEnvOverrides(_mcpConfig);
+  return _mcpConfig;
 }
 
-export function getPluginConfig(dotKey, defaultVal = undefined) {
-  const cfg = loadPluginConfig();
+/**
+ * Apply OPENCORTEX_* environment variable overrides to MCP config.
+ */
+function _applyEnvOverrides(cfg) {
+  const env = process.env;
+  if (env.OPENCORTEX_TENANT_ID) cfg.tenant_id = env.OPENCORTEX_TENANT_ID;
+  if (env.OPENCORTEX_USER_ID) cfg.user_id = env.OPENCORTEX_USER_ID;
+  if (env.OPENCORTEX_MODE) cfg.mode = env.OPENCORTEX_MODE;
+  if (env.OPENCORTEX_HTTP_PORT) cfg.local.http_port = parseInt(env.OPENCORTEX_HTTP_PORT, 10);
+  if (env.OPENCORTEX_HTTP_URL) cfg.remote.http_url = env.OPENCORTEX_HTTP_URL;
+}
+
+/**
+ * Get a value from the MCP config using dot-notation key.
+ * Falls back to defaultVal if not found.
+ */
+export function getMcpConfig(dotKey, defaultVal = undefined) {
+  const cfg = _loadMcpConfig();
   const keys = dotKey.split('.');
   let cur = cfg;
   for (const k of keys) {
@@ -72,14 +155,35 @@ export function getPluginConfig(dotKey, defaultVal = undefined) {
   return cur ?? defaultVal;
 }
 
-export function getPluginMode() {
-  return getPluginConfig('mode', 'local');
+// ── Backward-compatible aliases ─────────────────────────────────────────
+// These delegate to the MCP config so existing callers keep working.
+export function getPluginConfig(dotKey, defaultVal = undefined) {
+  return getMcpConfig(dotKey, defaultVal);
 }
 
+export function getPluginMode() {
+  return getMcpConfig('mode', 'local');
+}
+
+export function getConfigPath() {
+  return findMcpConfig();
+}
+
+// Legacy getProjectConfig — now returns MCP config (tenant_id/user_id used for headers)
+let _projectConfig = undefined;
+export function getProjectConfig() {
+  if (_projectConfig !== undefined) return _projectConfig;
+  const p = findMcpConfig();
+  if (!p) { _projectConfig = null; return null; }
+  try { _projectConfig = JSON.parse(readFileSync(p, 'utf-8')); } catch { _projectConfig = null; }
+  return _projectConfig;
+}
+
+// ── HTTP URL ────────────────────────────────────────────────────────────
 export function getHttpUrl() {
-  const mode = getPluginMode();
-  if (mode === 'remote') return getPluginConfig('remote.http_url', 'http://127.0.0.1:8921');
-  const port = getPluginConfig('local.http_port', 8921);
+  const mode = getMcpConfig('mode', 'local');
+  if (mode === 'remote') return getMcpConfig('remote.http_url', 'http://127.0.0.1:8921');
+  const port = getMcpConfig('local.http_port', 8921);
   return `http://127.0.0.1:${port}`;
 }
 

@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Literal, Optional
 class Skill:
     """A single learned skill entry in the Skillbook."""
 
-    id: str  # "{section_prefix}-{N:05d}"
+    id: str  # uuid4
     section: str  # "strategies" | "error_fixes" | "patterns" | "general"
     content: str  # L0: imperative sentence
     justification: Optional[str] = None
@@ -20,6 +20,13 @@ class Skill:
     status: str = "active"  # "active" | "invalid" | "protected"
     created_at: str = ""
     updated_at: str = ""
+    # Multi-tenant scope fields
+    tenant_id: str = ""
+    owner_user_id: str = ""
+    scope: str = "private"  # "private" | "shared" | "legacy"
+    share_status: str = "private_only"  # "private_only"|"candidate"|"promoted"|"demoted"|"blocked"
+    share_score: float = 0.0
+    share_reason: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -34,6 +41,12 @@ class Skill:
             "status": self.status,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "tenant_id": self.tenant_id,
+            "owner_user_id": self.owner_user_id,
+            "scope": self.scope,
+            "share_status": self.share_status,
+            "share_score": self.share_score,
+            "share_reason": self.share_reason,
         }
 
     @classmethod
@@ -50,6 +63,12 @@ class Skill:
             status=data.get("status", "active"),
             created_at=data.get("created_at", ""),
             updated_at=data.get("updated_at", ""),
+            tenant_id=data.get("tenant_id", ""),
+            owner_user_id=data.get("owner_user_id", ""),
+            scope=data.get("scope", "private"),
+            share_status=data.get("share_status", "private_only"),
+            share_score=data.get("share_score", 0.0),
+            share_reason=data.get("share_reason", ""),
         )
 
 

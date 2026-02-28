@@ -36,6 +36,7 @@ Typical usage::
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 from uuid import uuid4
 
@@ -128,10 +129,9 @@ class MemoryOrchestrator:
 
         # 1. Storage backend (auto-create QdrantStorageAdapter if not provided)
         if self._storage is None:
-            import os
             from opencortex.storage.qdrant import QdrantStorageAdapter
 
-            db_path = os.path.join(self._config.data_root, ".qdrant")
+            db_path = str(Path(self._config.data_root) / ".qdrant")
             self._storage = QdrantStorageAdapter(
                 path=db_path,
                 embedding_dim=self._config.embedding_dimension,
@@ -1103,11 +1103,14 @@ class MemoryOrchestrator:
         if not self._hooks:
             return {"success": False, "error": "Hooks not initialized"}
 
+        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
         result = await self._hooks.learn(
             state=state,
             action=action,
             reward=reward,
             available_actions=available_actions,
+            tenant_id=tid,
+            user_id=uid,
         )
         return {
             "success": result.success,
@@ -1137,7 +1140,10 @@ class MemoryOrchestrator:
         if not self._hooks:
             return {"success": False, "error": "Hooks not initialized"}
 
-        return await self._hooks.remember(content=content, memory_type=memory_type)
+        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
+        return await self._hooks.remember(
+            content=content, memory_type=memory_type, tenant_id=tid, user_id=uid,
+        )
 
     async def hooks_recall(
         self,
@@ -1158,7 +1164,8 @@ class MemoryOrchestrator:
         if not self._hooks:
             return []
 
-        return await self._hooks.recall(query=query, limit=limit)
+        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
+        return await self._hooks.recall(query=query, limit=limit, tenant_id=tid, user_id=uid)
 
     async def hooks_trajectory_begin(self, trajectory_id: str, initial_state: str) -> Dict[str, Any]:
         """Begin a learning trajectory."""
@@ -1200,9 +1207,12 @@ class MemoryOrchestrator:
         if not self._hooks:
             return {"success": False, "error": "Hooks not initialized"}
 
+        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
         return await self._hooks.trajectory_end(
             trajectory_id=trajectory_id,
             quality_score=quality_score,
+            tenant_id=tid,
+            user_id=uid,
         )
 
     async def hooks_error_record(self, error: str, fix: str, context: Optional[str] = None) -> Dict[str, Any]:
@@ -1211,7 +1221,10 @@ class MemoryOrchestrator:
         if not self._hooks:
             return {"success": False, "error": "Hooks not initialized"}
 
-        return await self._hooks.error_record(error=error, fix=fix, context=context)
+        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
+        return await self._hooks.error_record(
+            error=error, fix=fix, context=context, tenant_id=tid, user_id=uid,
+        )
 
     async def hooks_error_suggest(self, error: str) -> List[Dict[str, Any]]:
         """Get suggested fixes for an error."""
@@ -1219,7 +1232,8 @@ class MemoryOrchestrator:
         if not self._hooks:
             return []
 
-        return await self._hooks.error_suggest(error=error)
+        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
+        return await self._hooks.error_suggest(error=error, tenant_id=tid, user_id=uid)
 
     async def hooks_stats(self) -> Dict[str, Any]:
         """Get hooks statistics."""
@@ -1227,7 +1241,8 @@ class MemoryOrchestrator:
         if not self._hooks:
             return {"success": False, "error": "Hooks not initialized"}
 
-        stats = await self._hooks.stats()
+        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
+        stats = await self._hooks.stats(tenant_id=tid, user_id=uid)
         return {
             "success": True,
             "q_learning_patterns": stats.q_learning_patterns,
@@ -1235,6 +1250,54 @@ class MemoryOrchestrator:
             "learning_trajectories": stats.learning_trajectories,
             "error_patterns": stats.error_patterns,
         }
+
+    # =========================================================================
+    # Skill Approval & Demotion
+    # =========================================================================
+
+    async def hooks_list_candidates(self) -> List[Dict[str, Any]]:
+        """List candidate skills awaiting review for the current tenant."""
+        self._ensure_init()
+        if not self._hooks:
+            return []
+        tid, _uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
+        return await self._hooks.list_candidates(tenant_id=tid)
+
+    async def hooks_review_skill(
+        self,
+        skill_id: str,
+        decision: str,
+    ) -> Dict[str, Any]:
+        """Approve or reject a candidate skill."""
+        self._ensure_init()
+        if not self._hooks:
+            return {"success": False, "error": "Hooks not initialized"}
+        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
+        return await self._hooks.review_skill(
+            skill_id=skill_id, decision=decision, tenant_id=tid, user_id=uid,
+        )
+
+    async def hooks_demote_skill(
+        self,
+        skill_id: str,
+        reason: str = "",
+    ) -> Dict[str, Any]:
+        """Demote a shared skill back to private."""
+        self._ensure_init()
+        if not self._hooks:
+            return {"success": False, "error": "Hooks not initialized"}
+        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
+        return await self._hooks.demote_skill(
+            skill_id=skill_id, reason=reason, tenant_id=tid, user_id=uid,
+        )
+
+    async def hooks_migrate_legacy(self) -> Dict[str, Any]:
+        """Migrate legacy skills that lack scope fields."""
+        self._ensure_init()
+        if not self._hooks:
+            return {"success": False, "error": "Hooks not initialized"}
+        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
+        return await self._hooks.migrate_legacy_skills(tenant_id=tid, user_id=uid)
 
     # =========================================================================
     # Hooks Integration (Route through MCP → CortexFS)
@@ -1283,8 +1346,8 @@ class MemoryOrchestrator:
             "project_path": project_path,
             "tenant_id": tid,
             "user_id": uid,
-            "mcp_transport": self._config.mcp_transport,
-            "mcp_port": self._config.mcp_port,
+            "http_server_host": self._config.http_server_host,
+            "http_server_port": self._config.http_server_port,
         }
 
     async def hooks_pretrain(self, repo_path: str = ".") -> Dict[str, Any]:

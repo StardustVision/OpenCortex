@@ -4,7 +4,7 @@
  * Thin proxy: MCP JSON-RPC ↔ HTTP REST API.
  * Zero external dependencies.
  */
-import { getHttpUrl, getProjectConfig } from './common.mjs';
+import { getHttpUrl, getProjectConfig, ensureDefaultConfig } from './common.mjs';
 
 // ── Tool definitions ───────────────────────────────────────────────────
 // Each entry: [httpMethod, httpPath, description, parameters]
@@ -247,6 +247,7 @@ async function handleMessage(msg) {
 
 // ── Main loop ──────────────────────────────────────────────────────────
 async function main() {
+  ensureDefaultConfig();
   let buffer = '';
   for await (const chunk of process.stdin) {
     buffer += chunk.toString();

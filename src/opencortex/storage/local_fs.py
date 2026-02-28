@@ -10,8 +10,8 @@ The vectorize parameter is not used (queue system not ported).
 
 import json
 import logging
-import os
 import zipfile
+from pathlib import Path
 
 from opencortex.core.context import Context
 
@@ -27,9 +27,8 @@ def ensure_ovpack_extension(path: str) -> str:
 
 def ensure_dir_exists(path: str) -> None:
     """Ensure the parent directory of the given path exists."""
-    out_dir = os.path.dirname(os.path.abspath(path))
-    if out_dir:
-        os.makedirs(out_dir, exist_ok=True)
+    out_dir = Path(path).resolve().parent
+    out_dir.mkdir(parents=True, exist_ok=True)
 
 
 def get_ovpack_zip_path(base_name: str, rel_path: str) -> str:
@@ -79,7 +78,7 @@ async def import_ovpack(
     Returns:
         Root resource URI after import
     """
-    if not os.path.exists(file_path):
+    if not Path(file_path).exists():
         raise FileNotFoundError(f"File not found: {file_path}")
 
     parent = parent.strip().rstrip("/")
@@ -178,8 +177,9 @@ async def export_ovpack(cortex_fs, uri: str, to: str) -> str:
     if not base_name:
         base_name = "export"
 
-    if os.path.isdir(to):
-        to = os.path.join(to, f"{base_name}.ovpack")
+    to_path = Path(to)
+    if to_path.is_dir():
+        to = str(to_path / f"{base_name}.ovpack")
     else:
         to = ensure_ovpack_extension(to)
 

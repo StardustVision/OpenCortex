@@ -3,24 +3,36 @@
 OpenCortex configuration.
 
 Provides global configuration for tenant, user, data paths, etc.
-Configuration is loaded from a YAML/JSON file or set programmatically.
+Configuration is loaded from a JSON file or set programmatically.
+
+Search order:
+  CWD/server.json → CWD/opencortex.json → CWD/.opencortex.json
+  → $HOME/.opencortex/server.json → $HOME/.opencortex/opencortex.json
+
+Environment variables (OPENCORTEX_*) override file values.
 """
 
 import json
 import logging
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Default config file search order
-_CONFIG_FILE_NAMES = ["opencortex.json", ".opencortex.json"]
+# Default config file search order (server.json first)
+_CONFIG_FILE_NAMES = ["server.json", "opencortex.json", ".opencortex.json"]
 
 # Global default config directory and file
 DEFAULT_CONFIG_DIR = Path.home() / ".opencortex"
-DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "opencortex.json"
+DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "server.json"
+
+# Legacy config path (for migration)
+_LEGACY_CONFIG_PATH = DEFAULT_CONFIG_DIR / "opencortex.json"
+
+# Fields that belong to MCP config (excluded from server.json)
+_MCP_ONLY_FIELDS = {"mcp_transport", "mcp_port", "mcp_mode"}
 
 
 @dataclass
@@ -60,13 +72,14 @@ class CortexConfig:
     rerank_api_base: str = ""       # API endpoint
     rerank_threshold: float = 0.0   # Score threshold
     rerank_fusion_beta: float = 0.7 # Rerank vs retrieval score weight (0-1)
-    # MCP server
-    mcp_transport: str = "stdio"  # "stdio" | "sse" | "streamable-http"
-    mcp_port: int = 8920
-    mcp_mode: str = "remote"  # "remote" (thin client) | "local" (in-process orchestrator)
     # OpenCortex HTTP Server (FastAPI)
     http_server_host: str = "127.0.0.1"
     http_server_port: int = 8921
+    # ACE Multi-Tenant Skill Sharing
+    share_skills_to_team: bool = False
+    skill_share_mode: str = "manual"  # "manual" | "auto_safe" | "auto_aggressive"
+    skill_share_score_threshold: float = 0.85
+    ace_scope_enforcement_enabled: bool = False
 
     def tenant_prefix(self) -> str:
         """Return the tenant URI prefix: opencortex://{tenant_id}"""
@@ -82,7 +95,7 @@ class CortexConfig:
     def save(self, path: Optional[str] = None) -> None:
         """Save config to JSON file.
 
-        If no path is given, saves to $HOME/.opencortex/opencortex.json
+        If no path is given, saves to $HOME/.opencortex/server.json
         (creates the directory if needed).
         """
         if path:
@@ -98,8 +111,14 @@ class CortexConfig:
     def load(cls, path: Optional[str] = None) -> "CortexConfig":
         """Load config from JSON file.
 
-        Args:
-            path: Explicit config file path. If None, searches for default files.
+        Search order:
+          1. Explicit path (if given)
+          2. CWD: server.json → opencortex.json → .opencortex.json
+          3. $HOME/.opencortex/server.json
+          4. $HOME/.opencortex/opencortex.json (legacy)
+          5. Defaults
+
+        Environment variables (OPENCORTEX_*) override file values.
 
         Returns:
             CortexConfig instance (defaults if no file found).
@@ -109,15 +128,21 @@ class CortexConfig:
 
         # Search for config file in CWD (project-local overrides global)
         for name in _CONFIG_FILE_NAMES:
-            if os.path.exists(name):
+            if Path(name).exists():
                 return cls._load_from_file(name)
 
-        # Default: $HOME/.opencortex/opencortex.json
+        # $HOME/.opencortex/server.json
         if DEFAULT_CONFIG_PATH.exists():
             return cls._load_from_file(str(DEFAULT_CONFIG_PATH))
 
-        # No config file found, return defaults
-        return cls()
+        # Legacy fallback: $HOME/.opencortex/opencortex.json
+        if _LEGACY_CONFIG_PATH.exists():
+            return cls._load_from_file(str(_LEGACY_CONFIG_PATH))
+
+        # No config file found, apply env overrides to defaults
+        config = cls()
+        config._apply_env_overrides()
+        return config
 
     @classmethod
     def _load_from_file(cls, path: str) -> "CortexConfig":
@@ -128,21 +153,56 @@ class CortexConfig:
         known_fields = {f.name for f in cls.__dataclass_fields__.values()}
         filtered = {k: v for k, v in data.items() if k in known_fields}
         config = cls(**filtered)
+        config._apply_env_overrides()
         logger.info(f"[CortexConfig] Loaded from {path} (tenant={config.tenant_id}, user={config.user_id})")
         return config
 
+    def _apply_env_overrides(self) -> None:
+        """Override config fields from OPENCORTEX_* environment variables."""
+        for f in fields(self):
+            env_key = f"OPENCORTEX_{f.name.upper()}"
+            env_val = os.environ.get(env_key)
+            if env_val is not None:
+                # Type conversion based on field type
+                if f.type is int:
+                    setattr(self, f.name, int(env_val))
+                elif f.type is float:
+                    setattr(self, f.name, float(env_val))
+                elif f.type is bool:
+                    setattr(self, f.name, env_val.lower() in ("1", "true", "yes"))
+                else:
+                    setattr(self, f.name, env_val)
+
     @classmethod
     def ensure_default_config(cls) -> Path:
-        """Create default config at $HOME/.opencortex/opencortex.json if it doesn't exist.
+        """Create default config at $HOME/.opencortex/server.json if it doesn't exist.
+
+        If a legacy opencortex.json exists, extracts server fields into server.json.
 
         Returns:
             Path to the default config file.
         """
-        if not DEFAULT_CONFIG_PATH.exists():
-            DEFAULT_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-            default = cls()
-            default.save(str(DEFAULT_CONFIG_PATH))
-            logger.info(f"[CortexConfig] Created default config at {DEFAULT_CONFIG_PATH}")
+        if DEFAULT_CONFIG_PATH.exists():
+            return DEFAULT_CONFIG_PATH
+
+        DEFAULT_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+        if _LEGACY_CONFIG_PATH.exists():
+            # Migrate: extract server fields from legacy config
+            try:
+                with open(_LEGACY_CONFIG_PATH, "r", encoding="utf-8") as f:
+                    legacy_data = json.load(f)
+                known_fields = {f.name for f in cls.__dataclass_fields__.values()}
+                filtered = {k: v for k, v in legacy_data.items()
+                            if k in known_fields and k not in _MCP_ONLY_FIELDS}
+                config = cls(**filtered)
+            except Exception:
+                config = cls()
+        else:
+            config = cls()
+
+        config.save(str(DEFAULT_CONFIG_PATH))
+        logger.info(f"[CortexConfig] Created default config at {DEFAULT_CONFIG_PATH}")
         return DEFAULT_CONFIG_PATH
 
 

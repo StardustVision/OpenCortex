@@ -8,7 +8,7 @@ a thin client that forwards requests here.
 
 Usage::
 
-    python -m opencortex.http --host 127.0.0.1 --port 8921 --config opencortex.json
+    python -m opencortex.http --host 127.0.0.1 --port 8921 --config server.json
 """
 
 import logging
@@ -36,6 +36,8 @@ from opencortex.http.models import (
     SessionBeginRequest,
     SessionEndRequest,
     SessionMessageRequest,
+    SkillDemoteRequest,
+    SkillReviewRequest,
     TrajectoryBeginRequest,
     TrajectoryEndRequest,
     TrajectoryStepRequest,
@@ -273,6 +275,32 @@ def _register_routes(app: FastAPI) -> None:
     @app.post("/api/v1/hooks/error/suggest")
     async def error_suggest(req: ErrorSuggestRequest) -> List[Dict[str, Any]]:
         return await _orchestrator.hooks_error_suggest(error=req.error)
+
+    # =====================================================================
+    # Skill Approval & Demotion
+    # =====================================================================
+
+    @app.get("/api/v1/skills/candidates")
+    async def skills_candidates() -> List[Dict[str, Any]]:
+        return await _orchestrator.hooks_list_candidates()
+
+    @app.post("/api/v1/skills/review")
+    async def skills_review(req: SkillReviewRequest) -> Dict[str, Any]:
+        return await _orchestrator.hooks_review_skill(
+            skill_id=req.skill_id,
+            decision=req.decision,
+        )
+
+    @app.post("/api/v1/skills/demote")
+    async def skills_demote(req: SkillDemoteRequest) -> Dict[str, Any]:
+        return await _orchestrator.hooks_demote_skill(
+            skill_id=req.skill_id,
+            reason=req.reason,
+        )
+
+    @app.post("/api/v1/skills/migrate")
+    async def skills_migrate() -> Dict[str, Any]:
+        return await _orchestrator.hooks_migrate_legacy()
 
     # =====================================================================
     # Session

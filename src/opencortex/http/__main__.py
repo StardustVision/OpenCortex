@@ -4,7 +4,7 @@ CLI entry point for the OpenCortex HTTP Server.
 
 Usage::
 
-    python -m opencortex.http --host 127.0.0.1 --port 8921 --config opencortex.json
+    python -m opencortex.http --host 127.0.0.1 --port 8921 --config server.json
 """
 
 import argparse
@@ -30,7 +30,7 @@ def main():
     parser.add_argument(
         "--config",
         default=None,
-        help="Path to opencortex.json config file",
+        help="Path to config file (default: auto-discover server.json)",
     )
     parser.add_argument(
         "--log-level",
