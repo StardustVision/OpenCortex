@@ -3,7 +3,7 @@
 Intent Router: three-layer intent parsing -> SearchIntent.
 
 Layer 1: Keyword extraction (zero LLM cost)
-Layer 2: LLM semantic classification (conditional: query >= 30 chars)
+Layer 2: LLM semantic classification (whenever LLM is available)
 Layer 3: Memory Trigger (Agent reflection intent, output alongside LLM)
 """
 
@@ -51,9 +51,6 @@ _INTENT_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "summarize":     {"top_k": 30, "detail_level": "l1", "need_rerank": True},
     "personalized":  {"top_k": 10, "detail_level": "l1", "need_rerank": True},
 }
-
-# Minimum query length to trigger LLM classification
-_ROUTER_MIN_QUERY_LEN = 30
 
 # =========================================================================
 # LLM prompt
@@ -150,8 +147,8 @@ class IntentRouter:
         # Layer 1: keyword-based quick match
         intent = self._keyword_extract(query)
 
-        # Layer 2+3: LLM classification + Memory Trigger (long queries only)
-        if len(query) >= _ROUTER_MIN_QUERY_LEN and self._llm:
+        # Layer 2+3: LLM classification + Memory Trigger
+        if self._llm:
             try:
                 llm_intent = await self._llm_classify(query, context_type)
                 if llm_intent:
