@@ -95,6 +95,11 @@ class HierarchicalRetriever:
                 self.threshold,
             )
 
+        # Score gap threshold for conditional rerank
+        self._score_gap_threshold = (
+            rerank_config.score_gap_threshold if rerank_config else 0.15
+        )
+
     async def retrieve(
         self,
         query: TypedQuery,
@@ -246,6 +251,26 @@ class HierarchicalRetriever:
         )
         return results
 
+    def _should_rerank(self, results: List[Dict[str, Any]]) -> bool:
+        """Decide whether rerank is worth the cost.
+
+        Skip rerank when the top result has a clear score lead over the
+        second result — reranking is unlikely to change the ordering.
+        """
+        if len(results) < 2:
+            return False
+        scores = sorted(
+            [r.get("_score", 0.0) for r in results], reverse=True
+        )
+        gap = scores[0] - scores[1]
+        if gap > self._score_gap_threshold:
+            logger.debug(
+                "[Rerank] Skipped — score gap %.3f > threshold %.3f",
+                gap, self._score_gap_threshold,
+            )
+            return False
+        return True
+
     async def _merge_starting_points(
         self,
         query: str,
@@ -264,7 +289,12 @@ class HierarchicalRetriever:
         points = []
         seen = set()
 
-        if self._rerank_client and mode == RetrieverMode.THINKING and global_results:
+        if (
+            self._rerank_client
+            and mode == RetrieverMode.THINKING
+            and global_results
+            and self._should_rerank(global_results)
+        ):
             docs = [r.get("abstract", "") for r in global_results]
             rerank_scores = await self._rerank_client.rerank(query, docs)
             beta = self._fusion_beta
@@ -367,7 +397,11 @@ class HierarchicalRetriever:
                 continue
 
             query_scores = []
-            if self._rerank_client and mode == RetrieverMode.THINKING:
+            if (
+                self._rerank_client
+                and mode == RetrieverMode.THINKING
+                and self._should_rerank(results)
+            ):
                 documents = [r.get("abstract", "") for r in results]
                 rerank_scores = await self._rerank_client.rerank(query, documents)
                 beta = self._fusion_beta
