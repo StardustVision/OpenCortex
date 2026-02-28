@@ -164,6 +164,27 @@ class HierarchicalRetriever:
         else:
             root_uris = self._get_root_uris_for_type(query.context_type)
 
+        # No-embedder fallback: pure filter/scroll (no semantic ranking)
+        if not self.embedder:
+            results = await self.storage.search(
+                collection=collection,
+                query_vector=None,
+                filter=final_metadata_filter,
+                limit=limit,
+            )
+            # Apply RL boost to scroll results
+            for r in results:
+                reward = r.get("reward_score", 0.0)
+                if reward != 0 and self._rl_weight:
+                    r["_score"] = r.get("_score", 0.0) + self._rl_weight * reward
+            results.sort(key=lambda r: r.get("_score", 0.0), reverse=True)
+            matched = await self._convert_to_matched_contexts(results[:limit], query.context_type)
+            return QueryResult(
+                query=query,
+                matched_contexts=matched,
+                searched_directories=root_uris,
+            )
+
         # Step 2: Global vector search to supplement starting points
         global_results = await self._global_vector_search(
             collection=collection,

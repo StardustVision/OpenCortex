@@ -233,6 +233,15 @@ class MemoryOrchestrator:
 
         provider = (self._config.embedding_provider or "").strip().lower()
 
+        # Explicitly disabled — no embedding, degraded to filter/scroll search
+        if provider in ("none", "disabled", "off"):
+            logger.info(
+                "[MemoryOrchestrator] embedding_provider='%s' — "
+                "running without embedder (filter/scroll search only).",
+                provider,
+            )
+            return None
+
         if provider == "volcengine":
             try:
                 from opencortex.models.embedder.volcengine_embedders import (
