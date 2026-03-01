@@ -1,95 +1,132 @@
-# OpenCortex - Project Guide
+# OpenCortex — Developer Guide
 
-## 项目概述
+## Overview
 
-OpenCortex 是面向 AI Agent 的**记忆与上下文管理系统**，从 [OpenViking](https://github.com/volcengine/openviking) 移植并重构。
+OpenCortex is a memory and context management system for AI agents. It provides persistent, searchable, self-improving memory through three-layer summaries, reinforcement learning ranking, and self-learning skill extraction.
 
-核心能力：
-- **三层摘要** (L0/L1/L2) — 按需返回精度层级，节省 Token
-- **强化学习排序** — RL 驱动，高价值记忆上浮，低价值自然衰减
-- **租户级隔离** — 多团队多用户，URI 命名空间隔离
-- **MCP Server** — 通过 FastMCP v3 暴露工具给外部 Agent
-- **HTTP Server** — FastAPI 独立部署，承载 Orchestrator 业务逻辑
+Core subsystems:
+- **MemoryOrchestrator** — unified API layer (~1500 lines) wiring all components
+- **CortexFS** — three-layer filesystem (L0 abstract / L1 overview / L2 content)
+- **HierarchicalRetriever** — frontier-batching wave search with RL score fusion
+- **IntentRouter** — 3-layer query analysis (keywords → LLM → memory triggers)
+- **ACEngine** — self-learning loop (RuleExtractor → Skillbook)
+- **SessionManager** — session lifecycle with LLM memory extraction
+- **QdrantStorageAdapter** — embedded Qdrant with RL fields (reward, decay, protect)
 
-## 技术栈
+## Tech Stack
 
-- Python 3.10+, async-first (HTTP Server 后端)
-- Node.js >= 18 (MCP Server + Plugin Hooks, 零外部依赖)
-- 向量存储: Qdrant (嵌入式本地模式，零外部进程)
-- Embedding: 火山引擎 doubao-embedding-vision (1024 dim)
+- Python 3.10+, async-first (HTTP server backend)
+- Node.js >= 18 (MCP server + plugin hooks, zero external deps)
+- Vector store: Qdrant (embedded local mode, no separate process)
+- Embedding: Volcengine doubao-embedding-vision (1024 dim) / OpenAI-compatible
 - HTTP: FastAPI + uvicorn + httpx
 - MCP: Node.js stdio proxy (25 tools → HTTP API)
-- 测试: unittest (103 Python) + node:test (8 Node.js MCP)
+- Tests: unittest (111+ Python) + node:test (8 Node.js MCP)
 
-## 关键目录
+## Directory Structure
 
 ```
-src/opencortex/           # 核心框架 (Python)
-  config.py               # CortexConfig (tenant/user)
-  orchestrator.py          # MemoryOrchestrator 顶层 API
+src/opencortex/
+  config.py                      # CortexConfig dataclass + env overrides
+  orchestrator.py                # MemoryOrchestrator — top-level API
   http/
-    server.py              # FastAPI HTTP Server
-    client.py              # OpenCortexClient (异步 HTTP 客户端)
-    models.py              # Pydantic 请求模型
+    server.py                    # FastAPI app + REST routes + tenant middleware
+    client.py                    # OpenCortexClient (async HTTP client)
+    models.py                    # Pydantic request models
+    __main__.py                  # CLI entry point (opencortex-server)
   storage/
-    vikingdb_interface.py  # 抽象接口 (25 async 方法)
-    cortex_fs.py           # CortexFS 文件系统抽象 (原 VikingFS)
-    qdrant/adapter.py      # QdrantStorageAdapter (Qdrant 嵌入式)
-    qdrant/filter_translator.py  # VikingDB DSL → Qdrant Filter
+    vikingdb_interface.py        # Abstract interface (25 async methods)
+    cortex_fs.py                 # CortexFS three-layer filesystem (formerly VikingFS)
+    collection_schemas.py        # Collection schemas (includes RL fields)
+    qdrant/
+      adapter.py                 # QdrantStorageAdapter (standard + RL faces)
+      filter_translator.py       # VikingDB DSL → Qdrant Filter translation
+      rl_types.py                # Profile / DecayResult dataclasses
   retrieve/
-    hierarchical_retriever.py  # 层级递归检索
+    hierarchical_retriever.py    # Wave-based frontier batching + RL fusion
+    intent_router.py             # IntentRouter (keyword + LLM + memory triggers)
+    intent_analyzer.py           # LLM intent analysis → QueryPlan
+    rerank_client.py             # RerankClient (API / LLM / disabled)
+    types.py                     # TypedQuery / SearchIntent / FindResult / DetailLevel
   ace/
-    engine.py              # ACEngine 自学习引擎
-    skillbook.py           # Skillbook CRUD + 向量搜索
-    rule_extractor.py      # RuleExtractor 零 LLM 规则提取
-    reflector.py           # LLM 反思 (可选)
-    skill_manager.py       # LLM 策略管理 (可选)
-  models/embedder/         # 嵌入模型抽象
+    engine.py                    # ACEngine (Skillbook + Reflector + SkillManager)
+    skillbook.py                 # Skillbook CRUD + vector search + CortexFS persistence
+    rule_extractor.py            # RuleExtractor — zero-LLM skill extraction
+    reflector.py                 # LLM reflection (optional)
+    skill_manager.py             # LLM strategy management (optional)
+    types.py                     # Skill / Learning / UpdateOperation
+  session/
+    manager.py                   # SessionManager (begin/message/end)
+    extractor.py                 # MemoryExtractor (LLM-driven)
+    types.py                     # SessionContext / ExtractedMemory
+  models/embedder/               # EmbedderBase / Dense / Sparse / Hybrid abstractions
+  utils/
+    uri.py                       # CortexURI tenant-isolated URI scheme
 
-plugins/opencortex-memory/ # Claude Code 插件 (纯 Node.js)
-  hooks/run.mjs            # Hook 统一入口
-  hooks/handlers/*.mjs     # 4 个 Hook 处理器
-  lib/common.mjs           # 配置/状态/路径
-  lib/http-client.mjs      # fetch 封装
-  lib/transcript.mjs       # JSONL 解析
-  lib/mcp-server.mjs       # MCP stdio server (25 tools)
-  bin/oc-cli.mjs            # CLI 工具
+plugins/opencortex-memory/       # Claude Code plugin (pure Node.js)
+  hooks/run.mjs                  # Hook unified entry point
+  hooks/handlers/*.mjs           # 4 hook handlers (session-start, user-prompt-submit, stop, session-end)
+  lib/common.mjs                 # Config discovery, state, uv/python detection
+  lib/http-client.mjs            # Native fetch wrapper
+  lib/transcript.mjs             # JSONL parsing
+  lib/mcp-server.mjs             # MCP stdio server (25 tools)
+  bin/oc-cli.mjs                 # CLI tool
 
 tests/
-  test_e2e_phase1.py       # 24 个 E2E 测试
-  test_mcp_server.mjs      # 8 个 MCP 测试 (Node.js)
-  test_ace_phase1.py       # 21 个 ACE 测试
-  test_ace_phase2.py       # 17 个 ACE Phase 2 测试
-  test_rule_extractor.py   # 20 个规则提取测试
-  test_skill_search_fusion.py   # 11 个 Skill 融合搜索测试
-  test_integration_skill_pipeline.py  # 10 个 Qdrant 集成测试
-
-docs/architecture.md       # 架构设计文档
+  test_e2e_phase1.py             # 24 E2E tests
+  test_mcp_server.mjs            # 8 MCP tests (Node.js)
+  test_ace_phase1.py             # 21 ACE tests
+  test_ace_phase2.py             # 17 ACE Phase 2 tests
+  test_rule_extractor.py         # 20 rule extraction tests
+  test_skill_search_fusion.py    # 11 skill fusion search tests
+  test_integration_skill_pipeline.py  # 10 Qdrant integration tests
 ```
 
-## 开发约定
+## Development Conventions
 
-- 所有存储操作通过 `VikingDBInterface` 抽象，方法均为 `async`
-- URI 格式: `opencortex://{team}/user/{uid}/{type}/{category}/{node_id}`
-- 配置优先从 `opencortex.json` 加载
-- 强化学习方法 (update_reward/get_profile/apply_decay/set_protected) 不在接口中，通过 `hasattr` 检测
-- 包管理使用 `uv` (不用 pip)
-- 运行 Python 测试: `uv run python3 -m unittest tests.test_e2e_phase1 tests.test_ace_phase1 tests.test_ace_phase2 tests.test_rule_extractor tests.test_skill_search_fusion tests.test_integration_skill_pipeline -v`
-- 运行 MCP 测试: `node --test tests/test_mcp_server.mjs`
-- VikingFS 已重命名为 CortexFS，旧名保留向后兼容
+- All storage operations go through `VikingDBInterface` — every method is `async`
+- URI format: `opencortex://{team}/user/{uid}/{type}/{category}/{node_id}`
+- Config loads from `server.json` (project-local) or `~/.opencortex/server.json` (global)
+- RL methods (`update_reward`, `get_profile`, `apply_decay`, `set_protected`) are not in the interface — detected via `hasattr` on the adapter
+- Package management uses `uv` (not pip)
+- VikingFS has been renamed to CortexFS; old name retained for backward compatibility
 
-## 架构
+## Architecture
 
-调用链:
-- MCP: Agent → node mcp-server.mjs (stdio) → fetch → HTTP Server (FastAPI) → Orchestrator → Qdrant
-- Hooks: Agent → node run.mjs <hook> → fetch → HTTP Server
+### Call Chains
 
-自学习闭环:
-- `memory_store (add)` → RuleExtractor 异步提取 skill → Skillbook 持久化
-- `memory_search (search)` → 并行搜索 contexts + skillbooks → 混合排序返回
-- `memory_feedback (feedback)` → 更新 RL reward / Skillbook tag
+```
+MCP path:   Agent → node mcp-server.mjs (stdio) → fetch → HTTP Server (FastAPI) → Orchestrator → Qdrant
+Hooks path: Agent → node run.mjs <hook> → fetch → HTTP Server
+```
 
-MCP Server 为纯 Node.js stdio 代理，由 Claude Code 通过 .mcp.json 自动管理生命周期。
+### Self-Learning Loop
+
+```
+memory_store (add)     → RuleExtractor async-extracts skills → Skillbook persists
+memory_search (search) → parallel search contexts + skillbooks → hybrid sort + return
+memory_feedback        → update RL reward / Skillbook tag (helpful/harmful)
+```
+
+### Score Fusion Formula
+
+```
+final = beta * rerank_score + (1 - beta) * retrieval_score + rl_weight * reward_score
+```
+
+Where `rl_weight = 0.05` (conservative), `beta = 0.7` (rerank weight).
+
+### Storage Dual-Write
+
+Each memory is written to both:
+1. **CortexFS**: `.abstract.md` (L0) + `.overview.md` (L1) + `content.md` (L2)
+2. **Qdrant**: embedding vector + L0/L1 as payload fields + RL fields
+
+Search returns L0/L1 from Qdrant (zero filesystem I/O). L2 requires a CortexFS read.
+
+### MCP Server
+
+Pure Node.js stdio proxy. Claude Code manages its lifecycle via `.mcp.json`. The server translates MCP tool calls into HTTP requests to the FastAPI server.
 
 ## HTTP Server
 
@@ -97,28 +134,27 @@ MCP Server 为纯 Node.js stdio 代理，由 Claude Code 通过 .mcp.json 自动
 uv run opencortex-server --host 127.0.0.1 --port 8921
 ```
 
-## 当前状态
+Or via Docker:
 
-已完成: 核心框架 + HTTP Server + Node.js MCP Server + Node.js Hooks + ACE 自学习闭环 + 103 Python 测试 + 8 Node.js MCP 测试
-待实现: 真实 Embedding 接入, 远程同步, Session End LLM 反思 (config 控制)
+```bash
+docker compose up -d
+```
 
-## 记忆召回策略
+## Running Tests
 
-当 OpenCortex 记忆系统可用时（由 hook systemMessage 提示），遵循以下策略：
+```bash
+# Python core tests (no external dependencies)
+uv run python3 -m unittest tests.test_e2e_phase1 tests.test_ace_phase1 tests.test_ace_phase2 tests.test_rule_extractor tests.test_skill_search_fusion tests.test_integration_skill_pipeline -v
 
-**何时调用 `memory_search`**：
-- 用户提到过去的决定、偏好、约定
-- 任务需要项目上下文或历史信息
-- 遇到之前解决过的类似问题
-- 用户显式要求回忆/查找之前的内容
+# Node.js MCP tests (requires running HTTP server)
+node --test tests/test_mcp_server.mjs
 
-**何时不调用**：
-- 简单问候、闲聊、确认
-- 纯粹的代码生成（无需历史上下文）
-- 用户已提供完整上下文
+# Full regression
+uv run python3 -m unittest discover -s tests -v
+```
 
-**使用方式**：
-- 工具: `memory_search(query="...", limit=5)`
-- 可选过滤: `context_type` ("memory"/"resource"/"skill"), `category`
-- 结果中 score > 0.7 的记忆优先参考
-- 有用的记忆可用 `memory_feedback(uri="...", reward=1.0)` 正向反馈
+## Current Status
+
+Completed: Core framework + HTTP Server + Node.js MCP Server + Node.js Hooks + ACE self-learning loop + Docker deployment + 111+ Python tests + 8 Node.js MCP tests
+
+Pending: Real embedding integration, remote sync, Session End LLM reflection (config-controlled)

@@ -1,147 +1,219 @@
+<h1 align="center">OpenCortex</h1>
+<p align="center"><strong>Persistent memory and context management for AI agents</strong></p>
 <p align="center">
-  <h1 align="center">OpenCortex</h1>
-  <p align="center">Memory and context management for AI agents</p>
-  <p align="center">
-    <a href="#quick-start">Quick Start</a> ·
-    <a href="#architecture">Architecture</a> ·
-    <a href="#plugin-system">Plugin</a> ·
-    <a href="#mcp-tools">MCP Tools</a> ·
-    <a href="#evaluation-and-testing">Evaluation</a>
-  </p>
+  <a href="#what-is-opencortex">What is it</a> &middot;
+  <a href="#key-concepts">Key Concepts</a> &middot;
+  <a href="#architecture">Architecture</a> &middot;
+  <a href="#getting-started">Getting Started</a> &middot;
+  <a href="#core-features">Features</a> &middot;
+  <a href="#api-reference">API</a> &middot;
+  <a href="README_CN.md">中文文档</a>
 </p>
 
 ---
 
-English documentation is in this file.
+## What is OpenCortex
 
-- Chinese version: [README_CN](README_CN.md)
-- Architecture details: [docs/architecture.md](docs/architecture.md)
-- MCP server docs: [docs/mcp-server.md](docs/mcp-server.md)
-- ACE design docs: [docs/ace-design.md](docs/ace-design.md)
+LLM-based agents operate within finite context windows. When a session ends, everything the agent learned &mdash; user preferences, debugging solutions, architectural decisions &mdash; is lost. The next session starts from zero.
 
-## Why OpenCortex
+OpenCortex solves this by giving agents a **persistent, searchable, self-improving memory**. Think of it as long-term memory for AI: the agent stores what it learns, recalls relevant context when needed, and surfaces the most useful memories first through reinforcement learning.
 
-LLM agents have limited context windows and usually forget everything after a session ends.
+It is not a key-value store. It is a complete memory engine with layered summaries, semantic retrieval, intent-aware routing, and reinforcement-driven ranking.
 
-OpenCortex adds persistent, retrievable, and evolving memory to agent workflows:
+### What it does, concretely
 
-- Recall user preferences across sessions
-- Reuse known fixes for repeated errors
-- Keep architecture and code decisions available as context
+- **Remembers** user preferences, coding conventions, and past decisions across sessions
+- **Recalls** relevant context automatically when the agent processes a new prompt
+- **Learns** from feedback &mdash; memories that prove useful rank higher; stale ones decay
+- **Extracts** reusable skills from conversations without requiring LLM calls
+- **Isolates** data per tenant and user through URI-based namespaces
 
-It is not a simple key-value store. It is a complete memory engine with layered summaries, semantic retrieval, and reinforcement-driven ranking.
+---
 
-## Core Capabilities
+## Key Concepts
 
-### 1. Three-Layer Summaries (L0 / L1 / L2)
+Before diving into the architecture, here is a glossary of terms used throughout this project.
 
-- L0: one-line abstract, optimized for vector retrieval
-- L1: paragraph-level overview, optimized for low-token reasoning
-- L2: full content, loaded only when needed
+### Memory Layers: L0 / L1 / L2
 
-`add()` automatically generates L1 overview:
+OpenCortex stores each memory at three levels of detail to minimize token usage:
 
-- short content: reused directly
-- long content: summarized by LLM (or truncated fallback without LLM)
+| Layer | What it contains | Token cost | When it is used |
+|-------|-----------------|------------|-----------------|
+| **L0** (Abstract) | A single sentence summary | ~20-50 | Vector search indexing, quick confirmations |
+| **L1** (Overview) | A paragraph with reasoning and context | ~100-200 | Most retrieval scenarios (default) |
+| **L2** (Content) | The complete original content | Unlimited | Deep analysis, auditing |
 
-### 2. Intent-Aware Retrieval
+When you store a memory, L1 is generated automatically. When you search, the system returns only the layer you need &mdash; 90% of queries are served by L0 or L1.
 
-Intent Router dynamically selects retrieval strategy (top-k, detail level, time scope):
+### SONA (Self-Organizing Neural Attention)
 
-- quick lookup: low-cost L0 retrieval
-- recent recall: medium-depth L1 retrieval
-- deep analysis: L2 retrieval with richer context
-- summarize: larger top-k aggregation
+The reinforcement learning system that ranks memories. When an agent gives positive feedback to a memory, its reward score increases and it surfaces higher in future searches. Unused memories decay over time. The formula:
 
-### 3. SONA Reinforcement Ranking
-
-Memory ranking integrates semantic similarity and RL feedback:
-
-```text
-fused_score = similarity + rl_weight * reward_score
+```
+final_score = semantic_similarity + rl_weight * reward_score
 ```
 
-- positive feedback: memory moves up
-- stale/unused memory: decays over time
+### ACE (Agentic Context Engine)
 
-### 4. ACE Self-Learning Loop
+The self-learning subsystem. ACE watches what the agent stores and automatically extracts reusable **skills** &mdash; patterns like "when you see error X, apply fix Y" or "the user always wants dark theme". These skills are stored in a **Skillbook** and returned alongside regular memories during search.
 
-OpenCortex includes ACE (Agentic Context Engine):
+### MCP (Model Context Protocol)
 
-- RuleExtractor: zero-LLM extraction of reusable skills
-- Skillbook: persistence + retrieval of operational skills
-- Feedback loop: helpful/harmful tags improve future selection
+An open standard that lets AI agents call external tools. OpenCortex exposes 25 MCP tools (store, search, feedback, etc.) through a Node.js stdio server that Claude Code, Cursor, and other MCP-compatible clients can use directly.
 
-### 5. Session Self-Iteration
+### CortexFS
 
-On session end, hooks can automatically:
+The filesystem abstraction that manages the three-layer storage. Each memory becomes a directory with `.abstract.md` (L0), `.overview.md` (L1), and `content.md` (L2) files. CortexFS handles reading, writing, and hierarchical traversal.
 
-1. parse transcript
-2. summarize the turn
-3. store reusable memory
+### Intent Router
 
-### 6. Tenant/User Isolation
+Analyzes each search query to determine the optimal retrieval strategy. A quick yes/no question gets 3 results at L0; a deep analysis request gets 10 results at L2. Uses keyword matching first (zero LLM cost), then optional LLM classification for complex queries.
 
-URI namespace supports multi-tenant and per-user isolation:
+### Qdrant
 
-```text
-opencortex://{team}/user/{uid}/{type}/{category}/{node_id}
+An open-source vector database. OpenCortex uses Qdrant in **embedded mode** &mdash; it runs as an in-process library with no separate server process to manage. Data is persisted to local files automatically.
+
+### Embedding
+
+The process of converting text into a numerical vector that captures its semantic meaning. OpenCortex supports Volcengine (doubao-embedding), OpenAI, and other embedding providers. These vectors power the semantic search capability.
+
+### URI Namespace
+
+Every memory has a unique address in the format:
 ```
+opencortex://{tenant}/user/{user_id}/{type}/{category}/{node_id}
+```
+This ensures complete data isolation between tenants and users.
+
+---
 
 ## Architecture
 
-```text
-Agent (Claude Code / Cursor / Custom)
-  │
-  ├─ MCP tools ──→ node mcp-server.mjs (stdio) ──→ fetch ──→ HTTP Server (FastAPI :8921)
-  │                                                              │
-  │                                                              v
-  │                                                        MemoryOrchestrator
-  │                                                        (add/search/feedback/decay/session)
-  │                                                              │
-  │                                                              v
-  │                                                        IntentRouter + Retriever + ACE + SessionManager
-  │                                                              │
-  │                                                              v
-  │                                                        CortexFS (L0/L1/L2) + Qdrant adapter
-  │
-  └─ Hooks ──→ node run.mjs <hook-name>
-                  ├─ session-start   → start HTTP server (local) / health check (remote)
-                  ├─ user-prompt-submit → inject memory recall prompt
-                  ├─ stop            → ingest transcript turn via HTTP
-                  └─ session-end     → store session summary, stop HTTP server
+### System Overview
+
+```
+AI Agent (Claude Code / Cursor / Custom)
+  |
+  |--- MCP Protocol (stdio) ----> Node.js MCP Server ---- HTTP ----> FastAPI HTTP Server (:8921)
+  |                                (25 tools)                              |
+  |                                                                        v
+  |                                                                  MemoryOrchestrator
+  |                                                                  (unified API layer)
+  |                                                                        |
+  |                                                         +--------------+--------------+
+  |                                                         |              |              |
+  |                                                    IntentRouter   SessionManager   ACEngine
+  |                                                         |                            |
+  |                                                         v                            v
+  |                                                  HierarchicalRetriever          Skillbook
+  |                                                         |                       (self-learning)
+  |                                                         v
+  |                                                  CortexFS + Qdrant Adapter
+  |                                                  (L0/L1/L2)  (vectors + RL)
+  |
+  |--- Hooks (lifecycle events) -> Node.js run.mjs
+         |-- session-start      -> Start HTTP server / health check
+         |-- user-prompt-submit -> Proactive memory recall via search API
+         |-- stop               -> Parse transcript, store turn summary
+         |-- session-end        -> Store session summary, stop server
 ```
 
-The plugin hooks and MCP server are pure Node.js (.mjs) with zero external dependencies. Only the HTTP server backend requires Python.
+### Data Flow: Store
 
-## Deployment Modes
-
-- **Local** (default): SessionStart hook auto-starts the HTTP server; MCP server is managed by Claude Code via `.mcp.json`
-- **Remote**: connect to a pre-deployed HTTP server; no Python needed on the client
-
-Example `plugins/opencortex-memory/config.json`:
-
-```json
-{
-  "mode": "local",
-  "local": { "http_port": 8921 },
-  "remote": { "http_url": "http://your-server:8921" }
-}
+```
+Agent calls memory_store(abstract="User prefers dark theme", content="...")
+  |
+  v
+MemoryOrchestrator.add()
+  |-- Generate embedding vector (1024-dim)
+  |-- Auto-generate L1 overview (short content reused; long content summarized)
+  |-- Write to CortexFS:  .abstract.md / .overview.md / content.md
+  |-- Write to Qdrant:    vector + metadata + RL fields (reward_score=0)
+  |-- Async: RuleExtractor extracts reusable skills -> Skillbook
+  |
+  v
+Returns: { uri, context_type, category, abstract }
 ```
 
-## Quick Start
+### Data Flow: Search
 
-### 1. Install
+```
+Agent calls memory_search(query="What theme does the user prefer?")
+  |
+  v
+IntentRouter (3-layer analysis)
+  |-- Layer 1: Keyword extraction (zero LLM cost)
+  |-- Layer 2: LLM classification (optional, for complex queries)
+  |-- Layer 3: Memory triggers (auto-append category queries)
+  |-- Output: intent_type=quick_lookup, top_k=3, detail_level=L0
+  |
+  v
+HierarchicalRetriever
+  |-- Embed query -> vector search in Qdrant
+  |-- Frontier batching: wave-based parallel directory traversal
+  |-- Score propagation: child_score = a * child + (1-a) * parent
+  |-- RL fusion: final += rl_weight * reward_score
+  |-- Optional rerank: final = b * rerank + (1-b) * retrieval
+  |-- Convergence check: stop when top-K stable for 3 waves
+  |
+  v
+Returns: { results: [{ uri, abstract, score, overview? }], total }
+```
+
+### Data Flow: Feedback Loop
+
+```
+Agent calls memory_feedback(uri="opencortex://...", reward=1.0)
+  |
+  v
+Update Qdrant RL fields
+  |-- reward_score += 1.0
+  |-- positive_feedback_count += 1
+  |
+  v
+Next search: this memory ranks higher (score + 0.05 * reward)
+Over time: apply_decay() reduces unused memories (0.95x per cycle)
+```
+
+### Deployment Modes
+
+| Mode | How it works | Best for |
+|------|-------------|----------|
+| **Local** (default) | SessionStart hook auto-starts HTTP server; MCP server managed by Claude Code | Solo development |
+| **Remote** | Connect to a pre-deployed HTTP server; no Python needed on client | Team sharing, server deployment |
+| **Docker** | `docker compose up` with volume-mounted config | Production deployment |
+
+---
+
+## Getting Started
+
+### Prerequisites
+
+| Tool | Version | Purpose |
+|------|---------|---------|
+| **Python** | >= 3.10 | HTTP server backend |
+| **Node.js** | >= 18 | MCP server and plugin hooks |
+| **uv** | Latest | Python package manager ([install](https://docs.astral.sh/uv/getting-started/installation/)) |
+
+### 1. Clone and install
 
 ```bash
 git clone https://github.com/StardustVision/OpenCortex.git
 cd OpenCortex
-uv pip install -e .
+uv sync
 ```
+
+`uv sync` creates a virtual environment, installs all dependencies, and sets up the `opencortex-server` command.
 
 ### 2. Configure
 
-Create `opencortex.json` in your project root (or `$HOME/.opencortex/opencortex.json` for global config):
+Create a configuration file. The system searches in this order:
+
+1. `./server.json` (project-local)
+2. `~/.opencortex/server.json` (global, auto-created if missing)
+
+**With embedding (full semantic search):**
 
 ```json
 {
@@ -152,13 +224,11 @@ Create `opencortex.json` in your project root (or `$HOME/.opencortex/opencortex.
   "embedding_api_key": "YOUR_API_KEY",
   "embedding_api_base": "https://ark.cn-beijing.volces.com/api/v3",
   "http_server_host": "127.0.0.1",
-  "http_server_port": 8921,
-  "mcp_transport": "streamable-http",
-  "mcp_port": 8920
+  "http_server_port": 8921
 }
 ```
 
-No-embedding mode is also supported (filter/scroll fallback):
+**Without embedding (filter/scroll fallback, RL ranking still works):**
 
 ```json
 {
@@ -169,120 +239,184 @@ No-embedding mode is also supported (filter/scroll fallback):
 }
 ```
 
-### 3. Install Claude Code Plugin
-
+All fields can be overridden via environment variables with the `OPENCORTEX_` prefix:
 ```bash
-/plugin install
+export OPENCORTEX_TENANT_ID=my-team
+export OPENCORTEX_EMBEDDING_API_KEY=sk-xxx
 ```
 
-Select `opencortex-memory` from the plugin list. Claude Code automatically registers hooks from `hooks/hooks.json` and the MCP server from `.mcp.json`.
-
-### 4. Optional Manual Startup
-
-The plugin hooks auto-start the HTTP server when a Claude Code session begins. For manual startup:
+### 3. Start the server
 
 ```bash
-# HTTP Server only (MCP server is managed by Claude Code)
 uv run opencortex-server --port 8921
 ```
 
-### 5. Claude Code Integration (Other Projects)
+Verify it is running:
+```bash
+curl http://localhost:8921/api/v1/memory/health
+```
 
-Add `.mcp.json` to your project root:
+### 4. Install the Claude Code plugin
+
+Inside Claude Code:
+
+```
+/plugin install
+```
+
+Select `opencortex-memory`. Claude Code registers hooks and the MCP server automatically. In local mode, the plugin starts the HTTP server on session begin and stops it on session end.
+
+### 5. Docker deployment
+
+```bash
+# Build and start
+docker compose up -d
+
+# Check logs
+docker compose logs -f opencortex
+
+# Verify
+curl http://localhost:8921/api/v1/memory/health
+```
+
+To use a config file, uncomment the volume mount in `docker-compose.yml`:
+```yaml
+volumes:
+  - ./server.json:/app/server.json:ro
+```
+
+### 6. Use from other projects
+
+Add `.mcp.json` to any project root to connect to an OpenCortex instance:
 
 ```json
 {
   "mcpServers": {
     "opencortex": {
       "command": "node",
-      "args": ["path/to/plugins/opencortex-memory/lib/mcp-server.mjs"]
+      "args": ["/path/to/plugins/opencortex-memory/lib/mcp-server.mjs"]
     }
   }
 }
 ```
 
-## Plugin System
+---
 
-`plugins/opencortex-memory` combines hooks (passive memory), MCP server (tool proxy), and skills (active memory tools).
+## Core Features
 
-All hooks and the MCP server are implemented in pure Node.js (.mjs) — no bash, PowerShell, or Python dependencies.
+### Three-Layer Summaries (L0 / L1 / L2)
+
+Each memory is stored at three precision levels. The system automatically selects the cheapest layer that satisfies the query:
 
 ```
-plugins/opencortex-memory/
-├── hooks/
-│   ├── hooks.json                    # Hook registration
-│   ├── run.mjs                       # Unified entry point
-│   └── handlers/
-│       ├── session-start.mjs         # Start HTTP server, init state
-│       ├── user-prompt-submit.mjs    # Inject memory recall prompt
-│       ├── stop.mjs                  # Ingest transcript turn
-│       └── session-end.mjs           # Store summary, stop server
-├── lib/
-│   ├── common.mjs                    # Config, state, path resolution
-│   ├── http-client.mjs               # Native fetch wrapper
-│   ├── transcript.mjs                # JSONL parsing + summarization
-│   └── mcp-server.mjs               # MCP stdio server (25 tools)
-├── bin/
-│   └── oc-cli.mjs                    # CLI: health, status, recall, store
-├── skills/                           # Skill definitions
-└── config.json                       # Mode config (local/remote)
+L0 Abstract  ->  "User prefers dark theme"                     ~30 tokens
+L1 Overview  ->  "Consistent across 10+ sessions. Applies      ~150 tokens
+                  to VS Code, terminal, and browser tools.
+                  Expressed as a strong preference."
+L2 Content   ->  [Full conversation excerpt where this          ~500+ tokens
+                  preference was discussed]
 ```
 
-| Hook | Handler | Purpose |
-|------|---------|---------|
-| SessionStart | `session-start.mjs` | Start HTTP server (local), verify connectivity (remote) |
-| UserPromptSubmit | `user-prompt-submit.mjs` | Inject memory recall system message |
-| Stop | `stop.mjs` | Parse transcript, ingest turn (async, fire-and-forget) |
-| SessionEnd | `session-end.mjs` | Store session summary, kill HTTP server |
+`add()` auto-generates L1: short content is reused directly; long content is summarized by LLM (or truncated if no LLM is configured).
 
-## MCP Tools
+### Intent-Aware Retrieval
 
-### Core Memory
+The Intent Router analyzes each query and selects the retrieval strategy automatically:
 
-- `memory_store`
-- `memory_search`
-- `memory_feedback`
-- `memory_stats`
-- `memory_decay`
-- `memory_health`
+| Intent | Trigger | Top-K | Detail | Example |
+|--------|---------|-------|--------|---------|
+| `quick_lookup` | Short confirmatory query | 3 | L0 | "Does the user like dark theme?" |
+| `recent_recall` | Temporal keywords | 5 | L1 | "What did we discuss last time?" |
+| `deep_analysis` | Needs full context | 10 | L2 | "Review the auth system design in detail" |
+| `summarize` | Aggregation keywords | 30 | L1 | "Summarize recent architecture changes" |
 
-### Session
+### SONA Reinforcement Ranking
 
-- `session_begin`
-- `session_message`
-- `session_end`
+Positive feedback boosts a memory's score; negative feedback suppresses it. Time decay ensures stale memories fade:
 
-### Hooks/Integration
+```
+final_score = similarity + 0.05 * reward_score
 
-- `memory_hooks_learn`
-- `memory_hooks_remember`
-- `memory_hooks_recall`
-- `memory_hooks_stats`
-- trajectory / error / integration endpoints
+feedback(uri, reward=+1.0)  ->  +0.05 boost in future searches
+feedback(uri, reward=-1.0)  ->  -0.05 penalty
+decay()                     ->  reward *= 0.95 (protected: 0.99)
+```
 
-## HTTP Server REST API
+### ACE Self-Learning
 
-### Core Memory
+The RuleExtractor watches stored memories and extracts reusable skills with zero LLM cost:
 
-- `POST /api/v1/memory/store`
-- `POST /api/v1/memory/search`
-- `POST /api/v1/memory/feedback`
-- `GET /api/v1/memory/stats`
-- `POST /api/v1/memory/decay`
-- `GET /api/v1/memory/health`
+| Pattern | Detection | Example |
+|---------|-----------|---------|
+| Error -> Fix | Regex: error/traceback + resolution | "When UTF-8 error occurs, detect encoding with chardet first" |
+| Preference | Keywords: always/never/must | "Always use black to format Python code" |
+| Workflow | 3+ sequential ordered steps | "lint -> test -> build -> push deployment pipeline" |
 
-### Session
+Extracted skills are stored in the Skillbook and returned alongside regular memories during search.
 
-- `POST /api/v1/session/begin`
-- `POST /api/v1/session/message`
-- `POST /api/v1/session/end`
+### Session Self-Iteration
 
-### Hooks and Integration
+On each agent turn, the Stop hook automatically:
+1. Parses the conversation transcript
+2. Extracts a summary (LLM for long turns, local fallback for short ones)
+3. Stores it as a new memory
 
-- `POST /api/v1/hooks/*`
-- `POST/GET /api/v1/integration/*`
+No manual curation needed. The agent's knowledge base grows automatically.
 
-## Python API Example
+### Multi-Tenant Isolation
+
+```
+opencortex://{tenant}/user/{uid}/{type}/{category}/{node_id}
+```
+
+Complete data isolation between tenants and users. Team-level resources can be shared; user-level memories remain private. Per-request identity override via `X-Tenant-ID` / `X-User-ID` HTTP headers.
+
+---
+
+## API Reference
+
+### REST API (HTTP Server)
+
+#### Core Memory
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/v1/memory/store` | Store a memory (auto-generates L1, embedding, URI) |
+| POST | `/api/v1/memory/search` | Semantic search with intent routing and RL fusion |
+| POST | `/api/v1/memory/feedback` | Submit RL reward (+1 = useful, -1 = not useful) |
+| GET | `/api/v1/memory/stats` | Storage statistics and configuration |
+| POST | `/api/v1/memory/decay` | Trigger global reward decay |
+| GET | `/api/v1/memory/health` | Component health check |
+
+#### Session
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/v1/session/begin` | Start a new session |
+| POST | `/api/v1/session/message` | Add a message to the session |
+| POST | `/api/v1/session/end` | End session, extract and store memories |
+
+#### Hooks & Integration
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/v1/hooks/learn` | Record state-action-reward for Q-learning |
+| POST | `/api/v1/hooks/remember` | Store a general memory |
+| POST | `/api/v1/hooks/recall` | Retrieve relevant experiences |
+| POST | `/api/v1/hooks/error/record` | Record an error and its fix |
+| POST | `/api/v1/hooks/error/suggest` | Get fix suggestions for an error |
+| POST | `/api/v1/integration/route` | Route a task to the best agent |
+
+### MCP Tools (25 tools)
+
+The MCP server exposes the same capabilities as the REST API. Key tools:
+
+- `memory_store` / `memory_search` / `memory_feedback` / `memory_stats` / `memory_decay` / `memory_health`
+- `session_begin` / `session_message` / `session_end`
+- `memory_hooks_learn` / `memory_hooks_remember` / `memory_hooks_recall`
+- Trajectory, error, and integration tools
+
+### Python API
 
 ```python
 from opencortex import MemoryOrchestrator, CortexConfig, init_config
@@ -291,78 +425,120 @@ init_config(CortexConfig(tenant_id="myteam", user_id="alice"))
 orch = MemoryOrchestrator(embedder=my_embedder)
 await orch.init()
 
+# Store
 ctx = await orch.add(
     abstract="User prefers dark theme",
     content="Use dark theme in VS Code, terminal, and browser tools.",
     category="preferences",
 )
 
+# Search (Intent Router auto-selects strategy)
 result = await orch.search("What theme does the user prefer?")
 for m in result.memories:
     print(m.uri, m.abstract, m.score)
 
+# Feedback + Decay
 await orch.feedback(uri=ctx.uri, reward=1.0)
 await orch.decay()
+
+# Session lifecycle
+await orch.session_begin(session_id="s1")
+await orch.session_message("s1", "user", "Help me fix this bug")
+await orch.session_message("s1", "assistant", "The issue is...")
+await orch.session_end("s1", quality_score=0.9)  # auto-extracts memories
+
 await orch.close()
 ```
 
+---
+
+## Plugin System
+
+The `plugins/opencortex-memory` plugin combines hooks (passive memory collection), MCP server (tool proxy), and skills (active memory tools). All implemented in pure Node.js with zero external dependencies.
+
+```
+plugins/opencortex-memory/
+  hooks/
+    handlers/
+      session-start.mjs          # Start HTTP server, init state
+      user-prompt-submit.mjs     # Proactive memory recall
+      stop.mjs                   # Parse transcript, store summary
+      session-end.mjs            # Final summary, stop server
+  lib/
+    mcp-server.mjs               # MCP stdio server (25 tools -> HTTP)
+    common.mjs                   # Config discovery, state, uv/python detection
+    http-client.mjs              # Native fetch wrapper
+    transcript.mjs               # JSONL parsing
+  skills/                        # 6 skill definitions
+  bin/oc-cli.mjs                 # CLI: health, status, recall, store
+```
+
+### Hook Lifecycle
+
+```
+SessionStart -----> Start HTTP server (local) or health check (remote)
+                    Write session_state.json
+                         |
+UserPromptSubmit -> Search memories relevant to the prompt (3s timeout)
+                    Inject results into agent's system context
+                         |
+Stop (async) -----> Parse transcript, extract turn summary
+                    POST /api/v1/memory/store (fire-and-forget)
+                         |
+SessionEnd -------> Store session summary
+                    Kill HTTP server PID (local mode)
+```
+
+---
+
 ## Repository Layout
 
-```text
+```
 src/opencortex/
-  orchestrator.py          # top-level orchestration
-  http/                    # FastAPI server and HTTP client
-  retrieve/                # router, retriever, rerank
-  session/                 # extraction and session lifecycle
-  ace/                     # self-learning engine
-  storage/                 # CortexFS + Qdrant adapter
-  models/                  # embedders and llm factory
-plugins/opencortex-memory/ # Claude Code plugin (Node.js hooks + MCP server + skills)
-tests/                     # unit, integration, and live tests
+  orchestrator.py                # MemoryOrchestrator (unified API, ~1500 lines)
+  config.py                      # CortexConfig (dataclass + env overrides)
+  http/                          # FastAPI server + async client
+  retrieve/                      # IntentRouter + HierarchicalRetriever + Rerank
+  session/                       # SessionManager + MemoryExtractor
+  ace/                           # ACEngine + Skillbook + RuleExtractor
+  storage/                       # VikingDBInterface + CortexFS + Qdrant adapter
+  models/                        # Embedder abstractions + LLM factory
+
+plugins/opencortex-memory/       # Claude Code plugin (pure Node.js)
+
+tests/                           # 111+ Python tests + 8 Node.js tests
 ```
 
-## Evaluation and Testing
+---
 
-### Memory Retrieval Evaluation
-
-Use the built-in evaluation script:
+## Testing
 
 ```bash
-PYTHONPATH=src python3 scripts/eval_memory.py \
-  --dataset examples/memory_eval_dataset.sample.json \
-  --base-url http://127.0.0.1:8921 \
-  --k 1,3,5 \
-  --output _bmad-output/memory-eval-report.json
-```
+# Core regression (103 tests, no external dependencies)
+uv run python3 -m unittest tests.test_e2e_phase1 \
+  tests.test_ace_phase1 tests.test_ace_phase2 \
+  tests.test_rule_extractor tests.test_skill_search_fusion \
+  tests.test_integration_skill_pipeline -v
 
-Reported metrics include:
+# MCP server tests (requires running HTTP server)
+node --test tests/test_mcp_server.mjs
 
-- `recall@k`
-- `precision@k`
-- `accuracy@k` / `hit_rate@k`
-- `mrr`
-- token comparison (`tokens_with_memory` vs `tokens_without_memory`)
-
-See full plan: [docs/memory-test-plan.md](docs/memory-test-plan.md)
-
-### Run Tests
-
-```bash
-# full regression
+# Full regression
 uv run python3 -m unittest discover -s tests -v
-
-# evaluation unit tests
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest tests.test_memory_eval -v
 ```
+
+---
 
 ## Tech Stack
 
-- Python 3.10+ (HTTP server backend)
-- Node.js >= 18 (MCP server + plugin hooks, zero external deps)
-- FastAPI + uvicorn
-- Qdrant (embedded local mode)
-- Volcengine/OpenAI-compatible embedding + LLM backends
-- `uv` for Python package management
+| Component | Technology |
+|-----------|-----------|
+| Backend | Python 3.10+, async-first |
+| Plugin & MCP | Node.js >= 18, pure ESM, zero external deps |
+| Vector Store | Qdrant (embedded local mode, no separate process) |
+| Embedding | Volcengine doubao-embedding (1024-dim) / OpenAI-compatible |
+| HTTP | FastAPI + uvicorn |
+| Package Manager | uv |
 
 ## License
 
@@ -370,7 +546,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest tests.test_memory_e
 
 ## Acknowledgements
 
-OpenCortex is ported and evolved from these projects:
+OpenCortex is ported and evolved from:
 
-- [OpenViking](https://github.com/volcengine/openviking)
-- [Agentic Context Engine (ACE)](https://github.com/kayba-ai/agentic-context-engine)
+- [OpenViking](https://github.com/volcengine/openviking) &mdash; CortexFS three-layer storage, hierarchical retrieval algorithm, VikingDBInterface storage abstraction
+- [Agentic Context Engine (ACE)](https://github.com/kayba-ai/agentic-context-engine) &mdash; Skillbook concept, Reflector mechanism, trajectory management
