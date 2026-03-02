@@ -595,23 +595,27 @@ class MemoryOrchestrator:
             is_leaf=is_leaf,
         )
 
-        # Async skill extraction (non-blocking)
+        # Async skill extraction (non-blocking) — capture request identity
+        # since contextvars won't propagate into the fire-and-forget task
         if self._rule_extractor and self._hooks and content:
-            asyncio.create_task(self._try_extract_skills(abstract, content))
+            asyncio.create_task(self._try_extract_skills(abstract, content, tid, uid))
 
         logger.info("[MemoryOrchestrator] Added context: %s", uri)
         return ctx
 
-    async def _try_extract_skills(self, abstract: str, content: str) -> None:
+    async def _try_extract_skills(self, abstract: str, content: str,
+                                   tenant_id: str = "", user_id: str = "") -> None:
         """Background skill extraction from stored content. Failures are silent."""
         try:
             skills = self._rule_extractor.extract(abstract, content)
             for skill in skills:
                 # Dedup: check if a similar skill already exists
-                existing = await self._hooks.recall(skill.content, limit=1)
+                existing = await self._hooks.recall(skill.content, limit=1,
+                                                    tenant_id=tenant_id, user_id=user_id)
                 if existing and existing[0].get("score", 0) > 0.85:
                     continue
-                await self._hooks.remember(skill.content, skill.section)
+                await self._hooks.remember(skill.content, skill.section,
+                                           tenant_id=tenant_id, user_id=user_id)
                 logger.debug(
                     "[Orchestrator] Extracted skill: %s → %s",
                     skill.section, skill.content[:60],
@@ -839,8 +843,9 @@ class MemoryOrchestrator:
             for tq in typed_queries
         ]
 
-        # Parallel skillbook search (if hooks available)
-        skill_search_coro = self._search_skillbook(query, limit=3) if self._hooks else None
+        # Parallel skillbook search (if hooks available and type not restricted away from skills)
+        should_search_skills = self._hooks and (context_type is None or context_type == ContextType.SKILL)
+        skill_search_coro = self._search_skillbook(query, limit=3) if should_search_skills else None
 
         if skill_search_coro:
             all_results = await asyncio.gather(*retrieval_coros, skill_search_coro)
@@ -1945,7 +1950,8 @@ class MemoryOrchestrator:
         Returns MatchedContext list for merging into FindResult.
         """
         try:
-            raw_skills = await self._hooks.recall(query, limit=limit)
+            tid, uid = get_effective_identity()
+            raw_skills = await self._hooks.recall(query, limit=limit, tenant_id=tid, user_id=uid)
             results = []
             for s in raw_skills:
                 results.append(MatchedContext(
