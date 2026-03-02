@@ -25,6 +25,7 @@ from opencortex.config import CortexConfig, init_config
 from opencortex.core.context import Context
 from opencortex.core.message import Message
 from opencortex.core.user_id import UserIdentifier
+from opencortex.http.request_context import set_request_identity, reset_request_identity
 from opencortex.models.embedder.base import DenseEmbedderBase, EmbedResult
 from opencortex.orchestrator import MemoryOrchestrator
 from opencortex.retrieve.rerank_config import RerankConfig
@@ -468,16 +469,16 @@ class TestE2EPhase1(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp(prefix="opencortex_e2e_")
         self.config = CortexConfig(
-            tenant_id="testteam",
-            user_id="alice",
             data_root=self.temp_dir,
             embedding_dimension=MockEmbedder.DIMENSION,
         )
         init_config(self.config)
+        self._identity_tokens = set_request_identity("testteam", "alice")
         self.storage = InMemoryStorage()
         self.embedder = MockEmbedder()
 
     def tearDown(self):
+        reset_request_identity(self._identity_tokens)
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def _run(self, coro):
@@ -844,21 +845,26 @@ class TestE2EPhase1(unittest.TestCase):
 
     def test_15_tenant_isolation(self):
         """Different tenants produce different URI prefixes."""
-        config_a = CortexConfig(tenant_id="teamA", user_id="alice", data_root=self.temp_dir)
-        config_b = CortexConfig(tenant_id="teamB", user_id="bob", data_root=self.temp_dir)
+        config = CortexConfig(data_root=self.temp_dir)
 
         storage = InMemoryStorage()
         embedder = MockEmbedder()
 
-        orch_a = self._run(
-            MemoryOrchestrator(config=config_a, storage=storage, embedder=embedder).init()
-        )
-        orch_b = self._run(
-            MemoryOrchestrator(config=config_b, storage=storage, embedder=embedder).init()
+        orch = self._run(
+            MemoryOrchestrator(config=config, storage=storage, embedder=embedder).init()
         )
 
-        ctx_a = self._run(orch_a.add(abstract="Team A memory"))
-        ctx_b = self._run(orch_b.add(abstract="Team B memory"))
+        tokens_a = set_request_identity("teamA", "alice")
+        try:
+            ctx_a = self._run(orch.add(abstract="Team A memory"))
+        finally:
+            reset_request_identity(tokens_a)
+
+        tokens_b = set_request_identity("teamB", "bob")
+        try:
+            ctx_b = self._run(orch.add(abstract="Team B memory"))
+        finally:
+            reset_request_identity(tokens_b)
 
         self.assertIn("teamA", ctx_a.uri)
         self.assertIn("alice", ctx_a.uri)

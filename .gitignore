@@ -6,6 +6,7 @@ uv.lock
 .memcortex-dev/
 .memcortex/
 .opencortex/
+.cortex/
 .openviking/
 opencortex.json
 .opencortex.json

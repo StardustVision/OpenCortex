@@ -59,16 +59,13 @@ class TenantIdentityMiddleware(BaseHTTPMiddleware):
     """Extract per-request tenant/user identity from HTTP headers.
 
     Headers:
-        X-Tenant-ID — overrides config tenant_id for this request
-        X-User-ID   — overrides config user_id for this request
-
-    Falls back to CortexConfig defaults when headers are absent.
+        X-Tenant-ID — tenant identifier for this request (default: "default")
+        X-User-ID   — user identifier for this request (default: "default")
     """
 
     async def dispatch(self, request: Request, call_next) -> Response:
-        config = get_config()
-        tenant_id = request.headers.get("x-tenant-id", config.tenant_id)
-        user_id = request.headers.get("x-user-id", config.user_id)
+        tenant_id = request.headers.get("x-tenant-id", "default")
+        user_id = request.headers.get("x-user-id", "default")
         tokens = set_request_identity(tenant_id, user_id)
         try:
             return await call_next(request)
@@ -87,11 +84,7 @@ async def _lifespan(app: FastAPI):
     config = get_config()
     _orchestrator = MemoryOrchestrator(config=config)
     await _orchestrator.init()
-    logger.info(
-        "[HTTP] Orchestrator initialized (tenant=%s, user=%s)",
-        config.tenant_id,
-        config.user_id,
-    )
+    logger.info("[HTTP] Orchestrator initialized (data_root=%s)", config.data_root)
     try:
         yield
     finally:

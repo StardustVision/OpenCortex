@@ -344,8 +344,6 @@ async def _test_app_context():
 
     temp_dir = tempfile.mkdtemp(prefix="http_test_")
     config = CortexConfig(
-        tenant_id="testteam",
-        user_id="alice",
         data_root=temp_dir,
         embedding_dimension=MockEmbedder.DIMENSION,
     )
@@ -414,7 +412,7 @@ class TestHTTPServer(unittest.TestCase):
                 self.assertEqual(resp.status_code, 200)
                 data = resp.json()
                 self.assertIn("uri", data)
-                self.assertIn("testteam", data["uri"])
+                self.assertIn("default", data["uri"])
                 self.assertEqual(data["context_type"], "memory")
 
         self._run(check())
@@ -481,8 +479,8 @@ class TestHTTPServer(unittest.TestCase):
                 resp = await client.get("/api/v1/memory/stats")
                 self.assertEqual(resp.status_code, 200)
                 data = resp.json()
-                self.assertEqual(data["tenant_id"], "testteam")
-                self.assertEqual(data["user_id"], "alice")
+                self.assertEqual(data["tenant_id"], "default")
+                self.assertEqual(data["user_id"], "default")
                 self.assertIn("storage", data)
 
         self._run(check())

@@ -75,8 +75,6 @@ class TestIntegrationSkillPipeline(unittest.TestCase):
         self.temp_dir = tempfile.mkdtemp()
         self.qdrant_dir = os.path.join(self.temp_dir, ".qdrant")
         self.config = CortexConfig(
-            tenant_id="integ_test",
-            user_id="tester",
             data_root=self.temp_dir,
             embedding_provider="none",
             embedding_dimension=128,

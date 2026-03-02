@@ -190,8 +190,6 @@ class FrontierSearchTestBase(unittest.TestCase):
         self.temp_dir = tempfile.mkdtemp()
         self.qdrant_dir = os.path.join(self.temp_dir, ".qdrant")
         self.config = CortexConfig(
-            tenant_id="test_frontier",
-            user_id="tester",
             data_root=self.temp_dir,
             embedding_provider="none",
             embedding_dimension=128,

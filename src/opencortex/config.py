@@ -39,9 +39,10 @@ _MCP_ONLY_FIELDS = {"mcp_transport", "mcp_port", "mcp_mode"}
 class CortexConfig:
     """Global configuration for OpenCortex.
 
+    Tenant and user identity are determined per-request via HTTP headers
+    (X-Tenant-ID / X-User-ID), not from server-side configuration.
+
     Attributes:
-        tenant_id: Team/organization identifier. Default "default" for single-user.
-        user_id: User identifier within the tenant. Default "default".
         data_root: Root directory for local data storage.
         embedding_dimension: Default vector dimension for embeddings.
         embedding_provider: Embedding provider name (e.g., "openai", "jina").
@@ -53,8 +54,6 @@ class CortexConfig:
         llm_api_base: LLM API base URL.
     """
 
-    tenant_id: str = "default"
-    user_id: str = "default"
     data_root: str = "./data"
     embedding_dimension: int = 1024
     embedding_provider: str = ""
@@ -80,14 +79,6 @@ class CortexConfig:
     skill_share_mode: str = "manual"  # "manual" | "auto_safe" | "auto_aggressive"
     skill_share_score_threshold: float = 0.85
     ace_scope_enforcement_enabled: bool = False
-
-    def tenant_prefix(self) -> str:
-        """Return the tenant URI prefix: opencortex://{tenant_id}"""
-        return f"opencortex://{self.tenant_id}"
-
-    def user_prefix(self) -> str:
-        """Return the user URI prefix: opencortex://{tenant_id}/user/{user_id}"""
-        return f"opencortex://{self.tenant_id}/user/{self.user_id}"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -154,7 +145,7 @@ class CortexConfig:
         filtered = {k: v for k, v in data.items() if k in known_fields}
         config = cls(**filtered)
         config._apply_env_overrides()
-        logger.info(f"[CortexConfig] Loaded from {path} (tenant={config.tenant_id}, user={config.user_id})")
+        logger.info(f"[CortexConfig] Loaded from {path}")
         return config
 
     def _apply_env_overrides(self) -> None:

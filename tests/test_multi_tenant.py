@@ -267,8 +267,6 @@ class TestMultiTenant(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp(prefix="opencortex_mt_")
         self.config = CortexConfig(
-            tenant_id="default-tenant",
-            user_id="default-user",
             data_root=self.temp_dir,
             embedding_dimension=MockEmbedder.DIMENSION,
         )
@@ -317,8 +315,8 @@ class TestMultiTenant(unittest.TestCase):
     # 2. No header → config defaults
     # -----------------------------------------------------------------
 
-    def test_02_store_without_header_uses_config(self):
-        """Without request identity, URI uses config defaults."""
+    def test_02_store_without_header_uses_defaults(self):
+        """Without request identity, URI uses 'default' identity."""
         orch = self._init_orch()
 
         ctx = self._run(orch.add(
@@ -326,8 +324,7 @@ class TestMultiTenant(unittest.TestCase):
             category="general",
         ))
 
-        self.assertIn("default-tenant", ctx.uri)
-        self.assertIn("default-user", ctx.uri)
+        self.assertIn("default", ctx.uri)
 
     # -----------------------------------------------------------------
     # 3. Stats reflects effective identity
@@ -339,8 +336,8 @@ class TestMultiTenant(unittest.TestCase):
 
         # Without header
         stats = self._run(orch.stats())
-        self.assertEqual(stats["tenant_id"], "default-tenant")
-        self.assertEqual(stats["user_id"], "default-user")
+        self.assertEqual(stats["tenant_id"], "default")
+        self.assertEqual(stats["user_id"], "default")
 
         # With header
         tokens = set_request_identity("teamB", "bob")

@@ -341,8 +341,6 @@ def _make_orchestrator(temp_dir, storage=None, llm_fn=None, hooks=None):
     """Create a MemoryOrchestrator with test config."""
     storage = storage or InMemoryStorage()
     config = CortexConfig(
-        tenant_id="testteam",
-        user_id="alice",
         data_root=temp_dir,
         embedding_dimension=MockEmbedder.DIMENSION,
     )
@@ -528,8 +526,6 @@ async def _test_app_context():
 
     temp_dir = tempfile.mkdtemp(prefix="http_ace_test_")
     config = CortexConfig(
-        tenant_id="testteam",
-        user_id="alice",
         data_root=temp_dir,
         embedding_dimension=MockEmbedder.DIMENSION,
     )

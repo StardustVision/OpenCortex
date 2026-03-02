@@ -263,8 +263,6 @@ async def test_e2e_real_embedding(embedder):
 
     try:
         config = CortexConfig(
-            tenant_id="testteam",
-            user_id="alice",
             data_root=tmp,
             embedding_dimension=embedder.get_dimension(),
         )

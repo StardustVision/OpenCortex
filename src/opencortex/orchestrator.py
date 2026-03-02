@@ -14,10 +14,8 @@ internal components:
 
 Typical usage::
 
-    from opencortex import CortexConfig, init_config
     from opencortex.orchestrator import MemoryOrchestrator
 
-    init_config(CortexConfig(tenant_id="myteam", user_id="alice"))
     orch = MemoryOrchestrator(embedder=my_embedder)
     await orch.init()
 
@@ -145,11 +143,8 @@ class MemoryOrchestrator:
         if self._embedder is None:
             self._embedder = self._create_default_embedder()
 
-        # 2. User identity
-        self._user = UserIdentifier(
-            self._config.tenant_id,
-            self._config.user_id,
-        )
+        # 2. User identity (default; overridden per-request via HTTP headers)
+        self._user = UserIdentifier("default", "default")
 
         # 3. CortexFS
         self._fs = init_cortex_fs(
@@ -199,8 +194,6 @@ class MemoryOrchestrator:
                 embedder=self._embedder,
                 cortex_fs=self._fs,
                 llm_fn=self._llm_completion,
-                tenant_id=self._config.tenant_id,
-                user_id=self._config.user_id,
             )
             await self._hooks.init()
 
@@ -208,11 +201,7 @@ class MemoryOrchestrator:
         self._session_manager = self._create_session_manager()
 
         self._initialized = True
-        logger.info(
-            "[MemoryOrchestrator] Initialized (tenant=%s, user=%s)",
-            self._config.tenant_id,
-            self._config.user_id,
-        )
+        logger.info("[MemoryOrchestrator] Initialized (data_root=%s)", self._config.data_root)
         return self
 
     def _create_default_embedder(self) -> Optional[EmbedderBase]:
@@ -526,7 +515,7 @@ class MemoryOrchestrator:
             overview = await self._generate_overview(abstract, content)
 
         # Build effective user identity (per-request or config default)
-        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
+        tid, uid = get_effective_identity()
         effective_user = UserIdentifier(tid, uid)
 
         # Create context object
@@ -1103,7 +1092,7 @@ class MemoryOrchestrator:
         if not self._hooks:
             return {"success": False, "error": "Hooks not initialized"}
 
-        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
+        tid, uid = get_effective_identity()
         result = await self._hooks.learn(
             state=state,
             action=action,
@@ -1140,7 +1129,7 @@ class MemoryOrchestrator:
         if not self._hooks:
             return {"success": False, "error": "Hooks not initialized"}
 
-        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
+        tid, uid = get_effective_identity()
         return await self._hooks.remember(
             content=content, memory_type=memory_type, tenant_id=tid, user_id=uid,
         )
@@ -1164,7 +1153,7 @@ class MemoryOrchestrator:
         if not self._hooks:
             return []
 
-        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
+        tid, uid = get_effective_identity()
         return await self._hooks.recall(query=query, limit=limit, tenant_id=tid, user_id=uid)
 
     async def hooks_trajectory_begin(self, trajectory_id: str, initial_state: str) -> Dict[str, Any]:
@@ -1207,7 +1196,7 @@ class MemoryOrchestrator:
         if not self._hooks:
             return {"success": False, "error": "Hooks not initialized"}
 
-        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
+        tid, uid = get_effective_identity()
         return await self._hooks.trajectory_end(
             trajectory_id=trajectory_id,
             quality_score=quality_score,
@@ -1221,7 +1210,7 @@ class MemoryOrchestrator:
         if not self._hooks:
             return {"success": False, "error": "Hooks not initialized"}
 
-        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
+        tid, uid = get_effective_identity()
         return await self._hooks.error_record(
             error=error, fix=fix, context=context, tenant_id=tid, user_id=uid,
         )
@@ -1232,7 +1221,7 @@ class MemoryOrchestrator:
         if not self._hooks:
             return []
 
-        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
+        tid, uid = get_effective_identity()
         return await self._hooks.error_suggest(error=error, tenant_id=tid, user_id=uid)
 
     async def hooks_stats(self) -> Dict[str, Any]:
@@ -1241,7 +1230,7 @@ class MemoryOrchestrator:
         if not self._hooks:
             return {"success": False, "error": "Hooks not initialized"}
 
-        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
+        tid, uid = get_effective_identity()
         stats = await self._hooks.stats(tenant_id=tid, user_id=uid)
         return {
             "success": True,
@@ -1260,7 +1249,7 @@ class MemoryOrchestrator:
         self._ensure_init()
         if not self._hooks:
             return []
-        tid, _uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
+        tid, _uid = get_effective_identity()
         return await self._hooks.list_candidates(tenant_id=tid)
 
     async def hooks_review_skill(
@@ -1272,7 +1261,7 @@ class MemoryOrchestrator:
         self._ensure_init()
         if not self._hooks:
             return {"success": False, "error": "Hooks not initialized"}
-        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
+        tid, uid = get_effective_identity()
         return await self._hooks.review_skill(
             skill_id=skill_id, decision=decision, tenant_id=tid, user_id=uid,
         )
@@ -1286,7 +1275,7 @@ class MemoryOrchestrator:
         self._ensure_init()
         if not self._hooks:
             return {"success": False, "error": "Hooks not initialized"}
-        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
+        tid, uid = get_effective_identity()
         return await self._hooks.demote_skill(
             skill_id=skill_id, reason=reason, tenant_id=tid, user_id=uid,
         )
@@ -1296,7 +1285,7 @@ class MemoryOrchestrator:
         self._ensure_init()
         if not self._hooks:
             return {"success": False, "error": "Hooks not initialized"}
-        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
+        tid, uid = get_effective_identity()
         return await self._hooks.migrate_legacy_skills(tenant_id=tid, user_id=uid)
 
     # =========================================================================
@@ -1340,7 +1329,7 @@ class MemoryOrchestrator:
     async def hooks_init(self, project_path: str = ".") -> Dict[str, Any]:
         """Initialize hooks configuration for a project."""
         self._ensure_init()
-        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
+        tid, uid = get_effective_identity()
         return {
             "status": "ok",
             "project_path": project_path,
@@ -1493,7 +1482,7 @@ class MemoryOrchestrator:
             Dict with session info.
         """
         self._ensure_init()
-        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
+        tid, uid = get_effective_identity()
         ctx = await self._session_manager.begin(
             session_id=session_id,
             tenant_id=tid,
@@ -1606,7 +1595,7 @@ class MemoryOrchestrator:
                 "model": self._config.rerank_model or None,
                 "fusion_beta": rc.fusion_beta,
             }
-        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
+        tid, uid = get_effective_identity()
         return {
             "tenant_id": tid,
             "user_id": uid,
@@ -1622,7 +1611,7 @@ class MemoryOrchestrator:
 
     def _auto_uri(self, context_type: str, category: str) -> str:
         """Generate a URI based on context type and category."""
-        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
+        tid, uid = get_effective_identity()
         node_id = uuid4().hex[:12]
 
         if context_type == "memory":
@@ -1698,7 +1687,7 @@ class MemoryOrchestrator:
             uri = str(parent)
 
         # Build effective user identity (per-request or config default)
-        tid, uid = get_effective_identity(self._config.tenant_id, self._config.user_id)
+        tid, uid = get_effective_identity()
         effective_user = UserIdentifier(tid, uid)
 
         # Create directory records from top down (so parent_uri links are valid)

@@ -47,10 +47,7 @@ class TestRLIntegration(unittest.TestCase):
         cls._tmpdir = tempfile.mkdtemp(prefix="rl_test_")
         qdrant_path = os.path.join(cls._tmpdir, "qdrant")
 
-        init_config(CortexConfig(
-            tenant_id="rl_test_team",
-            user_id="rl_tester",
-        ))
+        init_config(CortexConfig())
 
         from opencortex.models.embedder.volcengine_embedders import (
             create_embedder_from_ov_conf,

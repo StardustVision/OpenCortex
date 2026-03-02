@@ -308,8 +308,6 @@ class TestSkillSearchFusion(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp()
         self.config = CortexConfig(
-            tenant_id="testteam",
-            user_id="alice",
             data_root=self.temp_dir,
             embedding_provider="none",
         )
@@ -424,8 +422,6 @@ class TestAsyncSkillExtraction(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp()
         self.config = CortexConfig(
-            tenant_id="testteam",
-            user_id="alice",
             data_root=self.temp_dir,
             embedding_provider="none",
         )
@@ -534,8 +530,6 @@ class TestSkillRecallWithURI(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp()
         self.config = CortexConfig(
-            tenant_id="testteam",
-            user_id="alice",
             data_root=self.temp_dir,
             embedding_provider="none",
         )

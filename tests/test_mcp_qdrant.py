@@ -41,8 +41,6 @@ def _create_qdrant_mcp_server(tmpdir: str):
     qdrant_path = os.path.join(tmpdir, "qdrant")
 
     config = CortexConfig(
-        tenant_id="mcp_qdrant_team",
-        user_id="mcp_tester",
         data_root=os.path.join(tmpdir, "data"),
     )
     init_config(config)

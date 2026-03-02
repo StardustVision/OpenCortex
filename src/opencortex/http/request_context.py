@@ -8,11 +8,14 @@ contextvars so that downstream code (orchestrator, retriever) can read the
 effective identity without changing method signatures.
 
 When no contextvar is set (e.g. in tests or single-tenant mode), callers
-fall back to the values from CortexConfig.
+fall back to "default".
 """
 
 from contextvars import ContextVar, Token
 from typing import Optional, Tuple
+
+_DEFAULT_TENANT = "default"
+_DEFAULT_USER = "default"
 
 _request_tenant_id: ContextVar[Optional[str]] = ContextVar(
     "_request_tenant_id", default=None
@@ -39,29 +42,13 @@ def reset_request_identity(
     _request_user_id.reset(tokens[1])
 
 
-def get_effective_identity(
-    config_tenant: Optional[str] = None,
-    config_user: Optional[str] = None,
-) -> Tuple[str, str]:
-    """Return (tenant_id, user_id), preferring contextvar over config/defaults.
+def get_effective_identity() -> Tuple[str, str]:
+    """Return (tenant_id, user_id), preferring contextvar over defaults.
 
     Resolution order:
     1. contextvar (set by middleware for this request)
-    2. explicit config_tenant / config_user arguments
-    3. global CortexConfig
+    2. "default" / "default"
     """
-    tenant = _request_tenant_id.get()
-    user = _request_user_id.get()
-
-    if tenant is None or user is None:
-        if config_tenant is not None and config_user is not None:
-            tenant = tenant or config_tenant
-            user = user or config_user
-        else:
-            from opencortex.config import get_config
-
-            cfg = get_config()
-            tenant = tenant or cfg.tenant_id
-            user = user or cfg.user_id
-
+    tenant = _request_tenant_id.get() or _DEFAULT_TENANT
+    user = _request_user_id.get() or _DEFAULT_USER
     return (tenant, user)
