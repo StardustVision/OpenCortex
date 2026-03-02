@@ -1,4 +1,5 @@
 """Tests for lexical text scoring helpers."""
+import asyncio
 import unittest
 
 
@@ -76,6 +77,58 @@ class TestComputeTextScore(unittest.TestCase):
         from opencortex.storage.qdrant.adapter import _compute_text_score
         score = _compute_text_score("a", "a a a a a", "a a a a a")
         self.assertLessEqual(score, 1.0)
+
+
+class TestEmbedTimeout(unittest.TestCase):
+    def test_timeout_returns_none(self):
+        """Embedding timeout returns None vectors."""
+        from opencortex.retrieve.hierarchical_retriever import HierarchicalRetriever
+        from opencortex.models.embedder.base import EmbedResult
+        import time
+
+        class SlowEmbedder:
+            def embed(self, text):
+                time.sleep(3.0)
+                return EmbedResult(dense_vector=[1.0, 0.0, 0.0, 0.0])
+            def get_dimension(self):
+                return 4
+
+        retriever = HierarchicalRetriever(
+            storage=None, embedder=SlowEmbedder(),
+            embed_timeout=0.1,
+        )
+        result = asyncio.run(retriever._embed_with_timeout("test query"))
+        self.assertIsNone(result)
+
+    def test_fast_embed_returns_result(self):
+        """Fast embedding returns normal result."""
+        from opencortex.retrieve.hierarchical_retriever import HierarchicalRetriever
+        from opencortex.models.embedder.base import EmbedResult
+
+        class FastEmbedder:
+            def embed(self, text):
+                return EmbedResult(dense_vector=[1.0, 0.0, 0.0, 0.0])
+            def get_dimension(self):
+                return 4
+
+        retriever = HierarchicalRetriever(
+            storage=None, embedder=FastEmbedder(),
+            embed_timeout=5.0,
+        )
+        result = asyncio.run(retriever._embed_with_timeout("test query"))
+        self.assertIsNotNone(result)
+        self.assertEqual(result.dense_vector, [1.0, 0.0, 0.0, 0.0])
+
+    def test_no_embedder_returns_none(self):
+        """No embedder returns None."""
+        from opencortex.retrieve.hierarchical_retriever import HierarchicalRetriever
+
+        retriever = HierarchicalRetriever(
+            storage=None, embedder=None,
+            embed_timeout=5.0,
+        )
+        result = asyncio.run(retriever._embed_with_timeout("test query"))
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":

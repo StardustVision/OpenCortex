@@ -167,6 +167,7 @@ class InMemoryStorage(VikingDBInterface):
         offset: int = 0,
         output_fields: Optional[List[str]] = None,
         with_vector: bool = False,
+        text_query: str = "",
     ) -> List[Dict[str, Any]]:
         self._ensure(collection)
         candidates = list(self._records[collection].values())

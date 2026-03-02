@@ -69,6 +69,7 @@ class HierarchicalRetriever:
         rl_weight: float = 0.05,
         use_frontier_batching: bool = True,
         max_waves: int = 8,
+        embed_timeout: float = 2.0,
     ):
         """Initialize hierarchical retriever with rerank_config.
 
@@ -88,6 +89,7 @@ class HierarchicalRetriever:
         self._rl_weight = rl_weight
         self._use_frontier_batching = use_frontier_batching
         self._max_waves = max_waves
+        self._embed_timeout = embed_timeout
 
         # Initialize rerank client only if config is available
         if rerank_config and rerank_config.is_available():
@@ -113,6 +115,37 @@ class HierarchicalRetriever:
         self._score_gap_threshold = (
             rerank_config.score_gap_threshold if rerank_config else 0.15
         )
+
+    async def _embed_with_timeout(self, text: str):
+        """Embed text with server-side timeout.
+
+        Uses run_in_executor (embedder.embed is synchronous) +
+        asyncio.wait_for for timeout control.  Returns None on timeout
+        so caller can fall back to lexical search.
+        """
+        if not self.embedder:
+            return None
+        loop = asyncio.get_running_loop()
+        try:
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, self.embedder.embed, text),
+                timeout=self._embed_timeout,
+            )
+            return result
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[HierarchicalRetriever] Embedding timeout (%.1fs), "
+                "falling back to lexical search",
+                self._embed_timeout,
+            )
+            return None
+        except Exception as exc:
+            logger.warning(
+                "[HierarchicalRetriever] Embedding error: %s, "
+                "falling back to lexical search",
+                exc,
+            )
+            return None
 
     async def retrieve(
         self,
@@ -169,16 +202,17 @@ class HierarchicalRetriever:
                 searched_directories=[],
             )
 
-        # Generate query vectors once to avoid duplicate embedding calls
+        # Generate query vectors with timeout protection
         query_vector = None
         sparse_query_vector = None
+        text_query = query.query  # Always available for lexical fallback
         if self.embedder:
-            loop = asyncio.get_event_loop()
-            result: EmbedResult = await loop.run_in_executor(
-                None, self.embedder.embed, query.query
-            )
-            query_vector = result.dense_vector
-            sparse_query_vector = result.sparse_vector
+            result = await self._embed_with_timeout(query.query)
+            if result:
+                query_vector = result.dense_vector
+                sparse_query_vector = result.sparse_vector
+            # If result is None (timeout/error), query_vector stays None
+            # and text_query will trigger lexical fallback in adapter
 
         # Step 1: Determine starting directories based on target_directories or context_type
         if target_dirs:
@@ -193,6 +227,7 @@ class HierarchicalRetriever:
                 query_vector=None,
                 filter=final_metadata_filter,
                 limit=limit,
+                text_query=text_query,
             )
             # Apply RL boost to scroll results
             for r in results:
@@ -216,6 +251,7 @@ class HierarchicalRetriever:
             sparse_query_vector=sparse_query_vector,
             limit=self.GLOBAL_SEARCH_TOPK,
             filter=final_metadata_filter,
+            text_query=text_query,
         )
 
         # Step 3: Merge starting points
@@ -234,6 +270,7 @@ class HierarchicalRetriever:
                 threshold=effective_threshold,
                 score_gte=score_gte,
                 metadata_filter=final_metadata_filter,
+                text_query=text_query,
             )
         else:
             candidates = await self._recursive_search(
@@ -247,6 +284,7 @@ class HierarchicalRetriever:
                 threshold=effective_threshold,
                 score_gte=score_gte,
                 metadata_filter=final_metadata_filter,
+                text_query=text_query,
             )
 
         # Step 6: Convert results
@@ -267,6 +305,7 @@ class HierarchicalRetriever:
         sparse_query_vector: Optional[Dict[str, float]],
         limit: int,
         filter: Optional[Dict[str, Any]] = None,
+        text_query: str = "",
     ) -> List[Dict[str, Any]]:
         """Global vector search to locate initial directories."""
         if not query_vector:
@@ -283,6 +322,7 @@ class HierarchicalRetriever:
             sparse_query_vector=sparse_query_vector,
             filter=global_filter,
             limit=limit,
+            text_query=text_query,
         )
         return results
 
@@ -374,6 +414,7 @@ class HierarchicalRetriever:
         threshold: Optional[float] = None,
         score_gte: bool = False,
         metadata_filter: Optional[Dict[str, Any]] = None,
+        text_query: str = "",
     ) -> List[Dict[str, Any]]:
         """
         Recursive search with directory priority return and score propagation.
@@ -430,6 +471,7 @@ class HierarchicalRetriever:
                     {"op": "must", "field": "parent_uri", "conds": [current_uri]}, metadata_filter
                 ),
                 limit=pre_filter_limit,
+                text_query=text_query,
             )
 
             if not results:
@@ -512,6 +554,7 @@ class HierarchicalRetriever:
         threshold: Optional[float] = None,
         score_gte: bool = False,
         metadata_filter: Optional[Dict[str, Any]] = None,
+        text_query: str = "",
     ) -> List[Dict[str, Any]]:
         """Frontier search with auto-fallback to recursive on error."""
         try:
@@ -521,6 +564,7 @@ class HierarchicalRetriever:
                 starting_points=starting_points, limit=limit, mode=mode,
                 threshold=threshold, score_gte=score_gte,
                 metadata_filter=metadata_filter,
+                text_query=text_query,
             )
         except Exception as e:
             logger.error("[FrontierSearch] Fallback to recursive: %s", e)
@@ -530,6 +574,7 @@ class HierarchicalRetriever:
                 starting_points=starting_points, limit=limit, mode=mode,
                 threshold=threshold, score_gte=score_gte,
                 metadata_filter=metadata_filter,
+                text_query=text_query,
             )
 
     async def _frontier_search_impl(
@@ -544,6 +589,7 @@ class HierarchicalRetriever:
         threshold: Optional[float] = None,
         score_gte: bool = False,
         metadata_filter: Optional[Dict[str, Any]] = None,
+        text_query: str = "",
     ) -> List[Dict[str, Any]]:
         """Wave-based frontier batching search.
 
@@ -600,6 +646,7 @@ class HierarchicalRetriever:
                 sparse_query_vector=sparse_query_vector,
                 filter=batch_filter,
                 limit=per_wave_limit,
+                text_query=text_query,
             )
 
             # 3. Group by parent + score propagation
@@ -640,6 +687,7 @@ class HierarchicalRetriever:
                     sparse_query_vector=sparse_query_vector,
                     filter=comp_filter,
                     limit=len(starved) * self.MIN_CHILDREN_PER_DIR,
+                    text_query=text_query,
                 )
                 for r in comp_results:
                     p_uri = r.get("parent_uri", "")
@@ -673,6 +721,7 @@ class HierarchicalRetriever:
                         sparse_query_vector=sparse_query_vector,
                         filter=tiny_filter,
                         limit=self.MIN_CHILDREN_PER_DIR,
+                        text_query=text_query,
                     )
                     for r in tiny_results:
                         if not any(c.get("uri") == r.get("uri") for c in children_by_parent.get(s_uri, [])):
