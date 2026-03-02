@@ -1503,5 +1503,28 @@ class TestMergeBehavior(unittest.TestCase):
         self.assertNotIn("cases", MERGEABLE_CATEGORIES)
 
 
+class TestMigrationBackfill(unittest.TestCase):
+    """Test that backfill_new_fields adds scope/category to existing records."""
+
+    def test_backfill_infers_scope_from_uri(self):
+        from opencortex.migration.v030_path_redesign import infer_scope
+        self.assertEqual(infer_scope("opencortex://t1/user/u1/memories/pref/abc"), "private")
+        self.assertEqual(infer_scope("opencortex://t1/shared/skills/err/abc"), "shared")
+        self.assertEqual(infer_scope("opencortex://t1/resources/docs/abc"), "shared")
+
+    def test_backfill_infers_category_from_uri(self):
+        from opencortex.migration.v030_path_redesign import infer_category
+        self.assertEqual(infer_category("opencortex://t1/user/u1/memories/preferences/abc"), "preferences")
+        self.assertEqual(infer_category("opencortex://t1/shared/skills/error_fixes/abc"), "error_fixes")
+        self.assertEqual(infer_category("opencortex://t1/resources/documents/abc"), "documents")
+
+    def test_backfill_infers_mergeable(self):
+        from opencortex.migration.v030_path_redesign import infer_mergeable
+        self.assertTrue(infer_mergeable("preferences"))
+        self.assertTrue(infer_mergeable("profile"))
+        self.assertFalse(infer_mergeable("events"))
+        self.assertFalse(infer_mergeable("cases"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
