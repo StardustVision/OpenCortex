@@ -34,8 +34,9 @@ Typical usage::
 
 import asyncio
 import logging
+import re
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Union
 from uuid import uuid4
 
 from opencortex.config import CortexConfig, get_config
@@ -292,7 +293,9 @@ class MemoryOrchestrator:
                     "(model=%s)",
                     model_name,
                 )
-                return embedder
+                from opencortex.models.embedder.sparse import BM25SparseEmbedder
+                from opencortex.models.embedder.base import CompositeHybridEmbedder
+                return CompositeHybridEmbedder(embedder, BM25SparseEmbedder())
             except ImportError as exc:
                 logger.warning(
                     "[MemoryOrchestrator] Cannot create Volcengine embedder — "
@@ -344,7 +347,9 @@ class MemoryOrchestrator:
                     "(model=%s)",
                     model_name,
                 )
-                return embedder
+                from opencortex.models.embedder.sparse import BM25SparseEmbedder
+                from opencortex.models.embedder.base import CompositeHybridEmbedder
+                return CompositeHybridEmbedder(embedder, BM25SparseEmbedder())
             except ImportError as exc:
                 logger.warning(
                     "[MemoryOrchestrator] Cannot create OpenAI embedder — "
@@ -535,6 +540,10 @@ class MemoryOrchestrator:
         tid, uid = get_effective_identity()
         effective_user = UserIdentifier(tid, uid)
 
+        # L0 quality gate: enrich abstract with key terms from content
+        if content and is_leaf:
+            abstract = self._enrich_abstract(abstract, content)
+
         # Create context object
         ctx = Context(
             uri=uri,
@@ -566,6 +575,8 @@ class MemoryOrchestrator:
         record = ctx.to_dict()
         if ctx.vector:
             record["vector"] = ctx.vector
+        if self._embedder and result.sparse_vector:
+            record["sparse_vector"] = result.sparse_vector
 
         # Populate scope/category/source fields for path-redesign
         inferred_scope = "private" if "/user/" in uri else "shared"
@@ -577,6 +588,7 @@ class MemoryOrchestrator:
         record["session_id"] = session_id or ""
         record["ttl_expires_at"] = ""
         record["project_id"] = get_effective_project_id()
+        record["source_tenant_id"] = tid
 
         # Set TTL for staging records (24 hours from now)
         if context_type == "staging":
@@ -670,6 +682,8 @@ class MemoryOrchestrator:
                     None, self._embedder.embed, abstract
                 )
                 update_data["vector"] = result.dense_vector
+                if result.sparse_vector:
+                    update_data["sparse_vector"] = result.sparse_vector
 
         if meta:
             existing_meta = record.get("meta", {})
@@ -819,9 +833,16 @@ class MemoryOrchestrator:
             ]},
         ]}
 
+        # Tenant isolation: hard filter by source_tenant_id
+        # Empty string covers legacy records without tenant field
+        if tid:
+            tenant_filter = {"op": "must", "field": "source_tenant_id", "conds": [tid, ""]}
+            combined_conds = [staging_exclude, scope_filter, tenant_filter]
+        else:
+            combined_conds = [staging_exclude, scope_filter]
+
         # Project-scoped filter: isolate resources by project_id
         project_id = get_effective_project_id()
-        combined_conds = [staging_exclude, scope_filter]
         if project_id and project_id != "public":
             # Include records matching this project or legacy records without project_id
             project_filter = {"op": "must", "field": "project_id", "conds": [project_id, "public", ""]}
@@ -1848,6 +1869,49 @@ class MemoryOrchestrator:
                         return candidate
         return ""
 
+    # Regexes for key term extraction (mirrors intent_router.py)
+    _CAMEL_RE = re.compile(r"[a-z]+[A-Z][a-zA-Z]*|[A-Z][a-z]+(?:[A-Z][a-z]+)+")
+    _CAPS_RE = re.compile(r"\b[A-Z]{2,}\b")
+    _PATH_RE = re.compile(r"[a-zA-Z0-9]+[_./-][a-zA-Z0-9]+")
+
+    @staticmethod
+    def _enrich_abstract(abstract: str, content: str) -> str:
+        """Enrich abstract with key terms from content if coverage is low.
+
+        Extracts CamelCase, ALL_CAPS, and path/symbol patterns from content,
+        checks how many appear in the abstract. If coverage < 70%, appends
+        missing terms (up to 10) to the abstract.
+        """
+        if not content:
+            return abstract
+
+        # Extract key terms from content
+        terms: Set[str] = set()
+        terms.update(MemoryOrchestrator._CAMEL_RE.findall(content))
+        terms.update(MemoryOrchestrator._CAPS_RE.findall(content))
+        terms.update(MemoryOrchestrator._PATH_RE.findall(content))
+
+        # Filter out very short / generic terms
+        terms = {t for t in terms if len(t) >= 2}
+        if not terms:
+            return abstract
+
+        # Check coverage in abstract
+        abstract_lower = abstract.lower()
+        covered = {t for t in terms if t.lower() in abstract_lower}
+        coverage = len(covered) / len(terms)
+
+        if coverage >= 0.7:
+            return abstract
+
+        # Append missing terms (up to 10)
+        missing = sorted(terms - covered)[:10]
+        if missing:
+            suffix = " [" + ", ".join(missing) + "]"
+            return abstract + suffix
+
+        return abstract
+
     def _derive_parent_uri(self, uri: str) -> str:
         """Derive parent URI by removing the last path segment."""
         try:
@@ -1925,6 +1989,7 @@ class MemoryOrchestrator:
 
             # Embed the directory name as a minimal vector
             dir_name = dir_uri.rstrip("/").rsplit("/", 1)[-1]
+            embed_result = None
             if self._embedder and dir_name:
                 loop = asyncio.get_event_loop()
                 embed_result = await loop.run_in_executor(
@@ -1935,9 +2000,12 @@ class MemoryOrchestrator:
             record = dir_ctx.to_dict()
             if dir_ctx.vector:
                 record["vector"] = dir_ctx.vector
+            if embed_result and embed_result.sparse_vector:
+                record["sparse_vector"] = embed_result.sparse_vector
             # Populate scope fields so directory records pass scope filters
             record["scope"] = "private" if "/user/" in dir_uri else "shared"
             record["source_user_id"] = uid
+            record["source_tenant_id"] = tid
             record["category"] = ""
             record["mergeable"] = False
             record["session_id"] = ""

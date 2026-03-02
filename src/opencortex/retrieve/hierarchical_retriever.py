@@ -9,9 +9,11 @@ and rerank-based relevance scoring.
 """
 
 import asyncio
+import math
 
 import heapq
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from opencortex.models.embedder.base import EmbedResult
@@ -67,6 +69,7 @@ class HierarchicalRetriever:
         rerank_config: Optional[RerankConfig] = None,
         llm_completion: Optional[Any] = None,
         rl_weight: float = 0.05,
+        hot_weight: float = 0.03,
         use_frontier_batching: bool = True,
         max_waves: int = 8,
         embed_timeout: float = 2.0,
@@ -78,6 +81,7 @@ class HierarchicalRetriever:
             embedder: Embedder instance (supports dense/sparse/hybrid)
             rerank_config: Rerank configuration (optional, will fallback to vector search only)
             llm_completion: Async LLM callable for RerankClient LLM fallback
+            hot_weight: Weight for hotness scoring in final score fusion.
         """
         self.storage = storage
         self.embedder = embedder
@@ -87,6 +91,7 @@ class HierarchicalRetriever:
         self.threshold = rerank_config.threshold if rerank_config else 0
 
         self._rl_weight = rl_weight
+        self._hot_weight = hot_weight
         self._use_frontier_batching = use_frontier_batching
         self._max_waves = max_waves
         self._embed_timeout = embed_timeout
@@ -115,6 +120,45 @@ class HierarchicalRetriever:
         self._score_gap_threshold = (
             rerank_config.score_gap_threshold if rerank_config else 0.15
         )
+
+    # Half-life of 7 days: λ = ln(2)/7
+    _HOTNESS_LAMBDA = math.log(2) / 7.0
+
+    @staticmethod
+    def _compute_hotness(record: Dict[str, Any]) -> float:
+        """Compute hotness score from access frequency and recency.
+
+        Formula: sigmoid(log1p(active_count)) * exp(-λ * age_days)
+        where λ = ln(2)/7 gives a 7-day half-life.
+        """
+        active_count = 0
+        try:
+            active_count = int(record.get("active_count", 0))
+        except (TypeError, ValueError):
+            pass
+
+        # Parse accessed_at for age calculation
+        age_days = 30.0  # default if no timestamp
+        accessed_at = record.get("accessed_at", "")
+        if accessed_at:
+            try:
+                if isinstance(accessed_at, str):
+                    # ISO format: "2026-03-02T10:00:00Z" or similar
+                    ts = datetime.fromisoformat(accessed_at.replace("Z", "+00:00"))
+                else:
+                    ts = accessed_at
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                delta = datetime.now(timezone.utc) - ts
+                age_days = max(0.0, delta.total_seconds() / 86400.0)
+            except (ValueError, TypeError, AttributeError):
+                pass
+
+        # sigmoid(log1p(active_count)) gives a 0..1 frequency signal
+        freq = 1.0 / (1.0 + math.exp(-math.log1p(active_count)))
+        # Exponential decay with 7-day half-life
+        recency = math.exp(-HierarchicalRetriever._HOTNESS_LAMBDA * age_days)
+        return freq * recency
 
     async def _embed_with_timeout(self, text: str):
         """Embed text with server-side timeout.
@@ -230,11 +274,13 @@ class HierarchicalRetriever:
                 limit=limit,
                 text_query=text_query,
             )
-            # Apply RL boost to scroll results
+            # Apply RL + hotness boost to scroll results
             for r in results:
                 reward = r.get("reward_score", 0.0)
                 if reward != 0 and self._rl_weight:
                     r["_score"] = r.get("_score", 0.0) + self._rl_weight * reward
+                if self._hot_weight:
+                    r["_score"] = r.get("_score", 0.0) + self._hot_weight * self._compute_hotness(r)
             results.sort(key=lambda r: r.get("_score", 0.0), reverse=True)
             matched = await self._convert_to_matched_contexts(
                 results[:limit], query.context_type, query.detail_level,
@@ -428,6 +474,8 @@ class HierarchicalRetriever:
                 reward = r.get("reward_score", 0.0)
                 if reward != 0 and self._rl_weight:
                     fused += self._rl_weight * reward
+                if self._hot_weight:
+                    fused += self._hot_weight * self._compute_hotness(r)
                 points.append((r["uri"], fused))
                 seen.add(r["uri"])
         else:
@@ -436,6 +484,8 @@ class HierarchicalRetriever:
                 reward = r.get("reward_score", 0.0)
                 if reward != 0 and self._rl_weight:
                     score += self._rl_weight * reward
+                if self._hot_weight:
+                    score += self._hot_weight * self._compute_hotness(r)
                 points.append((r["uri"], score))
                 seen.add(r["uri"])
 
@@ -546,6 +596,8 @@ class HierarchicalRetriever:
                 reward = r.get("reward_score", 0.0)
                 if reward != 0 and self._rl_weight:
                     final_score += self._rl_weight * reward
+                if self._hot_weight:
+                    final_score += self._hot_weight * self._compute_hotness(r)
 
                 if not passes_threshold(final_score):
                     logger.debug(
@@ -714,6 +766,8 @@ class HierarchicalRetriever:
                     reward = child.get("reward_score", 0.0)
                     if reward != 0 and self._rl_weight:
                         child["_final_score"] += self._rl_weight * reward
+                    if self._hot_weight:
+                        child["_final_score"] += self._hot_weight * self._compute_hotness(child)
 
             # 4. Compensation query (starved parents)
             starved = [
@@ -748,6 +802,8 @@ class HierarchicalRetriever:
                         reward = r.get("reward_score", 0.0)
                         if reward != 0 and self._rl_weight:
                             r["_final_score"] += self._rl_weight * reward
+                        if self._hot_weight:
+                            r["_final_score"] += self._hot_weight * self._compute_hotness(r)
                         children_by_parent[p_uri].append(r)
 
                 # Tiny queries for still-starved parents
@@ -779,6 +835,8 @@ class HierarchicalRetriever:
                             reward = r.get("reward_score", 0.0)
                             if reward != 0 and self._rl_weight:
                                 r["_final_score"] += self._rl_weight * reward
+                            if self._hot_weight:
+                                r["_final_score"] += self._hot_weight * self._compute_hotness(r)
                             if s_uri not in children_by_parent:
                                 children_by_parent[s_uri] = []
                             children_by_parent[s_uri].append(r)
@@ -870,11 +928,13 @@ class HierarchicalRetriever:
                 filter=filter,
                 limit=limit,
             )
-            # Apply RL reward boost
+            # Apply RL + hotness boost
             for r in results:
                 reward = r.get("reward_score", 0.0)
                 if reward != 0 and self._rl_weight:
                     r["_score"] = r.get("_score", 0.0) + self._rl_weight * reward
+                if self._hot_weight:
+                    r["_score"] = r.get("_score", 0.0) + self._hot_weight * self._compute_hotness(r)
             return results
         except Exception as exc:
             logger.warning("[HierarchicalRetriever] Lexical search failed: %s", exc)

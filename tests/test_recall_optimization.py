@@ -303,6 +303,8 @@ class InMemoryStorageWithLexical:
 class MockEmbedder:
     """Simple embedder that makes semantically dissimilar vectors for technical terms."""
 
+    model_name = "mock"
+
     def embed(self, text):
         @dataclass
         class EmbedResult:
@@ -312,8 +314,14 @@ class MockEmbedder:
         vec = [0.5, 0.5, 0.5, 0.5]
         return EmbedResult(dense_vector=vec)
 
+    def embed_batch(self, texts):
+        return [self.embed(t) for t in texts]
+
     def get_dimension(self):
         return 4
+
+    def close(self):
+        pass
 
 
 class TestParallelLexicalRetrieval(unittest.TestCase):
@@ -401,6 +409,280 @@ class TestSearchIntentSerialization(unittest.TestCase):
         d = result.to_dict()
         self.assertIn("search_intent", d)
         self.assertEqual(d["search_intent"]["lexical_boost"], 0.55)
+
+
+# =============================================================================
+# Test: BM25SparseEmbedder (Phase 2)
+# =============================================================================
+
+
+class TestBM25SparseEmbedder(unittest.TestCase):
+    """Test BM25SparseEmbedder produces valid sparse vectors."""
+
+    def setUp(self):
+        from opencortex.models.embedder.sparse import BM25SparseEmbedder
+        self.embedder = BM25SparseEmbedder()
+
+    def test_produces_sparse_vector(self):
+        result = self.embedder.embed("TrafficRule OutboundType configuration")
+        self.assertIsNotNone(result.sparse_vector)
+        self.assertIsInstance(result.sparse_vector, dict)
+        self.assertGreater(len(result.sparse_vector), 0)
+        # All weights must be positive
+        for token, weight in result.sparse_vector.items():
+            self.assertIsInstance(token, str)
+            self.assertGreater(weight, 0.0)
+
+    def test_no_dense_vector(self):
+        result = self.embedder.embed("hello world")
+        self.assertIsNone(result.dense_vector)
+        self.assertIsNotNone(result.sparse_vector)
+
+    def test_empty_input(self):
+        result = self.embedder.embed("")
+        self.assertIsNotNone(result.sparse_vector)
+        self.assertEqual(len(result.sparse_vector), 0)
+
+    def test_chinese_tokens(self):
+        result = self.embedder.embed("流量规则出站类型")
+        self.assertIsNotNone(result.sparse_vector)
+        # Should have Chinese character tokens
+        has_chinese = any(
+            "\u4e00" <= c <= "\u9fa5"
+            for token in result.sparse_vector
+            for c in token
+        )
+        self.assertTrue(has_chinese, "Should tokenize Chinese characters")
+
+    def test_max_tokens_respected(self):
+        from opencortex.models.embedder.sparse import BM25SparseEmbedder
+        embedder = BM25SparseEmbedder(max_tokens=5)
+        # Generate a long text with many unique tokens
+        text = " ".join(f"token{i}" for i in range(100))
+        result = embedder.embed(text)
+        self.assertLessEqual(len(result.sparse_vector), 5)
+
+    def test_camel_case_boost(self):
+        result = self.embedder.embed("TrafficRule defines outbound types")
+        # "trafficrule" should have higher weight than generic words
+        weights = result.sparse_vector
+        if "trafficrule" in weights and "defines" in weights:
+            self.assertGreater(weights["trafficrule"], weights["defines"])
+
+    def test_is_sparse_property(self):
+        self.assertTrue(self.embedder.is_sparse)
+        self.assertFalse(self.embedder.is_dense)
+
+
+# =============================================================================
+# Test: CompositeHybridEmbedder integration (Phase 2)
+# =============================================================================
+
+
+class TestCompositeHybridIntegration(unittest.TestCase):
+    """Test CompositeHybridEmbedder with BM25SparseEmbedder."""
+
+    def test_composite_produces_both_vectors(self):
+        from opencortex.models.embedder.sparse import BM25SparseEmbedder
+        from opencortex.models.embedder.base import CompositeHybridEmbedder
+
+        dense = MockEmbedder()
+        sparse = BM25SparseEmbedder()
+        hybrid = CompositeHybridEmbedder(dense, sparse)
+
+        result = hybrid.embed("TrafficRule configuration")
+        self.assertIsNotNone(result.dense_vector)
+        self.assertIsNotNone(result.sparse_vector)
+        self.assertEqual(len(result.dense_vector), 4)
+        self.assertGreater(len(result.sparse_vector), 0)
+
+    def test_composite_batch(self):
+        from opencortex.models.embedder.sparse import BM25SparseEmbedder
+        from opencortex.models.embedder.base import CompositeHybridEmbedder
+
+        dense = MockEmbedder()
+        sparse = BM25SparseEmbedder()
+        hybrid = CompositeHybridEmbedder(dense, sparse)
+
+        results = hybrid.embed_batch(["hello", "world"])
+        self.assertEqual(len(results), 2)
+        for r in results:
+            self.assertIsNotNone(r.dense_vector)
+            self.assertIsNotNone(r.sparse_vector)
+
+
+# =============================================================================
+# Test: Hotness scoring (Phase 3)
+# =============================================================================
+
+
+class TestHotnessScoring(unittest.TestCase):
+    """Test HierarchicalRetriever._compute_hotness static method."""
+
+    def test_zero_access_count(self):
+        record = {"active_count": 0, "accessed_at": ""}
+        score = HierarchicalRetriever._compute_hotness(record)
+        self.assertGreaterEqual(score, 0.0)
+        self.assertLessEqual(score, 1.0)
+
+    def test_high_access_recent(self):
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        record = {"active_count": 100, "accessed_at": now}
+        score = HierarchicalRetriever._compute_hotness(record)
+        self.assertGreater(score, 0.5, "High access + recent should give high hotness")
+
+    def test_high_access_old(self):
+        record = {"active_count": 100, "accessed_at": "2025-01-01T00:00:00Z"}
+        score = HierarchicalRetriever._compute_hotness(record)
+        # Very old → recency decay should make this low
+        self.assertLess(score, 0.1)
+
+    def test_low_access_recent(self):
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        record = {"active_count": 1, "accessed_at": now}
+        score = HierarchicalRetriever._compute_hotness(record)
+        # Low access but recent — moderate score
+        self.assertGreater(score, 0.0)
+        self.assertLess(score, 1.0)
+
+    def test_missing_fields_graceful(self):
+        """Empty record should not crash."""
+        record = {}
+        score = HierarchicalRetriever._compute_hotness(record)
+        self.assertGreaterEqual(score, 0.0)
+
+    def test_hotness_weight_in_constructor(self):
+        """Verify hot_weight parameter is accepted."""
+        storage = InMemoryStorageWithLexical()
+        retriever = HierarchicalRetriever(
+            storage=storage,
+            embedder=MockEmbedder(),
+            rerank_config=None,
+            hot_weight=0.05,
+        )
+        self.assertEqual(retriever._hot_weight, 0.05)
+
+
+# =============================================================================
+# Test: L0 quality gate (Phase 3)
+# =============================================================================
+
+
+class TestL0QualityGate(unittest.TestCase):
+    """Test MemoryOrchestrator._enrich_abstract."""
+
+    def test_enriches_low_coverage_abstract(self):
+        from opencortex.orchestrator import MemoryOrchestrator
+        abstract = "some generic description"
+        content = "TrafficRule defines OutboundType enum for SASE policy"
+        enriched = MemoryOrchestrator._enrich_abstract(abstract, content)
+        # Should have appended missing terms
+        self.assertNotEqual(enriched, abstract)
+        self.assertIn("[", enriched)
+
+    def test_no_enrichment_when_coverage_high(self):
+        from opencortex.orchestrator import MemoryOrchestrator
+        abstract = "TrafficRule OutboundType SASE policy configuration"
+        content = "TrafficRule defines OutboundType for SASE"
+        enriched = MemoryOrchestrator._enrich_abstract(abstract, content)
+        # Coverage should be high enough — no enrichment
+        self.assertEqual(enriched, abstract)
+
+    def test_no_enrichment_empty_content(self):
+        from opencortex.orchestrator import MemoryOrchestrator
+        abstract = "some abstract"
+        enriched = MemoryOrchestrator._enrich_abstract(abstract, "")
+        self.assertEqual(enriched, abstract)
+
+    def test_max_10_terms_appended(self):
+        from opencortex.orchestrator import MemoryOrchestrator
+        abstract = "generic"
+        # Content with many CamelCase terms
+        terms = " ".join(f"TermName{i}" for i in range(30))
+        content = terms
+        enriched = MemoryOrchestrator._enrich_abstract(abstract, content)
+        # Count terms in the bracket
+        if "[" in enriched:
+            bracket_content = enriched[enriched.index("[") + 1 : enriched.index("]")]
+            term_count = len(bracket_content.split(", "))
+            self.assertLessEqual(term_count, 10)
+
+
+# =============================================================================
+# Test: Tenant isolation field (Phase 3)
+# =============================================================================
+
+
+class TestTenantIsolation(unittest.TestCase):
+    """Test source_tenant_id field in schema and migration."""
+
+    def test_context_schema_has_source_tenant_id(self):
+        from opencortex.storage.collection_schemas import CollectionSchemas
+        schema = CollectionSchemas.context_collection("test", 1024)
+        field_names = [f["FieldName"] for f in schema["Fields"]]
+        self.assertIn("source_tenant_id", field_names)
+        self.assertIn("source_tenant_id", schema["ScalarIndex"])
+
+    def test_migration_infer_tenant_from_uri(self):
+        from opencortex.migration.v031_tenant_backfill import infer_tenant_from_uri
+        self.assertEqual(
+            infer_tenant_from_uri("opencortex://acme/user/u1/memory/docs/a"),
+            "acme",
+        )
+        self.assertEqual(
+            infer_tenant_from_uri("opencortex://sase/user/dev/memory/docs/x"),
+            "sase",
+        )
+        self.assertEqual(infer_tenant_from_uri(""), "")
+        self.assertEqual(infer_tenant_from_uri("invalid-uri"), "")
+
+
+# =============================================================================
+# Test: Eval dataset loading (Phase 0)
+# =============================================================================
+
+
+class TestEvalDataset(unittest.TestCase):
+    """Verify the SASE eval dataset loads correctly."""
+
+    def test_dataset_loads(self):
+        from opencortex.eval.memory_eval import load_dataset
+        dataset_path = os.path.join(
+            os.path.dirname(__file__), "..", "src", "opencortex",
+            "eval", "datasets", "sase_eval_200.jsonl",
+        )
+        if not os.path.exists(dataset_path):
+            self.skipTest("Eval dataset not found")
+        dataset = load_dataset(dataset_path)
+        self.assertGreaterEqual(len(dataset), 200)
+        for item in dataset:
+            self.assertIn("query", item)
+            self.assertIn("category", item)
+            self.assertIn("expected_uris", item)
+            self.assertIn(item["category"], ("hard_keyword", "semantic", "hierarchical"))
+
+    def test_dataset_category_distribution(self):
+        from opencortex.eval.memory_eval import load_dataset
+        dataset_path = os.path.join(
+            os.path.dirname(__file__), "..", "src", "opencortex",
+            "eval", "datasets", "sase_eval_200.jsonl",
+        )
+        if not os.path.exists(dataset_path):
+            self.skipTest("Eval dataset not found")
+        dataset = load_dataset(dataset_path)
+        cats = {}
+        for item in dataset:
+            c = item["category"]
+            cats[c] = cats.get(c, 0) + 1
+        total = sum(cats.values())
+        # Hard keyword should be ~40%
+        self.assertGreaterEqual(cats.get("hard_keyword", 0) / total, 0.30)
+        # Semantic should be ~40%
+        self.assertGreaterEqual(cats.get("semantic", 0) / total, 0.30)
+        # Hierarchical should be ~20%
+        self.assertGreaterEqual(cats.get("hierarchical", 0) / total, 0.10)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,205 @@
+{"query": "TrafficRule OutboundType enum values", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/traffic-rule-proto"]}
+{"query": "OutboundType configuration fields", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/traffic-rule-proto"]}
+{"query": "TrafficRule proto definition", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/traffic-rule-proto"]}
+{"query": "traffic_rule.proto outbound", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/traffic-rule-proto"]}
+{"query": "TrafficRule InboundType", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/traffic-rule-proto"]}
+{"query": "ESP tunnel UDP 4501", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/agent-tunnel"]}
+{"query": "IPsec ESP encapsulation port", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/agent-tunnel"]}
+{"query": "WireGuard tunnel config", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/agent-tunnel"]}
+{"query": "TUN device network interface", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/agent-service"]}
+{"query": "Agent TUN mode setup", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/agent-service"]}
+{"query": "DNS resolution agent service", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/agent-service"]}
+{"query": "DNS split-horizon agent", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/agent-service"]}
+{"query": "SCIM protocol integration", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/authentik-scim"]}
+{"query": "Authentik SCIM provisioning", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/authentik-scim"]}
+{"query": "SCIM user synchronization webhook", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/authentik-scim"]}
+{"query": "BFF API gateway routes", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/bff-api"]}
+{"query": "BFF Config API routing", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/bff-api"]}
+{"query": "DeviceManager DUG push", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/device-manager"]}
+{"query": "DUG device update gateway", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/device-manager"]}
+{"query": "pPOP vPOP deployment topology", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/sovereign-arch"]}
+{"query": "Sovereign SASE PRD requirements", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/sovereign-arch"]}
+{"query": "pPOP physical point of presence", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/sovereign-arch"]}
+{"query": "SasePolicy rule evaluation", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/policy-engine"]}
+{"query": "PolicyEngine SasePolicy matcher", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/policy-engine"]}
+{"query": "CertManager TLS rotation", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/cert-manager"]}
+{"query": "mTLS certificate lifecycle", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/cert-manager"]}
+{"query": "ZTN zero trust network access", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/ztn-architecture"]}
+{"query": "ZTNA identity-based access", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/ztn-architecture"]}
+{"query": "StreamGateway Dispatcher", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/stream-gateway"]}
+{"query": "MessageRouter stream handling", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/stream-gateway"]}
+{"query": "ConnTracker connection tracking", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/stream-gateway"]}
+{"query": "HealthChecker probe endpoint", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/health-check"]}
+{"query": "gRPC HealthCheck service", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/health-check"]}
+{"query": "AuditLog event sourcing", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/audit-log"]}
+{"query": "ConfigStore etcd backend", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/config-store"]}
+{"query": "RateLimiter token bucket", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/rate-limiter"]}
+{"query": "SessionStore Redis cluster", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/session-store"]}
+{"query": "MetricsCollector Prometheus", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/metrics"]}
+{"query": "AlertManager notification rules", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/alerting"]}
+{"query": "ServiceMesh Envoy sidecar", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/service-mesh"]}
+{"query": "DataPlane eBPF hooks", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/data-plane"]}
+{"query": "ControlPlane orchestrator", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/control-plane"]}
+{"query": "AccessProxy reverse proxy auth", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/access-proxy"]}
+{"query": "LogCollector FluentBit config", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/logging"]}
+{"query": "NetworkSegment VLAN tagging", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/network-segment"]}
+{"query": "DDoS mitigation SYN cookie", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/ddos-protection"]}
+{"query": "WAF rule OWASP CRS", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/waf"]}
+{"query": "IdP OIDC federation", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/identity-provider"]}
+{"query": "MFA TOTP WebAuthn", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/identity-provider"]}
+{"query": "RBAC role-based access control", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/access-control"]}
+{"query": "SDN software-defined networking", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/sdn-controller"]}
+{"query": "BGP route advertisement", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/routing"]}
+{"query": "OSPF area configuration", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/routing"]}
+{"query": "NAT traversal STUN TURN", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/nat-traversal"]}
+{"query": "QoS traffic shaping DSCP", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/qos"]}
+{"query": "IPS intrusion prevention", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/ips"]}
+{"query": "CASB cloud access security broker", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/casb"]}
+{"query": "DLP data loss prevention rules", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/dlp"]}
+{"query": "SWG secure web gateway", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/swg"]}
+{"query": "FWaaS firewall as a service", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/fwaas"]}
+{"query": "SD-WAN overlay network", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/sd-wan"]}
+{"query": "MPLS label switching path", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/mpls"]}
+{"query": "GRE tunnel encapsulation", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/tunneling"]}
+{"query": "VXLAN overlay network ID", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/vxlan"]}
+{"query": "PKI certificate authority chain", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/pki"]}
+{"query": "SAML assertion single sign-on", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/sso"]}
+{"query": "OAuth2 token exchange flow", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/oauth"]}
+{"query": "JWT claims validation", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/auth-token"]}
+{"query": "HMAC request signing", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/api-auth"]}
+{"query": "AES-256-GCM encryption", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/encryption"]}
+{"query": "ChaCha20-Poly1305 cipher", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/encryption"]}
+{"query": "mDNS service discovery", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/service-discovery"]}
+{"query": "Consul service registry", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/service-discovery"]}
+{"query": "K8s Ingress controller rules", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/k8s-ingress"]}
+{"query": "HPA horizontal pod autoscaler", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/k8s-scaling"]}
+{"query": "CRD custom resource definition", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/k8s-operator"]}
+{"query": "Terraform IaC module", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/infrastructure"]}
+{"query": "流规则出站类型配置", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/traffic-rule-proto"]}
+{"query": "出站流量规则定义", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/traffic-rule-proto"]}
+{"query": "流量策略出站方向设置", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/traffic-rule-proto"]}
+{"query": "如何定义出站流量类型", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/traffic-rule-proto"]}
+{"query": "隧道加密协议配置", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/agent-tunnel"]}
+{"query": "VPN 隧道建立过程", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/agent-tunnel"]}
+{"query": "安全隧道端口和加密设置", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/agent-tunnel"]}
+{"query": "客户端网络接口虚拟化", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/agent-service"]}
+{"query": "终端代理 DNS 处理逻辑", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/agent-service"]}
+{"query": "代理服务网络层实现", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/agent-service"]}
+{"query": "身份提供商用户同步机制", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/authentik-scim"]}
+{"query": "用户目录自动同步集成", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/authentik-scim"]}
+{"query": "第三方身份源对接", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/authentik-scim"]}
+{"query": "前端聚合层 API 设计", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/bff-api"]}
+{"query": "统一入口 API 路由规则", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/bff-api"]}
+{"query": "API 网关后端聚合模式", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/bff-api"]}
+{"query": "设备管理推送更新通道", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/device-manager"]}
+{"query": "终端设备固件升级推送", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/device-manager"]}
+{"query": "客户端配置下发机制", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/device-manager"]}
+{"query": "多地域主权部署架构", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/sovereign-arch"]}
+{"query": "数据主权合规部署方案", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/sovereign-arch"]}
+{"query": "本地化部署拓扑设计", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/sovereign-arch"]}
+{"query": "策略引擎规则匹配", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/policy-engine"]}
+{"query": "安全策略评估执行", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/policy-engine"]}
+{"query": "访问控制策略判定", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/policy-engine"]}
+{"query": "证书管理自动续期", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/cert-manager"]}
+{"query": "TLS 证书生命周期管理", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/cert-manager"]}
+{"query": "零信任网络架构设计", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/ztn-architecture"]}
+{"query": "基于身份的网络访问", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/ztn-architecture"]}
+{"query": "流式网关组件架构", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/stream-gateway"]}
+{"query": "消息路由分发机制", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/stream-gateway"]}
+{"query": "连接跟踪状态管理", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/stream-gateway"]}
+{"query": "服务健康检查探针", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/health-check"]}
+{"query": "节点存活检测机制", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/health-check"]}
+{"query": "审计日志事件记录", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/audit-log"]}
+{"query": "操作审计追踪存储", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/audit-log"]}
+{"query": "配置中心后端存储", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/config-store"]}
+{"query": "动态配置管理系统", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/config-store"]}
+{"query": "限流器令牌桶算法", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/rate-limiter"]}
+{"query": "API 请求频率控制", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/rate-limiter"]}
+{"query": "会话存储集群管理", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/session-store"]}
+{"query": "用户会话持久化方案", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/session-store"]}
+{"query": "可观测性指标采集", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/metrics"]}
+{"query": "系统监控数据收集", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/metrics"]}
+{"query": "告警规则通知配置", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/alerting"]}
+{"query": "异常事件告警机制", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/alerting"]}
+{"query": "服务网格代理注入", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/service-mesh"]}
+{"query": "微服务间流量管理", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/service-mesh"]}
+{"query": "数据面内核级处理", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/data-plane"]}
+{"query": "高性能包处理引擎", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/data-plane"]}
+{"query": "控制面统一编排", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/control-plane"]}
+{"query": "集中管控调度中心", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/control-plane"]}
+{"query": "反向代理认证接入", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/access-proxy"]}
+{"query": "应用访问代理安全层", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/access-proxy"]}
+{"query": "日志采集转发配置", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/logging"]}
+{"query": "日志聚合分析管道", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/logging"]}
+{"query": "网络分段隔离策略", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/network-segment"]}
+{"query": "微分段零信任网络", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/network-segment"]}
+{"query": "抗DDoS流量清洗", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/ddos-protection"]}
+{"query": "Web 应用防火墙规则", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/waf"]}
+{"query": "统一身份认证联邦", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/identity-provider"]}
+{"query": "多因素身份验证", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/identity-provider"]}
+{"query": "角色权限访问控制", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/access-control"]}
+{"query": "软件定义网络控制器", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/sdn-controller"]}
+{"query": "动态路由协议通告", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/routing"]}
+{"query": "网络地址转换穿透", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/nat-traversal"]}
+{"query": "流量优先级调度", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/qos"]}
+{"query": "入侵检测防御系统", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/ips"]}
+{"query": "云端访问安全代理", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/casb"]}
+{"query": "敏感数据泄露防护", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/dlp"]}
+{"query": "安全 Web 网关代理", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/swg"]}
+{"query": "云端防火墙服务", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/fwaas"]}
+{"query": "广域网智能选路", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/sd-wan"]}
+{"query": "标签交换路径协议", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/mpls"]}
+{"query": "隧道封装协议选型", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/tunneling"]}
+{"query": "虚拟扩展局域网覆盖", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/vxlan"]}
+{"query": "公钥基础设施证书链", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/pki"]}
+{"query": "单点登录断言验证", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/sso"]}
+{"query": "令牌交换授权流程", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/oauth"]}
+{"query": "访问令牌声明校验", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/auth-token"]}
+{"query": "请求签名认证方案", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/api-auth"]}
+{"query": "对称加密算法选择", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/encryption"]}
+{"query": "服务发现注册中心", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/service-discovery"]}
+{"query": "容器入口控制器", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/k8s-ingress"]}
+{"query": "弹性伸缩自动扩容", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/k8s-scaling"]}
+{"query": "自定义资源控制器", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/k8s-operator"]}
+{"query": "基础设施即代码模块", "category": "semantic", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/infrastructure"]}
+{"query": "服务全景与端口", "category": "semantic", "difficulty": "easy", "expected_uris": ["opencortex://sase/user/dev/memory/docs/service-overview"]}
+{"query": "Stream Gateway 内部组件", "category": "hierarchical", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/stream-gateway"]}
+{"query": "DDD 领域边界", "category": "semantic", "difficulty": "easy", "expected_uris": ["opencortex://sase/user/dev/memory/docs/ddd-boundaries"]}
+{"query": "Authentik SCIM 集成", "category": "semantic", "difficulty": "easy", "expected_uris": ["opencortex://sase/user/dev/memory/docs/authentik-scim"]}
+{"query": "TrafficRule 出站类型", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/traffic-rule-proto"]}
+{"query": "Agent TUN/DNS 设计", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/agent-service"]}
+{"query": "策略变更推送链路", "category": "semantic", "difficulty": "easy", "expected_uris": ["opencortex://sase/user/dev/memory/docs/policy-push"]}
+{"query": "BFF API 路由", "category": "semantic", "difficulty": "easy", "expected_uris": ["opencortex://sase/user/dev/memory/docs/bff-api"]}
+{"query": "Device Manager DUG 推送", "category": "semantic", "difficulty": "easy", "expected_uris": ["opencortex://sase/user/dev/memory/docs/device-manager"]}
+{"query": "Sovereign SASE 主权架构", "category": "hard_keyword", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/sovereign-arch"]}
+{"query": "Stream Gateway 下属 Dispatcher 组件如何处理消息", "category": "hierarchical", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/stream-gateway"]}
+{"query": "Stream Gateway MessageRouter 路由规则", "category": "hierarchical", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/stream-gateway"]}
+{"query": "SASE 架构下的网关子系统", "category": "hierarchical", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/stream-gateway"]}
+{"query": "安全架构中的代理层组件", "category": "hierarchical", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/access-proxy"]}
+{"query": "数据面子组件列表", "category": "hierarchical", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/data-plane"]}
+{"query": "控制面子系统架构", "category": "hierarchical", "difficulty": "medium", "expected_uris": ["opencortex://sase/user/dev/memory/docs/control-plane"]}
+{"query": "设备管理下属推送组件", "category": "hierarchical", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/device-manager"]}
+{"query": "身份认证下属 MFA 子模块", "category": "hierarchical", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/identity-provider"]}
+{"query": "策略引擎下属规则匹配子系统", "category": "hierarchical", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/policy-engine"]}
+{"query": "证书管理下属自动续期组件", "category": "hierarchical", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/cert-manager"]}
+{"query": "日志系统下属采集转发层", "category": "hierarchical", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/logging"]}
+{"query": "告警系统下属通知渠道管理", "category": "hierarchical", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/alerting"]}
+{"query": "服务网格下属代理注入控制", "category": "hierarchical", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/service-mesh"]}
+{"query": "隧道层下属加密子模块", "category": "hierarchical", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/agent-tunnel"]}
+{"query": "网络分段下属 VLAN 管理", "category": "hierarchical", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/network-segment"]}
+{"query": "DDoS 防护下属清洗中心", "category": "hierarchical", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/ddos-protection"]}
+{"query": "WAF 下属规则引擎", "category": "hierarchical", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/waf"]}
+{"query": "接入控制下属角色管理", "category": "hierarchical", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/access-control"]}
+{"query": "路由系统下属协议栈", "category": "hierarchical", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/routing"]}
+{"query": "配置管理下属版本控制", "category": "hierarchical", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/config-store"]}
+{"query": "限流下属滑动窗口", "category": "hierarchical", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/rate-limiter"]}
+{"query": "会话管理下属持久化策略", "category": "hierarchical", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/session-store"]}
+{"query": "SDN 下属控制面板", "category": "hierarchical", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/sdn-controller"]}
+{"query": "K8s 下属资源调度器", "category": "hierarchical", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/k8s-scaling"]}
+{"query": "基础设施下属网络模块", "category": "hierarchical", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/infrastructure"]}
+{"query": "IPS 下属签名检测引擎", "category": "hierarchical", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/ips"]}
+{"query": "CASB 下属影子 IT 发现", "category": "hierarchical", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/casb"]}
+{"query": "DLP 下属内容识别引擎", "category": "hierarchical", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/dlp"]}
+{"query": "SWG 下属 URL 分类过滤", "category": "hierarchical", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/swg"]}
+{"query": "FWaaS 下属策略同步", "category": "hierarchical", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/fwaas"]}
+{"query": "SD-WAN 下属链路质量监测", "category": "hierarchical", "difficulty": "hard", "expected_uris": ["opencortex://sase/user/dev/memory/docs/sd-wan"]}
