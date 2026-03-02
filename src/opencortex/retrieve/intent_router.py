@@ -140,6 +140,10 @@ class IntentRouter:
         # Layer 1: keyword-based quick match
         intent = self._keyword_extract(query)
 
+        # Short-circuit: keyword layer already determined no recall needed
+        if not intent.should_recall:
+            return intent
+
         # Layer 2+3: LLM classification + Memory Trigger
         if self._llm:
             try:

@@ -35,6 +35,7 @@ from opencortex.http.models import (
     HooksRecallRequest,
     HooksRememberRequest,
     HooksRouteRequest,
+    IntentShouldRecallRequest,
     MemoryFeedbackRequest,
     MemorySearchRequest,
     MemoryStoreRequest,
@@ -48,6 +49,7 @@ from opencortex.http.models import (
     TrajectoryStepRequest,
 )
 from opencortex.orchestrator import MemoryOrchestrator
+from opencortex.retrieve.intent_router import IntentRouter
 from opencortex.retrieve.types import ContextType
 
 logger = logging.getLogger(__name__)
@@ -128,7 +130,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="OpenCortex HTTP Server",
         description="Memory and context management system for AI Agents",
-        version="0.2.0",
+        version="0.2.2",
         lifespan=_lifespan,
     )
     app.add_middleware(RequestContextMiddleware)
@@ -223,6 +225,19 @@ def _register_routes(app: FastAPI) -> None:
     @app.get("/api/v1/memory/health")
     async def memory_health() -> Dict[str, Any]:
         return await _orchestrator.health_check()
+
+    # =====================================================================
+    # Intent
+    # =====================================================================
+
+    @app.post("/api/v1/intent/should_recall")
+    async def intent_should_recall(req: IntentShouldRecallRequest) -> Dict[str, Any]:
+        router = IntentRouter(llm_completion=_orchestrator._llm_completion)
+        intent = await router.route(req.query)
+        return {
+            "should_recall": intent.should_recall,
+            "intent_type": intent.intent_type,
+        }
 
     # =====================================================================
     # Hooks Learn
