@@ -17,16 +17,16 @@ const TOOLS = {
     'Store a new memory, resource, or skill. Returns the URI and metadata of the stored context.', {
       abstract:     { type: 'string',  description: 'Short summary of the memory', required: true },
       content:      { type: 'string',  description: 'Full content to store', default: '' },
-      category:     { type: 'string',  description: 'Category for organization', default: '' },
-      context_type: { type: 'string',  description: 'Type: memory, resource, or skill', default: 'memory' },
+      category:     { type: 'string',  description: 'Category: profile, preferences, entities, events, cases, patterns, error_fixes, workflows, strategies, documents, plans', default: '' },
+      context_type: { type: 'string',  description: 'Type: memory, resource, skill, case, pattern', default: 'memory' },
       meta:         { type: 'object',  description: 'Optional metadata key-value pairs' },
     }],
   memory_search: ['POST', '/api/v1/memory/search',
     'Semantic search across stored memories, resources, and skills. Returns ranked results with relevance scores.', {
       query:        { type: 'string',  description: 'Search query', required: true },
       limit:        { type: 'integer', description: 'Max results to return', default: 5 },
-      context_type: { type: 'string',  description: 'Filter by type' },
-      category:     { type: 'string',  description: 'Filter by category' },
+      context_type: { type: 'string',  description: 'Filter by type (memory, resource, skill, case, pattern)' },
+      category:     { type: 'string',  description: 'Filter by category (profile, preferences, entities, events, cases, patterns, etc.)' },
     }],
   memory_feedback: ['POST', '/api/v1/memory/feedback',
     'Submit reward feedback for a memory (reinforcement learning). Positive rewards reinforce retrieval; negative rewards penalize it.', {

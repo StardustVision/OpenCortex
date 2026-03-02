@@ -16,19 +16,39 @@ from pydantic import BaseModel, Field
 # =========================================================================
 
 class MemoryStoreRequest(BaseModel):
+    """Store a new memory, resource, or skill.
+
+    context_type: memory | resource | skill | case | pattern
+    category: profile | preferences | entities | events | cases | patterns |
+              error_fixes | workflows | strategies | documents | plans
+    """
     abstract: str
     content: str = ""
     overview: str = ""
-    category: str = ""
-    context_type: str = "memory"
+    category: str = Field(
+        default="",
+        description="Category: profile, preferences, entities, events, cases, patterns, "
+                    "error_fixes, workflows, strategies, documents, plans",
+    )
+    context_type: str = Field(
+        default="memory",
+        description="Type: memory, resource, skill, case, pattern",
+    )
     meta: Optional[Dict[str, Any]] = None
 
 
 class MemorySearchRequest(BaseModel):
+    """Semantic search across stored memories, resources, and skills."""
     query: str
     limit: int = 5
-    context_type: Optional[str] = None
-    category: Optional[str] = None
+    context_type: Optional[str] = Field(
+        default=None,
+        description="Filter by type (memory, resource, skill, case, pattern)",
+    )
+    category: Optional[str] = Field(
+        default=None,
+        description="Filter by category (profile, preferences, entities, events, cases, patterns, etc.)",
+    )
     detail_level: str = "l1"
 
 
