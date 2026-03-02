@@ -670,7 +670,7 @@ class TestE2EPhase1(unittest.TestCase):
             )
         )
 
-        self.assertIn("agent/skills", ctx.uri)
+        self.assertIn("/shared/skills/", ctx.uri)
         self.assertEqual(ctx.context_type, "skill")
 
         parsed = CortexURI(ctx.uri)
@@ -1165,6 +1165,61 @@ class TestE2EPhase1(unittest.TestCase):
         )
         self._run(orch.init())
         return orch
+
+
+class TestAutoUri(unittest.TestCase):
+    """Test _auto_uri routing table."""
+
+    def setUp(self):
+        from opencortex.http.request_context import set_request_identity
+        self._token = set_request_identity("testteam", "alice")
+
+    def tearDown(self):
+        from opencortex.http.request_context import reset_request_identity
+        reset_request_identity(self._token)
+
+    def _auto_uri(self, context_type, category):
+        from opencortex.orchestrator import MemoryOrchestrator
+        o = MemoryOrchestrator.__new__(MemoryOrchestrator)
+        return o._auto_uri(context_type, category)
+
+    def test_memory_profile(self):
+        uri = self._auto_uri("memory", "profile")
+        self.assertIn("/user/alice/memories/profile/", uri)
+        self.assertTrue(uri.startswith("opencortex://testteam/"))
+
+    def test_memory_preferences(self):
+        uri = self._auto_uri("memory", "preferences")
+        self.assertIn("/user/alice/memories/preferences/", uri)
+
+    def test_memory_empty_category_defaults_to_events(self):
+        uri = self._auto_uri("memory", "")
+        self.assertIn("/user/alice/memories/events/", uri)
+
+    def test_case(self):
+        uri = self._auto_uri("case", "anything")
+        self.assertIn("/shared/cases/", uri)
+        self.assertNotIn("/user/", uri)
+
+    def test_pattern(self):
+        uri = self._auto_uri("pattern", "")
+        self.assertIn("/shared/patterns/", uri)
+
+    def test_skill_error_fixes(self):
+        uri = self._auto_uri("skill", "error_fixes")
+        self.assertIn("/shared/skills/error_fixes/", uri)
+
+    def test_skill_empty_defaults_to_general(self):
+        uri = self._auto_uri("skill", "")
+        self.assertIn("/shared/skills/general/", uri)
+
+    def test_resource_documents(self):
+        uri = self._auto_uri("resource", "documents")
+        self.assertIn("/resources/documents/", uri)
+
+    def test_staging(self):
+        uri = self._auto_uri("staging", "")
+        self.assertIn("/user/alice/staging/", uri)
 
 
 if __name__ == "__main__":

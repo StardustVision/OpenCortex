@@ -1666,28 +1666,49 @@ class MemoryOrchestrator:
     # Internal helpers
     # =========================================================================
 
+    # Valid user memory categories
+    _USER_MEMORY_CATEGORIES = {"profile", "preferences", "entities", "events"}
+
     def _auto_uri(self, context_type: str, category: str) -> str:
-        """Generate a URI based on context type and category."""
+        """Generate a URI based on context type and category.
+
+        Routing table:
+          memory  + category  -> user/{uid}/memories/{category}/{nid}
+          memory  + (empty)   -> user/{uid}/memories/events/{nid}
+          case    + *         -> shared/cases/{nid}
+          pattern + *         -> shared/patterns/{nid}
+          skill   + section   -> shared/skills/{section}/{nid}
+          skill   + (empty)   -> shared/skills/general/{nid}
+          resource+ category  -> resources/{category}/{nid}
+          staging + *         -> user/{uid}/staging/{nid}
+        """
         tid, uid = get_effective_identity()
         node_id = uuid4().hex[:12]
 
         if context_type == "memory":
-            if category:
-                return CortexURI.build_private(
-                    tid, uid, "memories", category, node_id
-                )
-            return CortexURI.build_private(tid, uid, "memories", node_id)
+            cat = category if category in self._USER_MEMORY_CATEGORIES else "events"
+            return CortexURI.build_private(tid, uid, "memories", cat, node_id)
+
+        elif context_type == "case":
+            return CortexURI.build_shared(tid, "shared", "cases", node_id)
+
+        elif context_type == "pattern":
+            return CortexURI.build_shared(tid, "shared", "patterns", node_id)
 
         elif context_type == "skill":
-            return CortexURI.build_shared(tid, "agent", "skills", node_id)
+            section = category or "general"
+            return CortexURI.build_shared(tid, "shared", "skills", section, node_id)
 
         elif context_type == "resource":
             if category:
                 return CortexURI.build_shared(tid, "resources", category, node_id)
             return CortexURI.build_shared(tid, "resources", node_id)
 
-        # Fallback: treat as memory
-        return CortexURI.build_private(tid, uid, "memories", node_id)
+        elif context_type == "staging":
+            return CortexURI.build_private(tid, uid, "staging", node_id)
+
+        # Fallback: treat as user memory event
+        return CortexURI.build_private(tid, uid, "memories", "events", node_id)
 
     def _derive_parent_uri(self, uri: str) -> str:
         """Derive parent URI by removing the last path segment."""
@@ -1700,9 +1721,15 @@ class MemoryOrchestrator:
 
     def _infer_context_type(self, uri: str) -> ContextType:
         """Infer ContextType from URI path segments."""
-        if "/memories" in uri:
+        if "/staging/" in uri:
+            return ContextType.STAGING
+        elif "/memories/" in uri:
             return ContextType.MEMORY
-        elif "/skills" in uri:
+        elif "/shared/cases/" in uri:
+            return ContextType.CASE
+        elif "/shared/patterns/" in uri:
+            return ContextType.PATTERN
+        elif "/skills/" in uri:
             return ContextType.SKILL
         return ContextType.RESOURCE
 

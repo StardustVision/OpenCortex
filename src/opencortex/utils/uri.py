@@ -10,17 +10,18 @@ opencortex://{team_id}/{sub_scope}/...
 The tenant-based URI structure supports multi-team, multi-user isolation:
 
   Shared (team-level):
-    opencortex://{team_id}/resources/...
-    opencortex://{team_id}/agent/skills/...
-    opencortex://{team_id}/agent/memories/patterns/...
+    opencortex://{team_id}/resources/{category}/...
+    opencortex://{team_id}/shared/cases/...
+    opencortex://{team_id}/shared/patterns/...
+    opencortex://{team_id}/shared/skills/{section}/...
 
   Private (user-level):
-    opencortex://{team_id}/user/{user_id}/memories/...
+    opencortex://{team_id}/user/{user_id}/memories/{category}/...
+    opencortex://{team_id}/user/{user_id}/staging/...
     opencortex://{team_id}/user/{user_id}/reinforcement/...
     opencortex://{team_id}/user/{user_id}/feedback/...
     opencortex://{team_id}/user/{user_id}/workspace/...
     opencortex://{team_id}/user/{user_id}/session/...
-    opencortex://{team_id}/user/{user_id}/agent/memories/cases/...
 """
 
 import re
@@ -36,27 +37,28 @@ class CortexURI:
     Sub-scopes define data categories:
 
     Shared sub-scopes (team-level, no user_id):
-    - resources: Team resources (opencortex://{tid}/resources/...)
-    - agent: Agent skills & shared patterns (opencortex://{tid}/agent/...)
+    - resources: Team resources (opencortex://{tid}/resources/{category}/...)
+    - shared: Agent-generated cases, patterns, skills (opencortex://{tid}/shared/...)
+    - agent: Legacy agent scope (opencortex://{tid}/agent/...)
     - queue: Internal queue (opencortex://{tid}/queue/...)
     - temp: Temporary data (opencortex://{tid}/temp/...)
 
     Private sub-scopes (require user_id via /user/{uid}/ prefix):
-    - memories: User memories (opencortex://{tid}/user/{uid}/memories/...)
+    - memories: User memories by category (opencortex://{tid}/user/{uid}/memories/{category}/...)
+    - staging: Temporary user data (opencortex://{tid}/user/{uid}/staging/...)
     - reinforcement: HRCM data (opencortex://{tid}/user/{uid}/reinforcement/...)
     - feedback: Feedback data (opencortex://{tid}/user/{uid}/feedback/...)
     - workspace: Workspace (opencortex://{tid}/user/{uid}/workspace/...)
     - session: Session data (opencortex://{tid}/user/{uid}/session/...)
-    - agent/memories/cases: Private cases (opencortex://{tid}/user/{uid}/agent/memories/cases/...)
     """
 
     SCHEME = "opencortex"
 
     # Sub-scopes that exist directly under {team_id}/
-    SHARED_SUB_SCOPES = {"resources", "agent", "queue", "temp"}
+    SHARED_SUB_SCOPES = {"resources", "shared", "agent", "queue", "temp"}
 
     # Sub-scopes that exist under {team_id}/user/{user_id}/
-    PRIVATE_SUB_SCOPES = {"memories", "reinforcement", "feedback", "workspace", "session"}
+    PRIVATE_SUB_SCOPES = {"memories", "staging", "reinforcement", "feedback", "workspace", "session"}
 
     # All recognized sub-scopes (for validation of the path component after tenant_id or user_id)
     ALL_SUB_SCOPES = SHARED_SUB_SCOPES | PRIVATE_SUB_SCOPES | {"user"}
