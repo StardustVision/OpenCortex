@@ -18,6 +18,9 @@ class ContextType(str, Enum):
     MEMORY = "memory"
     RESOURCE = "resource"
     SKILL = "skill"
+    CASE = "case"
+    PATTERN = "pattern"
+    STAGING = "staging"
 
 
 class DetailLevel(str, Enum):

@@ -59,6 +59,12 @@ class CollectionSchemas:
                 {"FieldName": "positive_feedback_count", "FieldType": "int64"},
                 {"FieldName": "negative_feedback_count", "FieldType": "int64"},
                 {"FieldName": "protected", "FieldType": "bool"},
+                {"FieldName": "category", "FieldType": "string"},
+                {"FieldName": "scope", "FieldType": "string"},
+                {"FieldName": "session_id", "FieldType": "string"},
+                {"FieldName": "source_user_id", "FieldType": "string"},
+                {"FieldName": "mergeable", "FieldType": "bool"},
+                {"FieldName": "ttl_expires_at", "FieldType": "string"},
             ],
             "ScalarIndex": [
                 "uri",
@@ -74,6 +80,12 @@ class CollectionSchemas:
                 "tags",
                 "reward_score",
                 "protected",
+                "category",
+                "scope",
+                "session_id",
+                "source_user_id",
+                "mergeable",
+                "ttl_expires_at",
             ],
         }
 
@@ -117,6 +129,8 @@ class CollectionSchemas:
                 {"FieldName": "share_status", "FieldType": "string"},
                 {"FieldName": "share_score", "FieldType": "float"},
                 {"FieldName": "share_reason", "FieldType": "string"},
+                {"FieldName": "source_user_id", "FieldType": "string"},
+                {"FieldName": "source_tenant_id", "FieldType": "string"},
             ],
             "ScalarIndex": [
                 "uri",
@@ -135,6 +149,8 @@ class CollectionSchemas:
                 "owner_user_id",
                 "scope",
                 "share_status",
+                "source_user_id",
+                "source_tenant_id",
             ],
         }
 

@@ -37,6 +37,20 @@ from opencortex.storage.vikingdb_interface import (
 from opencortex.utils.uri import CortexURI
 
 
+class TestContextTypeEnum(unittest.TestCase):
+    def test_new_context_types_exist(self):
+        from opencortex.retrieve.types import ContextType
+        self.assertEqual(ContextType.CASE.value, "case")
+        self.assertEqual(ContextType.PATTERN.value, "pattern")
+        self.assertEqual(ContextType.STAGING.value, "staging")
+
+    def test_legacy_context_types_unchanged(self):
+        from opencortex.retrieve.types import ContextType
+        self.assertEqual(ContextType.MEMORY.value, "memory")
+        self.assertEqual(ContextType.RESOURCE.value, "resource")
+        self.assertEqual(ContextType.SKILL.value, "skill")
+
+
 # =============================================================================
 # Mock Embedder
 # =============================================================================
