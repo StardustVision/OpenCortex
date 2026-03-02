@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, accessSync, constants } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
@@ -215,6 +215,36 @@ export function loadState() {
 export function saveState(state) {
   ensureStateDir();
   writeFileSync(STATE_FILE, JSON.stringify(state, null, 2) + '\n');
+}
+
+// ── Project ID detection ─────────────────────────────────────────────────
+let _projectId = undefined;
+
+/**
+ * Detect the current project identifier from the git repository name.
+ * Falls back to "public" when not inside a git repo.
+ * Result is cached after the first call.
+ */
+export function detectProjectId() {
+  if (_projectId !== undefined) return _projectId;
+  try {
+    const toplevel = execSync('git rev-parse --show-toplevel', {
+      cwd: PROJECT_DIR,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf-8',
+    }).trim();
+    _projectId = basename(toplevel) || 'public';
+  } catch {
+    _projectId = 'public';
+  }
+  return _projectId;
+}
+
+/**
+ * Get the cached project ID (calls detectProjectId on first access).
+ */
+export function getProjectId() {
+  return detectProjectId();
 }
 
 // ── uv / python discovery (local mode server start) ─────────────────────

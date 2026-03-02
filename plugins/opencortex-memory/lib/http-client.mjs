@@ -1,5 +1,5 @@
 // HTTP client using native fetch (Node.js >= 18)
-import { getMcpConfig } from './common.mjs';
+import { getMcpConfig, getProjectId } from './common.mjs';
 
 /**
  * Build per-request HTTP headers from MCP config.
@@ -12,6 +12,8 @@ export function buildClientHeaders() {
   const userId = getMcpConfig('user_id', 'default');
   if (tenantId) hdrs['X-Tenant-ID'] = tenantId;
   if (userId) hdrs['X-User-ID'] = userId;
+  // Project ID
+  hdrs['X-Project-ID'] = getProjectId();
   // ACE skill sharing
   const shareSkills = getMcpConfig('share_skills_to_team');
   if (shareSkills) hdrs['X-Share-Skills-To-Team'] = String(shareSkills);

@@ -1224,7 +1224,8 @@ class TestAutoUri(unittest.TestCase):
 
     def test_resource_documents(self):
         uri = self._auto_uri("resource", "documents")
-        self.assertIn("/resources/documents/", uri)
+        # URI now includes project_id: resources/{project}/{category}/{nid}
+        self.assertIn("/resources/public/documents/", uri)
 
     def test_staging(self):
         uri = self._auto_uri("staging", "")

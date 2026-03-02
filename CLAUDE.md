@@ -167,3 +167,14 @@ uv run python3 -m unittest discover -s tests -v
 Completed: Core framework + HTTP Server + Node.js MCP Server + Node.js Hooks + ACE self-learning loop + Docker deployment + 111+ Python tests + 8 Node.js MCP tests
 
 Pending: Real embedding integration, remote sync, Session End LLM reflection (config-controlled)
+
+## ACE Learned Strategies
+
+<!-- ACE:START - Do not edit manually -->
+skills[5	]{id	section	content	helpful	harmful	neutral}:
+  async_patterns-00001	async_patterns	Move ALL awaits inside fire-and-forget create_task boundaries	1	0	0
+  async_patterns-00002	async_patterns	Wrap sync embed() with run_in_executor + wait_for, never direct await	1	0	0
+  timeout_design-00003	timeout_design	Server-side timeout must be shorter than client hard timeout for fallback to work	1	0	0
+  text_processing-00004	text_processing	"Tokenize Chinese with regex [\\u4e00-\\u9fa5] char-level, not .split()"	1	0	0
+  interface_design-00005	interface_design	Abstract interface signature changes require updating all implementations and test mocks	1	0	0
+<!-- ACE:END -->

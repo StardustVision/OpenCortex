@@ -39,7 +39,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 from uuid import uuid4
 
 from opencortex.config import CortexConfig, get_config
-from opencortex.http.request_context import get_effective_identity
+from opencortex.http.request_context import get_effective_identity, get_effective_project_id
 from opencortex.core.context import Context, ContextType as CoreContextType
 from opencortex.core.message import Message
 from opencortex.core.user_id import UserIdentifier
@@ -576,6 +576,7 @@ class MemoryOrchestrator:
         record["mergeable"] = effective_category in MERGEABLE_CATEGORIES
         record["session_id"] = session_id or ""
         record["ttl_expires_at"] = ""
+        record["project_id"] = get_effective_project_id()
 
         # Set TTL for staging records (24 hours from now)
         if context_type == "staging":
@@ -814,10 +815,18 @@ class MemoryOrchestrator:
             ]},
         ]}
 
+        # Project-scoped filter: isolate resources by project_id
+        project_id = get_effective_project_id()
+        combined_conds = [staging_exclude, scope_filter]
+        if project_id and project_id != "public":
+            # Include records matching this project or legacy records without project_id
+            project_filter = {"op": "must", "field": "project_id", "conds": [project_id, "public", ""]}
+            combined_conds.append(project_filter)
+
         if metadata_filter:
-            metadata_filter = {"op": "and", "conds": [metadata_filter, staging_exclude, scope_filter]}
+            metadata_filter = {"op": "and", "conds": [metadata_filter] + combined_conds}
         else:
-            metadata_filter = {"op": "and", "conds": [staging_exclude, scope_filter]}
+            metadata_filter = {"op": "and", "conds": combined_conds}
 
         # Build retrieval coroutines
         retrieval_coros = [
@@ -1772,7 +1781,7 @@ class MemoryOrchestrator:
           pattern + *         -> shared/patterns/{nid}
           skill   + section   -> shared/skills/{section}/{nid}
           skill   + (empty)   -> shared/skills/general/{nid}
-          resource+ category  -> resources/{category}/{nid}
+          resource+ category  -> resources/{project}/{category}/{nid}
           staging + *         -> user/{uid}/staging/{nid}
         """
         tid, uid = get_effective_identity()
@@ -1793,9 +1802,10 @@ class MemoryOrchestrator:
             return CortexURI.build_shared(tid, "shared", "skills", section, node_id)
 
         elif context_type == "resource":
+            project = get_effective_project_id()  # e.g. "OpenCortex" or "public"
             if category:
-                return CortexURI.build_shared(tid, "resources", category, node_id)
-            return CortexURI.build_shared(tid, "resources", node_id)
+                return CortexURI.build_shared(tid, "resources", project, category, node_id)
+            return CortexURI.build_shared(tid, "resources", project, node_id)
 
         elif context_type == "staging":
             return CortexURI.build_private(tid, uid, "staging", node_id)
@@ -1805,7 +1815,11 @@ class MemoryOrchestrator:
 
     @staticmethod
     def _extract_category_from_uri(uri: str) -> str:
-        """Extract category from URI path. E.g. /memories/preferences/abc -> preferences."""
+        """Extract category from URI path. E.g. /memories/preferences/abc -> preferences.
+
+        For resources the path is resources/{project}/{category}/{nid},
+        so the category is two segments after "resources".
+        """
         parts = uri.split("/")
         # Look for known parent segments, return next part
         for parent in ("memories", "cases", "patterns", "skills", "staging", "resources"):
@@ -1813,6 +1827,14 @@ class MemoryOrchestrator:
                 idx = parts.index(parent)
                 if parent in ("cases", "patterns"):
                     return parent
+                if parent == "resources":
+                    # resources/{project}/{category}/{nid} — skip project
+                    cat_idx = idx + 2
+                    if cat_idx < len(parts):
+                        candidate = parts[cat_idx]
+                        if len(candidate) != 12:
+                            return candidate
+                    continue
                 if idx + 1 < len(parts):
                     candidate = parts[idx + 1]
                     # Skip node_id (12-char hex)

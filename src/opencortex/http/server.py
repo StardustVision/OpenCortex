@@ -22,8 +22,10 @@ from opencortex.config import get_config
 from opencortex.http.request_context import (
     reset_request_ace_config,
     reset_request_identity,
+    reset_request_project_id,
     set_request_ace_config,
     set_request_identity,
+    set_request_project_id,
 )
 from opencortex.http.models import (
     ErrorRecordRequest,
@@ -66,8 +68,9 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
     """Extract per-request identity and client config from HTTP headers.
 
     Identity headers:
-        X-Tenant-ID — tenant identifier (default: "default")
-        X-User-ID   — user identifier (default: "default")
+        X-Tenant-ID  — tenant identifier (default: "default")
+        X-User-ID    — user identifier (default: "default")
+        X-Project-ID — project identifier (default: "public")
 
     ACE skill sharing headers:
         X-Share-Skills-To-Team        — "true"/"false" (default: "false")
@@ -81,6 +84,10 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         tenant_id = request.headers.get("x-tenant-id", "default")
         user_id = request.headers.get("x-user-id", "default")
         id_tokens = set_request_identity(tenant_id, user_id)
+
+        # Project ID
+        project_id = request.headers.get("x-project-id", "public")
+        project_token = set_request_project_id(project_id)
 
         # ACE config
         ace_tokens = set_request_ace_config(
@@ -102,6 +109,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         finally:
             reset_request_identity(id_tokens)
+            reset_request_project_id(project_token)
             reset_request_ace_config(ace_tokens)
 
 
@@ -130,7 +138,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="OpenCortex HTTP Server",
         description="Memory and context management system for AI Agents",
-        version="0.3.0",
+        version="0.3.1",
         lifespan=_lifespan,
     )
     app.add_middleware(RequestContextMiddleware)

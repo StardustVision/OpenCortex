@@ -10,6 +10,7 @@ without changing method signatures.
 Headers:
     X-Tenant-ID                   — tenant identifier (default: "default")
     X-User-ID                     — user identifier (default: "default")
+    X-Project-ID                  — project identifier (default: "public")
     X-Share-Skills-To-Team        — enable skill sharing (default: "false")
     X-Skill-Share-Mode            — "manual" | "auto_safe" | "auto_aggressive"
     X-Skill-Share-Score-Threshold — minimum share score (default: "0.85")
@@ -28,6 +29,7 @@ from typing import List, Optional, Tuple
 # ---------------------------------------------------------------------------
 _DEFAULT_TENANT = "default"
 _DEFAULT_USER = "default"
+_DEFAULT_PROJECT = "public"
 
 # ---------------------------------------------------------------------------
 # Identity contextvars
@@ -37,6 +39,9 @@ _request_tenant_id: ContextVar[Optional[str]] = ContextVar(
 )
 _request_user_id: ContextVar[Optional[str]] = ContextVar(
     "_request_user_id", default=None
+)
+_request_project_id: ContextVar[Optional[str]] = ContextVar(
+    "_request_project_id", default=None
 )
 
 # ---------------------------------------------------------------------------
@@ -93,6 +98,28 @@ def get_effective_identity() -> Tuple[str, str]:
     tenant = _request_tenant_id.get() or _DEFAULT_TENANT
     user = _request_user_id.get() or _DEFAULT_USER
     return (tenant, user)
+
+
+# ---------------------------------------------------------------------------
+# Project ID API
+# ---------------------------------------------------------------------------
+
+def set_request_project_id(project_id: str) -> Token[Optional[str]]:
+    """Set per-request project ID.  Returns token for later reset."""
+    return _request_project_id.set(project_id)
+
+
+def reset_request_project_id(token: Token[Optional[str]]) -> None:
+    """Reset project ID contextvar using token from :func:`set_request_project_id`."""
+    _request_project_id.reset(token)
+
+
+def get_effective_project_id() -> str:
+    """Return the effective project ID for the current request.
+
+    Falls back to "public" when no header is set.
+    """
+    return _request_project_id.get() or _DEFAULT_PROJECT
 
 
 # ---------------------------------------------------------------------------

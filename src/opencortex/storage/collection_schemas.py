@@ -65,6 +65,7 @@ class CollectionSchemas:
                 {"FieldName": "source_user_id", "FieldType": "string"},
                 {"FieldName": "mergeable", "FieldType": "bool"},
                 {"FieldName": "ttl_expires_at", "FieldType": "string"},
+                {"FieldName": "project_id", "FieldType": "string"},
             ],
             "ScalarIndex": [
                 "uri",
@@ -86,6 +87,7 @@ class CollectionSchemas:
                 "source_user_id",
                 "mergeable",
                 "ttl_expires_at",
+                "project_id",
             ],
         }
 
