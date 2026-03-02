@@ -12,7 +12,7 @@ Core subsystems:
 - **ACEngine** — self-learning loop (RuleExtractor → Skillbook)
 - **SessionManager** — session lifecycle with LLM memory extraction
 - **QdrantStorageAdapter** — embedded Qdrant with RL fields (reward, decay, protect)
-- **TenantIdentityMiddleware** — per-request tenant/user identity via HTTP headers
+- **RequestContextMiddleware** — per-request identity + ACE config via HTTP headers
 
 ## Tech Stack
 
@@ -28,10 +28,11 @@ Core subsystems:
 
 ```
 src/opencortex/
-  config.py                      # CortexConfig dataclass + env overrides (no tenant/user)
+  config.py                      # CortexConfig dataclass + env overrides (server-only settings)
   orchestrator.py                # MemoryOrchestrator — top-level API
   http/
-    server.py                    # FastAPI app + REST routes + tenant middleware
+    server.py                    # FastAPI app + REST routes + RequestContextMiddleware
+    request_context.py           # Per-request contextvars (identity + ACEConfig)
     client.py                    # OpenCortexClient (async HTTP client)
     models.py                    # Pydantic request models
     __main__.py                  # CLI entry point (opencortex-server)
@@ -68,7 +69,7 @@ plugins/opencortex-memory/       # Claude Code plugin (pure Node.js)
   hooks/run.mjs                  # Hook unified entry point
   hooks/handlers/*.mjs           # 4 hook handlers (session-start, user-prompt-submit, stop, session-end)
   lib/common.mjs                 # Config discovery, state, uv/python detection
-  lib/http-client.mjs            # Native fetch wrapper
+  lib/http-client.mjs            # Native fetch wrapper + buildClientHeaders()
   lib/transcript.mjs             # JSONL parsing
   lib/mcp-server.mjs             # MCP stdio server (25 tools)
   bin/oc-cli.mjs                 # CLI tool
@@ -87,8 +88,11 @@ tests/
 
 - All storage operations go through `VikingDBInterface` — every method is `async`
 - URI format: `opencortex://{team}/user/{uid}/{type}/{category}/{node_id}`
-- **Tenant/user identity**: determined per-request via `X-Tenant-ID` / `X-User-ID` HTTP headers (default: `"default"`). Server-side `CortexConfig` does NOT contain tenant/user fields. Middleware sets contextvars → `get_effective_identity()` reads them anywhere downstream.
-- Config loads from `server.json` (project-local) or `~/.opencortex/server.json` (global)
+- **Client-side config via HTTP headers**: identity and ACE skill sharing settings are NOT in server-side `CortexConfig`. They are sent per-request by the client (MCP plugin reads from `mcp.json`). `RequestContextMiddleware` parses headers → contextvars.
+  - Identity: `X-Tenant-ID` / `X-User-ID` → `get_effective_identity()`
+  - ACE: `X-Share-Skills-To-Team` / `X-Skill-Share-Mode` / `X-Skill-Share-Score-Threshold` / `X-ACE-Scope-Enforcement` → `get_effective_ace_config()`
+- **Server config** (`CortexConfig`): only server-side settings — storage, embedding, LLM, rerank, HTTP bind. Loads from `server.json` or `~/.opencortex/server.json`.
+- **Client config** (`mcp.json`): identity + ACE settings. Loads from `mcp.json` or `~/.opencortex/mcp.json`. Node.js `buildClientHeaders()` attaches them to every HTTP request.
 - RL methods (`update_reward`, `get_profile`, `apply_decay`, `set_protected`) are not in the interface — detected via `hasattr` on the adapter
 - Package management uses `uv` (not pip)
 - VikingFS has been renamed to CortexFS; old name retained for backward compatibility
@@ -98,8 +102,11 @@ tests/
 ### Call Chains
 
 ```
-MCP path:   Agent → node mcp-server.mjs (stdio) → fetch → HTTP Server (FastAPI) → Orchestrator → Qdrant
-Hooks path: Agent → node run.mjs <hook> → fetch → HTTP Server
+MCP path:   Agent → node mcp-server.mjs (stdio) → fetch + headers → HTTP Server (FastAPI) → Orchestrator → Qdrant
+Hooks path: Agent → node run.mjs <hook> → fetch + headers → HTTP Server
+
+Headers:    mcp.json → buildClientHeaders() → X-Tenant-ID, X-User-ID, X-Share-Skills-To-Team, ...
+            → RequestContextMiddleware → contextvars → get_effective_identity() / get_effective_ace_config()
 ```
 
 ### Self-Learning Loop
