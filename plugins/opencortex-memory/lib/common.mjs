@@ -18,6 +18,11 @@ const DEFAULT_MCP_CONFIG = {
   mode: 'local',
   tenant_id: 'default',
   user_id: 'default',
+  // ACE skill sharing (client-side config)
+  share_skills_to_team: false,
+  skill_share_mode: 'manual',
+  skill_share_score_threshold: 0.85,
+  ace_scope_enforcement: false,
   local: { http_port: 8921 },
   remote: { http_url: 'http://127.0.0.1:8921' },
 };
@@ -66,6 +71,11 @@ function _migrateLegacyConfig(legacyData) {
   if (legacyData.tenant_id) mcp.tenant_id = legacyData.tenant_id;
   if (legacyData.user_id) mcp.user_id = legacyData.user_id;
   if (legacyData.mcp_mode) mcp.mode = legacyData.mcp_mode;
+  // ACE skill sharing
+  if (legacyData.share_skills_to_team != null) mcp.share_skills_to_team = legacyData.share_skills_to_team;
+  if (legacyData.skill_share_mode) mcp.skill_share_mode = legacyData.skill_share_mode;
+  if (legacyData.skill_share_score_threshold != null) mcp.skill_share_score_threshold = legacyData.skill_share_score_threshold;
+  if (legacyData.ace_scope_enforcement != null) mcp.ace_scope_enforcement = legacyData.ace_scope_enforcement;
   // Port — only use http_server_port (mcp_port refers to the MCP server, not the HTTP API)
   const port = legacyData.http_server_port;
   if (port) mcp.local.http_port = port;
@@ -139,6 +149,11 @@ function _applyEnvOverrides(cfg) {
   if (env.OPENCORTEX_MODE) cfg.mode = env.OPENCORTEX_MODE;
   if (env.OPENCORTEX_HTTP_PORT) cfg.local.http_port = parseInt(env.OPENCORTEX_HTTP_PORT, 10);
   if (env.OPENCORTEX_HTTP_URL) cfg.remote.http_url = env.OPENCORTEX_HTTP_URL;
+  // ACE skill sharing
+  if (env.OPENCORTEX_SHARE_SKILLS_TO_TEAM) cfg.share_skills_to_team = env.OPENCORTEX_SHARE_SKILLS_TO_TEAM === 'true';
+  if (env.OPENCORTEX_SKILL_SHARE_MODE) cfg.skill_share_mode = env.OPENCORTEX_SKILL_SHARE_MODE;
+  if (env.OPENCORTEX_SKILL_SHARE_SCORE_THRESHOLD) cfg.skill_share_score_threshold = parseFloat(env.OPENCORTEX_SKILL_SHARE_SCORE_THRESHOLD);
+  if (env.OPENCORTEX_ACE_SCOPE_ENFORCEMENT) cfg.ace_scope_enforcement = env.OPENCORTEX_ACE_SCOPE_ENFORCEMENT === 'true';
 }
 
 /**
