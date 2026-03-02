@@ -197,6 +197,10 @@ class MemoryOrchestrator:
             )
             await self._hooks.init()
 
+        # 7b. Ensure full-text indexes on existing collections (idempotent)
+        if hasattr(self._storage, "ensure_text_indexes"):
+            await self._storage.ensure_text_indexes()
+
         # 8. Session manager for context self-iteration
         self._session_manager = self._create_session_manager()
 
