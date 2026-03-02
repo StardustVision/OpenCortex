@@ -806,32 +806,39 @@ class MemoryOrchestrator:
 
         result.search_intent = intent
 
-        # Async update access stats for returned results (fire-and-forget)
+        # Fire-and-forget: resolve URIs → record IDs → update access stats
         all_matched = result.memories + result.resources + result.skills
         if all_matched:
-            record_ids = []
-            for mc in all_matched:
-                try:
-                    recs = await self._storage.filter(
-                        _CONTEXT_COLLECTION,
-                        {"op": "must", "field": "uri", "conds": [mc.uri]},
-                        limit=1,
-                    )
-                    if recs:
-                        rid = recs[0].get("id", "")
-                        if rid:
-                            record_ids.append(rid)
-                except Exception:
-                    pass
-            if record_ids:
-                asyncio.create_task(self._update_access_stats(record_ids))
+            uris = [mc.uri for mc in all_matched]
+            asyncio.create_task(self._resolve_and_update_access_stats(uris))
 
         return result
+
+    async def _resolve_and_update_access_stats(self, uris: list) -> None:
+        """Resolve URIs to record IDs, then update access stats.
+
+        Runs entirely in a fire-and-forget task so search() returns immediately.
+        """
+        record_ids = []
+        for uri in uris:
+            try:
+                recs = await self._storage.filter(
+                    _CONTEXT_COLLECTION,
+                    {"op": "must", "field": "uri", "conds": [uri]},
+                    limit=1,
+                )
+                if recs:
+                    rid = recs[0].get("id", "")
+                    if rid:
+                        record_ids.append(rid)
+            except Exception:
+                pass
+        if record_ids:
+            await self._update_access_stats(record_ids)
 
     async def _update_access_stats(self, record_ids: list) -> None:
         """Async batch update access_count + accessed_at for retrieved records.
 
-        Called as fire-and-forget task after search returns Top-K.
         Failures are logged but do not affect search results.
         """
         from datetime import datetime, timezone

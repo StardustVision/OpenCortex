@@ -311,6 +311,7 @@ class VikingDBInterface(ABC):
             offset: Offset for pagination
             output_fields: Fields to return (None for all)
             with_vector: Include vector in results
+            text_query: Raw query text for lexical fallback when no vectors available
 
         Returns:
             List of matching records. If query_vector provided, includes _score field.

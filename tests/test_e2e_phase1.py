@@ -367,6 +367,7 @@ class InMemoryStorage(VikingDBInterface):
             negative_feedback_count=record.get("negative_feedback_count", 0),
             effective_score=record.get("reward_score", 0.0),
             is_protected=record.get("protected", False),
+            accessed_at=record.get("accessed_at", ""),
         )
 
     async def apply_decay(self, decay_rate=0.95, protected_rate=0.99, threshold=0.01):
@@ -493,6 +494,7 @@ class _SimpleProfile:
     last_feedback_at: float = 0.0
     effective_score: float = 0.0
     is_protected: bool = False
+    accessed_at: str = ""
 
 
 @dataclass
