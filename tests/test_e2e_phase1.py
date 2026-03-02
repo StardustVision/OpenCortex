@@ -1291,6 +1291,106 @@ class TestAddScopeFields(unittest.TestCase):
         return orch
 
 
+class TestStagingLifecycle(unittest.TestCase):
+    """Test staging records: TTL, exclusion from search, cleanup."""
+
+    def setUp(self):
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+
+    def tearDown(self):
+        self.loop.close()
+
+    def test_staging_record_has_ttl(self):
+        """Staging records must have ttl_expires_at set."""
+        from opencortex.http.request_context import set_request_identity, reset_request_identity
+        token = set_request_identity("t1", "u1")
+        try:
+            storage = InMemoryStorage()
+            orch = self._build_orch(storage)
+            ctx = self.loop.run_until_complete(
+                orch.add(abstract="temp note", context_type="staging")
+            )
+            records = self.loop.run_until_complete(
+                storage.filter("context",
+                    {"op": "must", "field": "uri", "conds": [ctx.uri]}, limit=1)
+            )
+            self.assertTrue(records[0].get("ttl_expires_at"))
+            self.assertEqual(records[0].get("context_type"), "staging")
+        finally:
+            reset_request_identity(token)
+
+    def test_cleanup_expired_staging(self):
+        """cleanup_expired_staging() removes records past their TTL."""
+        from opencortex.http.request_context import set_request_identity, reset_request_identity
+        token = set_request_identity("t1", "u1")
+        try:
+            storage = InMemoryStorage()
+            orch = self._build_orch(storage)
+            # Add a staging record
+            ctx = self.loop.run_until_complete(
+                orch.add(abstract="expired note", context_type="staging")
+            )
+            # Manually backdate ttl_expires_at to the past
+            records = self.loop.run_until_complete(
+                storage.filter("context",
+                    {"op": "must", "field": "uri", "conds": [ctx.uri]}, limit=1)
+            )
+            rid = records[0]["id"]
+            self.loop.run_until_complete(
+                storage.update("context", rid, {"ttl_expires_at": "2020-01-01T00:00:00Z"})
+            )
+            # Run cleanup
+            cleaned = self.loop.run_until_complete(orch.cleanup_expired_staging())
+            self.assertEqual(cleaned, 1)
+            # Verify record is gone
+            remaining = self.loop.run_until_complete(
+                storage.filter("context",
+                    {"op": "must", "field": "uri", "conds": [ctx.uri]}, limit=1)
+            )
+            self.assertEqual(len(remaining), 0)
+        finally:
+            reset_request_identity(token)
+
+    def test_cleanup_skips_unexpired_staging(self):
+        """cleanup_expired_staging() leaves unexpired staging records alone."""
+        from opencortex.http.request_context import set_request_identity, reset_request_identity
+        token = set_request_identity("t1", "u1")
+        try:
+            storage = InMemoryStorage()
+            orch = self._build_orch(storage)
+            ctx = self.loop.run_until_complete(
+                orch.add(abstract="fresh note", context_type="staging")
+            )
+            # TTL is 24h in the future, so cleanup should skip it
+            cleaned = self.loop.run_until_complete(orch.cleanup_expired_staging())
+            self.assertEqual(cleaned, 0)
+            # Record should still exist
+            records = self.loop.run_until_complete(
+                storage.filter("context",
+                    {"op": "must", "field": "uri", "conds": [ctx.uri]}, limit=1)
+            )
+            self.assertEqual(len(records), 1)
+        finally:
+            reset_request_identity(token)
+
+    def _build_orch(self, storage):
+        from opencortex.orchestrator import MemoryOrchestrator
+        from opencortex.config import CortexConfig
+        import tempfile
+        from opencortex.storage.cortex_fs import CortexFS
+        cfg = CortexConfig(embedding_provider="none")
+        orch = MemoryOrchestrator(config=cfg)
+        orch._storage = storage
+        orch._embedder = MockEmbedder()
+        orch._initialized = True
+        self.loop.run_until_complete(
+            storage.create_collection("context", {"vector_dim": MockEmbedder.DIMENSION})
+        )
+        orch._fs = CortexFS(data_root=tempfile.mkdtemp())
+        return orch
+
+
 class TestAcePreferencesRouting(unittest.TestCase):
     """ACE-extracted preferences should route to user/memories, not shared/skills."""
 

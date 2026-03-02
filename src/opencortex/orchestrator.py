@@ -567,6 +567,12 @@ class MemoryOrchestrator:
         record["session_id"] = session_id or ""
         record["ttl_expires_at"] = ""
 
+        # Set TTL for staging records (24 hours from now)
+        if context_type == "staging":
+            from datetime import datetime, timezone, timedelta
+            expires = datetime.now(timezone.utc) + timedelta(hours=24)
+            record["ttl_expires_at"] = expires.strftime("%Y-%m-%dT%H:%M:%SZ")
+
         await self._storage.upsert(_CONTEXT_COLLECTION, record)
 
         # Write to filesystem (L0 abstract + L1 overview + L2 content)
@@ -1064,6 +1070,34 @@ class MemoryOrchestrator:
             }
         logger.debug("[MemoryOrchestrator] Storage backend does not support decay")
         return None
+
+    async def cleanup_expired_staging(self) -> int:
+        """Delete staging records past their TTL. Returns count of cleaned records."""
+        self._ensure_init()
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        expired = await self._storage.filter(
+            _CONTEXT_COLLECTION,
+            {"op": "must", "field": "context_type", "conds": ["staging"]},
+            limit=1000,
+        )
+        cleaned = 0
+        for record in expired:
+            ttl = record.get("ttl_expires_at", "")
+            if ttl and ttl < now:
+                rid = record.get("id", "")
+                uri = record.get("uri", "")
+                if rid:
+                    await self._storage.delete(_CONTEXT_COLLECTION, [rid])
+                if uri:
+                    try:
+                        await self._fs.delete_temp(uri)
+                    except Exception:
+                        pass
+                cleaned += 1
+                logger.info("[Orchestrator] Cleaned expired staging: %s", uri)
+        return cleaned
 
     async def protect(self, uri: str, protected: bool = True) -> None:
         """
