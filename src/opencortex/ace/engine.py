@@ -25,6 +25,9 @@ class ACEngine:
     Implements the 9 HooksProtocol methods expected by MemoryOrchestrator._hooks.
     """
 
+    # Sections that should route to user/memories instead of shared/skills
+    _USER_MEMORY_SECTIONS = {"preferences"}
+
     def __init__(
         self,
         storage: VikingDBInterface,
@@ -51,6 +54,8 @@ class ACEngine:
         self._default_user_id = user_id
         # In-memory trajectory buffer
         self._trajectories: Dict[str, dict] = {}
+        # Set by orchestrator for routing user-memory sections (e.g. preferences)
+        self._store_memory_fn: Optional[Callable[..., Any]] = None
 
     async def init(self) -> None:
         """Initialize underlying Skillbook collection."""
@@ -100,9 +105,26 @@ class ACEngine:
         tenant_id: str = "",
         user_id: str = "",
     ) -> Dict[str, Any]:
-        """Store content in the Skillbook as a skill."""
+        """Store content in Skillbook or user memory depending on section."""
         tid = tenant_id or self._default_tenant_id
         uid = user_id or self._default_user_id
+
+        # Preferences route to user memory, not shared skills
+        if memory_type in self._USER_MEMORY_SECTIONS and self._store_memory_fn:
+            uri = await self._store_memory_fn(
+                abstract=content,
+                content=content,
+                category=memory_type,
+                context_type="memory",
+            )
+            return {
+                "success": True,
+                "uri": getattr(uri, "uri", str(uri)) if uri else "",
+                "section": memory_type,
+                "routed_to": "user_memory",
+            }
+
+        # All other sections -> shared skills (existing behavior)
         skill = await self._skillbook.add_skill(
             section=memory_type, content=content, tenant_id=tid, user_id=uid,
         )

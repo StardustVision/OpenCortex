@@ -196,6 +196,8 @@ class MemoryOrchestrator:
                 llm_fn=self._llm_completion,
             )
             await self._hooks.init()
+            # Wire user-memory routing so ACEngine can store preferences via orchestrator.add()
+            self._hooks._store_memory_fn = self.add
 
         # 7b. Ensure full-text indexes on existing collections (idempotent)
         if hasattr(self._storage, "ensure_text_indexes"):
