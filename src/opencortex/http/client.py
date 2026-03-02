@@ -37,11 +37,20 @@ class OpenCortexClient:
         timeout: float = _DEFAULT_TIMEOUT,
         tenant_id: Optional[str] = None,
         user_id: Optional[str] = None,
+        # ACE skill sharing config
+        share_skills_to_team: bool = False,
+        skill_share_mode: str = "manual",
+        skill_share_score_threshold: float = 0.85,
+        ace_scope_enforcement: bool = False,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._tenant_id = tenant_id
         self._user_id = user_id
+        self._share_skills_to_team = share_skills_to_team
+        self._skill_share_mode = skill_share_mode
+        self._skill_share_score_threshold = skill_share_score_threshold
+        self._ace_scope_enforcement = ace_scope_enforcement
         self._client: Optional[httpx.AsyncClient] = None
 
     async def connect(self) -> None:
@@ -71,13 +80,22 @@ class OpenCortexClient:
         """GET with retry logic."""
         return await self._request("GET", path)
 
-    def _identity_headers(self) -> Dict[str, str]:
-        """Build X-Tenant-ID / X-User-ID headers if configured."""
+    def _build_headers(self) -> Dict[str, str]:
+        """Build per-request HTTP headers for identity and client config."""
         hdrs: Dict[str, str] = {}
         if self._tenant_id:
             hdrs["X-Tenant-ID"] = self._tenant_id
         if self._user_id:
             hdrs["X-User-ID"] = self._user_id
+        # ACE skill sharing
+        if self._share_skills_to_team:
+            hdrs["X-Share-Skills-To-Team"] = "true"
+        if self._skill_share_mode != "manual":
+            hdrs["X-Skill-Share-Mode"] = self._skill_share_mode
+        if self._skill_share_score_threshold != 0.85:
+            hdrs["X-Skill-Share-Score-Threshold"] = str(self._skill_share_score_threshold)
+        if self._ace_scope_enforcement:
+            hdrs["X-ACE-Scope-Enforcement"] = "true"
         return hdrs
 
     async def _request(
@@ -86,7 +104,7 @@ class OpenCortexClient:
         if not self._client:
             raise OpenCortexClientError("Client not connected — call connect() first")
 
-        headers = self._identity_headers()
+        headers = self._build_headers()
         last_exc: Optional[Exception] = None
         for attempt in range(_MAX_RETRIES + 1):
             try:

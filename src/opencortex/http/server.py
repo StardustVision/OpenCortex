@@ -19,7 +19,12 @@ from fastapi import FastAPI, Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from opencortex.config import get_config
-from opencortex.http.request_context import reset_request_identity, set_request_identity
+from opencortex.http.request_context import (
+    reset_request_ace_config,
+    reset_request_identity,
+    set_request_ace_config,
+    set_request_identity,
+)
 from opencortex.http.models import (
     ErrorRecordRequest,
     ErrorSuggestRequest,
@@ -52,25 +57,50 @@ _orchestrator: Optional[MemoryOrchestrator] = None
 
 
 # ---------------------------------------------------------------------------
-# Tenant Identity Middleware
+# Request Context Middleware
 # ---------------------------------------------------------------------------
 
-class TenantIdentityMiddleware(BaseHTTPMiddleware):
-    """Extract per-request tenant/user identity from HTTP headers.
+class RequestContextMiddleware(BaseHTTPMiddleware):
+    """Extract per-request identity and client config from HTTP headers.
 
-    Headers:
-        X-Tenant-ID — tenant identifier for this request (default: "default")
-        X-User-ID   — user identifier for this request (default: "default")
+    Identity headers:
+        X-Tenant-ID — tenant identifier (default: "default")
+        X-User-ID   — user identifier (default: "default")
+
+    ACE skill sharing headers:
+        X-Share-Skills-To-Team        — "true"/"false" (default: "false")
+        X-Skill-Share-Mode            — "manual"/"auto_safe"/"auto_aggressive"
+        X-Skill-Share-Score-Threshold — float (default: "0.85")
+        X-ACE-Scope-Enforcement       — "true"/"false" (default: "false")
     """
 
     async def dispatch(self, request: Request, call_next) -> Response:
+        # Identity
         tenant_id = request.headers.get("x-tenant-id", "default")
         user_id = request.headers.get("x-user-id", "default")
-        tokens = set_request_identity(tenant_id, user_id)
+        id_tokens = set_request_identity(tenant_id, user_id)
+
+        # ACE config
+        ace_tokens = set_request_ace_config(
+            share_skills_to_team=request.headers.get(
+                "x-share-skills-to-team", "false"
+            ).lower() in ("1", "true", "yes"),
+            skill_share_mode=request.headers.get(
+                "x-skill-share-mode", "manual"
+            ),
+            skill_share_score_threshold=float(request.headers.get(
+                "x-skill-share-score-threshold", "0.85"
+            )),
+            ace_scope_enforcement=request.headers.get(
+                "x-ace-scope-enforcement", "false"
+            ).lower() in ("1", "true", "yes"),
+        )
+
         try:
             return await call_next(request)
         finally:
-            reset_request_identity(tokens)
+            reset_request_identity(id_tokens)
+            reset_request_ace_config(ace_tokens)
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +131,7 @@ def create_app() -> FastAPI:
         version="0.2.0",
         lifespan=_lifespan,
     )
-    app.add_middleware(TenantIdentityMiddleware)
+    app.add_middleware(RequestContextMiddleware)
     _register_routes(app)
     return app
 

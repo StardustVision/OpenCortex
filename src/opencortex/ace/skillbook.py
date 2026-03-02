@@ -8,7 +8,7 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from opencortex.ace.types import Skill, UpdateOperation
-from opencortex.config import CortexConfig, get_config
+from opencortex.http.request_context import get_effective_ace_config
 from opencortex.models.embedder.base import EmbedderBase
 from opencortex.storage.collection_schemas import init_skillbook_collection
 from opencortex.storage.cortex_fs import CortexFS
@@ -88,12 +88,12 @@ class Skillbook:
         )
 
         # Run sharing judgment if enabled
-        config = kwargs.get("_config") or get_config()
+        ace_cfg = kwargs.get("_config") or get_effective_ace_config()
         share_status, share_score, share_reason = self._should_promote_to_shared(
             skill=skill,
-            share_skills_to_team=config.share_skills_to_team,
-            skill_share_mode=config.skill_share_mode,
-            threshold=config.skill_share_score_threshold,
+            share_skills_to_team=ace_cfg.share_skills_to_team,
+            skill_share_mode=ace_cfg.skill_share_mode,
+            threshold=ace_cfg.skill_share_score_threshold,
         )
         skill.share_status = share_status
         skill.share_score = share_score
@@ -677,12 +677,12 @@ class Skillbook:
         """Check if the caller is authorized to modify a skill.
 
         Raises SkillAuthorizationError when:
-        - ace_scope_enforcement_enabled is True, AND
+        - ace_scope_enforcement_enabled is True (per-request), AND
         - user_id is provided, AND
         - skill has an owner_user_id that differs from user_id
         """
-        config = get_config()
-        if not config.ace_scope_enforcement_enabled:
+        ace_cfg = get_effective_ace_config()
+        if not ace_cfg.ace_scope_enforcement_enabled:
             return
         if not user_id or not skill.owner_user_id:
             return

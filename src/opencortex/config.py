@@ -74,11 +74,6 @@ class CortexConfig:
     # OpenCortex HTTP Server (FastAPI)
     http_server_host: str = "127.0.0.1"
     http_server_port: int = 8921
-    # ACE Multi-Tenant Skill Sharing
-    share_skills_to_team: bool = False
-    skill_share_mode: str = "manual"  # "manual" | "auto_safe" | "auto_aggressive"
-    skill_share_score_threshold: float = 0.85
-    ace_scope_enforcement_enabled: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)

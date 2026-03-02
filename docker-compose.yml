@@ -31,9 +31,4 @@ services:
       # - OPENCORTEX_RERANK_API_BASE=
       # - OPENCORTEX_RERANK_THRESHOLD=0.0
       # - OPENCORTEX_RERANK_FUSION_BETA=0.7
-      # ---- ACE Skill Sharing ----
-      # - OPENCORTEX_SHARE_SKILLS_TO_TEAM=false
-      # - OPENCORTEX_SKILL_SHARE_MODE=manual
-      # - OPENCORTEX_SKILL_SHARE_SCORE_THRESHOLD=0.85
-      # - OPENCORTEX_ACE_SCOPE_ENFORCEMENT_ENABLED=false
     restart: unless-stopped

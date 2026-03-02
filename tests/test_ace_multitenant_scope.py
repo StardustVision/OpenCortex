@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from opencortex.ace.skillbook import Skillbook, SkillAuthorizationError
 from opencortex.ace.types import Skill
 from opencortex.config import CortexConfig
+from opencortex.http.request_context import ACEConfig, set_request_ace_config, reset_request_ace_config
 from opencortex.models.embedder.base import DenseEmbedderBase, EmbedResult
 from opencortex.storage.cortex_fs import CortexFS
 from opencortex.storage.vikingdb_interface import (
@@ -239,9 +240,9 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-def _make_config(**overrides) -> CortexConfig:
-    """Create a CortexConfig with overrides for testing."""
-    return CortexConfig(**overrides)
+def _make_config(**overrides) -> ACEConfig:
+    """Create an ACEConfig with overrides for testing."""
+    return ACEConfig(**overrides)
 
 
 def _make_skillbook(storage, temp_dir):
@@ -661,9 +662,8 @@ class TestAuthorizationEnforcement(unittest.TestCase):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def _with_enforcement(self, enabled: bool):
-        """Temporarily set ace_scope_enforcement_enabled."""
-        from opencortex.config import init_config
-        init_config(CortexConfig(ace_scope_enforcement_enabled=enabled))
+        """Temporarily set ace_scope_enforcement_enabled via request context."""
+        self._ace_tokens = set_request_ace_config(ace_scope_enforcement=enabled)
 
     def test_01_owner_can_update(self):
         """Owner can update their own skill even with enforcement enabled."""
@@ -796,12 +796,12 @@ class TestApprovalAndDemotion(unittest.TestCase):
         # Approve first
         _run(self.sb.review_skill(self.candidate.id, decision="approve"))
         # Demote
-        from opencortex.config import init_config
-        init_config(CortexConfig(ace_scope_enforcement_enabled=False))
+        tokens = set_request_ace_config(ace_scope_enforcement=False)
         skill = _run(self.sb.demote_skill(
             self.candidate.id, reason="no longer relevant",
             tenant_id="team1", user_id="alice",
         ))
+        reset_request_ace_config(tokens)
         self.assertEqual(skill.scope, "private")
         self.assertEqual(skill.share_status, "demoted")
         self.assertEqual(skill.share_reason, "no longer relevant")
@@ -821,13 +821,15 @@ class TestApprovalAndDemotion(unittest.TestCase):
         # Approve first
         _run(self.sb.review_skill(self.candidate.id, decision="approve"))
         # Enable enforcement
-        from opencortex.config import init_config
-        init_config(CortexConfig(ace_scope_enforcement_enabled=True))
-        with self.assertRaises(SkillAuthorizationError):
-            _run(self.sb.demote_skill(
-                self.candidate.id, reason="test",
-                tenant_id="team1", user_id="bob",
-            ))
+        tokens = set_request_ace_config(ace_scope_enforcement=True)
+        try:
+            with self.assertRaises(SkillAuthorizationError):
+                _run(self.sb.demote_skill(
+                    self.candidate.id, reason="test",
+                    tenant_id="team1", user_id="bob",
+                ))
+        finally:
+            reset_request_ace_config(tokens)
 
     def test_10_approved_skill_visible_to_tenant(self):
         """After approval, the skill is visible to all users in the tenant."""
@@ -841,12 +843,12 @@ class TestApprovalAndDemotion(unittest.TestCase):
         """After demotion, the skill is only visible to the owner again."""
         # Approve then demote
         _run(self.sb.review_skill(self.candidate.id, decision="approve"))
-        from opencortex.config import init_config
-        init_config(CortexConfig(ace_scope_enforcement_enabled=False))
+        tokens = set_request_ace_config(ace_scope_enforcement=False)
         _run(self.sb.demote_skill(
             self.candidate.id, reason="test",
             tenant_id="team1", user_id="alice",
         ))
+        reset_request_ace_config(tokens)
         # Bob can no longer see it
         results = _run(self.sb.search("tests", tenant_id="team1", user_id="bob"))
         ids = [r.id for r in results]
