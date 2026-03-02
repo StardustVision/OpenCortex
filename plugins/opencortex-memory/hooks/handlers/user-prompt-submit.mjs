@@ -35,24 +35,30 @@ export default async function userPromptSubmit(ctx) {
 
   const allItems = result?.results || [];
   if (allItems.length === 0) {
-    return { systemMessage: `[opencortex-memory:${source}] No memories matched.` };
+    return { systemMessage: `[opencortex-memory:${source}] Recall OK — no memories matched.` };
   }
 
-  const items = allItems.filter(r => r.score > 0.5);
-  if (items.length === 0) {
-    const best = Math.max(...allItems.map(r => r.score ?? 0)).toFixed(2);
-    return {
-      systemMessage: `[opencortex-memory:${source}] ${allItems.length} found, all scored ≤ 0.5 (best: ${best}).`,
-    };
-  }
+  const TRUST_THRESHOLD = 0.5;
+  const trusted = allItems.filter(r => r.score > TRUST_THRESHOLD);
+  const untrusted = allItems.filter(r => r.score <= TRUST_THRESHOLD);
 
-  const lines = items.map(r => {
+  const formatItem = (r, reliable) => {
     const tag = r.context_type ? `[${r.context_type}]` : '';
     const score = r.score != null ? `(${r.score.toFixed(2)})` : '';
+    const status = reliable ? '' : ' ⚠ low-confidence';
     const text = r.abstract || r.overview || '';
-    return `- ${tag}${score} ${text}`;
-  });
+    return `- ${tag}${score}${status} ${text}`;
+  };
+
+  const lines = [];
+  for (const r of trusted) lines.push(formatItem(r, true));
+  for (const r of untrusted) lines.push(formatItem(r, false));
+
+  const summary = trusted.length > 0
+    ? `${trusted.length} reliable, ${untrusted.length} low-confidence`
+    : `${allItems.length} found, all low-confidence (score ≤ ${TRUST_THRESHOLD})`;
+
   return {
-    systemMessage: `[opencortex-memory:${source}] Recalled:\n${lines.join('\n')}`,
+    systemMessage: `[opencortex-memory:${source}] Recall OK — ${summary}:\n${lines.join('\n')}`,
   };
 }
