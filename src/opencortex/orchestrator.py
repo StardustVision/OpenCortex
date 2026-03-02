@@ -976,7 +976,7 @@ class MemoryOrchestrator:
         self._ensure_init()
 
         # If URI points to a skillbook entry, update skill tag directly
-        if "/skillbooks/" in uri and self._hooks:
+        if ("/skillbooks/" in uri or "/shared/skills/" in uri) and self._hooks:
             skill_id = uri.rsplit("/", 1)[-1]
             tag = "helpful" if reward > 0 else ("harmful" if reward < 0 else "neutral")
             try:

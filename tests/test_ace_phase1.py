@@ -329,7 +329,7 @@ class TestSkillbookCRUD(unittest.TestCase):
         self.storage = InMemoryStorage()
         self.embedder = MockEmbedder()
         self.fs = CortexFS(data_root=self.temp_dir, vector_store=self.storage)
-        self.prefix = "opencortex://test/user/alice/skillbooks"
+        self.prefix = "opencortex://test/shared/skills"
         self.sb = Skillbook(
             storage=self.storage,
             embedder=self.embedder,
@@ -363,7 +363,7 @@ class TestSkillbookCRUD(unittest.TestCase):
         # Check CortexFS abstract file
         abstract_path = os.path.join(
             self.temp_dir,
-            "test", "user", "alice", "skillbooks",
+            "test", "shared", "skills",
             "strategies", skill.id, ".abstract.md",
         )
         self.assertTrue(os.path.exists(abstract_path), f"Abstract file should exist at {abstract_path}")
@@ -564,7 +564,7 @@ class TestCortexFSIntegration(unittest.TestCase):
         self.storage = InMemoryStorage()
         self.embedder = MockEmbedder()
         self.fs = CortexFS(data_root=self.temp_dir, vector_store=self.storage)
-        self.prefix = "opencortex://test/user/alice/skillbooks"
+        self.prefix = "opencortex://test/shared/skills"
         self.sb = Skillbook(
             storage=self.storage,
             embedder=self.embedder,
@@ -591,7 +591,7 @@ class TestCortexFSIntegration(unittest.TestCase):
 
         base = os.path.join(
             self.temp_dir,
-            "test", "user", "alice", "skillbooks",
+            "test", "shared", "skills",
             "patterns", skill.id,
         )
 
@@ -624,7 +624,7 @@ class TestCortexFSIntegration(unittest.TestCase):
 
         section_base = os.path.join(
             self.temp_dir,
-            "test", "user", "alice", "skillbooks",
+            "test", "shared", "skills",
             "strategies",
         )
 
@@ -641,6 +641,23 @@ class TestCortexFSIntegration(unittest.TestCase):
             overview = f.read()
             self.assertIn("Skill A", overview)
             self.assertIn("Skill B", overview)
+
+
+# =============================================================================
+# Skillbook Prefix Tests
+# =============================================================================
+
+
+class TestSkillbookPrefix(unittest.TestCase):
+    def test_resolve_prefix_uses_shared_skills(self):
+        """Skillbook prefix should be shared/skills, not user/skillbooks."""
+        from opencortex.ace.skillbook import Skillbook
+        sb = Skillbook.__new__(Skillbook)
+        sb._prefix = "opencortex://myteam/shared/skills"
+        result = sb._resolve_prefix("myteam", "alice")
+        self.assertEqual(result, "opencortex://myteam/shared/skills")
+        self.assertNotIn("skillbooks", result)
+        self.assertNotIn("/user/", result)
 
 
 if __name__ == "__main__":

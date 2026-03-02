@@ -38,7 +38,7 @@ class Skillbook:
         self._storage = storage
         self._embedder = embedder
         self._fs = cortex_fs
-        self._prefix = prefix  # legacy: "opencortex://{t}/user/{u}/skillbooks"
+        self._prefix = prefix  # "opencortex://{t}/shared/skills"
         self._dim = embedding_dim
 
     async def init(self) -> None:
@@ -693,10 +693,10 @@ class Skillbook:
             )
 
     def _resolve_prefix(self, tenant_id: str = "", user_id: str = "") -> str:
-        """Resolve the URI prefix from tenant/user or fall back to self._prefix."""
-        if tenant_id and user_id:
-            return f"opencortex://{tenant_id}/user/{user_id}/skillbooks"
-        return self._prefix or "opencortex://default/user/default/skillbooks"
+        """Resolve the URI prefix for shared skills storage."""
+        if tenant_id:
+            return f"opencortex://{tenant_id}/shared/skills"
+        return self._prefix or "opencortex://default/shared/skills"
 
     def _build_scope_filter(
         self,

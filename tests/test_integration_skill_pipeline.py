@@ -217,7 +217,7 @@ class TestIntegrationSkillPipeline(unittest.TestCase):
                 for r in results:
                     self.assertIn("uri", r)
                     self.assertIn("score", r)
-                    self.assertIn("/skillbooks/", r["uri"])
+                    self.assertIn("/shared/skills/", r["uri"])
                     self.assertIsInstance(r["score"], float)
             finally:
                 await orch.close()

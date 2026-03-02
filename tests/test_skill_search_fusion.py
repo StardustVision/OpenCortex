@@ -382,7 +382,7 @@ class TestSkillSearchFusion(unittest.TestCase):
                 memory_type="error_fixes",
             )
             uri = result.get("uri", "")
-            self.assertIn("/skillbooks/", uri)
+            self.assertIn("/shared/skills/", uri)
 
             await orch.feedback(uri=uri, reward=1.0)
 
@@ -561,7 +561,7 @@ class TestSkillRecallWithURI(unittest.TestCase):
             results = await orch.hooks_recall("linting")
             self.assertGreater(len(results), 0)
             self.assertIn("uri", results[0])
-            self.assertIn("/skillbooks/", results[0]["uri"])
+            self.assertIn("/shared/skills/", results[0]["uri"])
         self._run(_test())
 
     def test_11_recall_returns_score(self):
