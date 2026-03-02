@@ -338,7 +338,7 @@ class TestSkillSearchFusion(unittest.TestCase):
             orch = await self._init_orch()
             result = await orch.hooks_remember(
                 content="Always use pytest-asyncio for async test fixtures",
-                memory_type="preferences",
+                memory_type="workflows",
             )
             self.assertTrue(result.get("success"))
 
@@ -557,7 +557,7 @@ class TestSkillRecallWithURI(unittest.TestCase):
         """hooks_recall results include uri field."""
         async def _test():
             orch = await self._init_orch()
-            await orch.hooks_remember(content="Use ruff for linting Python", memory_type="preferences")
+            await orch.hooks_remember(content="Use ruff for linting Python", memory_type="workflows")
             results = await orch.hooks_recall("linting")
             self.assertGreater(len(results), 0)
             self.assertIn("uri", results[0])

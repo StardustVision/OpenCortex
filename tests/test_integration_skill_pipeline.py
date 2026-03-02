@@ -234,7 +234,7 @@ class TestIntegrationSkillPipeline(unittest.TestCase):
             try:
                 result = await orch.hooks_remember(
                     content="Use black formatter with line-length 88",
-                    memory_type="preferences",
+                    memory_type="workflows",
                 )
                 uri = result["uri"]
                 skill_id = result["skill_id"]
@@ -243,7 +243,7 @@ class TestIntegrationSkillPipeline(unittest.TestCase):
                 await orch.feedback(uri=uri, reward=1.0)
 
                 # Verify helpful count increased
-                skills = await orch._hooks.skillbook.get_by_section("preferences")
+                skills = await orch._hooks.skillbook.get_by_section("workflows")
                 matching = [s for s in skills if s.id == skill_id]
                 self.assertEqual(len(matching), 1)
                 self.assertGreater(matching[0].helpful, 0)
@@ -327,7 +327,7 @@ class TestIntegrationSkillPipeline(unittest.TestCase):
                 # 2. Also manually store a skill
                 skill_result = await orch.hooks_remember(
                     content="Always create feature branch before starting work",
-                    memory_type="preferences",
+                    memory_type="workflows",
                 )
 
                 # 3. Search should find both memories and skills
@@ -339,7 +339,7 @@ class TestIntegrationSkillPipeline(unittest.TestCase):
                 await orch.feedback(uri=skill_result["uri"], reward=1.0)
 
                 # 5. Verify skill tag was updated
-                skills = await orch._hooks.skillbook.get_by_section("preferences")
+                skills = await orch._hooks.skillbook.get_by_section("workflows")
                 matching = [s for s in skills if s.id == skill_result["skill_id"]]
                 self.assertEqual(len(matching), 1)
                 self.assertGreater(matching[0].helpful, 0)
