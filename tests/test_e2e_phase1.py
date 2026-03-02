@@ -208,6 +208,7 @@ class InMemoryStorage(VikingDBInterface):
         offset: int = 0,
         output_fields: Optional[List[str]] = None,
         with_vector: bool = False,
+        text_query: str = "",
     ) -> List[Dict[str, Any]]:
         self._ensure(collection)
         candidates = list(self._records[collection].values())
@@ -233,6 +234,24 @@ class InMemoryStorage(VikingDBInterface):
         else:
             for r in candidates:
                 r = dict(r)
+
+        # Text fallback when no vector scoring was applied
+        if not query_vector and text_query:
+            query_lower = text_query.lower()
+            scored = []
+            for r in (candidates if isinstance(candidates, list) else list(candidates)):
+                r = dict(r)
+                abstract = (r.get("abstract") or "").lower()
+                overview = (r.get("overview") or "").lower()
+                score = 0.0
+                if query_lower in abstract:
+                    score += 0.8
+                if query_lower in overview:
+                    score += 0.4
+                r["_score"] = score
+                scored.append(r)
+            scored.sort(key=lambda x: x["_score"], reverse=True)
+            candidates = scored
 
         return candidates[offset : offset + limit]
 

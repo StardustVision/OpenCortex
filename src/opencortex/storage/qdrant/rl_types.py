@@ -18,6 +18,7 @@ class Profile:
     negative_feedback_count: int = 0
     effective_score: float = 0.0
     is_protected: bool = False
+    accessed_at: str = ""
 
 
 @dataclass

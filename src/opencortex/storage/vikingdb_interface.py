@@ -297,6 +297,7 @@ class VikingDBInterface(ABC):
         offset: int = 0,
         output_fields: Optional[List[str]] = None,
         with_vector: bool = False,
+        text_query: str = "",
     ) -> List[Dict[str, Any]]:
         """
         Hybrid search: vector similarity + scalar filtering + sparse vector matching.

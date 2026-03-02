@@ -314,6 +314,7 @@ class QdrantStorageAdapter(VikingDBInterface):
         offset: int = 0,
         output_fields: Optional[List[str]] = None,
         with_vector: bool = False,
+        text_query: str = "",
     ) -> List[Dict[str, Any]]:
         await self._assert_collection(collection)
         client = await self._ensure_client()
@@ -722,6 +723,7 @@ class QdrantStorageAdapter(VikingDBInterface):
             negative_feedback_count=p.get("negative_feedback_count", 0),
             effective_score=p.get("reward_score", 0.0),
             is_protected=p.get("protected", False),
+            accessed_at=p.get("accessed_at", ""),
         )
 
     async def set_protected(self, collection: str, id: str, protected: bool) -> None:
