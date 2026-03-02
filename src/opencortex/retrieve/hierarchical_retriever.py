@@ -952,15 +952,19 @@ class HierarchicalRetriever:
             return [
                 # User private memories
                 CortexURI.build_private(tid, uid, "memories"),
-                # Shared agent patterns
-                CortexURI.build_shared(tid, "agent", "memories", "patterns"),
-                # User private agent cases
-                CortexURI.build_private(tid, uid, "agent", "memories", "cases"),
+                # Shared patterns
+                CortexURI.build_shared(tid, "shared", "patterns"),
+                # Shared cases
+                CortexURI.build_shared(tid, "shared", "cases"),
             ]
         elif context_type == ContextType.RESOURCE:
             return [CortexURI.build_shared(tid, "resources")]
         elif context_type == ContextType.SKILL:
-            return [CortexURI.build_shared(tid, "agent", "skills")]
+            return [CortexURI.build_shared(tid, "shared", "skills")]
+        elif context_type == ContextType.CASE:
+            return [CortexURI.build_shared(tid, "shared", "cases")]
+        elif context_type == ContextType.PATTERN:
+            return [CortexURI.build_shared(tid, "shared", "patterns")]
         return []
 
     def _type_to_collection(self, context_type: ContextType) -> str:

@@ -53,6 +53,7 @@ from opencortex.retrieve.types import (
     DetailLevel,
     FindResult,
     MatchedContext,
+    MERGEABLE_CATEGORIES,
     QueryResult,
     SearchIntent,
     TypedQuery,
@@ -567,13 +568,12 @@ class MemoryOrchestrator:
             record["vector"] = ctx.vector
 
         # Populate scope/category/source fields for path-redesign
-        _MERGEABLE_CATEGORIES = {"profile", "preferences", "entities", "patterns"}
         inferred_scope = "private" if "/user/" in uri else "shared"
         effective_category = category or self._extract_category_from_uri(uri)
         record["scope"] = inferred_scope
         record["category"] = effective_category
         record["source_user_id"] = uid
-        record["mergeable"] = effective_category in _MERGEABLE_CATEGORIES
+        record["mergeable"] = effective_category in MERGEABLE_CATEGORIES
         record["session_id"] = session_id or ""
         record["ttl_expires_at"] = ""
 
@@ -803,10 +803,21 @@ class MemoryOrchestrator:
 
         # Exclude staging from global search
         staging_exclude = {"op": "must_not", "field": "context_type", "conds": ["staging"]}
+
+        # Scope-aware filter: return shared + user's private + legacy (no scope)
+        tid, uid = get_effective_identity()
+        scope_filter = {"op": "or", "conds": [
+            {"op": "must", "field": "scope", "conds": ["shared", ""]},
+            {"op": "and", "conds": [
+                {"op": "must", "field": "scope", "conds": ["private"]},
+                {"op": "must", "field": "source_user_id", "conds": [uid]},
+            ]},
+        ]}
+
         if metadata_filter:
-            metadata_filter = {"op": "and", "conds": [metadata_filter, staging_exclude]}
+            metadata_filter = {"op": "and", "conds": [metadata_filter, staging_exclude, scope_filter]}
         else:
-            metadata_filter = staging_exclude
+            metadata_filter = {"op": "and", "conds": [staging_exclude, scope_filter]}
 
         # Build retrieval coroutines
         retrieval_coros = [
@@ -1086,12 +1097,22 @@ class MemoryOrchestrator:
         if hasattr(self._storage, "apply_decay"):
             result = await self._storage.apply_decay()
             logger.info("[MemoryOrchestrator] Decay applied: %s", result)
-            return {
+            decay_result = {
                 "records_processed": result.records_processed,
                 "records_decayed": result.records_decayed,
                 "records_below_threshold": result.records_below_threshold,
                 "records_archived": result.records_archived,
             }
+
+            # Piggyback staging cleanup on decay
+            try:
+                cleaned = await self.cleanup_expired_staging()
+                if cleaned:
+                    decay_result["staging_cleaned"] = cleaned
+            except Exception as exc:
+                logger.warning("[Orchestrator] Staging cleanup failed: %s", exc)
+
+            return decay_result
         logger.debug("[MemoryOrchestrator] Storage backend does not support decay")
         return None
 
@@ -1886,6 +1907,13 @@ class MemoryOrchestrator:
             record = dir_ctx.to_dict()
             if dir_ctx.vector:
                 record["vector"] = dir_ctx.vector
+            # Populate scope fields so directory records pass scope filters
+            record["scope"] = "private" if "/user/" in dir_uri else "shared"
+            record["source_user_id"] = uid
+            record["category"] = ""
+            record["mergeable"] = False
+            record["session_id"] = ""
+            record["ttl_expires_at"] = ""
             await self._storage.upsert(_CONTEXT_COLLECTION, record)
             logger.debug("[MemoryOrchestrator] Created directory record: %s", dir_uri)
 

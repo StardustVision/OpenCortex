@@ -10,6 +10,7 @@ import logging
 import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
+from opencortex.retrieve.types import MERGEABLE_CATEGORIES
 from opencortex.session.extractor import MemoryExtractor
 from opencortex.session.types import (
     ExtractionResult,
@@ -26,11 +27,6 @@ LLMCompletionCallable = Callable[[str], Awaitable[str]]
 _DEDUP_THRESHOLD = 0.85
 # Minimum confidence to store a memory
 _MIN_CONFIDENCE = 0.3
-
-# Categories where existing memories should be updated (merged) rather than
-# creating duplicates.  Non-mergeable categories (events, cases) always produce
-# new records because each occurrence is unique.
-MERGEABLE_CATEGORIES = {"profile", "preferences", "entities", "patterns"}
 
 
 class SessionManager:

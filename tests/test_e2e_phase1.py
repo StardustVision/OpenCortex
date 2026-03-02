@@ -459,6 +459,9 @@ class InMemoryStorage(VikingDBInterface):
             field_name = filt.get("field", "")
             conds = filt.get("conds", [])
             val = record.get(field_name)
+            # Treat None as "" so records missing a field match empty-string conds
+            if val is None and "" in conds:
+                return True
             return val in conds
 
         elif op == "prefix":

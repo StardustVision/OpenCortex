@@ -23,6 +23,12 @@ class ContextType(str, Enum):
     STAGING = "staging"
 
 
+# Categories where existing memories should be updated (merged) rather than
+# creating duplicates.  Non-mergeable categories (events, cases) always produce
+# new records because each occurrence is unique.
+MERGEABLE_CATEGORIES = frozenset({"profile", "preferences", "entities", "patterns"})
+
+
 class DetailLevel(str, Enum):
     """Detail level for retrieval results."""
 

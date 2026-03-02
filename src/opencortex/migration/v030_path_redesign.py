@@ -2,9 +2,9 @@
 
 import logging
 
-logger = logging.getLogger(__name__)
+from opencortex.retrieve.types import MERGEABLE_CATEGORIES
 
-_MERGEABLE = {"profile", "preferences", "entities", "patterns"}
+logger = logging.getLogger(__name__)
 
 
 def infer_scope(uri: str) -> str:
@@ -33,7 +33,7 @@ def infer_category(uri: str) -> str:
 
 def infer_mergeable(category: str) -> bool:
     """Check if a category supports merging."""
-    return category in _MERGEABLE
+    return category in MERGEABLE_CATEGORIES
 
 
 async def backfill_new_fields(storage, collection: str) -> int:
