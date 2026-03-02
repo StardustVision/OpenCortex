@@ -12,6 +12,7 @@ Architecture:
 import hashlib
 import logging
 import os
+import re
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -24,6 +25,31 @@ from opencortex.storage.vikingdb_interface import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _tokenize_for_scoring(text: str) -> set:
+    """Zero-dependency tokenizer for Chinese+English mixed text scoring."""
+    text = (text or "").lower()
+    # English words, paths, error codes (e.g. error-404, config.yaml)
+    words = set(re.findall(r"[a-z0-9][a-z0-9_\-\.]*[a-z0-9]|[a-z0-9]", text))
+    # Chinese characters (single char as unigram)
+    chinese_chars = set(re.findall(r"[\u4e00-\u9fa5]", text))
+    return words | chinese_chars
+
+
+def _compute_text_score(query: str, abstract: str, overview: str) -> float:
+    """Term-overlap scoring for lexical search results.
+
+    Abstract matches are weighted 2x higher than overview matches.
+    """
+    query_terms = _tokenize_for_scoring(query)
+    if not query_terms:
+        return 0.0
+    abstract_terms = _tokenize_for_scoring(abstract)
+    overview_terms = _tokenize_for_scoring(overview)
+    abstract_hits = len(query_terms & abstract_terms)
+    overview_hits = len(query_terms & overview_terms)
+    return min(1.0, (abstract_hits * 2 + overview_hits) / (len(query_terms) * 2))
 
 
 class QdrantStorageAdapter(VikingDBInterface):
