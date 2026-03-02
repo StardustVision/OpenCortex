@@ -791,6 +791,13 @@ class MemoryOrchestrator:
                 if not tq.target_directories:
                     tq.target_directories = [target_uri]
 
+        # Exclude staging from global search
+        staging_exclude = {"op": "must_not", "field": "context_type", "conds": ["staging"]}
+        if metadata_filter:
+            metadata_filter = {"op": "and", "conds": [metadata_filter, staging_exclude]}
+        else:
+            metadata_filter = staging_exclude
+
         # Build retrieval coroutines
         retrieval_coros = [
             self._retriever.retrieve(
@@ -947,6 +954,13 @@ class MemoryOrchestrator:
         if target_uri:
             for tq in query_plan.queries:
                 tq.target_directories = [target_uri]
+
+        # Exclude staging from session search
+        staging_exclude = {"op": "must_not", "field": "context_type", "conds": ["staging"]}
+        if metadata_filter:
+            metadata_filter = {"op": "and", "conds": [metadata_filter, staging_exclude]}
+        else:
+            metadata_filter = staging_exclude
 
         query_results = await asyncio.gather(
             *[

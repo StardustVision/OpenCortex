@@ -492,6 +492,12 @@ class InMemoryStorage(VikingDBInterface):
         elif op == "or":
             return any(self._eval_filter(record, c) for c in filt.get("conds", []))
 
+        elif op == "must_not":
+            field_name = filt.get("field", "")
+            conds = filt.get("conds", [])
+            val = record.get(field_name)
+            return val not in conds
+
         return True
 
 
@@ -1407,6 +1413,81 @@ class TestAcePreferencesRouting(unittest.TestCase):
         """error_fixes should NOT be in _USER_MEMORY_SECTIONS — they stay shared."""
         from opencortex.ace.engine import ACEngine
         self.assertNotIn("error_fixes", ACEngine._USER_MEMORY_SECTIONS)
+
+
+class TestScopeAwareSearch(unittest.TestCase):
+    """Search should return user's private + project shared, exclude staging."""
+
+    def setUp(self):
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+
+    def tearDown(self):
+        self.loop.close()
+
+    def test_search_excludes_staging(self):
+        """Staging records should not appear in search results even if they
+        would otherwise match the query and live in the same collection."""
+        from opencortex.http.request_context import set_request_identity, reset_request_identity
+        token = set_request_identity("t1", "u1")
+        try:
+            storage = InMemoryStorage()
+            orch = self._build_orch(storage)
+            # Add a normal memory
+            self.loop.run_until_complete(
+                orch.add(abstract="permanent pref", category="preferences", context_type="memory")
+            )
+            # Inject a staging record directly into storage with context_type=memory URI
+            # so it would match the memory search, but with context_type="staging"
+            # This simulates a staging record that would slip through without the filter
+            self.loop.run_until_complete(storage.insert("context", {
+                "uri": "opencortex://t1/user/u1/memories/preferences/fake_staging",
+                "context_type": "staging",
+                "abstract": "staging note that looks like memory",
+                "vector": [0.1] * MockEmbedder.DIMENSION,
+            }))
+            result = self.loop.run_until_complete(
+                orch.search(query="note pref")
+            )
+            # Collect all URIs from results
+            all_results = []
+            if hasattr(result, 'memories'):
+                all_results.extend(result.memories)
+            if hasattr(result, 'resources'):
+                all_results.extend(result.resources)
+            if hasattr(result, 'skills'):
+                all_results.extend(result.skills)
+            # The staging-typed record should be excluded by the must_not filter
+            uris = [m.uri for m in all_results]
+            for uri in uris:
+                self.assertNotIn("fake_staging", uri,
+                    "Staging records must not appear in search results")
+        finally:
+            reset_request_identity(token)
+
+    def _build_orch(self, storage):
+        from opencortex.orchestrator import MemoryOrchestrator
+        from opencortex.config import CortexConfig
+        from opencortex.retrieve.hierarchical_retriever import HierarchicalRetriever
+        cfg = CortexConfig(embedding_provider="none")
+        orch = MemoryOrchestrator(config=cfg)
+        orch._storage = storage
+        orch._embedder = MockEmbedder()
+        orch._initialized = True
+        # Create the context collection so upsert/filter work
+        self.loop.run_until_complete(
+            storage.create_collection("context", {"vector_dim": MockEmbedder.DIMENSION})
+        )
+        # Initialize CortexFS for write_context
+        from opencortex.storage.cortex_fs import CortexFS
+        import tempfile
+        orch._fs = CortexFS(data_root=tempfile.mkdtemp())
+        # Initialize retriever so search() works
+        orch._retriever = HierarchicalRetriever(
+            storage=storage,
+            embedder=MockEmbedder(),
+        )
+        return orch
 
 
 if __name__ == "__main__":
