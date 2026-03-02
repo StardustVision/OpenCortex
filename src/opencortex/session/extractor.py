@@ -84,24 +84,28 @@ Conversation:
 {conversation}
 
 Extract memories in these categories:
+
+User memories (private to this user):
+- **profile**: User identity, roles, background attributes
 - **preferences**: User preferences, settings, workflow habits
-- **patterns**: Recurring patterns, common solutions, best practices
-- **entities**: Important names, paths, URLs, configurations
-- **skills**: Agent skills learned or improved during the session
-- **errors**: Error patterns and their solutions
+- **entities**: Important entities — people, projects, paths, URLs, configurations
+- **events**: Decisions, milestones, key events (each unique, never merge)
+
+Agent knowledge (shared at project level):
+- **cases**: Problem + solution pairs (each unique, never merge)
+- **patterns**: Reusable patterns, best practices, recurring solutions
 
 For each memory, provide:
 - abstract: Short summary (1-2 sentences, used for vector search)
 - content: Full details
-- category: One of the categories above
-- context_type: "memory" for user knowledge, "skill" for agent capabilities, "resource" for project info
+- category: One of: profile, preferences, entities, events, cases, patterns
+- context_type: "memory" for user categories (profile/preferences/entities/events), "case" for cases, "pattern" for patterns
 - confidence: 0.0 to 1.0 (how confident this is a persistent, reusable memory)
-- uri_hint: "user" for user-specific, "agent" for agent patterns, "shared" for project resources
 
 Return ONLY a JSON array. Example:
 [
-  {{"abstract": "User prefers dark theme", "content": "User explicitly set dark theme in VS Code and terminal", "category": "preferences", "context_type": "memory", "confidence": 0.9, "uri_hint": "user"}},
-  {{"abstract": "Fix import error by checking PYTHONPATH", "content": "When imports fail, check PYTHONPATH includes src/", "category": "errors", "context_type": "skill", "confidence": 0.7, "uri_hint": "agent"}}
+  {{"abstract": "User prefers dark theme", "content": "User explicitly set dark theme in VS Code and terminal", "category": "preferences", "context_type": "memory", "confidence": 0.9}},
+  {{"abstract": "Fix import error by checking PYTHONPATH", "content": "When imports fail, check PYTHONPATH includes src/", "category": "cases", "context_type": "case", "confidence": 0.7}}
 ]
 
 If no meaningful memories can be extracted, return an empty array: []
