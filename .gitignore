@@ -16,7 +16,6 @@ data/
 .cursor/
 _bmad*/
 node_modules/
-plugins/opencortex-memory/.mcp.json
 .ruvector/
 ruvector.db
 data_e2e_demo/
