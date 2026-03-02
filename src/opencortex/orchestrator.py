@@ -553,6 +553,18 @@ class MemoryOrchestrator:
         record = ctx.to_dict()
         if ctx.vector:
             record["vector"] = ctx.vector
+
+        # Populate scope/category/source fields for path-redesign
+        _MERGEABLE_CATEGORIES = {"profile", "preferences", "entities", "patterns"}
+        inferred_scope = "private" if "/user/" in uri else "shared"
+        effective_category = category or self._extract_category_from_uri(uri)
+        record["scope"] = inferred_scope
+        record["category"] = effective_category
+        record["source_user_id"] = uid
+        record["mergeable"] = effective_category in _MERGEABLE_CATEGORIES
+        record["session_id"] = session_id or ""
+        record["ttl_expires_at"] = ""
+
         await self._storage.upsert(_CONTEXT_COLLECTION, record)
 
         # Write to filesystem (L0 abstract + L1 overview + L2 content)
@@ -1709,6 +1721,23 @@ class MemoryOrchestrator:
 
         # Fallback: treat as user memory event
         return CortexURI.build_private(tid, uid, "memories", "events", node_id)
+
+    @staticmethod
+    def _extract_category_from_uri(uri: str) -> str:
+        """Extract category from URI path. E.g. /memories/preferences/abc -> preferences."""
+        parts = uri.split("/")
+        # Look for known parent segments, return next part
+        for parent in ("memories", "cases", "patterns", "skills", "staging", "resources"):
+            if parent in parts:
+                idx = parts.index(parent)
+                if parent in ("cases", "patterns"):
+                    return parent
+                if idx + 1 < len(parts):
+                    candidate = parts[idx + 1]
+                    # Skip node_id (12-char hex)
+                    if len(candidate) != 12:
+                        return candidate
+        return ""
 
     def _derive_parent_uri(self, uri: str) -> str:
         """Derive parent URI by removing the last path segment."""

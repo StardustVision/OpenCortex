@@ -1222,5 +1222,74 @@ class TestAutoUri(unittest.TestCase):
         self.assertIn("/user/alice/staging/", uri)
 
 
+class TestAddScopeFields(unittest.TestCase):
+    """Test that add() populates scope/category/source fields in Qdrant."""
+
+    def setUp(self):
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+
+    def tearDown(self):
+        self.loop.close()
+
+    def test_add_memory_sets_private_scope(self):
+        from opencortex.http.request_context import set_request_identity, reset_request_identity
+        token = set_request_identity("t1", "u1")
+        try:
+            storage = InMemoryStorage()
+            orch = self._build_orch(storage)
+            ctx = self.loop.run_until_complete(
+                orch.add(abstract="test pref", category="preferences", context_type="memory")
+            )
+            # Check Qdrant record has scope fields
+            records = self.loop.run_until_complete(
+                storage.filter("context",
+                    {"op": "must", "field": "uri", "conds": [ctx.uri]}, limit=1)
+            )
+            self.assertEqual(records[0].get("scope"), "private")
+            self.assertEqual(records[0].get("category"), "preferences")
+            self.assertEqual(records[0].get("source_user_id"), "u1")
+            self.assertTrue(records[0].get("mergeable"))
+        finally:
+            reset_request_identity(token)
+
+    def test_add_case_sets_shared_scope(self):
+        from opencortex.http.request_context import set_request_identity, reset_request_identity
+        token = set_request_identity("t1", "u1")
+        try:
+            storage = InMemoryStorage()
+            orch = self._build_orch(storage)
+            ctx = self.loop.run_until_complete(
+                orch.add(abstract="bug fix", context_type="case")
+            )
+            records = self.loop.run_until_complete(
+                storage.filter("context",
+                    {"op": "must", "field": "uri", "conds": [ctx.uri]}, limit=1)
+            )
+            self.assertEqual(records[0].get("scope"), "shared")
+            self.assertFalse(records[0].get("mergeable"))
+        finally:
+            reset_request_identity(token)
+
+    def _build_orch(self, storage):
+        """Create a minimal orchestrator with the given storage."""
+        from opencortex.orchestrator import MemoryOrchestrator
+        from opencortex.config import CortexConfig
+        cfg = CortexConfig(embedding_provider="none")
+        orch = MemoryOrchestrator(config=cfg)
+        orch._storage = storage
+        orch._embedder = MockEmbedder()
+        orch._initialized = True
+        # Create the context collection so upsert/filter work
+        self.loop.run_until_complete(
+            storage.create_collection("context", {"vector_dim": MockEmbedder.DIMENSION})
+        )
+        # Initialize CortexFS for write_context
+        from opencortex.storage.cortex_fs import CortexFS
+        import tempfile
+        orch._fs = CortexFS(data_root=tempfile.mkdtemp())
+        return orch
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
