@@ -203,6 +203,16 @@ class MemoryOrchestrator:
         if hasattr(self._storage, "ensure_text_indexes"):
             await self._storage.ensure_text_indexes()
 
+        # 7c. Run v0.3.0 path migration (idempotent)
+        try:
+            from opencortex.migration.v030_path_redesign import (
+                backfill_new_fields, cleanup_root_junk,
+            )
+            await cleanup_root_junk(self._storage, self._fs, _CONTEXT_COLLECTION)
+            await backfill_new_fields(self._storage, _CONTEXT_COLLECTION)
+        except Exception as exc:
+            logger.warning("[Orchestrator] Migration skipped: %s", exc)
+
         # 8. Session manager for context self-iteration
         self._session_manager = self._create_session_manager()
 
