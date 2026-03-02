@@ -27,6 +27,11 @@ _DEDUP_THRESHOLD = 0.85
 # Minimum confidence to store a memory
 _MIN_CONFIDENCE = 0.3
 
+# Categories where existing memories should be updated (merged) rather than
+# creating duplicates.  Non-mergeable categories (events, cases) always produce
+# new records because each occurrence is unique.
+MERGEABLE_CATEGORIES = {"profile", "preferences", "entities", "patterns"}
+
 
 class SessionManager:
     """Manages session lifecycle and memory extraction.
@@ -199,9 +204,18 @@ class SessionManager:
     async def _try_merge(self, memory: ExtractedMemory) -> bool:
         """Try to merge with an existing similar memory.
 
-        Returns True if merged, False if no similar memory found.
+        Only attempts merge for categories in MERGEABLE_CATEGORIES (profile,
+        preferences, entities, patterns).  Non-mergeable categories (events,
+        cases) always create new records — each occurrence is unique.
+
+        Returns True if merged, False if no similar memory found or category
+        is not mergeable.
         """
         if not self._search_fn:
+            return False
+
+        # Non-mergeable categories always create new records
+        if memory.category not in MERGEABLE_CATEGORIES:
             return False
 
         try:

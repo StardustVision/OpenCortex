@@ -1490,5 +1490,18 @@ class TestScopeAwareSearch(unittest.TestCase):
         return orch
 
 
+class TestMergeBehavior(unittest.TestCase):
+    """Mergeable categories should update existing instead of creating duplicate."""
+
+    def test_mergeable_categories_constant(self):
+        from opencortex.session.manager import MERGEABLE_CATEGORIES
+        self.assertIn("profile", MERGEABLE_CATEGORIES)
+        self.assertIn("preferences", MERGEABLE_CATEGORIES)
+        self.assertIn("entities", MERGEABLE_CATEGORIES)
+        self.assertIn("patterns", MERGEABLE_CATEGORIES)
+        self.assertNotIn("events", MERGEABLE_CATEGORIES)
+        self.assertNotIn("cases", MERGEABLE_CATEGORIES)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
