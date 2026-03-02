@@ -81,6 +81,36 @@ class QdrantStorageAdapter(VikingDBInterface):
             logger.info("[QdrantAdapter] Client initialized at %s", self._path)
         return self._client
 
+    async def ensure_text_indexes(self) -> None:
+        """Ensure full-text indexes exist on abstract/overview fields.
+
+        Safe to call on existing collections — Qdrant create_payload_index
+        is idempotent (skips if index already exists).
+        """
+        client = await self._ensure_client()
+        collections = await client.get_collections()
+        existing = {c.name for c in collections.collections}
+
+        for coll_name in existing:
+            for field in ("abstract", "overview"):
+                try:
+                    await client.create_payload_index(
+                        collection_name=coll_name,
+                        field_name=field,
+                        field_schema=models.TextIndexParams(
+                            type=models.TextIndexType.TEXT,
+                            tokenizer=models.TokenizerType.MULTILINGUAL,
+                            min_token_len=2,
+                            max_token_len=20,
+                        ),
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "[QdrantAdapter] Text index %s.%s: %s",
+                        coll_name, field, exc,
+                    )
+        logger.info("[QdrantAdapter] Text indexes ensured on %d collections", len(existing))
+
     # =========================================================================
     # Collection Management
     # =========================================================================
@@ -401,15 +431,54 @@ class QdrantStorageAdapter(VikingDBInterface):
             )
             points = results.points[offset:]
         else:
-            # Pure scalar filter — use scroll
-            points_list, _ = await client.scroll(
-                collection_name=collection,
-                scroll_filter=qdrant_filter,
-                limit=limit + offset,
-                with_payload=True,
-                with_vectors=with_vector,
-            )
-            points = points_list[offset:]
+            if text_query:
+                # Lexical fallback: MatchText on abstract OR overview
+                text_conditions = [
+                    models.FieldCondition(
+                        key="abstract",
+                        match=models.MatchText(text=text_query),
+                    ),
+                    models.FieldCondition(
+                        key="overview",
+                        match=models.MatchText(text=text_query),
+                    ),
+                ]
+                combined_filter = models.Filter(
+                    must=[qdrant_filter] if qdrant_filter else [],
+                    should=text_conditions,
+                )
+                oversample = (limit + offset) * 3
+                points_list, _ = await client.scroll(
+                    collection_name=collection,
+                    scroll_filter=combined_filter,
+                    limit=oversample,
+                    with_payload=True,
+                    with_vectors=with_vector,
+                )
+                # Score and rank by text overlap
+                for p in points_list:
+                    payload = p.payload or {}
+                    payload["_text_score"] = _compute_text_score(
+                        text_query,
+                        payload.get("abstract", ""),
+                        payload.get("overview", ""),
+                    )
+                    p.payload = payload
+                points_list.sort(
+                    key=lambda p: (p.payload or {}).get("_text_score", 0),
+                    reverse=True,
+                )
+                points = points_list[offset : offset + limit]
+            else:
+                # Pure scalar filter — use scroll
+                points_list, _ = await client.scroll(
+                    collection_name=collection,
+                    scroll_filter=qdrant_filter,
+                    limit=limit + offset,
+                    with_payload=True,
+                    with_vectors=with_vector,
+                )
+                points = points_list[offset:]
 
         return [self._from_scored_point(p) for p in points]
 
