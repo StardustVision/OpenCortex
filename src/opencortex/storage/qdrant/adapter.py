@@ -842,8 +842,11 @@ class QdrantStorageAdapter(VikingDBInterface):
         Batches set_payload calls per scroll page to avoid N individual
         update round-trips (each of which would also do a redundant retrieve).
         """
+        import math
+        from datetime import datetime, timezone
         from opencortex.storage.qdrant.rl_types import DecayResult
 
+        now = datetime.now(timezone.utc)
         result = DecayResult()
         client = await self._ensure_client()
         collections = await client.get_collections()
@@ -862,6 +865,18 @@ class QdrantStorageAdapter(VikingDBInterface):
                         continue
                     is_protected = record.get("protected", False)
                     rate = protected_rate if is_protected else decay_rate
+                    # Access-driven protection: recent access → slower decay
+                    accessed_at_str = record.get("accessed_at")
+                    if accessed_at_str:
+                        try:
+                            accessed_dt = datetime.fromisoformat(
+                                accessed_at_str.replace("Z", "+00:00")
+                            )
+                            days_since = max(0, (now - accessed_dt).days)
+                            access_bonus = 0.04 * math.exp(-days_since / 30)
+                            rate = min(1.0, rate + access_bonus)
+                        except (ValueError, TypeError):
+                            pass
                     new_reward = reward * rate
                     if abs(new_reward) < threshold:
                         new_reward = 0.0

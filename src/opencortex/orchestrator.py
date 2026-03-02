@@ -801,7 +801,53 @@ class MemoryOrchestrator:
             result.total = len(result.memories) + len(result.resources) + len(result.skills)
 
         result.search_intent = intent
+
+        # Async update access stats for returned results (fire-and-forget)
+        all_matched = result.memories + result.resources + result.skills
+        if all_matched:
+            record_ids = []
+            for mc in all_matched:
+                try:
+                    recs = await self._storage.filter(
+                        _CONTEXT_COLLECTION,
+                        {"op": "must", "field": "uri", "conds": [mc.uri]},
+                        limit=1,
+                    )
+                    if recs:
+                        rid = recs[0].get("id", "")
+                        if rid:
+                            record_ids.append(rid)
+                except Exception:
+                    pass
+            if record_ids:
+                asyncio.create_task(self._update_access_stats(record_ids))
+
         return result
+
+    async def _update_access_stats(self, record_ids: list) -> None:
+        """Async batch update access_count + accessed_at for retrieved records.
+
+        Called as fire-and-forget task after search returns Top-K.
+        Failures are logged but do not affect search results.
+        """
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for record_id in record_ids:
+            try:
+                records = await self._storage.get(_CONTEXT_COLLECTION, [record_id])
+                if records:
+                    count = records[0].get("active_count", 0)
+                    await self._storage.update(
+                        _CONTEXT_COLLECTION,
+                        record_id,
+                        {"active_count": count + 1, "accessed_at": now},
+                    )
+            except Exception as exc:
+                logger.debug(
+                    "[Orchestrator] Access stats update failed for %s: %s",
+                    record_id, exc,
+                )
 
     async def session_search(
         self,

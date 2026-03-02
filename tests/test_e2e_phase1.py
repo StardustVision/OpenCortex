@@ -333,25 +333,20 @@ class InMemoryStorage(VikingDBInterface):
     # ---- Reinforcement Learning ----
 
     async def update_reward(self, collection: str, id: str, reward: float) -> None:
-        key = f"{collection}::{id}"
-        profile = self._rl_profiles.setdefault(
-            key,
-            {
-                "reward_score": 0.0,
-                "retrieval_count": 0,
-                "positive_feedback_count": 0,
-                "negative_feedback_count": 0,
-                "effective_score": 0.0,
-                "is_protected": False,
-            },
-        )
-        profile["reward_score"] += reward
-        profile["retrieval_count"] += 1
+        self._ensure(collection)
+        record = self._records[collection].get(id)
+        if record is None:
+            return
+        record["reward_score"] = record.get("reward_score", 0.0) + reward
+        pos = record.get("positive_feedback_count", 0)
+        neg = record.get("negative_feedback_count", 0)
         if reward > 0:
-            profile["positive_feedback_count"] += 1
+            pos += 1
         elif reward < 0:
-            profile["negative_feedback_count"] += 1
-        profile["effective_score"] = profile["reward_score"]
+            neg += 1
+        record["positive_feedback_count"] = pos
+        record["negative_feedback_count"] = neg
+        record.setdefault("active_count", 0)
 
     async def update_reward_batch(
         self, collection: str, rewards: List[Tuple[str, float]]
@@ -360,34 +355,67 @@ class InMemoryStorage(VikingDBInterface):
             await self.update_reward(collection, rid, reward)
 
     async def get_profile(self, collection: str, id: str):
-        key = f"{collection}::{id}"
-        data = self._rl_profiles.get(key)
-        if not data:
+        self._ensure(collection)
+        record = self._records[collection].get(id)
+        if record is None:
             return None
-        # Return a duck-type object that matches SonaProfile
-        return _SimpleProfile(id=id, **data)
-
-    async def apply_decay(self):
-        processed = 0
-        decayed = 0
-        for key, profile in self._rl_profiles.items():
-            processed += 1
-            rate = 0.99 if profile.get("is_protected") else 0.95
-            old = profile["effective_score"]
-            profile["effective_score"] *= rate
-            if profile["effective_score"] != old:
-                decayed += 1
-        return _SimpleDecayResult(
-            records_processed=processed,
-            records_decayed=decayed,
-            records_below_threshold=0,
-            records_archived=0,
+        return _SimpleProfile(
+            id=id,
+            reward_score=record.get("reward_score", 0.0),
+            retrieval_count=record.get("active_count", 0),
+            positive_feedback_count=record.get("positive_feedback_count", 0),
+            negative_feedback_count=record.get("negative_feedback_count", 0),
+            effective_score=record.get("reward_score", 0.0),
+            is_protected=record.get("protected", False),
         )
 
+    async def apply_decay(self, decay_rate=0.95, protected_rate=0.99, threshold=0.01):
+        import math as _math
+        from datetime import datetime, timezone
+
+        processed = decayed = below = 0
+        now = datetime.now(timezone.utc)
+        for col_records in self._records.values():
+            for record in col_records.values():
+                processed += 1
+                reward = record.get("reward_score", 0.0)
+                if reward == 0.0:
+                    continue
+                is_protected = record.get("protected", False)
+                rate = protected_rate if is_protected else decay_rate
+                # Access-driven protection
+                accessed_at = record.get("accessed_at")
+                if accessed_at:
+                    try:
+                        accessed_dt = datetime.fromisoformat(
+                            accessed_at.replace("Z", "+00:00")
+                        )
+                        days_since = max(0, (now - accessed_dt).days)
+                        access_bonus = 0.04 * _math.exp(-days_since / 30)
+                        rate = min(1.0, rate + access_bonus)
+                    except (ValueError, TypeError):
+                        pass
+                new_reward = reward * rate
+                if abs(new_reward) < threshold:
+                    new_reward = 0.0
+                    below += 1
+                record["reward_score"] = new_reward
+                decayed += 1
+
+        class _R:
+            def __init__(self):
+                self.records_processed = processed
+                self.records_decayed = decayed
+                self.records_below_threshold = below
+                self.records_archived = 0
+
+        return _R()
+
     async def set_protected(self, collection: str, id: str, protected: bool = True) -> None:
-        key = f"{collection}::{id}"
-        if key in self._rl_profiles:
-            self._rl_profiles[key]["is_protected"] = protected
+        self._ensure(collection)
+        record = self._records[collection].get(id)
+        if record is not None:
+            record["protected"] = protected
 
     # ---- Internal helpers ----
 
