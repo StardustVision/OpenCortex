@@ -66,8 +66,8 @@ function _migrateLegacyConfig(legacyData) {
   if (legacyData.tenant_id) mcp.tenant_id = legacyData.tenant_id;
   if (legacyData.user_id) mcp.user_id = legacyData.user_id;
   if (legacyData.mcp_mode) mcp.mode = legacyData.mcp_mode;
-  // Port from various sources
-  const port = legacyData.mcp_port || legacyData.http_server_port;
+  // Port — only use http_server_port (mcp_port refers to the MCP server, not the HTTP API)
+  const port = legacyData.http_server_port;
   if (port) mcp.local.http_port = port;
   // Remote URL
   if (legacyData.http_server_host || legacyData.http_server_port) {
