@@ -21,7 +21,6 @@ class MemoryStoreRequest(BaseModel):
     overview: str = ""
     category: str = ""
     context_type: str = "memory"
-    uri: Optional[str] = None
     meta: Optional[Dict[str, Any]] = None
 
 

@@ -19,7 +19,6 @@ const TOOLS = {
       content:      { type: 'string',  description: 'Full content to store', default: '' },
       category:     { type: 'string',  description: 'Category for organization', default: '' },
       context_type: { type: 'string',  description: 'Type: memory, resource, or skill', default: 'memory' },
-      uri:          { type: 'string',  description: 'Optional URI identifier' },
       meta:         { type: 'object',  description: 'Optional metadata key-value pairs' },
     }],
   memory_search: ['POST', '/api/v1/memory/search',
