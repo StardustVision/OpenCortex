@@ -24,9 +24,9 @@ class RerankConfig:
     threshold: float = 0.0
     provider: str = ""  # "volcengine" | "jina" | "cohere" | "llm"
     fusion_beta: float = 0.7  # rerank vs retrieval score weight (0-1)
-    max_candidates: int = 5   # max docs to send for rerank (cost control)
+    max_candidates: int = 30  # max docs to send for rerank (cost control)
     use_llm_fallback: bool = True  # fallback to LLM when no API
-    score_gap_threshold: float = 0.15  # skip rerank if top1-top2 gap > this
+    score_gap_threshold: float = 0.05  # skip rerank if top1-top2 gap > this
 
     def is_available(self) -> bool:
         """Return True if reranking can be performed (API or LLM fallback)."""

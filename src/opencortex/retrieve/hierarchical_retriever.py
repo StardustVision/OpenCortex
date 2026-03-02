@@ -155,6 +155,7 @@ class HierarchicalRetriever:
         score_threshold: Optional[float] = None,
         score_gte: bool = False,
         metadata_filter: Optional[Dict[str, Any]] = None,
+        lexical_boost: float = 0.3,
     ) -> QueryResult:
         """
         Execute hierarchical retrieval.
@@ -258,34 +259,78 @@ class HierarchicalRetriever:
         starting_points = await self._merge_starting_points(query.query, root_uris, global_results)
 
         # Step 4: Search (frontier batching or recursive fallback)
-        if self._use_frontier_batching:
-            candidates = await self._frontier_search(
-                query=query.query,
+        # When query_vector is available, run dense + lexical in parallel for RRF fusion
+        if query_vector is not None:
+            if self._use_frontier_batching:
+                dense_coro = self._frontier_search(
+                    query=query.query,
+                    collection=collection,
+                    query_vector=query_vector,
+                    sparse_query_vector=sparse_query_vector,
+                    starting_points=starting_points,
+                    limit=limit,
+                    mode=mode,
+                    threshold=effective_threshold,
+                    score_gte=score_gte,
+                    metadata_filter=final_metadata_filter,
+                    text_query=text_query,
+                )
+            else:
+                dense_coro = self._recursive_search(
+                    query=query.query,
+                    collection=collection,
+                    query_vector=query_vector,
+                    sparse_query_vector=sparse_query_vector,
+                    starting_points=starting_points,
+                    limit=limit,
+                    mode=mode,
+                    threshold=effective_threshold,
+                    score_gte=score_gte,
+                    metadata_filter=final_metadata_filter,
+                    text_query=text_query,
+                )
+            lexical_coro = self._lexical_search(
                 collection=collection,
-                query_vector=query_vector,
-                sparse_query_vector=sparse_query_vector,
-                starting_points=starting_points,
-                limit=limit,
-                mode=mode,
-                threshold=effective_threshold,
-                score_gte=score_gte,
-                metadata_filter=final_metadata_filter,
                 text_query=text_query,
+                filter=final_metadata_filter,
+                limit=limit,
             )
+            dense_candidates, lexical_candidates = await asyncio.gather(
+                dense_coro, lexical_coro,
+            )
+            candidates = self._merge_rrf(
+                dense_candidates, lexical_candidates, lexical_weight=lexical_boost,
+            )[:limit]
         else:
-            candidates = await self._recursive_search(
-                query=query.query,
-                collection=collection,
-                query_vector=query_vector,
-                sparse_query_vector=sparse_query_vector,
-                starting_points=starting_points,
-                limit=limit,
-                mode=mode,
-                threshold=effective_threshold,
-                score_gte=score_gte,
-                metadata_filter=final_metadata_filter,
-                text_query=text_query,
-            )
+            # Embedding failed — adapter.search() already uses lexical fallback
+            if self._use_frontier_batching:
+                candidates = await self._frontier_search(
+                    query=query.query,
+                    collection=collection,
+                    query_vector=query_vector,
+                    sparse_query_vector=sparse_query_vector,
+                    starting_points=starting_points,
+                    limit=limit,
+                    mode=mode,
+                    threshold=effective_threshold,
+                    score_gte=score_gte,
+                    metadata_filter=final_metadata_filter,
+                    text_query=text_query,
+                )
+            else:
+                candidates = await self._recursive_search(
+                    query=query.query,
+                    collection=collection,
+                    query_vector=query_vector,
+                    sparse_query_vector=sparse_query_vector,
+                    starting_points=starting_points,
+                    limit=limit,
+                    mode=mode,
+                    threshold=effective_threshold,
+                    score_gte=score_gte,
+                    metadata_filter=final_metadata_filter,
+                    text_query=text_query,
+                )
 
         # Step 6: Convert results
         matched = await self._convert_to_matched_contexts(
@@ -803,6 +848,96 @@ class HierarchicalRetriever:
             top_m.sort(key=lambda x: x.get("_final_score", 0.0), reverse=True)
 
         return top_m[:limit]
+
+    async def _lexical_search(
+        self,
+        collection: str,
+        text_query: str,
+        filter: Optional[Dict[str, Any]] = None,
+        limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """Run standalone lexical search if storage supports it.
+
+        Uses hasattr detection (same pattern as RL methods) so InMemoryStorage
+        in tests gracefully returns empty results.
+        """
+        if not hasattr(self.storage, "search_lexical"):
+            return []
+        try:
+            results = await self.storage.search_lexical(
+                collection=collection,
+                text_query=text_query,
+                filter=filter,
+                limit=limit,
+            )
+            # Apply RL reward boost
+            for r in results:
+                reward = r.get("reward_score", 0.0)
+                if reward != 0 and self._rl_weight:
+                    r["_score"] = r.get("_score", 0.0) + self._rl_weight * reward
+            return results
+        except Exception as exc:
+            logger.warning("[HierarchicalRetriever] Lexical search failed: %s", exc)
+            return []
+
+    @staticmethod
+    def _merge_rrf(
+        dense_results: List[Dict[str, Any]],
+        lexical_results: List[Dict[str, Any]],
+        lexical_weight: float = 0.3,
+        k: int = 60,
+    ) -> List[Dict[str, Any]]:
+        """Merge dense and lexical results using weighted Reciprocal Rank Fusion.
+
+        Formula:
+            RRF(d) = (1-b) * 1/(k + rank_dense(d)) + b * 1/(k + rank_lexical(d))
+
+        Where b = lexical_weight, k = 60.
+        Documents not present in a path get rank = len(results) (worst rank).
+        """
+        if not lexical_results:
+            return dense_results
+
+        # Build rank maps (0-indexed)
+        dense_rank = {}
+        dense_by_uri = {}
+        for i, r in enumerate(dense_results):
+            uri = r.get("uri", "")
+            if uri:
+                dense_rank[uri] = i
+                dense_by_uri[uri] = r
+
+        lexical_rank = {}
+        lexical_by_uri = {}
+        for i, r in enumerate(lexical_results):
+            uri = r.get("uri", "")
+            if uri:
+                lexical_rank[uri] = i
+                lexical_by_uri[uri] = r
+
+        all_uris = set(dense_rank.keys()) | set(lexical_rank.keys())
+        dense_default = len(dense_results)
+        lexical_default = len(lexical_results)
+
+        b = lexical_weight
+        scored: List[tuple] = []  # (rrf_score, uri)
+        for uri in all_uris:
+            dr = dense_rank.get(uri, dense_default)
+            lr = lexical_rank.get(uri, lexical_default)
+            rrf = (1 - b) / (k + dr) + b / (k + lr)
+            scored.append((rrf, uri))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        merged = []
+        for rrf_score, uri in scored:
+            record = dense_by_uri.get(uri) or lexical_by_uri.get(uri)
+            if record:
+                record = dict(record)  # avoid mutating original
+                record["_final_score"] = rrf_score
+                merged.append(record)
+
+        return merged
 
     async def _convert_to_matched_contexts(
         self,

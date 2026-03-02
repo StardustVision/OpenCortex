@@ -214,6 +214,7 @@ def _register_routes(app: FastAPI) -> None:
                 "detail_level": result.search_intent.detail_level.value,
                 "time_scope": result.search_intent.time_scope,
                 "should_recall": result.search_intent.should_recall,
+                "lexical_boost": result.search_intent.lexical_boost,
             }
         return resp
 

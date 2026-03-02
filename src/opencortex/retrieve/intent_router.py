@@ -8,6 +8,7 @@ Layer 3: Memory Trigger (Agent reflection intent, output alongside LLM)
 """
 
 import logging
+import re
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from opencortex.retrieve.types import (
@@ -21,6 +22,17 @@ from opencortex.utils.json_parse import parse_json_from_response as _parse_json_
 logger = logging.getLogger(__name__)
 
 LLMCompletionCallable = Callable[[str], Awaitable[str]]
+
+# =========================================================================
+# Hard keyword detection patterns
+# =========================================================================
+
+_CAMEL_CASE_RE = re.compile(r"[a-z]+[A-Z][a-zA-Z]*")            # TrafficRule, OutboundType
+_ALL_CAPS_RE = re.compile(r"\b[A-Z]{2,}\b")                       # TUN, DNS, SCIM
+_PATH_SYMBOL_RE = re.compile(r"[a-zA-Z0-9]+[_./-][a-zA-Z0-9]+")  # traffic_rule.proto
+
+_HARD_KEYWORD_LEXICAL_BOOST = 0.55
+_DEFAULT_LEXICAL_BOOST = 0.3
 
 # =========================================================================
 # Keyword rule tables
@@ -123,6 +135,19 @@ class IntentRouter:
     def __init__(self, llm_completion: Optional[LLMCompletionCallable] = None):
         self._llm = llm_completion
 
+    @staticmethod
+    def _detect_hard_keywords(query: str) -> bool:
+        """Detect hard keywords (CamelCase, ALL_CAPS, path/symbol patterns).
+
+        These patterns indicate technical identifiers that benefit from
+        exact lexical matching over semantic similarity.
+        """
+        return bool(
+            _CAMEL_CASE_RE.search(query)
+            or _ALL_CAPS_RE.search(query)
+            or _PATH_SYMBOL_RE.search(query)
+        )
+
     async def route(
         self,
         query: str,
@@ -187,6 +212,13 @@ class IntentRouter:
                 intent_type = itype
                 break
 
+        # Detect hard keywords for lexical boost
+        lexical_boost = (
+            _HARD_KEYWORD_LEXICAL_BOOST
+            if self._detect_hard_keywords(query_stripped)
+            else _DEFAULT_LEXICAL_BOOST
+        )
+
         defaults = _INTENT_DEFAULTS.get(intent_type, _INTENT_DEFAULTS["recent_recall"])
         return SearchIntent(
             intent_type=intent_type,
@@ -194,6 +226,7 @@ class IntentRouter:
             detail_level=DetailLevel(defaults["detail_level"]),
             time_scope=time_scope,
             need_rerank=defaults["need_rerank"],
+            lexical_boost=lexical_boost,
         )
 
     async def _llm_classify(
@@ -244,7 +277,11 @@ class IntentRouter:
         )
 
     def _merge(self, keyword_intent: SearchIntent, llm_intent: SearchIntent) -> SearchIntent:
-        """Merge LLM result over keyword result (LLM takes priority)."""
+        """Merge LLM result over keyword result (LLM takes priority).
+
+        lexical_boost uses max(keyword, llm) to ensure regex-detected hard
+        keywords are never downgraded by LLM classification.
+        """
         return SearchIntent(
             intent_type=llm_intent.intent_type,
             top_k=llm_intent.top_k,
@@ -253,6 +290,7 @@ class IntentRouter:
             need_rerank=llm_intent.need_rerank,
             should_recall=llm_intent.should_recall,
             trigger_categories=llm_intent.trigger_categories,
+            lexical_boost=max(keyword_intent.lexical_boost, llm_intent.lexical_boost),
         )
 
     def _build_queries(

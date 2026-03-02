@@ -300,6 +300,7 @@ class SearchIntent:
     should_recall: bool = True
     trigger_categories: List[str] = field(default_factory=list)
     queries: List[TypedQuery] = field(default_factory=list)
+    lexical_boost: float = 0.3  # RRF weight for lexical path (0.55 for hard keywords)
 
 
 @dataclass
@@ -404,6 +405,7 @@ class FindResult:
                 "need_rerank": self.search_intent.need_rerank,
                 "should_recall": self.search_intent.should_recall,
                 "trigger_categories": self.search_intent.trigger_categories,
+                "lexical_boost": self.search_intent.lexical_boost,
             }
 
         return result

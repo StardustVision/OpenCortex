@@ -482,6 +482,61 @@ class QdrantStorageAdapter(VikingDBInterface):
 
         return [self._from_scored_point(p) for p in points]
 
+    async def search_lexical(
+        self,
+        collection: str,
+        text_query: str,
+        filter: Optional[Dict[str, Any]] = None,
+        limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """Standalone lexical search via MatchText on abstract/overview.
+
+        Unlike the lexical fallback inside search() (which only triggers when
+        query_vector is None), this method always executes and is designed to
+        run in parallel with dense search for RRF fusion.
+
+        Returns dicts with '_score' set from term-overlap scoring.
+        """
+        await self._assert_collection(collection)
+        client = await self._ensure_client()
+        qdrant_filter = translate_filter(filter) if filter else None
+
+        text_conditions = [
+            models.FieldCondition(
+                key="abstract",
+                match=models.MatchText(text=text_query),
+            ),
+            models.FieldCondition(
+                key="overview",
+                match=models.MatchText(text=text_query),
+            ),
+        ]
+        combined_filter = models.Filter(
+            must=[qdrant_filter] if qdrant_filter else [],
+            should=text_conditions,
+        )
+        oversample = limit * 3
+        points_list, _ = await client.scroll(
+            collection_name=collection,
+            scroll_filter=combined_filter,
+            limit=oversample,
+            with_payload=True,
+            with_vectors=False,
+        )
+
+        results = []
+        for p in points_list:
+            record = self._from_point(p)
+            record["_score"] = _compute_text_score(
+                text_query,
+                record.get("abstract", ""),
+                record.get("overview", ""),
+            )
+            results.append(record)
+
+        results.sort(key=lambda r: r.get("_score", 0.0), reverse=True)
+        return results[:limit]
+
     async def filter(
         self,
         collection: str,

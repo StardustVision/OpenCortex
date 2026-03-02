@@ -839,6 +839,7 @@ class MemoryOrchestrator:
                 limit=effective_limit,
                 score_threshold=score_threshold,
                 metadata_filter=metadata_filter,
+                lexical_boost=intent.lexical_boost,
             )
             for tq in typed_queries
         ]
