@@ -12,6 +12,7 @@ Core subsystems:
 - **ACEngine** — self-learning loop (RuleExtractor → Skillbook)
 - **SessionManager** — session lifecycle with LLM memory extraction
 - **QdrantStorageAdapter** — embedded Qdrant with RL fields (reward, decay, protect)
+- **TenantIdentityMiddleware** — per-request tenant/user identity via HTTP headers
 
 ## Tech Stack
 
@@ -27,7 +28,7 @@ Core subsystems:
 
 ```
 src/opencortex/
-  config.py                      # CortexConfig dataclass + env overrides
+  config.py                      # CortexConfig dataclass + env overrides (no tenant/user)
   orchestrator.py                # MemoryOrchestrator — top-level API
   http/
     server.py                    # FastAPI app + REST routes + tenant middleware
@@ -86,6 +87,7 @@ tests/
 
 - All storage operations go through `VikingDBInterface` — every method is `async`
 - URI format: `opencortex://{team}/user/{uid}/{type}/{category}/{node_id}`
+- **Tenant/user identity**: determined per-request via `X-Tenant-ID` / `X-User-ID` HTTP headers (default: `"default"`). Server-side `CortexConfig` does NOT contain tenant/user fields. Middleware sets contextvars → `get_effective_identity()` reads them anywhere downstream.
 - Config loads from `server.json` (project-local) or `~/.opencortex/server.json` (global)
 - RL methods (`update_reward`, `get_profile`, `apply_decay`, `set_protected`) are not in the interface — detected via `hasattr` on the adapter
 - Package management uses `uv` (not pip)
