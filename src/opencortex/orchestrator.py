@@ -583,7 +583,8 @@ class MemoryOrchestrator:
 
         # Build URI if not provided
         if not uri:
-            uri = self._auto_uri(context_type or "memory", category)
+            uri = self._auto_uri(context_type or "memory", category, abstract=abstract)
+            uri = await self._resolve_unique_uri(uri)
 
         # Build parent URI if not provided
         if not parent_uri:
@@ -2023,8 +2024,11 @@ class MemoryOrchestrator:
     # Valid user memory categories
     _USER_MEMORY_CATEGORIES = {"profile", "preferences", "entities", "events"}
 
-    def _auto_uri(self, context_type: str, category: str) -> str:
-        """Generate a URI based on context type and category.
+    def _auto_uri(self, context_type: str, category: str, abstract: str = "") -> str:
+        """Generate a URI based on context type, category, and abstract text.
+
+        Uses semantic node names (deterministic) instead of random UUIDs
+        when an abstract is provided. Falls back to uuid4 hex otherwise.
 
         Routing table:
           memory  + category  -> user/{uid}/memories/{category}/{nid}
@@ -2036,34 +2040,58 @@ class MemoryOrchestrator:
           resource+ category  -> resources/{project}/{category}/{nid}
           staging + *         -> user/{uid}/staging/{nid}
         """
+        from opencortex.utils.semantic_name import semantic_node_name
+
         tid, uid = get_effective_identity()
-        node_id = uuid4().hex[:12]
+        node_name = semantic_node_name(abstract) if abstract else uuid4().hex[:12]
 
         if context_type == "memory":
             cat = category if category in self._USER_MEMORY_CATEGORIES else "events"
-            return CortexURI.build_private(tid, uid, "memories", cat, node_id)
+            return CortexURI.build_private(tid, uid, "memories", cat, node_name)
 
         elif context_type == "case":
-            return CortexURI.build_shared(tid, "shared", "cases", node_id)
+            return CortexURI.build_shared(tid, "shared", "cases", node_name)
 
         elif context_type == "pattern":
-            return CortexURI.build_shared(tid, "shared", "patterns", node_id)
+            return CortexURI.build_shared(tid, "shared", "patterns", node_name)
 
         elif context_type == "skill":
             section = category or "general"
-            return CortexURI.build_shared(tid, "shared", "skills", section, node_id)
+            return CortexURI.build_shared(tid, "shared", "skills", section, node_name)
 
         elif context_type == "resource":
             project = get_effective_project_id()  # e.g. "OpenCortex" or "public"
             if category:
-                return CortexURI.build_shared(tid, "resources", project, category, node_id)
-            return CortexURI.build_shared(tid, "resources", project, node_id)
+                return CortexURI.build_shared(tid, "resources", project, category, node_name)
+            return CortexURI.build_shared(tid, "resources", project, node_name)
 
         elif context_type == "staging":
-            return CortexURI.build_private(tid, uid, "staging", node_id)
+            return CortexURI.build_private(tid, uid, "staging", node_name)
 
         # Fallback: treat as user memory event
-        return CortexURI.build_private(tid, uid, "memories", "events", node_id)
+        return CortexURI.build_private(tid, uid, "memories", "events", node_name)
+
+    async def _uri_exists(self, uri: str) -> bool:
+        """Check if a URI already exists in the context collection."""
+        try:
+            results = await self._storage.filter(
+                _CONTEXT_COLLECTION,
+                {"op": "must", "field": "uri", "conds": [uri]},
+                limit=1,
+            )
+            return len(results) > 0
+        except Exception:
+            return False
+
+    async def _resolve_unique_uri(self, uri: str, max_attempts: int = 100) -> str:
+        """Ensure URI is unique, appending _1, _2, ... if needed."""
+        if not await self._uri_exists(uri):
+            return uri
+        for i in range(1, max_attempts + 1):
+            candidate = f"{uri}_{i}"
+            if not await self._uri_exists(candidate):
+                return candidate
+        raise ValueError(f"URI conflict unresolved after {max_attempts} attempts: {uri}")
 
     @staticmethod
     def _extract_category_from_uri(uri: str) -> str:
