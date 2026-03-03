@@ -107,7 +107,7 @@ class MemoryOrchestrator:
         self._analyzer: Optional[IntentAnalyzer] = None
         self._user: Optional[UserIdentifier] = None
         self._session_manager = None
-        self._rule_extractor: Optional[RuleExtractor] = RuleExtractor()
+        self._rule_extractor: Optional[RuleExtractor] = RuleExtractor() if self._config.ace_enabled else None
         self._initialized = False
 
     # =========================================================================
@@ -188,7 +188,7 @@ class MemoryOrchestrator:
         )
 
         # 7. Hooks — ACE (Agentic Context Engine) self-learning
-        if self._hooks is None:
+        if self._hooks is None and self._config.ace_enabled:
             from opencortex.ace.engine import ACEngine
 
             self._hooks = ACEngine(

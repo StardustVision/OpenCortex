@@ -74,6 +74,8 @@ class CortexConfig:
     # OpenCortex HTTP Server (FastAPI)
     http_server_host: str = "127.0.0.1"
     http_server_port: int = 8921
+    # ACE (Agentic Context Engine) self-learning
+    ace_enabled: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
