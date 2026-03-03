@@ -23,17 +23,6 @@
         ]
       }
     ],
-    "BeforeAgent": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node -e \"const p=process.argv; const d=require('fs').existsSync(p[1]+'/hooks/run.mjs') ? p[1] : p[2]; p.splice(1,2,'run.mjs'); import(require('url').pathToFileURL(d+'/hooks/run.mjs').href)\" \"${CLAUDE_PLUGIN_ROOT}\" \"${extensionPath}\" user-prompt-submit",
-            "timeout": 15
-          }
-        ]
-      }
-    ],
     "Stop": [
       {
         "hooks": [
