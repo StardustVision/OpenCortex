@@ -1,0 +1,46 @@
+{
+  "name": "opencortex-memory",
+  "version": "0.3.4",
+  "description": "OpenCortex MCP server and CLI for memory tools, hooks, and session intelligence.",
+  "type": "module",
+  "license": "MIT",
+  "author": "StardustVision",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/StardustVision/OpenCortex.git",
+    "directory": "plugins/opencortex-memory"
+  },
+  "homepage": "https://github.com/StardustVision/OpenCortex",
+  "bugs": {
+    "url": "https://github.com/StardustVision/OpenCortex/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "codex",
+    "claude",
+    "gemini",
+    "memory"
+  ],
+  "bin": {
+    "opencortex-memory": "lib/mcp-server.mjs",
+    "opencortex-mcp": "lib/mcp-server.mjs",
+    "opencortex-cli": "bin/oc-cli.mjs"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "hooks",
+    ".claude-plugin",
+    ".mcp.json",
+    "gemini-extension.json",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "check": "node --check ./lib/mcp-server.mjs && node --check ./bin/oc-cli.mjs",
+    "prepublishOnly": "npm run check"
+  }
+}
