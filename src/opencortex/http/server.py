@@ -43,6 +43,7 @@ from opencortex.http.models import (
     MemoryStoreRequest,
     SessionBeginRequest,
     SessionEndRequest,
+    SessionExtractTurnRequest,
     SessionMessageRequest,
     SkillDemoteRequest,
     SkillReviewRequest,
@@ -389,6 +390,13 @@ def _register_routes(app: FastAPI) -> None:
     @app.post("/api/v1/session/end")
     async def session_end(req: SessionEndRequest) -> Dict[str, Any]:
         return await _orchestrator.session_end(
+            session_id=req.session_id,
+            quality_score=req.quality_score,
+        )
+
+    @app.post("/api/v1/session/extract_turn")
+    async def session_extract_turn(req: SessionExtractTurnRequest) -> Dict[str, Any]:
+        return await _orchestrator.session_extract_turn(
             session_id=req.session_id,
             quality_score=req.quality_score,
         )

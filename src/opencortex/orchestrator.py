@@ -1960,6 +1960,29 @@ class MemoryOrchestrator:
             "total_extracted": len(result.memories),
         }
 
+    async def session_extract_turn(
+        self,
+        session_id: str,
+        quality_score: float = 0.5,
+    ) -> Dict[str, Any]:
+        """Extract memories from the latest turn without ending the session."""
+        self._ensure_init()
+        if not self._session_manager:
+            return {"status": "error", "error": "Session manager not initialized"}
+
+        result = await self._session_manager.extract_turn(
+            session_id=session_id,
+            quality_score=quality_score,
+        )
+        return {
+            "status": "ok",
+            "session_id": session_id,
+            "stored": result.stored_count,
+            "merged": result.merged_count,
+            "skipped": result.skipped_count,
+            "total_extracted": len(result.memories),
+        }
+
     # =========================================================================
     # Lifecycle
     # =========================================================================

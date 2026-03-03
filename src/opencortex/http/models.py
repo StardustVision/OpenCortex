@@ -137,6 +137,11 @@ class SessionEndRequest(BaseModel):
     quality_score: float = 0.5
 
 
+class SessionExtractTurnRequest(BaseModel):
+    session_id: str
+    quality_score: float = 0.5
+
+
 # =========================================================================
 # Integration
 # =========================================================================
