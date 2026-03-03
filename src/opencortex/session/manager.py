@@ -198,6 +198,57 @@ class SessionManager:
         )
         return result
 
+    async def extract_turn(
+        self,
+        session_id: str,
+        quality_score: float = 0.5,
+    ) -> ExtractionResult:
+        """Extract memories from the latest turn without ending the session.
+
+        Takes the last 2 messages (1 user + 1 assistant) and runs LLM extraction.
+        Does NOT remove the session — it continues accumulating messages.
+        """
+        ctx = self._sessions.get(session_id)
+        if not ctx:
+            logger.warning("[SessionManager] extract_turn: session not found: %s", session_id)
+            return ExtractionResult(session_id=session_id)
+
+        result = ExtractionResult(session_id=session_id, quality_score=quality_score)
+
+        if not self._extractor:
+            return result
+
+        # Take last 2 messages (the latest turn)
+        recent = ctx.messages[-2:] if len(ctx.messages) >= 2 else ctx.messages[:]
+        if not recent:
+            return result
+
+        extracted = await self._extractor.extract(
+            messages=recent,
+            quality_score=quality_score,
+        )
+        result.memories = extracted
+
+        for memory in extracted:
+            if memory.confidence < _MIN_CONFIDENCE:
+                result.skipped_count += 1
+                continue
+            stored = await self._store_memory(memory)
+            if stored == "merged":
+                result.merged_count += 1
+            elif stored == "skipped":
+                result.skipped_count += 1
+            elif stored == "created":
+                result.stored_count += 1
+            else:
+                result.skipped_count += 1
+
+        logger.info(
+            "[SessionManager] extract_turn %s: stored=%d, merged=%d, skipped=%d",
+            session_id, result.stored_count, result.merged_count, result.skipped_count,
+        )
+        return result
+
     async def _store_memory(self, memory: ExtractedMemory) -> str:
         """Store a memory via store_fn and return the dedup_action.
 
