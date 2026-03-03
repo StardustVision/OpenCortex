@@ -217,13 +217,6 @@ class MemoryOrchestrator:
         except Exception as exc:
             logger.warning("[Orchestrator] Migration skipped: %s", exc)
 
-        # 7d. Run v0.3.2 overview-first migration (idempotent)
-        try:
-            from opencortex.migration.v032_overview_first import migrate_overview_first
-            await migrate_overview_first(self)
-        except Exception as exc:
-            logger.warning("[Orchestrator] v0.3.2 migration skipped: %s", exc)
-
         # 8. Session manager for context self-iteration
         self._session_manager = self._create_session_manager()
 
