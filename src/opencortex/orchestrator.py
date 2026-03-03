@@ -547,6 +547,8 @@ class MemoryOrchestrator:
         meta: Optional[Dict[str, Any]] = None,
         related_uri: Optional[List[str]] = None,
         session_id: Optional[str] = None,
+        dedup: bool = True,
+        dedup_threshold: float = 0.82,
     ) -> Context:
         """
         Add a new context (memory, resource, or skill).
@@ -566,9 +568,16 @@ class MemoryOrchestrator:
             meta: Additional metadata dict.
             related_uri: List of related context URIs.
             session_id: Session identifier.
+            dedup: If True, check for semantically similar records before
+                inserting. Mergeable categories merge content; non-mergeable
+                categories skip silently. Set False for bulk import.
+            dedup_threshold: Minimum similarity score to consider a duplicate
+                (default 0.82).
 
         Returns:
-            The created Context object.
+            The created Context object.  ``meta["dedup_action"]`` indicates
+            what happened: ``"created"`` (new), ``"merged"``, or
+            ``"skipped"``.
         """
         self._ensure_init()
 
@@ -614,12 +623,46 @@ class MemoryOrchestrator:
         )
 
         # Embed (offload sync embedder to thread so we don't block the loop)
+        result = None
         if self._embedder:
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 None, self._embedder.embed, ctx.get_vectorization_text()
             )
             ctx.vector = result.dense_vector
+
+        # --- Write-time semantic dedup ---
+        effective_category = category or self._extract_category_from_uri(uri)
+        if dedup and ctx.vector and is_leaf:
+            dup = await self._check_duplicate(
+                vector=ctx.vector,
+                category=effective_category,
+                context_type=context_type or "memory",
+                threshold=dedup_threshold,
+                tid=tid,
+                uid=uid,
+            )
+            if dup:
+                existing_uri, existing_score = dup
+                if effective_category in MERGEABLE_CATEGORIES:
+                    await self._merge_into(existing_uri, abstract, content)
+                    logger.info(
+                        "[MemoryOrchestrator] Dedup merged into %s (score=%.3f)",
+                        existing_uri, existing_score,
+                    )
+                    ctx.uri = existing_uri
+                    ctx.meta["dedup_action"] = "merged"
+                    ctx.meta["dedup_score"] = round(existing_score, 4)
+                    return ctx
+                else:
+                    logger.info(
+                        "[MemoryOrchestrator] Dedup skipped, duplicate of %s (score=%.3f)",
+                        existing_uri, existing_score,
+                    )
+                    ctx.uri = existing_uri
+                    ctx.meta["dedup_action"] = "skipped"
+                    ctx.meta["dedup_score"] = round(existing_score, 4)
+                    return ctx
 
         # Ensure parent directory records exist in vector DB
         if is_leaf and parent_uri:
@@ -634,7 +677,6 @@ class MemoryOrchestrator:
 
         # Populate scope/category/source fields for path-redesign
         inferred_scope = "private" if "/user/" in uri else "shared"
-        effective_category = category or self._extract_category_from_uri(uri)
         record["scope"] = inferred_scope
         record["category"] = effective_category
         record["source_user_id"] = uid
@@ -665,6 +707,7 @@ class MemoryOrchestrator:
         # if self._rule_extractor and self._hooks and content:
         #     asyncio.create_task(self._try_extract_skills(abstract, content, tid, uid))
 
+        ctx.meta["dedup_action"] = "created"
         logger.info("[MemoryOrchestrator] Added context: %s", uri)
         return ctx
 
@@ -682,6 +725,90 @@ class MemoryOrchestrator:
     #                                        tenant_id=tenant_id, user_id=user_id)
     #     except Exception:
     #         logger.debug("[Orchestrator] Skill extraction failed silently")
+
+    # ------------------------------------------------------------------
+    # Write-time dedup helpers
+    # ------------------------------------------------------------------
+
+    async def _check_duplicate(
+        self,
+        vector: list,
+        category: str,
+        context_type: str,
+        threshold: float,
+        tid: str,
+        uid: str,
+    ) -> Optional[tuple]:
+        """Return ``(existing_uri, score)`` if a duplicate is found, else None."""
+        try:
+            # Build scope-aware filter: same tenant, same category, leaf only
+            conds: list = [
+                {"op": "must", "field": "source_tenant_id", "conds": [tid]},
+                {"op": "must", "field": "is_leaf", "conds": [True]},
+            ]
+            if category:
+                conds.append(
+                    {"op": "must", "field": "category", "conds": [category]}
+                )
+            # Scope: shared OR (private AND own user)
+            conds.append(
+                {
+                    "op": "or",
+                    "conds": [
+                        {"op": "must", "field": "scope", "conds": ["shared"]},
+                        {
+                            "op": "and",
+                            "conds": [
+                                {"op": "must", "field": "scope", "conds": ["private"]},
+                                {"op": "must", "field": "source_user_id", "conds": [uid]},
+                            ],
+                        },
+                    ],
+                }
+            )
+            dedup_filter = {"op": "and", "conds": conds}
+
+            results = await self._storage.search(
+                _CONTEXT_COLLECTION,
+                query_vector=vector,
+                filter=dedup_filter,
+                limit=1,
+                output_fields=["uri", "abstract"],
+            )
+            if results:
+                score = results[0].get("_score", results[0].get("score", 0.0))
+                if score >= threshold:
+                    return (results[0]["uri"], score)
+        except Exception as exc:
+            logger.debug("[MemoryOrchestrator] Dedup check failed: %s", exc)
+        return None
+
+    async def _merge_into(
+        self, existing_uri: str, new_abstract: str, new_content: str
+    ) -> None:
+        """Merge new content into an existing record and reinforce it."""
+        records = await self._storage.filter(
+            _CONTEXT_COLLECTION,
+            {"op": "must", "field": "uri", "conds": [existing_uri]},
+            limit=1,
+            output_fields=["abstract", "overview"],
+        )
+        existing_content = ""
+        if records:
+            # Read existing L2 content from filesystem
+            try:
+                existing_content = await self._fs.read_file(existing_uri)
+            except Exception:
+                existing_content = ""
+
+        merged_content = (
+            f"{existing_content}\n---\n{new_content}".strip()
+            if new_content
+            else existing_content
+        )
+        await self.update(existing_uri, abstract=new_abstract, content=merged_content)
+        # Positive reinforcement for the merged record
+        await self.feedback(existing_uri, 0.5)
 
     async def update(
         self,

@@ -4,13 +4,15 @@ Session manager for OpenCortex.
 
 Manages session lifecycle (begin/add_message/end) and triggers
 memory extraction + deduplication at session end.
+
+Write-time dedup is now handled by ``orchestrator.add(dedup=True)``
+so the session manager no longer needs its own merge logic.
 """
 
 import logging
 import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
-from opencortex.retrieve.types import MERGEABLE_CATEGORIES
 from opencortex.session.extractor import MemoryExtractor
 from opencortex.session.types import (
     ExtractionResult,
@@ -23,8 +25,6 @@ logger = logging.getLogger(__name__)
 
 LLMCompletionCallable = Callable[[str], Awaitable[str]]
 
-# Semantic dedup threshold — memories with similarity >= this are merged
-_DEDUP_THRESHOLD = 0.85
 # Minimum confidence to store a memory
 _MIN_CONFIDENCE = 0.3
 
@@ -34,10 +34,10 @@ class SessionManager:
 
     Args:
         llm_completion: Async LLM callable for memory extraction.
-        store_fn: Async callable to store a memory (abstract, content, category, context_type, uri_hint).
-        search_fn: Async callable to search existing memories (query) -> list of dicts with 'uri', 'score'.
-        update_fn: Async callable to update an existing memory (uri, abstract, content).
-        feedback_fn: Async callable to send feedback (uri, reward).
+        store_fn: Async callable to store a memory.  Must accept keyword
+            args ``abstract``, ``content``, ``category``, ``context_type``
+            and return an object with a ``.meta`` dict containing
+            ``dedup_action`` (``"created"`` | ``"merged"`` | ``"skipped"``).
     """
 
     def __init__(
@@ -50,6 +50,8 @@ class SessionManager:
     ):
         self._llm_completion = llm_completion
         self._store_fn = store_fn
+        # search_fn, update_fn, feedback_fn kept for backward compat but
+        # no longer used — dedup is handled by orchestrator.add().
         self._search_fn = search_fn
         self._update_fn = update_fn
         self._feedback_fn = feedback_fn
@@ -129,8 +131,8 @@ class SessionManager:
 
         Performs:
         1. LLM-driven memory extraction from conversation
-        2. Semantic deduplication against existing memories
-        3. Store new / update existing memories via Viking FS
+        2. Store each memory via store_fn (which runs write-time dedup)
+        3. Classify result as created / merged / skipped from dedup_action
 
         Args:
             session_id: Session to end.
@@ -171,22 +173,21 @@ class SessionManager:
             session_id,
         )
 
-        # Step 2: Deduplicate and store
+        # Step 2: Store (dedup handled by orchestrator.add)
         for memory in extracted:
             if memory.confidence < _MIN_CONFIDENCE:
                 result.skipped_count += 1
                 continue
 
-            # Check for existing similar memories (dedup)
-            is_merged = await self._try_merge(memory)
-            if is_merged:
+            stored = await self._store_memory(memory)
+            if stored == "merged":
                 result.merged_count += 1
+            elif stored == "skipped":
+                result.skipped_count += 1
+            elif stored == "created":
+                result.stored_count += 1
             else:
-                stored = await self._store_memory(memory)
-                if stored:
-                    result.stored_count += 1
-                else:
-                    result.skipped_count += 1
+                result.skipped_count += 1
 
         logger.info(
             "[SessionManager] Session %s extraction done: stored=%d, merged=%d, skipped=%d",
@@ -197,59 +198,29 @@ class SessionManager:
         )
         return result
 
-    async def _try_merge(self, memory: ExtractedMemory) -> bool:
-        """Try to merge with an existing similar memory.
+    async def _store_memory(self, memory: ExtractedMemory) -> str:
+        """Store a memory via store_fn and return the dedup_action.
 
-        Only attempts merge for categories in MERGEABLE_CATEGORIES (profile,
-        preferences, entities, patterns).  Non-mergeable categories (events,
-        cases) always create new records — each occurrence is unique.
-
-        Returns True if merged, False if no similar memory found or category
-        is not mergeable.
+        Returns:
+            ``"created"``, ``"merged"``, ``"skipped"``, or ``""`` on error.
         """
-        if not self._search_fn:
-            return False
-
-        # Non-mergeable categories always create new records
-        if memory.category not in MERGEABLE_CATEGORIES:
-            return False
-
-        try:
-            results = await self._search_fn(memory.abstract)
-            for r in results:
-                score = r.get("score", 0.0)
-                if score >= _DEDUP_THRESHOLD:
-                    uri = r.get("uri", "")
-                    if uri and self._update_fn:
-                        # Merge: update existing memory with new content
-                        merged_content = f"{r.get('content', '')}\n---\n{memory.content}".strip()
-                        await self._update_fn(uri, memory.abstract, merged_content)
-                        # Reinforce the existing memory
-                        if self._feedback_fn:
-                            await self._feedback_fn(uri, 0.5)
-                        logger.debug("[SessionManager] Merged memory into %s", uri)
-                        return True
-        except Exception as exc:
-            logger.warning("[SessionManager] Dedup search failed: %s", exc)
-
-        return False
-
-    async def _store_memory(self, memory: ExtractedMemory) -> bool:
-        """Store a new extracted memory."""
         if not self._store_fn:
-            return False
+            return ""
 
         try:
-            await self._store_fn(
+            ctx = await self._store_fn(
                 abstract=memory.abstract,
                 content=memory.content,
                 category=memory.category,
                 context_type=memory.context_type,
             )
-            return True
+            # store_fn returns a Context with meta["dedup_action"]
+            if hasattr(ctx, "meta") and isinstance(ctx.meta, dict):
+                return ctx.meta.get("dedup_action", "created")
+            return "created"
         except Exception as exc:
             logger.warning("[SessionManager] Failed to store memory: %s", exc)
-            return False
+            return ""
 
     def get_session(self, session_id: str) -> Optional[SessionContext]:
         """Get an active session context."""

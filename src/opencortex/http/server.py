@@ -168,6 +168,7 @@ def _register_routes(app: FastAPI) -> None:
             category=req.category,
             context_type=req.context_type,
             meta=req.meta,
+            dedup=req.dedup,
         )
         resp: Dict[str, Any] = {
             "uri": result.uri,
@@ -177,6 +178,9 @@ def _register_routes(app: FastAPI) -> None:
         }
         if result.overview:
             resp["overview"] = result.overview
+        dedup_action = result.meta.get("dedup_action")
+        if dedup_action:
+            resp["dedup_action"] = dedup_action
         return resp
 
     @app.post("/api/v1/memory/search")

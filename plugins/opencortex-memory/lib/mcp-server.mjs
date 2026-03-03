@@ -20,6 +20,7 @@ const TOOLS = {
       category:     { type: 'string',  description: 'Category: profile, preferences, entities, events, cases, patterns, error_fixes, workflows, strategies, documents, plans', default: '' },
       context_type: { type: 'string',  description: 'Type: memory, resource, skill, case, pattern', default: 'memory' },
       meta:         { type: 'object',  description: 'Optional metadata key-value pairs' },
+      dedup:        { type: 'boolean', description: 'Check for semantic duplicates before storing (default true)', default: true },
     }],
   memory_search: ['POST', '/api/v1/memory/search',
     'Semantic search across stored memories, resources, and skills. Returns ranked results with relevance scores.', {

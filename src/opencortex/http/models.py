@@ -35,6 +35,11 @@ class MemoryStoreRequest(BaseModel):
         description="Type: memory, resource, skill, case, pattern",
     )
     meta: Optional[Dict[str, Any]] = None
+    dedup: bool = Field(
+        default=True,
+        description="Check for semantic duplicates before storing. "
+                    "Set False for bulk import.",
+    )
 
 
 class MemorySearchRequest(BaseModel):

@@ -1060,7 +1060,8 @@ class TestE2EPhase1(unittest.TestCase):
         """Complete pipeline: add -> search -> feedback -> decay -> verify."""
         orch = self._init_orch()
 
-        # Step 1: Add multiple memories
+        # Step 1: Add multiple memories (dedup=False because mock embedder
+        # produces near-identical 4D vectors for unrelated texts)
         memories = []
         for text in [
             "User prefers dark theme in VS Code",
@@ -1068,7 +1069,7 @@ class TestE2EPhase1(unittest.TestCase):
             "Team uses PostgreSQL for production",
             "Deploy process: CI/CD via GitHub Actions",
         ]:
-            ctx = self._run(orch.add(abstract=text, category="preferences"))
+            ctx = self._run(orch.add(abstract=text, category="preferences", dedup=False))
             memories.append(ctx)
 
         # Step 2: Add a resource
@@ -1077,6 +1078,7 @@ class TestE2EPhase1(unittest.TestCase):
                 abstract="Python style guide with PEP8 conventions",
                 context_type="resource",
                 category="standards",
+                dedup=False,
             )
         )
 
@@ -1499,7 +1501,7 @@ class TestMergeBehavior(unittest.TestCase):
     """Mergeable categories should update existing instead of creating duplicate."""
 
     def test_mergeable_categories_constant(self):
-        from opencortex.session.manager import MERGEABLE_CATEGORIES
+        from opencortex.retrieve.types import MERGEABLE_CATEGORIES
         self.assertIn("profile", MERGEABLE_CATEGORIES)
         self.assertIn("preferences", MERGEABLE_CATEGORIES)
         self.assertIn("entities", MERGEABLE_CATEGORIES)
