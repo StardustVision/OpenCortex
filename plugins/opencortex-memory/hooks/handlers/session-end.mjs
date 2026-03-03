@@ -5,21 +5,19 @@ export default async function sessionEnd(ctx) {
   const state = loadState();
   if (!state) return {};
 
-  // Post session summary (best-effort)
-  if (state.active && (state.ingested_turns || 0) > 0) {
+  let extractionMsg = '';
+
+  // Trigger full session extraction via SessionManager
+  if (state.active && state.session_id) {
     try {
-      await httpPost(`${state.http_url}/api/v1/memory/store`, {
-        abstract: `Session summary: ${state.ingested_turns} turns`,
-        content: `Session with ${state.ingested_turns} turns from ${state.started_at || 'unknown'} to ${Math.floor(Date.now() / 1000)}.`,
-        category: 'session_summary',
-        context_type: 'memory',
-        meta: {
-          source: 'hook:session-end',
-          ingested_turns: state.ingested_turns,
-          started_at: state.started_at,
-          ended_at: Math.floor(Date.now() / 1000),
-        },
-      }, 10000);
+      const result = await httpPost(`${state.http_url}/api/v1/session/end`, {
+        session_id: state.session_id,
+        quality_score: 0.5,
+      }, 30000);  // LLM analysis needs time
+
+      if (result && (result.stored_count > 0 || result.merged_count > 0)) {
+        extractionMsg = ` extraction: stored=${result.stored_count} merged=${result.merged_count} skipped=${result.skipped_count}`;
+      }
     } catch {
       // best-effort
     }
@@ -37,6 +35,6 @@ export default async function sessionEnd(ctx) {
 
   const turns = state.ingested_turns || 0;
   return {
-    systemMessage: `[opencortex-memory] session ended — turns=${turns}`,
+    systemMessage: `[opencortex-memory] session ended — turns=${turns}${extractionMsg}`,
   };
 }
