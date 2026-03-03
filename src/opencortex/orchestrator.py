@@ -107,7 +107,9 @@ class MemoryOrchestrator:
         self._analyzer: Optional[IntentAnalyzer] = None
         self._user: Optional[UserIdentifier] = None
         self._session_manager = None
-        self._rule_extractor: Optional[RuleExtractor] = RuleExtractor() if self._config.ace_enabled else None
+        # ACE skill extraction disabled — pure memory mode
+        # self._rule_extractor: Optional[RuleExtractor] = RuleExtractor()
+        self._rule_extractor: Optional[RuleExtractor] = None
         self._initialized = False
 
     # =========================================================================
@@ -607,33 +609,27 @@ class MemoryOrchestrator:
             is_leaf=is_leaf,
         )
 
-        # Async skill extraction (non-blocking) — capture request identity
-        # since contextvars won't propagate into the fire-and-forget task
-        if self._rule_extractor and self._hooks and content:
-            asyncio.create_task(self._try_extract_skills(abstract, content, tid, uid))
+        # ACE skill extraction disabled — pure memory mode
+        # if self._rule_extractor and self._hooks and content:
+        #     asyncio.create_task(self._try_extract_skills(abstract, content, tid, uid))
 
         logger.info("[MemoryOrchestrator] Added context: %s", uri)
         return ctx
 
-    async def _try_extract_skills(self, abstract: str, content: str,
-                                   tenant_id: str = "", user_id: str = "") -> None:
-        """Background skill extraction from stored content. Failures are silent."""
-        try:
-            skills = self._rule_extractor.extract(abstract, content)
-            for skill in skills:
-                # Dedup: check if a similar skill already exists
-                existing = await self._hooks.recall(skill.content, limit=1,
-                                                    tenant_id=tenant_id, user_id=user_id)
-                if existing and existing[0].get("score", 0) > 0.85:
-                    continue
-                await self._hooks.remember(skill.content, skill.section,
-                                           tenant_id=tenant_id, user_id=user_id)
-                logger.debug(
-                    "[Orchestrator] Extracted skill: %s → %s",
-                    skill.section, skill.content[:60],
-                )
-        except Exception:
-            logger.debug("[Orchestrator] Skill extraction failed silently")
+    # async def _try_extract_skills(self, abstract: str, content: str,
+    #                                tenant_id: str = "", user_id: str = "") -> None:
+    #     """Background skill extraction from stored content. Failures are silent."""
+    #     try:
+    #         skills = self._rule_extractor.extract(abstract, content)
+    #         for skill in skills:
+    #             existing = await self._hooks.recall(skill.content, limit=1,
+    #                                                 tenant_id=tenant_id, user_id=user_id)
+    #             if existing and existing[0].get("score", 0) > 0.85:
+    #                 continue
+    #             await self._hooks.remember(skill.content, skill.section,
+    #                                        tenant_id=tenant_id, user_id=user_id)
+    #     except Exception:
+    #         logger.debug("[Orchestrator] Skill extraction failed silently")
 
     async def update(
         self,
@@ -795,11 +791,7 @@ class MemoryOrchestrator:
             elif target_uri:
                 types_to_search = [self._infer_context_type(target_uri)]
             else:
-                types_to_search = [
-                    ContextType.MEMORY,
-                    ContextType.RESOURCE,
-                    ContextType.SKILL,
-                ]
+                types_to_search = [ContextType.ANY]
 
             dl = DetailLevel(detail_level)
             typed_queries = [
@@ -868,29 +860,13 @@ class MemoryOrchestrator:
             for tq in typed_queries
         ]
 
-        # Parallel skillbook search (if hooks available and type not restricted away from skills)
-        should_search_skills = self._hooks and (context_type is None or context_type == ContextType.SKILL)
-        skill_search_coro = self._search_skillbook(query, limit=3) if should_search_skills else None
+        # ACE skillbook search disabled — pure memory mode
+        # should_search_skills = self._hooks and (context_type is None or context_type == ContextType.SKILL)
+        # skill_search_coro = self._search_skillbook(query, limit=3) if should_search_skills else None
 
-        if skill_search_coro:
-            all_results = await asyncio.gather(*retrieval_coros, skill_search_coro)
-            query_results = list(all_results[:-1])
-            skill_contexts = all_results[-1]
-        else:
-            query_results = list(await asyncio.gather(*retrieval_coros))
-            skill_contexts = []
+        query_results = list(await asyncio.gather(*retrieval_coros))
 
         result = self._aggregate_results(query_results)
-
-        # Merge skillbook results (deduplicate by URI)
-        if skill_contexts:
-            existing_uris = {s.uri for s in result.skills}
-            for sc in skill_contexts:
-                if sc.uri not in existing_uris:
-                    result.skills.append(sc)
-                    existing_uris.add(sc.uri)
-            result.total = len(result.memories) + len(result.resources) + len(result.skills)
-
         result.search_intent = intent
 
         # Fire-and-forget: resolve URIs → record IDs → update access stats
@@ -1305,23 +1281,19 @@ class MemoryOrchestrator:
         memory_type: str = "general",
     ) -> Dict[str, Any]:
         """
-        Store content in semantic memory.
+        Store content in semantic memory (context collection).
 
-        Args:
-            content: Content to remember
-            memory_type: Type of memory
-
-        Returns:
-            Dict with remember result
+        Redirected from ACE Skillbook to unified context collection
+        so that hooks_recall and memory_search both find it.
         """
         self._ensure_init()
-        if not self._hooks:
-            return {"success": False, "error": "Hooks not initialized"}
-
-        tid, uid = get_effective_identity()
-        return await self._hooks.remember(
-            content=content, memory_type=memory_type, tenant_id=tid, user_id=uid,
+        result = await self.add(
+            abstract=content,
+            content=content,
+            category=memory_type,
+            context_type="memory",
         )
+        return {"success": True, "uri": result.uri, "section": memory_type}
 
     async def hooks_recall(
         self,
@@ -1329,21 +1301,22 @@ class MemoryOrchestrator:
         limit: int = 5,
     ) -> List[Dict[str, Any]]:
         """
-        Search semantic memory.
+        Search semantic memory (context collection).
 
-        Args:
-            query: Search query
-            limit: Maximum results
-
-        Returns:
-            List of matching memories
+        Redirected from ACE Skillbook to unified context collection
+        so results are consistent with memory_search.
         """
         self._ensure_init()
-        if not self._hooks:
-            return []
-
-        tid, uid = get_effective_identity()
-        return await self._hooks.recall(query=query, limit=limit, tenant_id=tid, user_id=uid)
+        find_result = await self.search(query=query, limit=limit)
+        return [
+            {
+                "content": m.abstract,
+                "uri": m.uri,
+                "section": m.category,
+                "score": m.score,
+            }
+            for m in find_result
+        ]
 
     async def hooks_trajectory_begin(self, trajectory_id: str, initial_state: str) -> Dict[str, Any]:
         """Begin a learning trajectory."""
@@ -2016,29 +1989,23 @@ class MemoryOrchestrator:
             await self._storage.upsert(_CONTEXT_COLLECTION, record)
             logger.debug("[MemoryOrchestrator] Created directory record: %s", dir_uri)
 
-    async def _search_skillbook(self, query: str, limit: int = 3) -> List[MatchedContext]:
-        """Search ACE Skillbook for relevant skills.
-
-        Returns MatchedContext list for merging into FindResult.
-        """
-        try:
-            tid, uid = get_effective_identity()
-            raw_skills = await self._hooks.recall(query, limit=limit, tenant_id=tid, user_id=uid)
-            results = []
-            for s in raw_skills:
-                results.append(MatchedContext(
-                    uri=s.get("uri", f"skillbook://{s.get('skill_id', '')}"),
-                    context_type=ContextType.SKILL,
-                    is_leaf=True,
-                    abstract=s.get("content", ""),
-                    score=s.get("score", 0.0),
-                    category=s.get("section", ""),
-                    match_reason="skillbook",
-                ))
-            return results
-        except Exception:
-            logger.debug("[Orchestrator] Skillbook search failed silently")
-            return []
+    # ACE skillbook search disabled — pure memory mode
+    # async def _search_skillbook(self, query: str, limit: int = 3) -> List[MatchedContext]:
+    #     """Search ACE Skillbook for relevant skills."""
+    #     try:
+    #         tid, uid = get_effective_identity()
+    #         raw_skills = await self._hooks.recall(query, limit=limit, tenant_id=tid, user_id=uid)
+    #         results = []
+    #         for s in raw_skills:
+    #             results.append(MatchedContext(
+    #                 uri=s.get("uri", f"skillbook://{s.get('skill_id', '')}"),
+    #                 context_type=ContextType.SKILL, is_leaf=True,
+    #                 abstract=s.get("content", ""), score=s.get("score", 0.0),
+    #                 category=s.get("section", ""), match_reason="skillbook",
+    #             ))
+    #         return results
+    #     except Exception:
+    #         return []
 
     def _aggregate_results(
         self, query_results: List[QueryResult]
@@ -2052,12 +2019,15 @@ class MemoryOrchestrator:
                 if ctx.uri in seen_uris:
                     continue
                 seen_uris.add(ctx.uri)
-                if ctx.context_type == ContextType.MEMORY:
+                if ctx.context_type in (ContextType.MEMORY, ContextType.CASE, ContextType.PATTERN):
                     memories.append(ctx)
                 elif ctx.context_type == ContextType.RESOURCE:
                     resources.append(ctx)
                 elif ctx.context_type == ContextType.SKILL:
                     skills.append(ctx)
+                else:
+                    # ANY or unknown — classify as memory
+                    memories.append(ctx)
 
         return FindResult(
             memories=memories,

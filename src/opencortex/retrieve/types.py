@@ -21,6 +21,7 @@ class ContextType(str, Enum):
     CASE = "case"
     PATTERN = "pattern"
     STAGING = "staging"
+    ANY = "any"  # Global search without context_type filter
 
 
 # Categories where existing memories should be updated (merged) rather than

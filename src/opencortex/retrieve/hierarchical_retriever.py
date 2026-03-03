@@ -220,11 +220,12 @@ class HierarchicalRetriever:
 
         target_dirs = [d for d in (query.target_directories or []) if d]
 
-        # Create context_type filter
-        type_filter = {"op": "must", "field": "context_type", "conds": [query.context_type.value]}
-
         # Merge all filters
-        filters_to_merge = [type_filter]
+        filters_to_merge = []
+        # Only apply context_type filter for specific type queries (skip for ANY)
+        if query.context_type != ContextType.ANY:
+            type_filter = {"op": "must", "field": "context_type", "conds": [query.context_type.value]}
+            filters_to_merge.append(type_filter)
         if target_dirs:
             target_filter = {
                 "op": "or",
@@ -1049,9 +1050,18 @@ class HierarchicalRetriever:
                 except Exception:
                     pass
 
+            # Use record's actual context_type when query is ANY
+            effective_type = context_type
+            if context_type == ContextType.ANY:
+                raw_type = c.get("context_type", "memory")
+                try:
+                    effective_type = ContextType(raw_type)
+                except ValueError:
+                    effective_type = ContextType.MEMORY
+
             return MatchedContext(
                 uri=c.get("uri", ""),
-                context_type=context_type,
+                context_type=effective_type,
                 is_leaf=c.get("is_leaf", False),
                 abstract=abstract,
                 overview=overview,
@@ -1160,6 +1170,15 @@ class HierarchicalRetriever:
             return [CortexURI.build_shared(tid, "shared", "cases")]
         elif context_type == ContextType.PATTERN:
             return [CortexURI.build_shared(tid, "shared", "patterns")]
+        elif context_type == ContextType.ANY:
+            # Global search: include all known root paths
+            return [
+                CortexURI.build_private(tid, uid, "memories"),
+                CortexURI.build_shared(tid, "shared", "patterns"),
+                CortexURI.build_shared(tid, "shared", "cases"),
+                CortexURI.build_shared(tid, "shared", "skills"),
+                CortexURI.build_shared(tid, "resources"),
+            ]
         return []
 
     def _type_to_collection(self, context_type: ContextType) -> str:

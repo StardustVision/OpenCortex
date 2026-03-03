@@ -300,11 +300,11 @@ class IntentRouter:
         intent: SearchIntent,
     ) -> List[TypedQuery]:
         """Build query list from intent, including trigger category queries."""
-        # Determine context types to search
         if context_type:
             types = [context_type]
         else:
-            types = [ContextType.MEMORY, ContextType.RESOURCE, ContextType.SKILL]
+            # Single global query — no context_type filter
+            types = [ContextType.ANY]
 
         queries = [
             TypedQuery(
@@ -322,10 +322,10 @@ class IntentRouter:
             queries.append(
                 TypedQuery(
                     query=f"{query} {cat}",
-                    context_type=ContextType.MEMORY,
+                    context_type=ContextType.ANY,
                     intent=f"trigger:{cat}",
                     priority=2,
-                    detail_level=DetailLevel.L0,  # trigger queries use L0 to save tokens
+                    detail_level=DetailLevel.L0,
                 )
             )
 
