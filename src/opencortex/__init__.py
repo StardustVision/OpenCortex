@@ -7,7 +7,7 @@ OpenCortex: Memory and context management for AI agents.
 Ported and adapted from OpenViking with tenant-based multi-user isolation.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.3.3"
 
 from opencortex.config import CortexConfig, get_config, init_config
 
