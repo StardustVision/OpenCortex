@@ -38,6 +38,7 @@ from opencortex.http.models import (
     HooksRememberRequest,
     HooksRouteRequest,
     IntentShouldRecallRequest,
+    MemoryBatchStoreRequest,
     MemoryFeedbackRequest,
     MemorySearchRequest,
     MemoryStoreRequest,
@@ -183,6 +184,14 @@ def _register_routes(app: FastAPI) -> None:
         if dedup_action:
             resp["dedup_action"] = dedup_action
         return resp
+
+    @app.post("/api/v1/memory/batch_store")
+    async def memory_batch_store(req: MemoryBatchStoreRequest) -> Dict[str, Any]:
+        return await _orchestrator.batch_add(
+            items=[item.model_dump() for item in req.items],
+            source_path=req.source_path,
+            scan_meta=req.scan_meta,
+        )
 
     @app.post("/api/v1/memory/search")
     async def memory_search(req: MemorySearchRequest) -> Dict[str, Any]:

@@ -22,6 +22,12 @@ const TOOLS = {
       meta:         { type: 'object',  description: 'Optional metadata key-value pairs' },
       dedup:        { type: 'boolean', description: 'Check for semantic duplicates before storing (default true)', default: true },
     }],
+  memory_batch_store: ['POST', '/api/v1/memory/batch_store',
+    'Batch store multiple documents. Use with oc-scan for deterministic import.', {
+      items:       { type: 'array',  description: 'Array of {content, category, context_type, meta}', required: true },
+      source_path: { type: 'string', description: 'Source directory path', default: '' },
+      scan_meta:   { type: 'object', description: 'Scan metadata {total_files, has_git, project_id}' },
+    }],
   memory_search: ['POST', '/api/v1/memory/search',
     'Semantic search across stored memories, resources, and skills. Returns ranked results with relevance scores.', {
       query:        { type: 'string',  description: 'Search query', required: true },

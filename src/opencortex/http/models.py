@@ -143,6 +143,23 @@ class SessionExtractTurnRequest(BaseModel):
 
 
 # =========================================================================
+# Batch Import
+# =========================================================================
+
+class MemoryBatchItem(BaseModel):
+    content: str
+    category: str = "documents"
+    context_type: str = "resource"
+    meta: Optional[Dict[str, Any]] = None
+
+
+class MemoryBatchStoreRequest(BaseModel):
+    items: List[MemoryBatchItem]
+    source_path: str = ""
+    scan_meta: Optional[Dict[str, Any]] = None
+
+
+# =========================================================================
 # Integration
 # =========================================================================
 

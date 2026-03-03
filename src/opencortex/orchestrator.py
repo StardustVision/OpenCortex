@@ -1984,6 +1984,58 @@ class MemoryOrchestrator:
         }
 
     # =========================================================================
+    # Batch Import
+    # =========================================================================
+
+    async def batch_add(
+        self,
+        items: List[Dict[str, Any]],
+        source_path: str = "",
+        scan_meta: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Batch add documents. LLM generates abstract + overview per item."""
+        self._ensure_init()
+
+        imported = 0
+        errors = []
+        uris = []
+
+        for i, item in enumerate(items):
+            try:
+                content = item.get("content", "")
+                file_path = (item.get("meta") or {}).get("file_path", f"item_{i}")
+
+                # LLM generate abstract + overview
+                abstract, overview = await self._generate_abstract_overview(content, file_path)
+
+                result = await self.add(
+                    abstract=abstract,
+                    content=content,
+                    overview=overview,
+                    category=item.get("category", "documents"),
+                    context_type=item.get("context_type", "resource"),
+                    meta=item.get("meta"),
+                    dedup=False,  # Deterministic URIs handle dedup via upsert
+                )
+                uris.append(result.uri)
+                imported += 1
+            except Exception as exc:
+                errors.append({"index": i, "error": str(exc)})
+
+        has_git = (scan_meta or {}).get("has_git", False)
+        project_id = (scan_meta or {}).get("project_id", "public")
+
+        return {
+            "status": "ok" if not errors else "partial",
+            "total": len(items),
+            "imported": imported,
+            "errors": errors,
+            "has_git_project": has_git and project_id != "public",
+            "project_id": project_id,
+            "uris": uris,
+        }
+
+    # =========================================================================
     # Lifecycle
     # =========================================================================
 
@@ -2046,6 +2098,31 @@ class MemoryOrchestrator:
 
     # Valid user memory categories
     _USER_MEMORY_CATEGORIES = {"profile", "preferences", "entities", "events"}
+
+    async def _generate_abstract_overview(self, content: str, file_path: str) -> tuple:
+        """Use LLM to generate abstract (L0) and overview (L1) from content."""
+        if not self._llm_completion:
+            # Fallback: filename as abstract, first 500 chars as overview
+            return file_path, content[:500]
+
+        prompt = f"""Summarize this document for a memory system.
+
+File: {file_path}
+Content (first 3000 chars):
+{content[:3000]}
+
+Return JSON: {{"abstract": "1-2 sentence summary", "overview": "1 paragraph overview"}}"""
+
+        try:
+            response = await self._llm_completion(prompt)
+            from opencortex.utils.json_parse import parse_json_from_response
+            data = parse_json_from_response(response)
+            if isinstance(data, dict):
+                return data.get("abstract", file_path), data.get("overview", content[:500])
+        except Exception:
+            pass
+
+        return file_path, content[:500]
 
     def _auto_uri(self, context_type: str, category: str, abstract: str = "") -> str:
         """Generate a URI based on context type, category, and abstract text.
