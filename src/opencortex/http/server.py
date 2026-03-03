@@ -452,3 +452,18 @@ def _register_routes(app: FastAPI) -> None:
         )
         text = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
         return {"status": "ok", "result": text}
+
+    # =====================================================================
+    # Migration
+    # =====================================================================
+
+    @app.post("/api/v1/migration/overview-first")
+    async def migration_overview_first(
+        dry_run: bool = False,
+        batch: int = 50,
+    ) -> Dict[str, Any]:
+        """Run v0.3.2 overview-first migration (re-generate L0/L1 from L2)."""
+        from opencortex.migration.v032_overview_first import migrate_overview_first
+        return await migrate_overview_first(
+            _orchestrator, dry_run=dry_run, batch_size=batch,
+        )
