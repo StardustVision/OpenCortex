@@ -735,7 +735,10 @@ class QdrantStorageAdapter(VikingDBInterface):
     def _to_point(self, data: Dict[str, Any]) -> models.PointStruct:
         """Convert a VikingDBInterface data dict to a Qdrant PointStruct."""
         # Extract and normalize ID
-        raw_id = data.pop("id", None) or str(uuid.uuid4())
+        raw_id = data.pop("id", None)
+        if raw_id is None:
+            from opencortex.utils.id_generator import generate_id
+            raw_id = generate_id()
         point_id = self._to_point_id(raw_id)
 
         # Extract vectors
@@ -781,18 +784,20 @@ class QdrantStorageAdapter(VikingDBInterface):
         return result
 
     @staticmethod
-    def _to_point_id(raw_id: str) -> str:
-        """Convert string ID to a Qdrant-compatible point ID.
+    def _to_point_id(raw_id) -> int | str:
+        """Convert raw ID to a Qdrant-compatible point ID.
 
-        Qdrant accepts UUIDs or unsigned integers as point IDs.
-        We use UUID5 derived from the string to ensure deterministic mapping.
+        Accepts:
+          - int (Snowflake) -> use directly
+          - valid UUID string -> use as UUID
+          - other string -> derive UUID5
         """
+        if isinstance(raw_id, int):
+            return raw_id
         try:
-            # If it's already a valid UUID, use it directly
-            return str(uuid.UUID(raw_id))
+            return str(uuid.UUID(str(raw_id)))
         except (ValueError, AttributeError):
-            # Derive a deterministic UUID from the string
-            return str(uuid.uuid5(uuid.NAMESPACE_URL, raw_id))
+            return str(uuid.uuid5(uuid.NAMESPACE_URL, str(raw_id)))
 
     @staticmethod
     def _to_sparse_vector(sparse_dict: Dict[str, float]) -> models.SparseVector:
