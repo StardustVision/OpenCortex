@@ -85,9 +85,12 @@ def translate_filter(dsl: Dict[str, Any]) -> models.Filter:
         return models.Filter(must=[condition])
 
     elif op == "is_null":
+        # Matches records where the field is missing, null, or empty array.
+        # Qdrant's IsEmpty covers missing fields; IsNull only covers explicit nulls.
         field = dsl.get("field", "")
-        return models.Filter(must=[
+        return models.Filter(should=[
             models.IsNullCondition(is_null=models.PayloadField(key=field)),
+            models.IsEmptyCondition(is_empty=models.PayloadField(key=field)),
         ])
 
     # Unknown op — return empty filter (match all)
