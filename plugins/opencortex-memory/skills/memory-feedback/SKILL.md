@@ -12,25 +12,16 @@ Submit reinforcement learning feedback for a memory: $ARGUMENTS
 
 ## Steps
 
-1. Determine the HTTP server URL from session state.
-```bash
-PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
-STATE_FILE="$PROJECT_DIR/.opencortex/memory/session_state.json"
-HTTP_URL=$(python3 -c "import json; print(json.load(open('$STATE_FILE')).get('http_url','http://127.0.0.1:8921'))" 2>/dev/null || echo "http://127.0.0.1:8921")
-```
-
-2. Parse the URI and reward value from user arguments.
+1. Parse the URI and reward value from user arguments.
    - Positive reward (+1.0): memory was helpful, boost future ranking.
    - Negative reward (-1.0): memory was irrelevant, lower future ranking.
 
-3. Submit feedback via HTTP API.
+2. Submit feedback via OpenCortex CLI.
 ```bash
-curl -sf -X POST "$HTTP_URL/api/v1/memory/feedback" \
-  -H "Content-Type: application/json" \
-  -d '{"uri": "<memory-uri>", "reward": <+1.0 or -1.0>}'
+npx opencortex-cli feedback "<memory-uri>" "<+1.0 or -1.0>"
 ```
 
-4. Confirm the feedback was applied.
+3. Confirm the feedback was applied.
 
 ## Output rules
 - Parse the URI from the arguments (e.g., `opencortex://...`).

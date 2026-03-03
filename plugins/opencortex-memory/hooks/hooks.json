@@ -1,12 +1,12 @@
 {
-  "description": "OpenCortex memory hooks for Claude Code (pure Node.js, zero external deps)",
+  "description": "OpenCortex memory hooks for Claude Code and Gemini CLI",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/run.mjs session-start",
+            "command": "node -e \"const p=process.argv; const d=require('fs').existsSync(p[1]+'/hooks/run.mjs') ? p[1] : p[2]; p.splice(1,2,'run.mjs'); import(require('url').pathToFileURL(d+'/hooks/run.mjs').href)\" \"${CLAUDE_PLUGIN_ROOT}\" \"${extensionPath}\" session-start",
             "timeout": 12
           }
         ]
@@ -17,7 +17,18 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/run.mjs user-prompt-submit",
+            "command": "node -e \"const p=process.argv; const d=require('fs').existsSync(p[1]+'/hooks/run.mjs') ? p[1] : p[2]; p.splice(1,2,'run.mjs'); import(require('url').pathToFileURL(d+'/hooks/run.mjs').href)\" \"${CLAUDE_PLUGIN_ROOT}\" \"${extensionPath}\" user-prompt-submit",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "BeforeAgent": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"const p=process.argv; const d=require('fs').existsSync(p[1]+'/hooks/run.mjs') ? p[1] : p[2]; p.splice(1,2,'run.mjs'); import(require('url').pathToFileURL(d+'/hooks/run.mjs').href)\" \"${CLAUDE_PLUGIN_ROOT}\" \"${extensionPath}\" user-prompt-submit",
             "timeout": 15
           }
         ]
@@ -28,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/run.mjs stop",
+            "command": "node -e \"const p=process.argv; const d=require('fs').existsSync(p[1]+'/hooks/run.mjs') ? p[1] : p[2]; p.splice(1,2,'run.mjs'); import(require('url').pathToFileURL(d+'/hooks/run.mjs').href)\" \"${CLAUDE_PLUGIN_ROOT}\" \"${extensionPath}\" stop",
             "async": true,
             "timeout": 120
           }
@@ -40,7 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/run.mjs session-end",
+            "command": "node -e \"const p=process.argv; const d=require('fs').existsSync(p[1]+'/hooks/run.mjs') ? p[1] : p[2]; p.splice(1,2,'run.mjs'); import(require('url').pathToFileURL(d+'/hooks/run.mjs').href)\" \"${CLAUDE_PLUGIN_ROOT}\" \"${extensionPath}\" session-end",
             "timeout": 20
           }
         ]

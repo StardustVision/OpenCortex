@@ -12,21 +12,12 @@ Apply reward decay to all stored memories.
 
 ## Steps
 
-1. Determine the HTTP server URL from session state.
+1. Trigger decay via OpenCortex CLI.
 ```bash
-PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
-STATE_FILE="$PROJECT_DIR/.opencortex/memory/session_state.json"
-HTTP_URL=$(python3 -c "import json; print(json.load(open('$STATE_FILE')).get('http_url','http://127.0.0.1:8921'))" 2>/dev/null || echo "http://127.0.0.1:8921")
+npx opencortex-cli decay
 ```
 
-2. Trigger decay via HTTP API.
-```bash
-curl -sf -X POST "$HTTP_URL/api/v1/memory/decay" \
-  -H "Content-Type: application/json" \
-  -d '{}'
-```
-
-3. Report the decay results.
+2. Report the decay results.
 
 ## Output rules
 - Report: records processed, decayed, below threshold, archived.

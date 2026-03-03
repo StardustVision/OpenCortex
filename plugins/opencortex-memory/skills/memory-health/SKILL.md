@@ -12,25 +12,17 @@ Verify the OpenCortex memory system is operational.
 
 ## Steps
 
-1. Determine the HTTP server URL from session state.
+1. Check service health via OpenCortex CLI.
 ```bash
-PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
-STATE_FILE="$PROJECT_DIR/.opencortex/memory/session_state.json"
-HTTP_URL=$(python3 -c "import json; print(json.load(open('$STATE_FILE')).get('http_url','http://127.0.0.1:8921'))" 2>/dev/null || echo "http://127.0.0.1:8921")
-echo "HTTP server: $HTTP_URL"
+npx opencortex-cli health
 ```
 
-2. Check HTTP server health.
+2. Check session state.
 ```bash
-curl -sf "$HTTP_URL/api/v1/memory/health" | python3 -m json.tool
+npx opencortex-cli status
 ```
 
-3. Check session state.
-```bash
-cat "$STATE_FILE" 2>/dev/null | python3 -m json.tool
-```
-
-4. Summarize system status.
+3. Summarize system status.
 
 ## Output rules
 - Report: HTTP server status, storage backend (Qdrant), embedding model, tenant/user.

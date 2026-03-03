@@ -1,0 +1,4 @@
+interface:
+  display_name: "Claude Hooks Simulator"
+  short_description: "Simulate Claude hook lifecycle in Codex"
+  default_prompt: "Simulate session-start, user-prompt-submit, stop, and session-end hooks for OpenCortex using local project files and return outputs."

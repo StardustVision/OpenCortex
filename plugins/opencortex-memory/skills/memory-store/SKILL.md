@@ -12,33 +12,14 @@ Store the following information as a long-term memory: $ARGUMENTS
 
 ## Steps
 
-1. Determine the HTTP server URL and credentials from session state.
+1. Compose clear memory text from the user's request.
+
+2. Store via OpenCortex CLI.
 ```bash
-PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
-STATE_FILE="$PROJECT_DIR/.opencortex/memory/session_state.json"
-HTTP_URL=$(python3 -c "import json; print(json.load(open('$STATE_FILE')).get('http_url','http://127.0.0.1:8921'))" 2>/dev/null || echo "http://127.0.0.1:8921")
-TENANT_ID=$(python3 -c "import json; print(json.load(open('$STATE_FILE')).get('tenant_id','default'))" 2>/dev/null || echo "default")
-USER_ID=$(python3 -c "import json; print(json.load(open('$STATE_FILE')).get('user_id','default'))" 2>/dev/null || echo "default")
+npx opencortex-cli store "<what to remember>" --category "<decision|pattern|fact|fix|preference>"
 ```
 
-2. Compose a clear abstract (1-line summary) and detailed content from the user's request.
-
-3. Store via HTTP API.
-```bash
-curl -sf -X POST "$HTTP_URL/api/v1/memory/store" \
-  -H "Content-Type: application/json" \
-  -H "X-Tenant-ID: $TENANT_ID" \
-  -H "X-User-ID: $USER_ID" \
-  -d '{
-    "abstract": "<one-line summary of what to remember>",
-    "content": "<detailed content with context>",
-    "category": "<appropriate category: decision|pattern|fact|fix|preference>",
-    "context_type": "memory",
-    "meta": {"source": "skill:memory-store", "timestamp": '"$(date +%s)"'}
-  }'
-```
-
-4. Confirm storage to the user with the returned URI.
+3. Confirm storage to the user with the returned URI.
 
 ## Output rules
 - Write a clear, specific abstract that will be useful for future search.
