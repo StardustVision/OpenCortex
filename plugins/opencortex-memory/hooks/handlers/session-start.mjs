@@ -5,7 +5,7 @@ import {
   PROJECT_DIR, ensureStateDir, saveState,
   getMcpConfig, getHttpUrl, findUv, findPython, ensureDefaultConfig,
 } from '../../lib/common.mjs';
-import { healthCheck } from '../../lib/http-client.mjs';
+import { healthCheck, httpPost } from '../../lib/http-client.mjs';
 
 export default async function sessionStart(ctx) {
   // Ensure mcp.json exists (auto-create or migrate from legacy opencortex.json)
@@ -65,6 +65,7 @@ export default async function sessionStart(ctx) {
   }
 
   // Write state
+  const sessionId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const state = {
     active: true,
     mode,
@@ -74,11 +75,21 @@ export default async function sessionStart(ctx) {
     tenant_id: tenantId,
     user_id: userId,
     http_pid: httpPid,
+    session_id: sessionId,
     last_turn_uuid: '',
     ingested_turns: 0,
     started_at: Math.floor(Date.now() / 1000),
   };
   saveState(state);
+
+  // Register session on server (best-effort)
+  try {
+    await httpPost(`${httpUrl}/api/v1/session/begin`, {
+      session_id: sessionId,
+    }, 5000);
+  } catch {
+    // best-effort
+  }
 
   const portInfo = mode === 'local'
     ? `HTTP :${getMcpConfig('local.http_port', 8921)}`

@@ -44,6 +44,33 @@ export default async function stop(ctx) {
       },
     }, 15000);
 
+    // Buffer turn messages in SessionManager
+    if (state.session_id) {
+      try {
+        if (turn.userText) {
+          await httpPost(`${state.http_url}/api/v1/session/message`, {
+            session_id: state.session_id,
+            role: 'user',
+            content: turn.userText.slice(0, 2000),
+          }, 5000);
+        }
+        if (turn.assistantText) {
+          await httpPost(`${state.http_url}/api/v1/session/message`, {
+            session_id: state.session_id,
+            role: 'assistant',
+            content: turn.assistantText.slice(0, 2000),
+          }, 5000);
+        }
+
+        // Extract memories from this turn (LLM, best-effort)
+        await httpPost(`${state.http_url}/api/v1/session/extract_turn`, {
+          session_id: state.session_id,
+        }, 15000);
+      } catch {
+        // Best-effort — don't fail the hook
+      }
+    }
+
     // Update state
     state.last_turn_uuid = turn.turnUuid;
     state.ingested_turns = (state.ingested_turns || 0) + 1;
