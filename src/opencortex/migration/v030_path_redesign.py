@@ -60,6 +60,8 @@ async def backfill_new_fields(storage, collection: str) -> int:
             "source_user_id": record.get("owner_user_id", ""),
             "session_id": "",
             "ttl_expires_at": "",
+            "project_id": record.get("project_id", ""),
+            "source_tenant_id": record.get("source_tenant_id", ""),
         })
         updated += 1
     logger.info("[Migration] Backfilled %d records in %s", updated, collection)

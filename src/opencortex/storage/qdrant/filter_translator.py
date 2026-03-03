@@ -6,7 +6,7 @@ Translates the VikingDB-style filter DSL used throughout OpenCortex into
 Qdrant's native Filter/FieldCondition models.
 
 Supported VikingDB operators:
-    must, must_not, range, prefix, contains, and, or
+    must, must_not, range, prefix, contains, and, or, is_null
 """
 
 from typing import Any, Dict, List
@@ -83,6 +83,12 @@ def translate_filter(dsl: Dict[str, Any]) -> models.Filter:
     elif op == "contains":
         condition = _contains_condition(dsl)
         return models.Filter(must=[condition])
+
+    elif op == "is_null":
+        field = dsl.get("field", "")
+        return models.Filter(must=[
+            models.IsNullCondition(is_null=models.PayloadField(key=field)),
+        ])
 
     # Unknown op — return empty filter (match all)
     return models.Filter()

@@ -844,8 +844,11 @@ class MemoryOrchestrator:
         # Project-scoped filter: isolate resources by project_id
         project_id = get_effective_project_id()
         if project_id and project_id != "public":
-            # Include records matching this project or legacy records without project_id
-            project_filter = {"op": "must", "field": "project_id", "conds": [project_id, "public", ""]}
+            # Include records matching this project, "public", empty, or missing project_id
+            project_filter = {"op": "or", "conds": [
+                {"op": "must", "field": "project_id", "conds": [project_id, "public", ""]},
+                {"op": "is_null", "field": "project_id"},
+            ]}
             combined_conds.append(project_filter)
 
         if metadata_filter:
