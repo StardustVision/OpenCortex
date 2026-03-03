@@ -416,13 +416,16 @@ class MemoryOrchestrator:
         )
 
     async def _generate_overview(self, abstract: str, content: str) -> str:
-        """Generate L1 overview from content.
+        """Generate L1 overview from content (overview-first).
 
         Strategy:
         - No content -> empty
         - Short content (<=500 chars) -> use content as-is
         - Long content + LLM available -> LLM summarization
         - Long content + no LLM -> truncated paragraphs
+
+        The first sentence of the overview is designed to be a standalone
+        summary (usable as L0 abstract via _extract_abstract_from_overview).
         """
         if not content:
             return ""
@@ -430,10 +433,10 @@ class MemoryOrchestrator:
             return content
         if self._llm_completion:
             prompt = (
-                "Generate a concise paragraph overview (3-8 sentences) "
-                "of the following content. Focus on key facts, decisions, "
-                "and actionable details.\n\n"
-                f"Title: {abstract}\n\nContent:\n{content[:4000]}\n\nOverview:"
+                "Generate a concise overview (3-8 sentences) of the following content. "
+                "The FIRST sentence must be a standalone summary of the key point. "
+                "Then provide supporting details: facts, decisions, and actionable information.\n\n"
+                f"Title: {abstract}\n\nContent:\n{content}\n\nOverview:"
             )
             try:
                 overview = await self._llm_completion(prompt)
@@ -453,6 +456,49 @@ class MemoryOrchestrator:
             truncated.append(p)
             total += len(p)
         return "\n\n".join(truncated) if truncated else content[:500] + "..."
+
+    @staticmethod
+    def _extract_abstract_from_overview(overview: str) -> str:
+        """Extract L0 abstract from L1 overview (overview-first flow).
+
+        Takes the first paragraph (before ## or double newline).
+        For plain paragraphs, takes the first 1-2 sentences.
+        """
+        if not overview:
+            return ""
+
+        lines = overview.split("\n")
+        content_lines = []
+        in_header = True
+
+        for line in lines:
+            # Skip leading markdown headers
+            if in_header and line.startswith("#"):
+                continue
+            elif in_header and line.strip():
+                in_header = False
+
+            if not in_header:
+                if line.startswith("##"):
+                    break
+                if line.strip():
+                    content_lines.append(line.strip())
+
+        text = " ".join(content_lines).strip()
+        if not text:
+            return ""
+
+        # Take first 1-2 sentences (split on sentence-ending punctuation)
+        sentences = re.split(r'(?<=[.。!！?？])\s+', text)
+        abstract = sentences[0]
+        if len(sentences) > 1 and len(abstract) < 80:
+            abstract += " " + sentences[1]
+
+        # Cap at ~200 chars
+        if len(abstract) > 200:
+            abstract = abstract[:197] + "..."
+
+        return abstract
 
     def _ensure_init(self) -> None:
         """Raise if not initialized."""
@@ -534,15 +580,21 @@ class MemoryOrchestrator:
         if not parent_uri:
             parent_uri = self._derive_parent_uri(uri)
 
-        # Generate L1 overview if not provided and content exists
+        # Step 1: Generate L1 overview from content (overview-first)
         if not overview and content and is_leaf:
             overview = await self._generate_overview(abstract, content)
+
+        # Step 2: Extract L0 from L1 (overview-first flow)
+        if overview and content and is_leaf:
+            extracted = self._extract_abstract_from_overview(overview)
+            if extracted:
+                abstract = extracted
 
         # Build effective user identity (per-request or config default)
         tid, uid = get_effective_identity()
         effective_user = UserIdentifier(tid, uid)
 
-        # L0 quality gate: enrich abstract with key terms from content
+        # Step 3: Enrich L0 with key terms from content
         if content and is_leaf:
             abstract = self._enrich_abstract(abstract, content)
 
@@ -1014,6 +1066,76 @@ class MemoryOrchestrator:
         result.query_plan = query_plan
         result.query_results = list(query_results)
         return result
+
+    # =========================================================================
+    # Memory Listing
+    # =========================================================================
+
+    async def list_memories(
+        self,
+        category: Optional[str] = None,
+        context_type: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """List user's accessible memories with readable content.
+
+        Returns private (own) + shared memories, ordered by updated_at desc.
+        """
+        self._ensure_init()
+        tid, uid = get_effective_identity()
+
+        # Same scope filter as search(): private own + shared
+        scope_filter = {"op": "or", "conds": [
+            {"op": "must", "field": "scope", "conds": ["shared", ""]},
+            {"op": "and", "conds": [
+                {"op": "must", "field": "scope", "conds": ["private"]},
+                {"op": "must", "field": "source_user_id", "conds": [uid]},
+            ]},
+        ]}
+
+        conds: List[Dict[str, Any]] = [
+            {"op": "must_not", "field": "context_type", "conds": ["staging"]},
+            scope_filter,
+        ]
+        if tid:
+            conds.append({"op": "must", "field": "source_tenant_id", "conds": [tid, ""]})
+        if category:
+            conds.append({"op": "must", "field": "category", "conds": [category]})
+        if context_type:
+            conds.append({"op": "must", "field": "context_type", "conds": [context_type]})
+
+        # Project filter
+        project_id = get_effective_project_id()
+        if project_id and project_id != "public":
+            conds.append({"op": "or", "conds": [
+                {"op": "must", "field": "project_id", "conds": [project_id, "public", ""]},
+                {"op": "is_null", "field": "project_id"},
+            ]})
+
+        combined: Dict[str, Any] = {"op": "and", "conds": conds}
+
+        records = await self._storage.filter(
+            _CONTEXT_COLLECTION,
+            combined,
+            limit=limit,
+            offset=offset,
+            order_by="updated_at",
+            order_desc=True,
+        )
+
+        return [
+            {
+                "uri": r.get("uri", ""),
+                "abstract": r.get("abstract", ""),
+                "category": r.get("category", ""),
+                "context_type": r.get("context_type", ""),
+                "scope": r.get("scope", ""),
+                "updated_at": r.get("updated_at", ""),
+                "created_at": r.get("created_at", ""),
+            }
+            for r in records
+        ]
 
     # =========================================================================
     # Reinforcement Learning

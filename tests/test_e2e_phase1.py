@@ -635,7 +635,8 @@ class TestE2EPhase1(unittest.TestCase):
             )
         )
         self.assertEqual(len(records), 1)
-        self.assertEqual(records[0]["abstract"], "User prefers dark theme in all editors")
+        # Overview-first: L0 abstract is extracted from L1 overview, not the user input
+        self.assertIn("Dark theme everywhere", records[0]["abstract"])
 
         # Verify filesystem (L0 abstract written)
         abstract_path = os.path.join(
@@ -646,7 +647,7 @@ class TestE2EPhase1(unittest.TestCase):
         )
         self.assertTrue(os.path.exists(abstract_path), f"Abstract file should exist at {abstract_path}")
         with open(abstract_path, "r") as f:
-            self.assertEqual(f.read(), "User prefers dark theme in all editors")
+            self.assertIn("Dark theme everywhere", f.read())
 
     def test_03_add_resource(self):
         """Add a shared resource and verify it's team-level."""

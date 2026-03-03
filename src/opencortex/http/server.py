@@ -223,6 +223,22 @@ def _register_routes(app: FastAPI) -> None:
         await _orchestrator.feedback(uri=req.uri, reward=req.reward)
         return {"status": "ok", "uri": req.uri, "reward": str(req.reward)}
 
+    @app.get("/api/v1/memory/list")
+    async def memory_list(
+        category: Optional[str] = None,
+        context_type: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        """List user's accessible memories (private + shared)."""
+        items = await _orchestrator.list_memories(
+            category=category,
+            context_type=context_type,
+            limit=limit,
+            offset=offset,
+        )
+        return {"results": items, "total": len(items)}
+
     @app.get("/api/v1/memory/stats")
     async def memory_stats() -> Dict[str, Any]:
         return await _orchestrator.stats()
@@ -409,3 +425,30 @@ def _register_routes(app: FastAPI) -> None:
     @app.get("/api/v1/integration/build-agents")
     async def integration_build_agents() -> Dict[str, Any]:
         return await _orchestrator.hooks_build_agents()
+
+    # =====================================================================
+    # Content (L0/L1/L2 on-demand loading)
+    # =====================================================================
+
+    @app.get("/api/v1/content/abstract")
+    async def content_abstract(uri: str) -> Dict[str, Any]:
+        """Read L0 abstract from CortexFS."""
+        text = await _orchestrator._fs.abstract(uri)
+        return {"status": "ok", "result": text}
+
+    @app.get("/api/v1/content/overview")
+    async def content_overview(uri: str) -> Dict[str, Any]:
+        """Read L1 overview from CortexFS."""
+        text = await _orchestrator._fs.overview(uri)
+        return {"status": "ok", "result": text}
+
+    @app.get("/api/v1/content/read")
+    async def content_read(
+        uri: str, offset: int = 0, limit: int = -1,
+    ) -> Dict[str, Any]:
+        """Read L2 content from CortexFS."""
+        raw = await _orchestrator._fs.read(
+            uri + "/content.md", offset=offset, size=limit,
+        )
+        text = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+        return {"status": "ok", "result": text}
