@@ -159,6 +159,11 @@ class MemoryBatchStoreRequest(BaseModel):
     scan_meta: Optional[Dict[str, Any]] = None
 
 
+class PromoteToSharedRequest(BaseModel):
+    uris: List[str]
+    project_id: str
+
+
 # =========================================================================
 # Integration
 # =========================================================================

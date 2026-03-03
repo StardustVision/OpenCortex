@@ -42,6 +42,7 @@ from opencortex.http.models import (
     MemoryFeedbackRequest,
     MemorySearchRequest,
     MemoryStoreRequest,
+    PromoteToSharedRequest,
     SessionBeginRequest,
     SessionEndRequest,
     SessionExtractTurnRequest,
@@ -191,6 +192,13 @@ def _register_routes(app: FastAPI) -> None:
             items=[item.model_dump() for item in req.items],
             source_path=req.source_path,
             scan_meta=req.scan_meta,
+        )
+
+    @app.post("/api/v1/memory/promote_to_shared")
+    async def memory_promote_to_shared(req: PromoteToSharedRequest) -> Dict[str, Any]:
+        return await _orchestrator.promote_to_shared(
+            uris=req.uris,
+            project_id=req.project_id,
         )
 
     @app.post("/api/v1/memory/search")

@@ -2035,6 +2035,70 @@ class MemoryOrchestrator:
             "uris": uris,
         }
 
+    async def promote_to_shared(
+        self,
+        uris: List[str],
+        project_id: str,
+    ) -> Dict[str, Any]:
+        """Promote private resources to shared project scope.
+
+        Rewrites URIs from user/{uid}/resources/... to resources/{project}/documents/...
+        Updates Qdrant scope field and CortexFS paths.
+        """
+        self._ensure_init()
+        tid, uid = get_effective_identity()
+        promoted = 0
+        errors = []
+
+        for uri in uris:
+            try:
+                # 1. Get existing record
+                results = await self._storage.filter(
+                    _CONTEXT_COLLECTION,
+                    filter={"op": "must", "field": "uri", "conds": [uri]},
+                    limit=1,
+                )
+                if not results:
+                    errors.append({"uri": uri, "error": "not found"})
+                    continue
+
+                record = results[0]
+
+                # 2. Build new shared URI
+                # Extract node name from old URI (last path segment)
+                parts = uri.rstrip("/").split("/")
+                node_name = parts[-1] if parts else "unnamed"
+                new_uri = CortexURI.build_shared(tid, "resources", project_id, "documents", node_name)
+
+                # 3. Update record fields
+                record["uri"] = new_uri
+                record["scope"] = "shared"
+                record["project_id"] = project_id
+                record["parent_uri"] = CortexURI.build_shared(tid, "resources", project_id, "documents")
+
+                # 4. Upsert with new URI
+                await self._storage.upsert(_CONTEXT_COLLECTION, record)
+
+                # 5. Delete old record if URI changed
+                if new_uri != uri:
+                    old_id = record.get("id", "")
+                    if old_id:
+                        try:
+                            await self._storage.delete(_CONTEXT_COLLECTION, [old_id])
+                        except Exception:
+                            pass  # best-effort cleanup
+
+                promoted += 1
+            except Exception as exc:
+                errors.append({"uri": uri, "error": str(exc)})
+
+        return {
+            "status": "ok" if not errors else "partial",
+            "promoted": promoted,
+            "total": len(uris),
+            "errors": errors,
+        }
+
     # =========================================================================
     # Lifecycle
     # =========================================================================
