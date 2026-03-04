@@ -205,3 +205,36 @@ class SkillReviewRequest(BaseModel):
 class SkillDemoteRequest(BaseModel):
     skill_id: str
     reason: str = ""
+
+
+
+# =========================================================================
+# Skill Evolution
+# =========================================================================
+
+class SkillLookupRequest(BaseModel):
+    objective: str
+    section: str = ""
+    limit: int = 5
+
+
+class SkillFeedbackRequest(BaseModel):
+    uri: str
+    session_id: str = ""
+    turn_uuid: str = ""
+    success: bool = True
+    score: float = 1.0
+
+
+class SkillMineRequest(BaseModel):
+    section: str = ""
+    min_cases: int = 5
+    max_cases: int = 200
+    max_clusters: int = 10
+    llm_budget: int = 5
+
+
+class SkillEvolveRequest(BaseModel):
+    uri: str
+    confidence_threshold: float = 0.3
+    observation_turns: int = 10

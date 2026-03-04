@@ -264,6 +264,7 @@ class SessionManager:
                 content=memory.content,
                 category=memory.category,
                 context_type=memory.context_type,
+                meta=memory.meta,
             )
             # store_fn returns a Context with meta["dedup_action"]
             if hasattr(ctx, "meta") and isinstance(ctx.meta, dict):

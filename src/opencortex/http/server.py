@@ -48,6 +48,10 @@ from opencortex.http.models import (
     SessionExtractTurnRequest,
     SessionMessageRequest,
     SkillDemoteRequest,
+    SkillEvolveRequest,
+    SkillFeedbackRequest,
+    SkillLookupRequest,
+    SkillMineRequest,
     SkillReviewRequest,
     TrajectoryBeginRequest,
     TrajectoryEndRequest,
@@ -387,6 +391,38 @@ def _register_routes(app: FastAPI) -> None:
     @app.post("/api/v1/skills/migrate")
     async def skills_migrate() -> Dict[str, Any]:
         return await _orchestrator.hooks_migrate_legacy()
+
+    # =====================================================================
+    # Skill Evolution
+    # =====================================================================
+
+    @app.post("/api/v1/skill/lookup")
+    async def skill_lookup(req: SkillLookupRequest) -> Dict[str, Any]:
+        return {"skills": await _orchestrator.skill_lookup(
+            objective=req.objective, section=req.section, limit=req.limit,
+        )}
+
+    @app.post("/api/v1/skill/feedback")
+    async def skill_feedback(req: SkillFeedbackRequest) -> Dict[str, Any]:
+        return await _orchestrator.skill_feedback(
+            uri=req.uri, session_id=req.session_id,
+            turn_uuid=req.turn_uuid, success=req.success, score=req.score,
+        )
+
+    @app.post("/api/v1/skill/mine")
+    async def skill_mine(req: SkillMineRequest) -> Dict[str, Any]:
+        return await _orchestrator.mine_skills(
+            section=req.section, min_cases=req.min_cases,
+            max_cases=req.max_cases, max_clusters=req.max_clusters,
+            llm_budget=req.llm_budget,
+        )
+
+    @app.post("/api/v1/skill/evolve")
+    async def skill_evolve(req: SkillEvolveRequest) -> Dict[str, Any]:
+        return await _orchestrator.evolve_skill(
+            uri=req.uri, confidence_threshold=req.confidence_threshold,
+            observation_turns=req.observation_turns,
+        )
 
     # =====================================================================
     # Session

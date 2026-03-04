@@ -91,12 +91,34 @@ export default async function sessionStart(ctx) {
     // best-effort
   }
 
+  // Inject learned skills into system message (best-effort)
+  let skillSummary = '';
+  try {
+    const lookupRes = await httpPost(`${httpUrl}/api/v1/skill/lookup`, {
+      objective: 'general task execution', limit: 5,
+    }, 5000);
+    const skills = (lookupRes && lookupRes.skills) || [];
+    const relevant = skills.filter(s =>
+      (s.confidence_score ?? 0) >= 0.3 && s.status !== 'deprecated'
+    );
+    if (relevant.length > 0) {
+      const lines = relevant.map(s => {
+        const triggers = (s.trigger_conditions || []).join(', ');
+        const steps = (s.action_template || []).join(' → ');
+        return `- ${s.content} [confidence: ${(s.confidence_score ?? 0).toFixed(2)}]\n  When: ${triggers}\n  Steps: ${steps}`;
+      });
+      skillSummary = `\n\n[Learned Skills]\n${lines.join('\n')}`;
+    }
+  } catch {
+    // best-effort — don't block session start
+  }
+
   const portInfo = mode === 'local'
     ? `HTTP :${getMcpConfig('local.http_port', 8921)}`
     : httpUrl;
 
   return {
-    systemMessage: `[opencortex-memory] ${mode} mode — ${portInfo} tenant=${tenantId} user=${userId}`,
+    systemMessage: `[opencortex-memory] ${mode} mode — ${portInfo} tenant=${tenantId} user=${userId}${skillSummary}`,
   };
 }
 

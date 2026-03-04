@@ -408,9 +408,8 @@ class TestSkillSearchFusion(unittest.TestCase):
 # =============================================================================
 
 
-@unittest.skip("ACE skill extraction disabled — pure memory mode")
 class TestAsyncSkillExtraction(unittest.TestCase):
-    """Test that add() triggers async skill extraction. (DISABLED)"""
+    """Test that add() triggers async skill extraction."""
 
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp()

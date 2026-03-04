@@ -6,7 +6,7 @@ LLM-driven analysis of session conversations to extract persistent memories.
 """
 
 import logging
-from typing import Awaitable, Callable, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from opencortex.session.types import ExtractedMemory, Message
 from opencortex.utils.json_parse import parse_json_from_response
@@ -14,6 +14,20 @@ from opencortex.utils.json_parse import parse_json_from_response
 logger = logging.getLogger(__name__)
 
 LLMCompletionCallable = Callable[[str], Awaitable[str]]
+
+CASE_META_SCHEMA_VERSION = 1
+
+
+def validate_case_meta(meta: dict) -> dict:
+    """Read-time compat: fill missing fields with defaults."""
+    meta.setdefault("schema_version", CASE_META_SCHEMA_VERSION)
+    meta.setdefault("task_objective", "")
+    meta.setdefault("action_path", [])
+    meta.setdefault("result", "")
+    meta.setdefault("evaluation", {"status": "unknown", "score": 0.0})
+    meta.setdefault("error_cause", "")
+    meta.setdefault("improvement", "")
+    return meta
 
 
 class MemoryExtractor:
@@ -102,10 +116,19 @@ For each memory, provide:
 - context_type: "memory" for user categories (profile/preferences/entities/events), "case" for cases, "pattern" for patterns
 - confidence: 0.0 to 1.0 (how confident this is a persistent, reusable memory)
 
+**For case-type memories ONLY** (context_type="case"), also include a "meta" object:
+- schema_version: 1 (integer, always 1)
+- task_objective: What the user was trying to accomplish (string)
+- action_path: Ordered list of key steps taken (array of strings)
+- result: What actually happened (string)
+- evaluation: {{"status": "success"|"partial"|"failure", "score": 0.0-1.0}}
+- error_cause: What went wrong (empty string if success)
+- improvement: What could be done better next time (string)
+
 Return ONLY a JSON array. Example:
 [
   {{"abstract": "User prefers dark theme", "content": "User explicitly set dark theme in VS Code and terminal", "category": "preferences", "context_type": "memory", "confidence": 0.9}},
-  {{"abstract": "Fix import error by checking PYTHONPATH", "content": "When imports fail, check PYTHONPATH includes src/", "category": "cases", "context_type": "case", "confidence": 0.7}}
+  {{"abstract": "Fix import error by checking PYTHONPATH", "content": "When imports fail, check PYTHONPATH includes src/", "category": "cases", "context_type": "case", "confidence": 0.7, "meta": {{"schema_version": 1, "task_objective": "Fix Python import error", "action_path": ["Check PYTHONPATH", "Add src/ to path", "Verify import"], "result": "Import resolved after adding src/ to PYTHONPATH", "evaluation": {{"status": "success", "score": 0.9}}, "error_cause": "", "improvement": "Add src/ to PYTHONPATH in project setup"}}}}
 ]
 
 If no meaningful memories can be extracted, return an empty array: []
@@ -128,14 +151,21 @@ Memories:"""
             abstract = item.get("abstract", "").strip()
             if not abstract:
                 continue
+            context_type = item.get("context_type", "memory")
+            raw_meta = item.get("meta", {})
+            if not isinstance(raw_meta, dict):
+                raw_meta = {}
+            if context_type == "case":
+                validate_case_meta(raw_meta)
             memories.append(
                 ExtractedMemory(
                     abstract=abstract,
                     content=item.get("content", ""),
                     category=item.get("category", ""),
-                    context_type=item.get("context_type", "memory"),
+                    context_type=context_type,
                     confidence=min(1.0, max(0.0, float(item.get("confidence", 0.5)))),
                     uri_hint=item.get("uri_hint", "user"),
+                    meta=raw_meta,
                 )
             )
         return memories

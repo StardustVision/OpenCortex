@@ -18,6 +18,19 @@ from opencortex.utils.time_utils import get_current_timestamp
 logger = logging.getLogger(__name__)
 
 
+def validate_skill_meta(record: dict) -> dict:
+    """Read-time compat: fill missing evolution fields."""
+    record.setdefault("confidence_score", 0.5)
+    record.setdefault("version", 1)
+    record.setdefault("trigger_conditions", [])
+    record.setdefault("action_template", [])
+    record.setdefault("success_metric", "")
+    record.setdefault("source_case_uris", [])
+    record.setdefault("supersedes_uri", "")
+    record.setdefault("superseded_by_uri", "")
+    return record
+
+
 class SkillAuthorizationError(ValueError):
     """Raised when a user lacks permission to modify a skill."""
 
@@ -81,6 +94,14 @@ class Skillbook:
             status=kwargs.get("status", "active"),
             created_at=now,
             updated_at=now,
+            confidence_score=kwargs.get("confidence_score", 0.5),
+            version=kwargs.get("version", 1),
+            trigger_conditions=kwargs.get("trigger_conditions", []),
+            action_template=kwargs.get("action_template", []),
+            success_metric=kwargs.get("success_metric", ""),
+            source_case_uris=kwargs.get("source_case_uris", []),
+            supersedes_uri=kwargs.get("supersedes_uri"),
+            superseded_by_uri=kwargs.get("superseded_by_uri"),
             tenant_id=tenant_id,
             owner_user_id=user_id,
             scope="private",
@@ -663,6 +684,15 @@ class Skillbook:
                 "status": skill.status,
                 "created_at": skill.created_at,
                 "updated_at": skill.updated_at,
+                # Evolution fields
+                "confidence_score": skill.confidence_score,
+                "version": skill.version,
+                "trigger_conditions": skill.trigger_conditions,
+                "action_template": skill.action_template,
+                "success_metric": skill.success_metric,
+                "source_case_uris": skill.source_case_uris,
+                "supersedes_uri": skill.supersedes_uri or "",
+                "superseded_by_uri": skill.superseded_by_uri or "",
                 # Multi-tenant scope fields
                 "tenant_id": skill.tenant_id,
                 "owner_user_id": skill.owner_user_id,
@@ -703,6 +733,7 @@ class Skillbook:
         tenant_id: str = "",
         user_id: str = "",
         section: Optional[str] = None,
+        exclude_status: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Build a scope-aware filter for dual-read (private + shared + legacy).
 
@@ -714,10 +745,21 @@ class Skillbook:
         in the tenant, same as shared skills.
 
         When not provided, falls back to basic context_type filter.
+
+        Args:
+            exclude_status: List of status values to exclude (default: ["deprecated"]).
         """
+        if exclude_status is None:
+            exclude_status = ["deprecated"]
+
         base_conds: List[Dict[str, Any]] = [
             {"op": "must", "field": "context_type", "conds": ["ace_skill"]},
         ]
+
+        if exclude_status:
+            base_conds.append(
+                {"op": "must_not", "field": "status", "conds": exclude_status},
+            )
 
         if tenant_id:
             base_conds.append(

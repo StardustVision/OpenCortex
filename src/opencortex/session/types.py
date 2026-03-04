@@ -35,9 +35,10 @@ class ExtractedMemory:
     abstract: str
     content: str = ""
     category: str = ""
-    context_type: str = "memory"  # "memory" | "skill" | "resource"
+    context_type: str = "memory"  # "memory" | "skill" | "resource" | "case"
     confidence: float = 0.0
     uri_hint: str = ""  # suggested target URI (user/agent)
+    meta: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

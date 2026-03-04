@@ -70,7 +70,6 @@ logger = logging.getLogger(__name__)
 # Default collection name for all context types
 _CONTEXT_COLLECTION = "context"
 
-
 class MemoryOrchestrator:
     """
     Top-level orchestrator for OpenCortex memory operations.
@@ -107,9 +106,8 @@ class MemoryOrchestrator:
         self._analyzer: Optional[IntentAnalyzer] = None
         self._user: Optional[UserIdentifier] = None
         self._session_manager = None
-        # ACE skill extraction disabled — pure memory mode
-        # self._rule_extractor: Optional[RuleExtractor] = RuleExtractor()
-        self._rule_extractor: Optional[RuleExtractor] = None
+        self._skillbook = None
+        self._rule_extractor: Optional[RuleExtractor] = RuleExtractor()
         self._initialized = False
 
     # =========================================================================
@@ -189,7 +187,17 @@ class MemoryOrchestrator:
             llm_completion=self._llm_completion,
         )
 
-        # 7. Hooks — ACE (Agentic Context Engine) self-learning
+        # 7. Skillbook — always available for skill evolution
+        from opencortex.ace.skillbook import Skillbook
+
+        self._skillbook = Skillbook(
+            storage=self._storage,
+            embedder=self._embedder,
+            cortex_fs=self._fs,
+        )
+        await self._skillbook.init()
+
+        # 7a. ACE full pipeline (Reflector + SkillManager) — opt-in
         if self._hooks is None and self._config.ace_enabled:
             from opencortex.ace.engine import ACEngine
 
@@ -704,28 +712,31 @@ class MemoryOrchestrator:
             is_leaf=is_leaf,
         )
 
-        # ACE skill extraction disabled — pure memory mode
-        # if self._rule_extractor and self._hooks and content:
-        #     asyncio.create_task(self._try_extract_skills(abstract, content, tid, uid))
+        if self._rule_extractor and self._skillbook and content:
+            asyncio.create_task(self._try_extract_skills(abstract, content, tid, uid))
 
         ctx.meta["dedup_action"] = "created"
         logger.info("[MemoryOrchestrator] Added context: %s", uri)
         return ctx
 
-    # async def _try_extract_skills(self, abstract: str, content: str,
-    #                                tenant_id: str = "", user_id: str = "") -> None:
-    #     """Background skill extraction from stored content. Failures are silent."""
-    #     try:
-    #         skills = self._rule_extractor.extract(abstract, content)
-    #         for skill in skills:
-    #             existing = await self._hooks.recall(skill.content, limit=1,
-    #                                                 tenant_id=tenant_id, user_id=user_id)
-    #             if existing and existing[0].get("score", 0) > 0.85:
-    #                 continue
-    #             await self._hooks.remember(skill.content, skill.section,
-    #                                        tenant_id=tenant_id, user_id=user_id)
-    #     except Exception:
-    #         logger.debug("[Orchestrator] Skill extraction failed silently")
+    async def _try_extract_skills(self, abstract: str, content: str,
+                                   tenant_id: str = "", user_id: str = "") -> None:
+        """Background skill extraction from stored content. Failures are silent."""
+        try:
+            skills = self._rule_extractor.extract(abstract, content)
+            for skill in skills:
+                existing = await self._skillbook.search(
+                    skill.content, limit=1,
+                    tenant_id=tenant_id, user_id=user_id,
+                )
+                if existing and getattr(existing[0], '_score', 0) > 0.85:
+                    continue
+                await self._skillbook.add_skill(
+                    skill.section, skill.content,
+                    tenant_id=tenant_id, user_id=user_id,
+                )
+        except Exception:
+            logger.debug("[Orchestrator] Skill extraction failed silently")
 
     # ------------------------------------------------------------------
     # Write-time dedup helpers
@@ -1040,9 +1051,11 @@ class MemoryOrchestrator:
             for tq in typed_queries
         ]
 
-        # ACE skillbook search disabled — pure memory mode
-        # should_search_skills = self._hooks and (context_type is None or context_type == ContextType.SKILL)
-        # skill_search_coro = self._search_skillbook(query, limit=3) if should_search_skills else None
+        should_search_skills = self._skillbook and (context_type is None or context_type == ContextType.SKILL)
+
+        # Include skillbook search in the gather if applicable
+        if should_search_skills:
+            retrieval_coros.append(self._search_skillbook_as_query_result(query, typed_queries))
 
         query_results = list(await asyncio.gather(*retrieval_coros))
 
@@ -1284,11 +1297,11 @@ class MemoryOrchestrator:
         self._ensure_init()
 
         # If URI points to a skillbook entry, update skill tag directly
-        if ("/skillbooks/" in uri or "/shared/skills/" in uri) and self._hooks:
+        if ("/skillbooks/" in uri or "/shared/skills/" in uri) and self._skillbook:
             skill_id = uri.rsplit("/", 1)[-1]
             tag = "helpful" if reward > 0 else ("harmful" if reward < 0 else "neutral")
             try:
-                await self._hooks.skillbook.tag_skill(skill_id, tag)
+                await self._skillbook.tag_skill(skill_id, tag)
                 logger.info(
                     "[MemoryOrchestrator] Skillbook feedback: skill=%s, tag=%s",
                     skill_id, tag,
@@ -1848,6 +1861,370 @@ class MemoryOrchestrator:
         }
 
     # =========================================================================
+    # Skill Evolution
+    # =========================================================================
+
+    async def skill_lookup(self, objective: str, section: str = "", limit: int = 5) -> List[Dict]:
+        """Search for relevant skills by objective."""
+        self._ensure_init()
+        tid, uid = get_effective_identity()
+        skills = await self._skillbook.search(
+            query=objective, limit=limit * 2, section=section or None,
+            tenant_id=tid, user_id=uid,
+        )
+        # Post-filter: exclude deprecated
+        active = [s for s in skills if s.status not in ("deprecated",)]
+        active.sort(key=lambda s: s.confidence_score, reverse=True)
+        return [s.to_dict() for s in active[:limit]]
+
+    async def skill_feedback(
+        self, uri: str, session_id: str = "", turn_uuid: str = "",
+        success: bool = True, score: float = 1.0,
+    ) -> Dict:
+        """Provide usage feedback for a skill. Updates confidence + checks evolution."""
+        import math
+        self._ensure_init()
+
+        # Extract skill_id from URI
+        skill_id = uri.rsplit("/", 1)[-1]
+
+        # Tag the skill
+        tag = "helpful" if success else "harmful"
+        try:
+            await self._skillbook.tag_skill(skill_id, tag)
+        except ValueError:
+            return {"error": "skill not found", "uri": uri}
+
+        # Read updated skill
+        records = await self._storage.get(self._skillbook.COLLECTION, [skill_id])
+        if not records:
+            return {"error": "skill not found after tag", "uri": uri}
+
+        record = records[0]
+        skill = self._skillbook._Skill_cls(record) if hasattr(self._skillbook, '_Skill_cls') else None
+        helpful = record.get("helpful", 0)
+        harmful = record.get("harmful", 0)
+        neutral = record.get("neutral", 0)
+        usage = helpful + harmful + neutral
+        rate = helpful / usage if usage > 0 else 0.5
+
+        # Freshness decay
+        updated_at = record.get("updated_at", "")
+        days = 0
+        if updated_at:
+            try:
+                from datetime import datetime, timezone
+                dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+                days = (datetime.now(timezone.utc) - dt).days
+            except (ValueError, TypeError):
+                pass
+        freshness = 0.5 + 0.5 * math.exp(-days / 45)
+        confidence = round(rate * math.log(usage + 1) * freshness, 4)
+
+        old_version = record.get("version", 1)
+        from opencortex.utils.time_utils import get_current_timestamp
+        now = get_current_timestamp()
+        await self._storage.update(
+            self._skillbook.COLLECTION, skill_id,
+            {"confidence_score": confidence, "version": old_version + 1, "updated_at": now},
+        )
+
+        # Check observation resolution
+        supersedes_uri = record.get("supersedes_uri", "")
+        observation_turns = record.get("observation_turns", 10)
+        if supersedes_uri and usage >= observation_turns:
+            try:
+                await self._resolve_observation(uri)
+            except Exception as exc:
+                logger.warning("[Skill] Observation resolution failed: %s", exc)
+
+        return {
+            "status": "updated", "uri": uri,
+            "confidence_score": confidence,
+            "version": old_version + 1,
+            "helpful": helpful, "harmful": harmful, "neutral": neutral,
+        }
+
+    async def mine_skills(
+        self, section: str = "", min_cases: int = 5,
+        max_cases: int = 200, max_clusters: int = 10, llm_budget: int = 5,
+    ) -> Dict:
+        """Mine skills from successful case memories in context collection."""
+        import hashlib
+        import math
+
+        self._ensure_init()
+
+        from opencortex.utils.json_parse import parse_json_from_response
+
+        if self._llm_completion is None:
+            return {"error": "LLM not available"}
+
+        tid, uid = get_effective_identity()
+
+        # Fetch cases from context collection
+        case_conds = [
+            {"op": "must", "field": "context_type", "conds": ["case"]},
+            {"op": "must", "field": "source_tenant_id", "conds": [tid, ""]},
+        ]
+        if section:
+            case_conds.append({"op": "must", "field": "category", "conds": [section]})
+        case_filter = {"op": "and", "conds": case_conds}
+
+        cases, _ = await self._storage.scroll(
+            _CONTEXT_COLLECTION, filter=case_filter, limit=max_cases,
+        )
+
+        # Filter successful cases
+        success_cases = []
+        for r in cases:
+            meta = r.get("meta", {})
+            if isinstance(meta, str):
+                import json
+                try:
+                    meta = json.loads(meta)
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+            if meta.get("evaluation", {}).get("status") == "success":
+                success_cases.append(r)
+
+        if not success_cases:
+            return {"mined": 0, "clusters": 0, "cases_scanned": len(cases)}
+
+        # Greedy clustering by cosine similarity
+        def _cosine_sim(a, b):
+            dot = sum(x * y for x, y in zip(a, b))
+            na = math.sqrt(sum(x * x for x in a))
+            nb = math.sqrt(sum(x * x for x in b))
+            if na == 0 or nb == 0:
+                return 0.0
+            return dot / (na * nb)
+
+        similarity_threshold = 0.75
+        clusters: List[Dict] = []
+
+        for record in success_cases:
+            vec = record.get("vector") or []
+            if not vec:
+                continue
+
+            best_cluster = None
+            best_sim = -1.0
+            for cluster in clusters:
+                sim = _cosine_sim(vec, cluster["centroid"])
+                if sim > best_sim:
+                    best_sim = sim
+                    best_cluster = cluster
+
+            if best_cluster is not None and best_sim >= similarity_threshold:
+                best_cluster["members"].append(record)
+                n = len(best_cluster["members"])
+                centroid = best_cluster["centroid"]
+                best_cluster["centroid"] = [
+                    (c * (n - 1) + v) / n for c, v in zip(centroid, vec)
+                ]
+            else:
+                if len(clusters) < max_clusters * 5:
+                    clusters.append({"centroid": list(vec), "members": [record]})
+
+        clusters.sort(key=lambda c: len(c["members"]), reverse=True)
+        top_clusters = clusters[:max_clusters]
+
+        total_clusters = len(top_clusters)
+        mined = 0
+
+        for cluster in top_clusters:
+            if mined >= llm_budget:
+                break
+
+            members = cluster["members"]
+            if len(members) < min_cases:
+                continue
+
+            source_uris = sorted([m.get("uri", "") for m in members if m.get("uri")])
+            source_hash = hashlib.sha256("\n".join(source_uris).encode()).hexdigest()[:16]
+
+            # Build prompt
+            case_lines = []
+            for m in members[:20]:
+                abstract = m.get("abstract", "")
+                meta = m.get("meta", {})
+                if isinstance(meta, str):
+                    import json
+                    try:
+                        meta = json.loads(meta)
+                    except (json.JSONDecodeError, TypeError):
+                        meta = {}
+                action_path = meta.get("action_path", [])
+                if isinstance(action_path, list):
+                    action_str = " → ".join(str(s) for s in action_path)
+                else:
+                    action_str = str(action_path)
+                case_lines.append(f"- {abstract} (steps: {action_str})")
+
+            cases_text = "\n".join(case_lines)
+
+            prompt = (
+                "Analyze these successful task cases and extract a reusable skill template.\n\n"
+                f"Cases:\n{cases_text}\n\n"
+                "Return a JSON object with:\n"
+                "- abstract: Short description of the skill (1-2 sentences)\n"
+                "- section: Category section (e.g. \"strategies\", \"error_fixes\", \"patterns\")\n"
+                "- trigger_conditions: List of conditions when this skill applies\n"
+                "- action_template: Ordered list of action steps\n"
+                "- success_metric: How to measure success"
+            )
+
+            try:
+                raw_response = await self._llm_completion(prompt)
+                skill_data = parse_json_from_response(raw_response)
+            except Exception as exc:
+                logger.warning("[mine_skills] LLM call failed: %s", exc)
+                continue
+
+            if not isinstance(skill_data, dict):
+                continue
+
+            abstract = skill_data.get("abstract", "Mined skill")
+            skill_section = skill_data.get("section", section or "general")
+            trigger_conditions = skill_data.get("trigger_conditions", [])
+            action_template = skill_data.get("action_template", [])
+            success_metric = skill_data.get("success_metric", "")
+
+            try:
+                await self._skillbook.add_skill(
+                    section=skill_section,
+                    content=abstract,
+                    tenant_id=tid,
+                    user_id=uid,
+                    trigger_conditions=trigger_conditions if isinstance(trigger_conditions, list) else [],
+                    action_template=action_template if isinstance(action_template, list) else [],
+                    success_metric=success_metric,
+                    source_case_uris=source_uris,
+                )
+                mined += 1
+                logger.info("[mine_skills] stored skill '%s' (source_hash=%s)", abstract, source_hash)
+            except Exception as exc:
+                logger.warning("[mine_skills] failed to store skill: %s", exc)
+
+        return {"mined": mined, "clusters": total_clusters, "cases_scanned": len(success_cases)}
+
+    async def evolve_skill(
+        self, uri: str, confidence_threshold: float = 0.3, observation_turns: int = 10,
+    ) -> Dict:
+        """Dual-track skill evolution controller."""
+        self._ensure_init()
+
+        # Read current skill by URI
+        skill_id = uri.rsplit("/", 1)[-1]
+        records = await self._storage.get(self._skillbook.COLLECTION, [skill_id])
+        if not records:
+            return {"error": "skill not found", "uri": uri}
+
+        record = records[0]
+        confidence = record.get("confidence_score", 0.5)
+
+        if confidence >= confidence_threshold:
+            return {"status": "no_evolution_needed", "uri": uri, "confidence": confidence}
+
+        if record.get("superseded_by_uri"):
+            return {"status": "already_evolving", "uri": uri,
+                    "superseded_by": record["superseded_by_uri"]}
+
+        # Mine for replacement
+        skill_section = record.get("type", record.get("section", ""))
+        mine_result = await self.mine_skills(
+            section=skill_section, min_cases=3, max_clusters=1, llm_budget=1,
+        )
+
+        if mine_result.get("mined", 0) == 0:
+            return {"status": "no_replacement_found", "uri": uri, "mine_result": mine_result}
+
+        # Find the newly created skill
+        tid, uid = get_effective_identity()
+        new_skills = await self._skillbook.search(
+            query=record.get("abstract", record.get("content", "")),
+            limit=5, section=skill_section or None,
+            tenant_id=tid, user_id=uid,
+        )
+
+        new_skill = None
+        for s in new_skills:
+            if s.id != skill_id and s.status == "active":
+                new_skill = s
+                break
+
+        if not new_skill:
+            return {"status": "no_replacement_found", "uri": uri}
+
+        new_uri = f"opencortex://{tid}/shared/skills/{new_skill.section}/{new_skill.id}"
+
+        # Old → observation, new stays active
+        from opencortex.utils.time_utils import get_current_timestamp
+        now = get_current_timestamp()
+        await self._storage.update(
+            self._skillbook.COLLECTION, skill_id,
+            {"status": "observation", "superseded_by_uri": new_uri,
+             "version": record.get("version", 1) + 1, "updated_at": now},
+        )
+        await self._storage.update(
+            self._skillbook.COLLECTION, new_skill.id,
+            {"supersedes_uri": uri, "updated_at": now},
+        )
+
+        return {
+            "status": "evolution_started",
+            "old_uri": uri, "new_uri": new_uri,
+            "old_status": "observation", "new_status": "active",
+            "observation_turns": observation_turns,
+        }
+
+    async def _resolve_observation(self, new_uri: str) -> Optional[Dict]:
+        """Compare new vs old skill confidence and resolve observation."""
+        new_id = new_uri.rsplit("/", 1)[-1]
+        new_records = await self._storage.get(self._skillbook.COLLECTION, [new_id])
+        if not new_records:
+            return None
+
+        new_record = new_records[0]
+        supersedes_uri = new_record.get("supersedes_uri", "")
+        if not supersedes_uri:
+            return None
+
+        old_id = supersedes_uri.rsplit("/", 1)[-1]
+        old_records = await self._storage.get(self._skillbook.COLLECTION, [old_id])
+        if not old_records:
+            return None
+
+        new_confidence = new_record.get("confidence_score", 0)
+        old_confidence = old_records[0].get("confidence_score", 0)
+
+        from opencortex.utils.time_utils import get_current_timestamp
+        now = get_current_timestamp()
+
+        if new_confidence > old_confidence:
+            # New wins — deprecate old
+            await self._storage.update(
+                self._skillbook.COLLECTION, old_id,
+                {"status": "deprecated", "version": old_records[0].get("version", 1) + 1,
+                 "updated_at": now},
+            )
+            return {"winner": new_uri, "loser": supersedes_uri, "action": "old_deprecated"}
+        else:
+            # Old wins — rollback
+            await self._storage.update(
+                self._skillbook.COLLECTION, new_id,
+                {"status": "deprecated", "version": new_record.get("version", 1) + 1,
+                 "updated_at": now},
+            )
+            await self._storage.update(
+                self._skillbook.COLLECTION, old_id,
+                {"status": "active", "superseded_by_uri": "",
+                 "version": old_records[0].get("version", 1) + 1, "updated_at": now},
+            )
+            return {"winner": supersedes_uri, "loser": new_uri, "action": "rollback"}
+
+    # =========================================================================
     # Session Management (Context Self-Iteration)
     # =========================================================================
 
@@ -1855,8 +2232,8 @@ class MemoryOrchestrator:
         """Create a SessionManager wired to the orchestrator's storage pipeline."""
         from opencortex.session.manager import SessionManager
 
-        async def _store_fn(abstract: str, content: str = "", category: str = "", context_type: str = "memory"):
-            await self.add(abstract=abstract, content=content, category=category, context_type=context_type)
+        async def _store_fn(abstract: str, content: str = "", category: str = "", context_type: str = "memory", meta: dict = None):
+            await self.add(abstract=abstract, content=content, category=category, context_type=context_type, meta=meta)
 
         async def _search_fn(query: str):
             result = await self.search(query=query, limit=3, score_threshold=0.5)
@@ -2430,23 +2807,40 @@ Return JSON: {{"abstract": "1-2 sentence summary", "overview": "1 paragraph over
             await self._storage.upsert(_CONTEXT_COLLECTION, record)
             logger.debug("[MemoryOrchestrator] Created directory record: %s", dir_uri)
 
-    # ACE skillbook search disabled — pure memory mode
-    # async def _search_skillbook(self, query: str, limit: int = 3) -> List[MatchedContext]:
-    #     """Search ACE Skillbook for relevant skills."""
-    #     try:
-    #         tid, uid = get_effective_identity()
-    #         raw_skills = await self._hooks.recall(query, limit=limit, tenant_id=tid, user_id=uid)
-    #         results = []
-    #         for s in raw_skills:
-    #             results.append(MatchedContext(
-    #                 uri=s.get("uri", f"skillbook://{s.get('skill_id', '')}"),
-    #                 context_type=ContextType.SKILL, is_leaf=True,
-    #                 abstract=s.get("content", ""), score=s.get("score", 0.0),
-    #                 category=s.get("section", ""), match_reason="skillbook",
-    #             ))
-    #         return results
-    #     except Exception:
-    #         return []
+    async def _search_skillbook_as_query_result(
+        self, query: str, typed_queries: List[TypedQuery],
+    ) -> QueryResult:
+        """Wrap skillbook search into a QueryResult for gather()."""
+        try:
+            skill_matches = await self._search_skillbook(query, limit=3)
+        except Exception:
+            skill_matches = []
+        return QueryResult(
+            query=typed_queries[0] if typed_queries else TypedQuery(
+                query=query, context_type=ContextType.SKILL, intent="skillbook"
+            ),
+            matched_contexts=skill_matches,
+            searched_directories=["skillbooks"],
+        )
+
+    async def _search_skillbook(self, query: str, limit: int = 3) -> List[MatchedContext]:
+        """Search ACE Skillbook for relevant skills."""
+        try:
+            tid, uid = get_effective_identity()
+            raw_skills = await self._skillbook.search(
+                query, limit=limit, tenant_id=tid, user_id=uid,
+            )
+            results = []
+            for s in raw_skills:
+                results.append(MatchedContext(
+                    uri=f"opencortex://{tid}/shared/skills/{s.section}/{s.id}",
+                    context_type=ContextType.SKILL, is_leaf=True,
+                    abstract=s.content, score=getattr(s, '_score', 0.0),
+                    category=s.section, match_reason="skillbook",
+                ))
+            return results
+        except Exception:
+            return []
 
     def _aggregate_results(
         self, query_results: List[QueryResult]
