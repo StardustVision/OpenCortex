@@ -63,62 +63,6 @@ class MemoryFeedbackRequest(BaseModel):
 
 
 # =========================================================================
-# Hooks Learn
-# =========================================================================
-
-class HooksLearnRequest(BaseModel):
-    state: str
-    action: str
-    reward: float
-    available_actions: str = ""
-
-
-class HooksRememberRequest(BaseModel):
-    content: str
-    memory_type: str = "general"
-
-
-class HooksRecallRequest(BaseModel):
-    query: str
-    limit: int = 5
-
-
-# =========================================================================
-# Trajectory
-# =========================================================================
-
-class TrajectoryBeginRequest(BaseModel):
-    trajectory_id: str
-    initial_state: str
-
-
-class TrajectoryStepRequest(BaseModel):
-    trajectory_id: str
-    action: str
-    reward: float
-    next_state: str = ""
-
-
-class TrajectoryEndRequest(BaseModel):
-    trajectory_id: str
-    quality_score: float
-
-
-# =========================================================================
-# Error
-# =========================================================================
-
-class ErrorRecordRequest(BaseModel):
-    error: str
-    fix: str
-    context: str = ""
-
-
-class ErrorSuggestRequest(BaseModel):
-    error: str
-
-
-# =========================================================================
 # Session
 # =========================================================================
 
@@ -165,47 +109,11 @@ class PromoteToSharedRequest(BaseModel):
 
 
 # =========================================================================
-# Integration
-# =========================================================================
-
-class HooksRouteRequest(BaseModel):
-    task: str
-    agents: str = ""
-
-
-class HooksInitRequest(BaseModel):
-    project_path: str = "."
-
-
-class HooksPretrainRequest(BaseModel):
-    repo_path: str = "."
-
-
-class HooksExportRequest(BaseModel):
-    format: str = "json"
-
-
-# =========================================================================
 # Intent
 # =========================================================================
 
 class IntentShouldRecallRequest(BaseModel):
     query: str
-
-
-# =========================================================================
-# Skill Approval & Demotion
-# =========================================================================
-
-class SkillReviewRequest(BaseModel):
-    skill_id: str
-    decision: str  # "approve" | "reject"
-
-
-class SkillDemoteRequest(BaseModel):
-    skill_id: str
-    reason: str = ""
-
 
 
 # =========================================================================

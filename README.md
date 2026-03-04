@@ -62,7 +62,7 @@ Skills evolve over time through a **confidence scoring** system: usage feedback 
 
 ### MCP (Model Context Protocol)
 
-An open standard that lets AI agents call external tools. OpenCortex exposes 25 MCP tools (store, search, feedback, etc.) through a Node.js stdio server that Claude Code, Cursor, and other MCP-compatible clients can use directly.
+An open standard that lets AI agents call external tools. OpenCortex exposes 13 MCP tools (store, search, feedback, etc.) through a Node.js stdio server that Claude Code, Cursor, and other MCP-compatible clients can use directly.
 
 ### CortexFS
 
@@ -98,18 +98,18 @@ This ensures complete data isolation between tenants and users.
 AI Agent (Claude Code / Cursor / Custom)
   |
   |--- MCP Protocol (stdio) ----> Node.js MCP Server ---- HTTP ----> FastAPI HTTP Server (:8921)
-  |                                (25 tools)                              |
+  |                                (13 tools)                              |
   |                                                                        v
   |                                                                  MemoryOrchestrator
   |                                                                  (unified API layer)
   |                                                                        |
   |                                                         +--------------+--------------+
   |                                                         |              |              |
-  |                                                    IntentRouter   SessionManager   ACEngine
-  |                                                         |                            |
-  |                                                         v                            v
-  |                                                  HierarchicalRetriever          Skillbook
-  |                                                         |                       (self-learning)
+  |                                                    IntentRouter   SessionManager   Skillbook
+  |                                                         |                        (self-learning)
+  |                                                         v
+  |                                                  HierarchicalRetriever
+  |                                                         |
   |                                                         v
   |                                                  CortexFS + Qdrant Adapter
   |                                                  (L0/L1/L2)  (vectors + RL)
@@ -432,15 +432,14 @@ Complete data isolation between tenants and users. Team-level resources can be s
 | POST | `/api/v1/hooks/error/suggest` | Get fix suggestions for an error |
 | POST | `/api/v1/integration/route` | Route a task to the best agent |
 
-### MCP Tools (29 tools)
+### MCP Tools (13 tools)
 
 The MCP server exposes the same capabilities as the REST API. Key tools:
 
-- `memory_store` / `memory_search` / `memory_feedback` / `memory_stats` / `memory_decay` / `memory_health`
+- `memory_store` / `memory_search` / `memory_feedback` / `memory_decay`
 - `session_begin` / `session_message` / `session_end`
 - `skill_lookup` / `skill_feedback` / `skill_mine` / `skill_evolve`
-- `memory_hooks_learn` / `memory_hooks_remember` / `memory_hooks_recall`
-- Trajectory, error, and integration tools
+- `system_status`
 
 ### Python API
 
@@ -491,7 +490,7 @@ plugins/opencortex-memory/
       stop.mjs                   # Parse transcript, store summary
       session-end.mjs            # Final summary, stop server
   lib/
-    mcp-server.mjs               # MCP stdio server (25 tools -> HTTP)
+    mcp-server.mjs               # MCP stdio server (13 tools -> HTTP)
     common.mjs                   # Config discovery, state, uv/python detection
     http-client.mjs              # Native fetch wrapper
     transcript.mjs               # JSONL parsing
@@ -526,7 +525,7 @@ src/opencortex/
   http/                          # FastAPI server + async client
   retrieve/                      # IntentRouter + HierarchicalRetriever + Rerank
   session/                       # SessionManager + MemoryExtractor
-  ace/                           # ACEngine + Skillbook + RuleExtractor
+  ace/                           # Skillbook + RuleExtractor
   storage/                       # VikingDBInterface + CortexFS + Qdrant adapter
   models/                        # Embedder abstractions + LLM factory
 
@@ -542,7 +541,7 @@ tests/                           # 175+ Python tests + 8 Node.js tests
 ```bash
 # Core regression (176 tests, no external dependencies)
 uv run python3 -m unittest tests.test_e2e_phase1 \
-  tests.test_ace_phase1 tests.test_ace_phase2 \
+  tests.test_ace_phase1 \
   tests.test_rule_extractor tests.test_skill_search_fusion \
   tests.test_case_memory tests.test_skill_evolution -v
 

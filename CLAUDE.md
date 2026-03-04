@@ -9,7 +9,7 @@ Core subsystems:
 - **CortexFS** — three-layer filesystem (L0 abstract / L1 overview / L2 content)
 - **HierarchicalRetriever** — frontier-batching wave search with RL score fusion
 - **IntentRouter** — 3-layer query analysis (keywords → LLM → memory triggers)
-- **ACEngine** — self-learning loop (RuleExtractor → Skillbook)
+- **Skillbook + RuleExtractor** — skill extraction and evolution (direct on orchestrator)
 - **SessionManager** — session lifecycle with LLM memory extraction
 - **QdrantStorageAdapter** — embedded Qdrant with RL fields (reward, decay, protect)
 - **RequestContextMiddleware** — per-request identity + ACE config via HTTP headers
@@ -21,8 +21,8 @@ Core subsystems:
 - Vector store: Qdrant (embedded local mode, no separate process)
 - Embedding: Volcengine doubao-embedding-vision (1024 dim) / OpenAI-compatible
 - HTTP: FastAPI + uvicorn + httpx
-- MCP: Node.js stdio proxy (25 tools → HTTP API)
-- Tests: unittest (175+ Python) + node:test (8 Node.js MCP)
+- MCP: Node.js stdio proxy (13 tools → HTTP API)
+- Tests: unittest (140+ Python) + node:test (8 Node.js MCP)
 
 ## Directory Structure
 
@@ -51,11 +51,8 @@ src/opencortex/
     rerank_client.py             # RerankClient (API / LLM / disabled)
     types.py                     # TypedQuery / SearchIntent / FindResult / DetailLevel
   ace/
-    engine.py                    # ACEngine (Skillbook + Reflector + SkillManager)
     skillbook.py                 # Skillbook CRUD + vector search + CortexFS persistence
     rule_extractor.py            # RuleExtractor — zero-LLM skill extraction
-    reflector.py                 # LLM reflection (optional)
-    skill_manager.py             # LLM strategy management (optional)
     types.py                     # Skill / Learning / UpdateOperation
   session/
     manager.py                   # SessionManager (begin/message/end)
@@ -71,7 +68,7 @@ plugins/opencortex-memory/       # Claude Code plugin (pure Node.js)
   lib/common.mjs                 # Config discovery, state, uv/python detection
   lib/http-client.mjs            # Native fetch wrapper + buildClientHeaders()
   lib/transcript.mjs             # JSONL parsing
-  lib/mcp-server.mjs             # MCP stdio server (29 tools)
+  lib/mcp-server.mjs             # MCP stdio server (13 tools)
   bin/oc-cli.mjs                 # CLI tool
 
 tests/
@@ -79,8 +76,7 @@ tests/
   test_skill_evolution.py        # 51 skill evolution tests (unit + data flow)
   test_case_memory.py            # 8 case memory tests
   test_mcp_server.mjs            # 8 MCP tests (Node.js)
-  test_ace_phase1.py             # 21 ACE tests
-  test_ace_phase2.py             # 17 ACE Phase 2 tests
+  test_ace_phase1.py             # 15 ACE tests (Skillbook + CortexFS)
   test_rule_extractor.py         # 20 rule extraction tests
   test_skill_search_fusion.py    # 11 skill fusion search tests
   test_integration_skill_pipeline.py  # 10 Qdrant integration tests
@@ -155,7 +151,7 @@ docker compose up -d
 
 ```bash
 # Python core tests (no external dependencies)
-uv run python3 -m unittest tests.test_e2e_phase1 tests.test_ace_phase1 tests.test_ace_phase2 tests.test_rule_extractor tests.test_skill_search_fusion tests.test_case_memory tests.test_skill_evolution -v
+uv run python3 -m unittest tests.test_e2e_phase1 tests.test_ace_phase1 tests.test_rule_extractor tests.test_skill_search_fusion tests.test_case_memory tests.test_skill_evolution -v
 
 # Node.js MCP tests (requires running HTTP server)
 node --test tests/test_mcp_server.mjs

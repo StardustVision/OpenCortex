@@ -1,5 +1,5 @@
 """
-ACE Phase 1 tests — Skillbook CRUD, ACEngine HooksProtocol, CortexFS integration.
+ACE Phase 1 tests — Skillbook CRUD, CortexFS integration.
 
 Uses in-memory mocks (no external binary or network calls needed).
 """
@@ -16,9 +16,8 @@ from uuid import uuid4
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from opencortex.ace.engine import ACEngine
 from opencortex.ace.skillbook import Skillbook
-from opencortex.ace.types import HooksStats, LearnResult, Skill, UpdateOperation
+from opencortex.ace.types import Skill, UpdateOperation
 from opencortex.models.embedder.base import DenseEmbedderBase, EmbedResult
 from opencortex.storage.cortex_fs import CortexFS
 from opencortex.storage.vikingdb_interface import (
@@ -462,93 +461,6 @@ class TestSkillbookCRUD(unittest.TestCase):
         self.assertEqual(stats["total"], 3)
         self.assertEqual(stats["by_section"]["strategies"], 2)
         self.assertEqual(stats["by_section"]["error_fixes"], 1)
-
-
-# =============================================================================
-# ACEngine HooksProtocol Tests
-# =============================================================================
-
-
-class TestACEngineHooks(unittest.TestCase):
-    """Test ACEngine's HooksProtocol implementation."""
-
-    def setUp(self):
-        self.temp_dir = tempfile.mkdtemp(prefix="ace_engine_test_")
-        self.storage = InMemoryStorage()
-        self.embedder = MockEmbedder()
-        self.fs = CortexFS(data_root=self.temp_dir, vector_store=self.storage)
-        self.engine = ACEngine(
-            storage=self.storage,
-            embedder=self.embedder,
-            cortex_fs=self.fs,
-            tenant_id="test",
-            user_id="alice",
-        )
-        _run(self.engine.init())
-
-    def tearDown(self):
-        shutil.rmtree(self.temp_dir, ignore_errors=True)
-
-    def test_12_remember_recall(self):
-        """remember → recall end-to-end."""
-        result = _run(self.engine.remember(content="Always validate user input", memory_type="strategies"))
-        self.assertTrue(result["success"])
-        self.assertIn("skill_id", result)
-
-        recalls = _run(self.engine.recall(query="input validation"))
-        self.assertGreater(len(recalls), 0)
-        self.assertIn("content", recalls[0])
-
-    def test_13_error_record_suggest(self):
-        """error_record → error_suggest end-to-end."""
-        record_result = _run(
-            self.engine.error_record(
-                error="JSONDecodeError: invalid UTF-8",
-                fix="Validate encoding before JSON.parse",
-                context="API response handling",
-            )
-        )
-        self.assertTrue(record_result["success"])
-        self.assertIn("skill_id", record_result)
-
-        suggestions = _run(self.engine.error_suggest(error="JSONDecodeError"))
-        self.assertGreater(len(suggestions), 0)
-        self.assertIn("fix", suggestions[0])
-
-    def test_14_learn_stub(self):
-        """learn() returns LearnResult (simple mode without LLM)."""
-        result = _run(self.engine.learn(state="s1", action="a1", reward=0.5))
-        self.assertIsInstance(result, LearnResult)
-        self.assertTrue(result.success)
-
-    def test_15_trajectory_lifecycle(self):
-        """begin → step → end doesn't raise."""
-        begin = _run(self.engine.trajectory_begin(trajectory_id="t1", initial_state="start"))
-        self.assertEqual(begin["trajectory_id"], "t1")
-
-        step1 = _run(self.engine.trajectory_step(trajectory_id="t1", action="act1", reward=0.5))
-        self.assertEqual(step1["step"], 1)
-
-        step2 = _run(
-            self.engine.trajectory_step(
-                trajectory_id="t1", action="act2", reward=0.8, next_state="s2"
-            )
-        )
-        self.assertEqual(step2["step"], 2)
-
-        end = _run(self.engine.trajectory_end(trajectory_id="t1", quality_score=0.9))
-        self.assertEqual(end["steps"], 2)
-        self.assertEqual(end["quality_score"], 0.9)
-
-    def test_16_stats_via_engine(self):
-        """stats() returns HooksStats with correct counts."""
-        _run(self.engine.remember(content="strategy skill", memory_type="strategies"))
-        _run(self.engine.error_record(error="err", fix="fix it"))
-
-        stats = _run(self.engine.stats())
-        self.assertIsInstance(stats, HooksStats)
-        self.assertEqual(stats.vector_memories, 2)
-        self.assertGreaterEqual(stats.error_patterns, 1)
 
 
 # =============================================================================

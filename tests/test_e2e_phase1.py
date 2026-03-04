@@ -1404,24 +1404,6 @@ class TestStagingLifecycle(unittest.TestCase):
         return orch
 
 
-class TestAcePreferencesRouting(unittest.TestCase):
-    """ACE-extracted preferences should route to user/memories, not shared/skills."""
-
-    def test_preferences_section_routes_to_user_memory(self):
-        """When RuleExtractor extracts a preferences skill, it should be stored
-        as a user memory, not as a shared skill."""
-        from opencortex.ace.engine import ACEngine
-        # The remember() method should detect preferences section
-        # and route to user memory instead of skillbook
-        # This test validates the routing decision
-        self.assertIn("preferences", ACEngine._USER_MEMORY_SECTIONS)
-
-    def test_error_fixes_routes_to_shared(self):
-        """error_fixes should NOT be in _USER_MEMORY_SECTIONS — they stay shared."""
-        from opencortex.ace.engine import ACEngine
-        self.assertNotIn("error_fixes", ACEngine._USER_MEMORY_SECTIONS)
-
-
 class TestScopeAwareSearch(unittest.TestCase):
     """Search should return user's private + project shared, exclude staging."""
 

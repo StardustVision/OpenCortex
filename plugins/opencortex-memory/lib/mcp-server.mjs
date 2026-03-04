@@ -40,63 +40,11 @@ const TOOLS = {
       uri:    { type: 'string', description: 'URI of the memory to reward', required: true },
       reward: { type: 'number', description: 'Reward value (positive or negative)', required: true },
     }],
-  memory_stats: ['GET', '/api/v1/memory/stats',
-    'Get system statistics including storage info, tenant, and component status.', {}],
   memory_decay: ['POST', '/api/v1/memory/decay',
     'Trigger time-decay across all stored memories. Reduces effective scores of inactive memories over time.', {}],
-  memory_health: ['GET', '/api/v1/memory/health',
-    'Check health status of all OpenCortex components.', {}],
-
-  // ── Hooks Learn ──
-  memory_hooks_learn: ['POST', '/api/v1/hooks/learn',
-    'Record a learning outcome using native Q-learning. Maps OpenCortex concepts to hooks: state=URI, action=context_type, reward=feedback. Returns best action recommendation based on learned patterns.', {
-      state:             { type: 'string', description: 'Current state identifier', required: true },
-      action:            { type: 'string', description: 'Action taken', required: true },
-      reward:            { type: 'number', description: 'Reward value', required: true },
-      available_actions: { type: 'string', description: 'Comma-separated available actions', default: '' },
-    }],
-  memory_hooks_remember: ['POST', '/api/v1/hooks/remember',
-    'Store content in semantic memory. Useful for remembering important context that should persist beyond session.', {
-      content:     { type: 'string', description: 'Content to remember', required: true },
-      memory_type: { type: 'string', description: 'Memory type category', default: 'general' },
-    }],
-  memory_hooks_recall: ['POST', '/api/v1/hooks/recall',
-    'Search semantic memory for relevant content. Different from vector search - searches learned patterns and memories.', {
-      query: { type: 'string',  description: 'Recall query', required: true },
-      limit: { type: 'integer', description: 'Max results', default: 5 },
-    }],
-  memory_hooks_stats: ['GET', '/api/v1/hooks/stats',
-    'Get hooks intelligence statistics (Q-learning patterns, memories, trajectories, errors).', {}],
-
-  // ── Trajectory ──
-  memory_hooks_trajectory_begin: ['POST', '/api/v1/hooks/trajectory/begin',
-    'Begin tracking a learning trajectory for multi-step tasks.', {
-      trajectory_id: { type: 'string', description: 'Unique trajectory identifier', required: true },
-      initial_state: { type: 'string', description: 'Starting state', required: true },
-    }],
-  memory_hooks_trajectory_step: ['POST', '/api/v1/hooks/trajectory/step',
-    'Add a step to an existing learning trajectory.', {
-      trajectory_id: { type: 'string', description: 'Trajectory identifier', required: true },
-      action:        { type: 'string', description: 'Action taken', required: true },
-      reward:        { type: 'number', description: 'Step reward', required: true },
-      next_state:    { type: 'string', description: 'Resulting state', default: '' },
-    }],
-  memory_hooks_trajectory_end: ['POST', '/api/v1/hooks/trajectory/end',
-    'End a learning trajectory with a quality score.', {
-      trajectory_id: { type: 'string', description: 'Trajectory identifier', required: true },
-      quality_score: { type: 'number', description: 'Overall quality score', required: true },
-    }],
-
-  // ── Error Learning ──
-  memory_hooks_error_record: ['POST', '/api/v1/hooks/error/record',
-    'Record an error and its fix for the system to learn from. Helps the system remember how to fix common errors.', {
-      error:   { type: 'string', description: 'Error description', required: true },
-      fix:     { type: 'string', description: 'How the error was fixed', required: true },
-      context: { type: 'string', description: 'Additional context', default: '' },
-    }],
-  memory_hooks_error_suggest: ['POST', '/api/v1/hooks/error/suggest',
-    'Get suggested fixes for an error based on learned patterns. The system will recommend fixes based on previously recorded errors.', {
-      error: { type: 'string', description: 'Error to get suggestions for', required: true },
+  system_status: ['GET', '/api/v1/system/status',
+    'Get system status (health, stats, or full doctor report).', {
+      type: { type: 'string', description: 'Status type: health | stats | doctor', default: 'doctor' },
     }],
 
   // ── Session ──
@@ -115,31 +63,6 @@ const TOOLS = {
       session_id:    { type: 'string', description: 'Session identifier', required: true },
       quality_score: { type: 'number', description: 'Session quality score', default: 0.5 },
     }],
-
-  // ── Integration ──
-  hooks_route: ['POST', '/api/v1/integration/route',
-    'Route a task to the best agent based on learned patterns. Returns the recommended agent and reasoning.', {
-      task:   { type: 'string', description: 'Task description to route', required: true },
-      agents: { type: 'string', description: 'Comma-separated available agents', default: '' },
-    }],
-  hooks_init: ['POST', '/api/v1/integration/init',
-    'Initialize OpenCortex hooks configuration for a project.', {
-      project_path: { type: 'string', description: 'Path to project', default: '.' },
-    }],
-  hooks_pretrain: ['POST', '/api/v1/integration/pretrain',
-    'Pre-train OpenCortex from repository content (files, patterns, structure).', {
-      repo_path: { type: 'string', description: 'Path to repository', default: '.' },
-    }],
-  hooks_verify: ['GET', '/api/v1/integration/verify',
-    'Verify OpenCortex hooks configuration is correct and functional.', {}],
-  hooks_doctor: ['GET', '/api/v1/integration/doctor',
-    'Diagnose OpenCortex system health, configuration issues, and connectivity.', {}],
-  hooks_export: ['POST', '/api/v1/integration/export',
-    'Export OpenCortex intelligence data (learned patterns, memories, trajectories).', {
-      format: { type: 'string', description: 'Export format', default: 'json' },
-    }],
-  hooks_build_agents: ['GET', '/api/v1/integration/build-agents',
-    'Generate agent configuration based on learned patterns and project structure.', {}],
 
   // ── Skill Evolution ──
   skill_lookup: ['POST', '/api/v1/skill/lookup',
@@ -198,7 +121,7 @@ async function callTool(name, args) {
   const def = TOOLS[name];
   if (!def) throw new Error(`Unknown tool: ${name}`);
   const [method, path] = def;
-  const url = `${HTTP_URL}${path}`;
+  let url = `${HTTP_URL}${path}`;
 
   // Apply defaults
   const params = def[3];
@@ -218,6 +141,9 @@ async function callTool(name, args) {
   if (method === 'POST') {
     hdrs['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
+  } else if (method === 'GET' && Object.keys(body).length > 0) {
+    const qs = new URLSearchParams(body).toString();
+    url = `${url}?${qs}`;
   }
   opts.headers = hdrs;
 

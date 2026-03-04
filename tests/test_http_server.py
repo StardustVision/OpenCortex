@@ -558,41 +558,42 @@ class TestHTTPServer(unittest.TestCase):
         self._run(check())
 
     # -----------------------------------------------------------------
-    # 8. Integration endpoints
+    # 8. System status endpoint
     # -----------------------------------------------------------------
 
-    def test_08_integration_verify(self):
-        """GET /api/v1/integration/verify returns status."""
+    def test_08_system_status_doctor(self):
+        """GET /api/v1/system/status returns doctor report by default."""
         async def check():
             async with _test_app_context() as client:
-                resp = await client.get("/api/v1/integration/verify")
+                resp = await client.get("/api/v1/system/status")
                 self.assertEqual(resp.status_code, 200)
                 data = resp.json()
-                self.assertIn("status", data)
+                self.assertIn("issues", data)
+                self.assertIn("initialized", data)
 
         self._run(check())
 
-    def test_09_integration_doctor(self):
-        """GET /api/v1/integration/doctor returns diagnostics."""
+    def test_09_system_status_health(self):
+        """GET /api/v1/system/status?type=health returns health check."""
         async def check():
             async with _test_app_context() as client:
-                resp = await client.get("/api/v1/integration/doctor")
+                resp = await client.get("/api/v1/system/status?type=health")
                 self.assertEqual(resp.status_code, 200)
                 data = resp.json()
-                self.assertIn("status", data)
-                self.assertIn("health", data)
+                self.assertIn("initialized", data)
+                self.assertIn("storage", data)
 
         self._run(check())
 
-    def test_10_build_agents(self):
-        """GET /api/v1/integration/build-agents returns agent configs."""
+    def test_10_system_status_stats(self):
+        """GET /api/v1/system/status?type=stats returns statistics."""
         async def check():
             async with _test_app_context() as client:
-                resp = await client.get("/api/v1/integration/build-agents")
+                resp = await client.get("/api/v1/system/status?type=stats")
                 self.assertEqual(resp.status_code, 200)
                 data = resp.json()
-                self.assertIn("agents", data)
-                self.assertGreater(len(data["agents"]), 0)
+                self.assertIn("storage", data)
+                self.assertIn("tenant_id", data)
 
         self._run(check())
 

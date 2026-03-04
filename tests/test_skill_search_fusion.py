@@ -332,30 +332,30 @@ class TestSkillSearchFusion(unittest.TestCase):
         await orch.init()
         return orch
 
-    def test_01_search_returns_remembered_entries(self):
-        """Content stored via hooks_remember appears in search results (context collection)."""
+    def test_01_search_returns_stored_entries(self):
+        """Content stored via add() appears in search results."""
         async def _test():
             orch = await self._init_orch()
-            result = await orch.hooks_remember(
+            result = await orch.add(
+                abstract="Always use pytest-asyncio for async test fixtures",
                 content="Always use pytest-asyncio for async test fixtures",
-                memory_type="workflows",
+                category="workflows",
+                context_type="memory",
             )
-            self.assertTrue(result.get("success"))
+            self.assertTrue(result.uri)
 
             find_result = await orch.search("how to test async code")
-            # Now stored in context collection, appears as memory (not skill)
             all_abstracts = [m.abstract for m in find_result]
             self.assertTrue(
                 any("pytest-asyncio" in a for a in all_abstracts),
-                f"Expected remembered content in search. Got: {all_abstracts}",
+                f"Expected stored content in search. Got: {all_abstracts}",
             )
         self._run(_test())
 
-    def test_02_search_without_hooks_still_works(self):
-        """Search works fine when hooks are None (no skillbook)."""
+    def test_02_search_without_skillbook_still_works(self):
+        """Search works fine when skillbook search fails."""
         async def _test():
             orch = await self._init_orch()
-            orch._hooks = None
 
             await orch.add(abstract="Dark theme preference", category="preferences")
             result = await orch.search("theme")
@@ -363,26 +363,28 @@ class TestSkillSearchFusion(unittest.TestCase):
         self._run(_test())
 
     def test_03_dedup_in_search(self):
-        """Duplicate remembered content is deduplicated in search results."""
+        """Duplicate stored content is deduplicated in search results."""
         async def _test():
             orch = await self._init_orch()
-            await orch.hooks_remember(content="Use black for formatting", memory_type="preferences")
-            await orch.hooks_remember(content="Use black for formatting", memory_type="preferences")
+            await orch.add(abstract="Use black for formatting", content="Use black for formatting", category="preferences")
+            await orch.add(abstract="Use black for formatting", content="Use black for formatting", category="preferences")
 
             result = await orch.search("formatting tool")
             uris = [m.uri for m in result]
             self.assertEqual(len(uris), len(set(uris)), "URIs should be unique")
         self._run(_test())
 
-    def test_04_feedback_updates_remembered_content(self):
-        """Feedback on a remembered content URI updates reward score."""
+    def test_04_feedback_updates_stored_content(self):
+        """Feedback on a stored content URI updates reward score."""
         async def _test():
             orch = await self._init_orch()
-            result = await orch.hooks_remember(
+            result = await orch.add(
+                abstract="Use chardet for encoding detection",
                 content="Use chardet for encoding detection",
-                memory_type="error_fixes",
+                category="error_fixes",
+                context_type="memory",
             )
-            uri = result.get("uri", "")
+            uri = result.uri
             self.assertTrue(uri, "URI should be non-empty")
 
             await orch.feedback(uri=uri, reward=1.0)
@@ -390,14 +392,16 @@ class TestSkillSearchFusion(unittest.TestCase):
         self._run(_test())
 
     def test_05_feedback_negative(self):
-        """Negative feedback on remembered content doesn't crash."""
+        """Negative feedback on stored content doesn't crash."""
         async def _test():
             orch = await self._init_orch()
-            result = await orch.hooks_remember(
+            result = await orch.add(
+                abstract="Use eval() for dynamic code",
                 content="Use eval() for dynamic code",
-                memory_type="patterns",
+                category="patterns",
+                context_type="memory",
             )
-            uri = result.get("uri", "")
+            uri = result.uri
             await orch.feedback(uri=uri, reward=-1.0)
             # No crash expected
         self._run(_test())
@@ -459,8 +463,8 @@ class TestAsyncSkillExtraction(unittest.TestCase):
             # Let the background task complete
             await asyncio.sleep(0.1)
 
-            skills = await orch.hooks_recall("database connection error")
-            self.assertIsInstance(skills, list)
+            results = await orch.search("database connection error")
+            self.assertIsInstance(list(results), list)
         self._run(_test())
 
     def test_07_add_without_content_no_extraction(self):
@@ -469,7 +473,7 @@ class TestAsyncSkillExtraction(unittest.TestCase):
             orch = await self._init_orch()
             await orch.add(abstract="Simple note", category="notes")
             await asyncio.sleep(0.05)
-            stats = await orch.hooks_stats()
+            stats = await orch.stats()
             self.assertIsInstance(stats, dict)
         self._run(_test())
 
@@ -493,8 +497,8 @@ class TestAsyncSkillExtraction(unittest.TestCase):
             )
             await asyncio.sleep(0.1)
 
-            skills = await orch.hooks_recall("eslint configuration")
-            self.assertIsInstance(skills, list)
+            results = await orch.search("eslint configuration")
+            self.assertIsInstance(list(results), list)
         self._run(_test())
 
     def test_09_extraction_failure_is_silent(self):
@@ -516,8 +520,8 @@ class TestAsyncSkillExtraction(unittest.TestCase):
 # =============================================================================
 
 
-class TestSkillRecallWithURI(unittest.TestCase):
-    """Test that recall returns URI and score fields."""
+class TestSearchWithURI(unittest.TestCase):
+    """Test that search returns URI and score fields."""
 
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp()
@@ -544,25 +548,26 @@ class TestSkillRecallWithURI(unittest.TestCase):
         await orch.init()
         return orch
 
-    def test_10_recall_returns_uri(self):
-        """hooks_recall results include uri field (now from context collection)."""
+    def test_10_search_returns_uri(self):
+        """search results include uri field."""
         async def _test():
             orch = await self._init_orch()
-            await orch.hooks_remember(content="Use ruff for linting Python", memory_type="workflows")
-            results = await orch.hooks_recall("linting")
-            self.assertGreater(len(results), 0)
-            self.assertIn("uri", results[0])
-            self.assertTrue(results[0]["uri"].startswith("opencortex://"))
+            await orch.add(abstract="Use ruff for linting Python", content="Use ruff for linting Python", category="workflows")
+            results = await orch.search("linting")
+            matched = list(results)
+            self.assertGreater(len(matched), 0)
+            self.assertTrue(matched[0].uri.startswith("opencortex://"))
         self._run(_test())
 
-    def test_11_recall_returns_score(self):
-        """hooks_recall results include score field."""
+    def test_11_search_returns_score(self):
+        """search results include score field."""
         async def _test():
             orch = await self._init_orch()
-            await orch.hooks_remember(content="Deploy with docker compose", memory_type="workflows")
-            results = await orch.hooks_recall("deploy docker")
-            self.assertGreater(len(results), 0)
-            self.assertIn("score", results[0])
+            await orch.add(abstract="Deploy with docker compose", content="Deploy with docker compose", category="workflows")
+            results = await orch.search("deploy docker")
+            matched = list(results)
+            self.assertGreater(len(matched), 0)
+            self.assertIsNotNone(matched[0].score)
         self._run(_test())
 
 

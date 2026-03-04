@@ -28,15 +28,6 @@ from opencortex.http.request_context import (
     set_request_project_id,
 )
 from opencortex.http.models import (
-    ErrorRecordRequest,
-    ErrorSuggestRequest,
-    HooksExportRequest,
-    HooksInitRequest,
-    HooksLearnRequest,
-    HooksPretrainRequest,
-    HooksRecallRequest,
-    HooksRememberRequest,
-    HooksRouteRequest,
     IntentShouldRecallRequest,
     MemoryBatchStoreRequest,
     MemoryFeedbackRequest,
@@ -47,15 +38,10 @@ from opencortex.http.models import (
     SessionEndRequest,
     SessionExtractTurnRequest,
     SessionMessageRequest,
-    SkillDemoteRequest,
     SkillEvolveRequest,
     SkillFeedbackRequest,
     SkillLookupRequest,
     SkillMineRequest,
-    SkillReviewRequest,
-    TrajectoryBeginRequest,
-    TrajectoryEndRequest,
-    TrajectoryStepRequest,
 )
 from opencortex.orchestrator import MemoryOrchestrator
 from opencortex.retrieve.intent_router import IntentRouter
@@ -292,107 +278,6 @@ def _register_routes(app: FastAPI) -> None:
         }
 
     # =====================================================================
-    # Hooks Learn
-    # =====================================================================
-
-    @app.post("/api/v1/hooks/learn")
-    async def hooks_learn(req: HooksLearnRequest) -> Dict[str, Any]:
-        actions = req.available_actions.split(",") if req.available_actions else None
-        return await _orchestrator.hooks_learn(
-            state=req.state,
-            action=req.action,
-            reward=req.reward,
-            available_actions=actions,
-        )
-
-    @app.post("/api/v1/hooks/remember")
-    async def hooks_remember(req: HooksRememberRequest) -> Dict[str, Any]:
-        return await _orchestrator.hooks_remember(
-            content=req.content,
-            memory_type=req.memory_type,
-        )
-
-    @app.post("/api/v1/hooks/recall")
-    async def hooks_recall(req: HooksRecallRequest) -> List[Dict[str, Any]]:
-        return await _orchestrator.hooks_recall(
-            query=req.query,
-            limit=req.limit,
-        )
-
-    @app.get("/api/v1/hooks/stats")
-    async def hooks_stats() -> Dict[str, Any]:
-        return await _orchestrator.hooks_stats()
-
-    # =====================================================================
-    # Trajectory
-    # =====================================================================
-
-    @app.post("/api/v1/hooks/trajectory/begin")
-    async def trajectory_begin(req: TrajectoryBeginRequest) -> Dict[str, Any]:
-        return await _orchestrator.hooks_trajectory_begin(
-            trajectory_id=req.trajectory_id,
-            initial_state=req.initial_state,
-        )
-
-    @app.post("/api/v1/hooks/trajectory/step")
-    async def trajectory_step(req: TrajectoryStepRequest) -> Dict[str, Any]:
-        return await _orchestrator.hooks_trajectory_step(
-            trajectory_id=req.trajectory_id,
-            action=req.action,
-            reward=req.reward,
-            next_state=req.next_state or None,
-        )
-
-    @app.post("/api/v1/hooks/trajectory/end")
-    async def trajectory_end(req: TrajectoryEndRequest) -> Dict[str, Any]:
-        return await _orchestrator.hooks_trajectory_end(
-            trajectory_id=req.trajectory_id,
-            quality_score=req.quality_score,
-        )
-
-    # =====================================================================
-    # Error
-    # =====================================================================
-
-    @app.post("/api/v1/hooks/error/record")
-    async def error_record(req: ErrorRecordRequest) -> Dict[str, Any]:
-        return await _orchestrator.hooks_error_record(
-            error=req.error,
-            fix=req.fix,
-            context=req.context or None,
-        )
-
-    @app.post("/api/v1/hooks/error/suggest")
-    async def error_suggest(req: ErrorSuggestRequest) -> List[Dict[str, Any]]:
-        return await _orchestrator.hooks_error_suggest(error=req.error)
-
-    # =====================================================================
-    # Skill Approval & Demotion
-    # =====================================================================
-
-    @app.get("/api/v1/skills/candidates")
-    async def skills_candidates() -> List[Dict[str, Any]]:
-        return await _orchestrator.hooks_list_candidates()
-
-    @app.post("/api/v1/skills/review")
-    async def skills_review(req: SkillReviewRequest) -> Dict[str, Any]:
-        return await _orchestrator.hooks_review_skill(
-            skill_id=req.skill_id,
-            decision=req.decision,
-        )
-
-    @app.post("/api/v1/skills/demote")
-    async def skills_demote(req: SkillDemoteRequest) -> Dict[str, Any]:
-        return await _orchestrator.hooks_demote_skill(
-            skill_id=req.skill_id,
-            reason=req.reason,
-        )
-
-    @app.post("/api/v1/skills/migrate")
-    async def skills_migrate() -> Dict[str, Any]:
-        return await _orchestrator.hooks_migrate_legacy()
-
-    # =====================================================================
     # Skill Evolution
     # =====================================================================
 
@@ -455,41 +340,12 @@ def _register_routes(app: FastAPI) -> None:
         )
 
     # =====================================================================
-    # Integration
+    # System Status
     # =====================================================================
 
-    @app.post("/api/v1/integration/route")
-    async def integration_route(req: HooksRouteRequest) -> Dict[str, Any]:
-        agent_list = (
-            [a.strip() for a in req.agents.split(",") if a.strip()]
-            if req.agents
-            else None
-        )
-        return await _orchestrator.hooks_route(task=req.task, agents=agent_list)
-
-    @app.post("/api/v1/integration/init")
-    async def integration_init(req: HooksInitRequest) -> Dict[str, Any]:
-        return await _orchestrator.hooks_init(project_path=req.project_path)
-
-    @app.post("/api/v1/integration/pretrain")
-    async def integration_pretrain(req: HooksPretrainRequest) -> Dict[str, Any]:
-        return await _orchestrator.hooks_pretrain(repo_path=req.repo_path)
-
-    @app.get("/api/v1/integration/verify")
-    async def integration_verify() -> Dict[str, Any]:
-        return await _orchestrator.hooks_verify()
-
-    @app.get("/api/v1/integration/doctor")
-    async def integration_doctor() -> Dict[str, Any]:
-        return await _orchestrator.hooks_doctor()
-
-    @app.post("/api/v1/integration/export")
-    async def integration_export(req: HooksExportRequest) -> Dict[str, Any]:
-        return await _orchestrator.hooks_export(format=req.format)
-
-    @app.get("/api/v1/integration/build-agents")
-    async def integration_build_agents() -> Dict[str, Any]:
-        return await _orchestrator.hooks_build_agents()
+    @app.get("/api/v1/system/status")
+    async def system_status(type: str = "doctor") -> Dict[str, Any]:
+        return await _orchestrator.system_status(status_type=type)
 
     # =====================================================================
     # Content (L0/L1/L2 on-demand loading)

@@ -349,16 +349,16 @@ class TestMultiTenant(unittest.TestCase):
             reset_request_identity(tokens)
 
     # -----------------------------------------------------------------
-    # 4. hooks_init reflects effective identity
+    # 4. system_status reflects effective identity
     # -----------------------------------------------------------------
 
-    def test_04_hooks_init_effective_identity(self):
-        """hooks_init returns per-request tenant/user."""
+    def test_04_system_status_effective_identity(self):
+        """system_status(stats) returns per-request tenant/user."""
         orch = self._init_orch()
 
         tokens = set_request_identity("teamC", "charlie")
         try:
-            result = self._run(orch.hooks_init())
+            result = self._run(orch.system_status(status_type="stats"))
             self.assertEqual(result["tenant_id"], "teamC")
             self.assertEqual(result["user_id"], "charlie")
         finally:

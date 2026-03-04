@@ -60,7 +60,7 @@ OpenCortex 将每条记忆存储为三个精度层级，最大程度减少 Token
 
 ### MCP（模型上下文协议）
 
-一种开放标准，允许 AI Agent 调用外部工具。OpenCortex 通过 Node.js stdio 服务器暴露 25 个 MCP 工具（存储、搜索、反馈等），Claude Code、Cursor 等 MCP 兼容客户端可以直接使用。
+一种开放标准，允许 AI Agent 调用外部工具。OpenCortex 通过 Node.js stdio 服务器暴露 13 个 MCP 工具（存储、搜索、反馈等），Claude Code、Cursor 等 MCP 兼容客户端可以直接使用。
 
 ### CortexFS
 
@@ -96,14 +96,14 @@ opencortex://{tenant}/user/{user_id}/{type}/{category}/{node_id}
 AI Agent (Claude Code / Cursor / Custom)
   |
   |--- MCP 协议 (stdio) ----> Node.js MCP Server ---- HTTP ----> FastAPI HTTP Server (:8921)
-  |                            (25 个工具)                              |
+  |                            (13 个工具)                              |
   |                                                                     v
   |                                                               MemoryOrchestrator
   |                                                               (统一 API 层)
   |                                                                     |
   |                                                      +--------------+--------------+
   |                                                      |              |              |
-  |                                                 IntentRouter   SessionManager   ACEngine
+  |                                                 IntentRouter   SessionManager   Skillbook
   |                                                      |                            |
   |                                                      v                            v
   |                                               HierarchicalRetriever          Skillbook
@@ -428,7 +428,7 @@ opencortex://{tenant}/user/{uid}/{type}/{category}/{node_id}
 | POST | `/api/v1/hooks/error/suggest` | 获取错误修复建议 |
 | POST | `/api/v1/integration/route` | 将任务路由到最佳 Agent |
 
-### MCP 工具 (29 个)
+### MCP 工具 (13 个)
 
 MCP 服务器暴露与 REST API 相同的能力。主要工具：
 
@@ -487,7 +487,7 @@ plugins/opencortex-memory/
       stop.mjs                   # 解析 transcript，存储摘要
       session-end.mjs            # 最终摘要，停止服务
   lib/
-    mcp-server.mjs               # MCP stdio 服务器 (25 工具 -> HTTP)
+    mcp-server.mjs               # MCP stdio 服务器 (13 工具 -> HTTP)
     common.mjs                   # 配置发现、状态管理、uv/python 检测
     http-client.mjs              # native fetch 封装
     transcript.mjs               # JSONL 解析
@@ -522,7 +522,7 @@ src/opencortex/
   http/                          # FastAPI 服务器 + 异步客户端
   retrieve/                      # IntentRouter + HierarchicalRetriever + Rerank
   session/                       # SessionManager + MemoryExtractor
-  ace/                           # ACEngine + Skillbook + RuleExtractor
+  ace/                           # Skillbook + RuleExtractor
   storage/                       # VikingDBInterface + CortexFS + Qdrant adapter
   models/                        # Embedder 抽象 + LLM 工厂
 

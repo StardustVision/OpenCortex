@@ -92,14 +92,12 @@ class MemoryOrchestrator:
         embedder: Optional[EmbedderBase] = None,
         rerank_config: Optional[RerankConfig] = None,
         llm_completion: Optional[LLMCompletionCallable] = None,
-        hooks: Optional[Any] = None,
     ):
         self._config = config or get_config()
         self._storage = storage
         self._embedder = embedder
         self._rerank_config = rerank_config or RerankConfig()
         self._llm_completion = llm_completion
-        self._hooks = hooks
 
         self._fs: Optional[CortexFS] = None
         self._retriever: Optional[HierarchicalRetriever] = None
@@ -197,21 +195,7 @@ class MemoryOrchestrator:
         )
         await self._skillbook.init()
 
-        # 7a. ACE full pipeline (Reflector + SkillManager) — opt-in
-        if self._hooks is None and self._config.ace_enabled:
-            from opencortex.ace.engine import ACEngine
-
-            self._hooks = ACEngine(
-                storage=self._storage,
-                embedder=self._embedder,
-                cortex_fs=self._fs,
-                llm_fn=self._llm_completion,
-            )
-            await self._hooks.init()
-            # Wire user-memory routing so ACEngine can store preferences via orchestrator.add()
-            self._hooks._store_memory_fn = self.add
-
-        # 7b. Ensure full-text indexes on existing collections (idempotent)
+        # 7a. Ensure full-text indexes on existing collections (idempotent)
         if hasattr(self._storage, "ensure_text_indexes"):
             await self._storage.ensure_text_indexes()
 
@@ -388,18 +372,6 @@ class MemoryOrchestrator:
             "No embedder will be auto-created.",
             provider,
         )
-        return None
-
-    def _create_default_hooks(self) -> None:
-        """
-        Hooks placeholder — will be replaced by ACE.
-
-        Self-learning will be replaced by ACE (Agentic Context Engine)
-        with playbook-based strategy evolution.
-
-        Returns:
-            None (hooks disabled).
-        """
         return None
 
     def _build_rerank_config(self) -> RerankConfig:
@@ -1296,20 +1268,6 @@ class MemoryOrchestrator:
         """
         self._ensure_init()
 
-        # If URI points to a skillbook entry, update skill tag directly
-        if ("/skillbooks/" in uri or "/shared/skills/" in uri) and self._skillbook:
-            skill_id = uri.rsplit("/", 1)[-1]
-            tag = "helpful" if reward > 0 else ("harmful" if reward < 0 else "neutral")
-            try:
-                await self._skillbook.tag_skill(skill_id, tag)
-                logger.info(
-                    "[MemoryOrchestrator] Skillbook feedback: skill=%s, tag=%s",
-                    skill_id, tag,
-                )
-            except Exception:
-                logger.debug("[Orchestrator] Skillbook tag update failed for %s", uri)
-            return
-
         # Find the record ID for this URI in context collection
         records = await self._storage.filter(
             _CONTEXT_COLLECTION,
@@ -1489,376 +1447,30 @@ class MemoryOrchestrator:
         return None
 
     # =========================================================================
-    # Native Self-Learning (Hooks — placeholder)
+    # System Status
     # =========================================================================
 
-    async def hooks_learn(
-        self,
-        state: str,
-        action: str,
-        reward: float,
-        available_actions: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
-        """
-        Record a learning outcome using hooks (Q-learning).
-
-        Maps OpenCortex concepts to hooks:
-        - state: URI or context identifier
-        - action: context_type (memory/skill/resource)
-        - reward: feedback signal (-1 to 1)
+    async def system_status(self, status_type: str = "doctor") -> Dict[str, Any]:
+        """Unified system status endpoint.
 
         Args:
-            state: Current state (e.g., URI)
-            action: Action taken (e.g., "memory", "skill")
-            reward: Reward value
-            available_actions: List of available actions
-
-        Returns:
-            Dict with learning result
+            status_type: "health" | "stats" | "doctor"
         """
-        self._ensure_init()
-        if not self._hooks:
-            return {"success": False, "error": "Hooks not initialized"}
-
-        tid, uid = get_effective_identity()
-        result = await self._hooks.learn(
-            state=state,
-            action=action,
-            reward=reward,
-            available_actions=available_actions,
-            tenant_id=tid,
-            user_id=uid,
-        )
-        return {
-            "success": result.success,
-            "state": state,
-            "best_action": result.best_action,
-            "message": result.message,
-            "operations_applied": result.operations_applied,
-            "reflection_key_insight": result.reflection_key_insight,
-        }
-
-    async def hooks_remember(
-        self,
-        content: str,
-        memory_type: str = "general",
-    ) -> Dict[str, Any]:
-        """
-        Store content in semantic memory (context collection).
-
-        Redirected from ACE Skillbook to unified context collection
-        so that hooks_recall and memory_search both find it.
-        """
-        self._ensure_init()
-        result = await self.add(
-            abstract=content,
-            content=content,
-            category=memory_type,
-            context_type="memory",
-        )
-        return {"success": True, "uri": result.uri, "section": memory_type}
-
-    async def hooks_recall(
-        self,
-        query: str,
-        limit: int = 5,
-    ) -> List[Dict[str, Any]]:
-        """
-        Search semantic memory (context collection).
-
-        Redirected from ACE Skillbook to unified context collection
-        so results are consistent with memory_search.
-        """
-        self._ensure_init()
-        find_result = await self.search(query=query, limit=limit)
-        return [
-            {
-                "content": m.abstract,
-                "uri": m.uri,
-                "section": m.category,
-                "score": m.score,
-            }
-            for m in find_result
-        ]
-
-    async def hooks_trajectory_begin(self, trajectory_id: str, initial_state: str) -> Dict[str, Any]:
-        """Begin a learning trajectory."""
-        self._ensure_init()
-        if not self._hooks:
-            return {"success": False, "error": "Hooks not initialized"}
-
-        return await self._hooks.trajectory_begin(
-            trajectory_id=trajectory_id,
-            initial_state=initial_state,
-        )
-
-    async def hooks_trajectory_step(
-        self,
-        trajectory_id: str,
-        action: str,
-        reward: float,
-        next_state: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Add a step to a trajectory."""
-        self._ensure_init()
-        if not self._hooks:
-            return {"success": False, "error": "Hooks not initialized"}
-
-        return await self._hooks.trajectory_step(
-            trajectory_id=trajectory_id,
-            action=action,
-            reward=reward,
-            next_state=next_state,
-        )
-
-    async def hooks_trajectory_end(
-        self,
-        trajectory_id: str,
-        quality_score: float,
-    ) -> Dict[str, Any]:
-        """End a trajectory with quality score."""
-        self._ensure_init()
-        if not self._hooks:
-            return {"success": False, "error": "Hooks not initialized"}
-
-        tid, uid = get_effective_identity()
-        return await self._hooks.trajectory_end(
-            trajectory_id=trajectory_id,
-            quality_score=quality_score,
-            tenant_id=tid,
-            user_id=uid,
-        )
-
-    async def hooks_error_record(self, error: str, fix: str, context: Optional[str] = None) -> Dict[str, Any]:
-        """Record an error and its fix for learning."""
-        self._ensure_init()
-        if not self._hooks:
-            return {"success": False, "error": "Hooks not initialized"}
-
-        tid, uid = get_effective_identity()
-        return await self._hooks.error_record(
-            error=error, fix=fix, context=context, tenant_id=tid, user_id=uid,
-        )
-
-    async def hooks_error_suggest(self, error: str) -> List[Dict[str, Any]]:
-        """Get suggested fixes for an error."""
-        self._ensure_init()
-        if not self._hooks:
-            return []
-
-        tid, uid = get_effective_identity()
-        return await self._hooks.error_suggest(error=error, tenant_id=tid, user_id=uid)
-
-    async def hooks_stats(self) -> Dict[str, Any]:
-        """Get hooks statistics."""
-        self._ensure_init()
-        if not self._hooks:
-            return {"success": False, "error": "Hooks not initialized"}
-
-        tid, uid = get_effective_identity()
-        stats = await self._hooks.stats(tenant_id=tid, user_id=uid)
-        return {
-            "success": True,
-            "q_learning_patterns": stats.q_learning_patterns,
-            "vector_memories": stats.vector_memories,
-            "learning_trajectories": stats.learning_trajectories,
-            "error_patterns": stats.error_patterns,
-        }
-
-    # =========================================================================
-    # Skill Approval & Demotion
-    # =========================================================================
-
-    async def hooks_list_candidates(self) -> List[Dict[str, Any]]:
-        """List candidate skills awaiting review for the current tenant."""
-        self._ensure_init()
-        if not self._hooks:
-            return []
-        tid, _uid = get_effective_identity()
-        return await self._hooks.list_candidates(tenant_id=tid)
-
-    async def hooks_review_skill(
-        self,
-        skill_id: str,
-        decision: str,
-    ) -> Dict[str, Any]:
-        """Approve or reject a candidate skill."""
-        self._ensure_init()
-        if not self._hooks:
-            return {"success": False, "error": "Hooks not initialized"}
-        tid, uid = get_effective_identity()
-        return await self._hooks.review_skill(
-            skill_id=skill_id, decision=decision, tenant_id=tid, user_id=uid,
-        )
-
-    async def hooks_demote_skill(
-        self,
-        skill_id: str,
-        reason: str = "",
-    ) -> Dict[str, Any]:
-        """Demote a shared skill back to private."""
-        self._ensure_init()
-        if not self._hooks:
-            return {"success": False, "error": "Hooks not initialized"}
-        tid, uid = get_effective_identity()
-        return await self._hooks.demote_skill(
-            skill_id=skill_id, reason=reason, tenant_id=tid, user_id=uid,
-        )
-
-    async def hooks_migrate_legacy(self) -> Dict[str, Any]:
-        """Migrate legacy skills that lack scope fields."""
-        self._ensure_init()
-        if not self._hooks:
-            return {"success": False, "error": "Hooks not initialized"}
-        tid, uid = get_effective_identity()
-        return await self._hooks.migrate_legacy_skills(tenant_id=tid, user_id=uid)
-
-    # =========================================================================
-    # Hooks Integration (Route through MCP → CortexFS)
-    # =========================================================================
-
-    async def hooks_route(
-        self,
-        task: str,
-        agents: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
-        """Route a task to the best agent based on learned patterns.
-
-        Uses memory search + Q-learning patterns to recommend the best agent.
-        """
-        self._ensure_init()
-
-        # Search for relevant memories about this task type
-        result = await self.search(query=task, limit=3)
-        context_hints = [m.abstract for m in result.memories[:3]]
-
-        # Use hooks Q-learning if available
-        best_action = None
-        if self._hooks:
-            try:
-                recall_results = await self._hooks.recall(query=task, limit=3)
-                if recall_results:
-                    context_hints.extend(
-                        r.get("content", "") for r in recall_results[:2]
-                    )
-            except Exception:
-                pass
-
-        return {
-            "task": task,
-            "agents": agents or [],
-            "context_hints": context_hints,
-            "recommended_agent": best_action,
-        }
-
-    async def hooks_init(self, project_path: str = ".") -> Dict[str, Any]:
-        """Initialize hooks configuration for a project."""
-        self._ensure_init()
-        tid, uid = get_effective_identity()
-        return {
-            "status": "ok",
-            "project_path": project_path,
-            "tenant_id": tid,
-            "user_id": uid,
-            "http_server_host": self._config.http_server_host,
-            "http_server_port": self._config.http_server_port,
-        }
-
-    async def hooks_pretrain(self, repo_path: str = ".") -> Dict[str, Any]:
-        """Pre-train from repository content."""
-        self._ensure_init()
-
-        if self._hooks:
-            try:
-                result = await self._hooks.remember(
-                    content=f"Repository at {repo_path}",
-                    memory_type="project_structure",
-                )
-                return {"status": "ok", "repo_path": repo_path, "remember_result": result}
-            except Exception as exc:
-                return {"status": "partial", "repo_path": repo_path, "error": str(exc)}
-
-        return {"status": "ok", "repo_path": repo_path, "note": "No hooks backend, skipping pretrain"}
-
-    async def hooks_verify(self) -> Dict[str, Any]:
-        """Verify hooks configuration."""
-        self._ensure_init()
-        health = await self.health_check()
-        hooks_ok = self._hooks is not None
-        return {
-            "status": "ok" if health.get("storage") and hooks_ok else "degraded",
-            "storage": health.get("storage", False),
-            "embedder": health.get("embedder", False),
-            "llm": health.get("llm", False),
-            "hooks": hooks_ok,
-            "session_manager": self._session_manager is not None,
-        }
-
-    async def hooks_doctor(self) -> Dict[str, Any]:
-        """Run diagnostics on the OpenCortex system."""
-        self._ensure_init()
-        health = await self.health_check()
-        stats = await self.stats()
-
-        issues = []
-        if not health.get("storage"):
-            issues.append("Storage backend not reachable")
-        if not health.get("embedder"):
-            issues.append("No embedder configured — search will not work")
-        if not health.get("llm"):
-            issues.append("No LLM configured — intent analysis and session extraction disabled")
-        if not self._hooks:
-            issues.append("Hooks not initialized — native self-learning disabled")
-
-        return {
-            "status": "healthy" if not issues else "issues_found",
-            "health": health,
-            "stats": stats,
-            "issues": issues,
-        }
-
-    async def hooks_export(self, format: str = "json") -> Dict[str, Any]:
-        """Export intelligence data."""
-        self._ensure_init()
-        stats = await self.stats()
-
-        hooks_stats = {}
-        if self._hooks:
-            try:
-                hooks_stats = await self.hooks_stats()
-            except Exception:
-                pass
-
-        export_data = {
-            "format": format,
-            "orchestrator_stats": stats,
-            "hooks_stats": hooks_stats,
-        }
-        return export_data
-
-    async def hooks_build_agents(self) -> Dict[str, Any]:
-        """Generate agent configurations based on learned patterns."""
-        self._ensure_init()
-
-        # Search for skill memories to inform agent configuration
-        result = await self.search(query="agent skills capabilities", context_type=None, limit=10)
-        skills = [{"uri": m.uri, "abstract": m.abstract, "score": m.score} for m in result.skills]
-
-        return {
-            "agents": [
-                {
-                    "name": "memory-agent",
-                    "description": "Manages persistent memory storage and retrieval",
-                    "tools": ["memory_store", "memory_search", "memory_feedback"],
-                },
-                {
-                    "name": "session-agent",
-                    "description": "Manages session lifecycle and memory extraction",
-                    "tools": ["session_begin", "session_message", "session_end"],
-                },
-            ],
-            "learned_skills": skills,
-        }
+        if status_type == "health":
+            return await self.health_check()
+        elif status_type == "stats":
+            return await self.stats()
+        else:  # doctor
+            health = await self.health_check()
+            st = await self.stats()
+            issues = []
+            if not health.get("storage"):
+                issues.append("Storage unavailable")
+            if not health.get("embedder"):
+                issues.append("Embedder unavailable")
+            if not health.get("llm"):
+                issues.append("No LLM configured — intent analysis and session extraction disabled")
+            return {**health, **st, "issues": issues}
 
     # =========================================================================
     # Skill Evolution
