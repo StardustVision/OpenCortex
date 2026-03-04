@@ -406,6 +406,7 @@ opencortex://{tenant}/user/{uid}/{type}/{category}/{node_id}
 |------|------|------|
 | POST | `/api/v1/session/begin` | 开始新会话 |
 | POST | `/api/v1/session/message` | 向会话添加消息 |
+| POST | `/api/v1/session/extract_turn` | 仅提取最新轮记忆（会话保持激活） |
 | POST | `/api/v1/session/end` | 结束会话，提取并存储记忆 |
 
 #### 技能进化
@@ -417,33 +418,28 @@ opencortex://{tenant}/user/{uid}/{type}/{category}/{node_id}
 | POST | `/api/v1/skill/mine` | 从成功案例中挖掘技能 |
 | POST | `/api/v1/skill/evolve` | 触发双轨技能进化 |
 
-#### Hooks 与集成
+#### 意图与系统状态
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
-| POST | `/api/v1/hooks/learn` | 记录 state-action-reward |
-| POST | `/api/v1/hooks/remember` | 存储通用记忆 |
-| POST | `/api/v1/hooks/recall` | 检索相关经验 |
-| POST | `/api/v1/hooks/error/record` | 记录错误及修复方案 |
-| POST | `/api/v1/hooks/error/suggest` | 获取错误修复建议 |
-| POST | `/api/v1/integration/route` | 将任务路由到最佳 Agent |
+| POST | `/api/v1/intent/should_recall` | 判断查询是否需要检索记忆 |
+| GET | `/api/v1/system/status` | 统一 health/stats/doctor 状态 |
 
 ### MCP 工具 (13 个)
 
 MCP 服务器暴露与 REST API 相同的能力。主要工具：
 
-- `memory_store` / `memory_search` / `memory_feedback` / `memory_stats` / `memory_decay` / `memory_health`
+- `memory_store` / `memory_batch_store` / `memory_search` / `memory_feedback` / `memory_decay`
 - `session_begin` / `session_message` / `session_end`
 - `skill_lookup` / `skill_feedback` / `skill_mine` / `skill_evolve`
-- `memory_hooks_learn` / `memory_hooks_remember` / `memory_hooks_recall`
-- 轨迹、错误和集成工具
+- `system_status`
 
 ### Python API
 
 ```python
 from opencortex import MemoryOrchestrator, CortexConfig, init_config
 
-init_config(CortexConfig(tenant_id="myteam", user_id="alice"))
+init_config(CortexConfig())
 orch = MemoryOrchestrator(embedder=my_embedder)
 await orch.init()
 

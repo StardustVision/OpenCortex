@@ -7,13 +7,28 @@
 import { spawn } from 'node:child_process';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, '..');
 const MCP_SERVER = join(PROJECT_ROOT, 'plugins', 'opencortex-memory', 'lib', 'mcp-server.mjs');
-const HTTP_URL = 'http://127.0.0.1:8921';
+
+function loadMcpConfig() {
+  try {
+    const raw = readFileSync(join(PROJECT_ROOT, 'mcp.json'), 'utf8');
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+const MCP_CONFIG = loadMcpConfig();
+const TEST_MODE = MCP_CONFIG.mode || 'local';
+const HTTP_URL = TEST_MODE === 'remote'
+  ? (MCP_CONFIG.remote?.http_url || 'http://127.0.0.1:8921')
+  : 'http://127.0.0.1:8921';
 
 // ── helpers ────────────────────────────────────────────────────────────
 
@@ -98,7 +113,13 @@ let httpServer = null;
 
 describe('MCP Server (Node.js stdio proxy)', async () => {
   before(async () => {
-    // Start HTTP server if not already running
+    if (TEST_MODE === 'remote') {
+      const ok = await healthCheck();
+      if (!ok) throw new Error(`Remote HTTP server unreachable: ${HTTP_URL}`);
+      return;
+    }
+
+    // Local mode: start HTTP server if not already running
     if (!(await healthCheck())) {
       httpServer = spawn('uv', ['run', 'python3', '-m', 'opencortex.http',
         '--host', '127.0.0.1', '--port', '8921', '--log-level', 'WARNING',
@@ -132,15 +153,14 @@ describe('MCP Server (Node.js stdio proxy)', async () => {
       const toolsRes = await client.request('tools/list');
       const names = toolsRes.result.tools.map(t => t.name);
       for (const expected of [
-        'memory_store', 'memory_search', 'memory_feedback',
-        'memory_stats', 'memory_decay', 'memory_health',
+        'memory_store', 'memory_batch_store', 'memory_search', 'memory_feedback', 'memory_decay',
+        'system_status',
         'session_begin', 'session_message', 'session_end',
-        'hooks_route', 'hooks_init', 'hooks_verify',
-        'hooks_doctor', 'hooks_export', 'hooks_build_agents',
+        'skill_lookup', 'skill_feedback', 'skill_mine', 'skill_evolve',
       ]) {
         assert.ok(names.includes(expected), `Missing tool: ${expected}`);
       }
-      assert.equal(names.length, 25, 'Expected 25 tools');
+      assert.equal(names.length, 13, 'Expected 13 tools');
     } finally {
       client.close();
     }
@@ -197,10 +217,10 @@ describe('MCP Server (Node.js stdio proxy)', async () => {
     }
   });
 
-  it('05 memory_stats', async () => {
+  it('05 system_status(stats)', async () => {
     const client = createMcpClient();
     try {
-      const data = await client.callTool('memory_stats');
+      const data = await client.callTool('system_status', { type: 'stats' });
       assert.ok('tenant_id' in data);
       assert.ok('storage' in data);
     } finally {
@@ -218,10 +238,10 @@ describe('MCP Server (Node.js stdio proxy)', async () => {
     }
   });
 
-  it('07 memory_health', async () => {
+  it('07 system_status(health)', async () => {
     const client = createMcpClient();
     try {
-      const data = await client.callTool('memory_health');
+      const data = await client.callTool('system_status', { type: 'health' });
       assert.ok(data.initialized);
       assert.ok(data.storage);
       assert.ok(data.embedder);
@@ -263,7 +283,7 @@ describe('MCP Server (Node.js stdio proxy)', async () => {
       assert.ok(decay.records_processed >= 0);
 
       // Health
-      const health = await client.callTool('memory_health');
+      const health = await client.callTool('system_status', { type: 'health' });
       assert.ok(health.initialized);
     } finally {
       client.close();

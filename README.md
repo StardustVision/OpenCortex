@@ -410,6 +410,7 @@ Complete data isolation between tenants and users. Team-level resources can be s
 |--------|----------|-------------|
 | POST | `/api/v1/session/begin` | Start a new session |
 | POST | `/api/v1/session/message` | Add a message to the session |
+| POST | `/api/v1/session/extract_turn` | Extract memories from the latest turn (session remains active) |
 | POST | `/api/v1/session/end` | End session, extract and store memories |
 
 #### Skill Evolution
@@ -421,22 +422,18 @@ Complete data isolation between tenants and users. Team-level resources can be s
 | POST | `/api/v1/skill/mine` | Mine skills from successful case memories |
 | POST | `/api/v1/skill/evolve` | Trigger dual-track skill evolution |
 
-#### Hooks & Integration
+#### Intent & System
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/v1/hooks/learn` | Record state-action-reward for Q-learning |
-| POST | `/api/v1/hooks/remember` | Store a general memory |
-| POST | `/api/v1/hooks/recall` | Retrieve relevant experiences |
-| POST | `/api/v1/hooks/error/record` | Record an error and its fix |
-| POST | `/api/v1/hooks/error/suggest` | Get fix suggestions for an error |
-| POST | `/api/v1/integration/route` | Route a task to the best agent |
+| POST | `/api/v1/intent/should_recall` | Decide whether recall is needed for a query |
+| GET | `/api/v1/system/status` | Unified health/stats/doctor status |
 
 ### MCP Tools (13 tools)
 
 The MCP server exposes the same capabilities as the REST API. Key tools:
 
-- `memory_store` / `memory_search` / `memory_feedback` / `memory_decay`
+- `memory_store` / `memory_batch_store` / `memory_search` / `memory_feedback` / `memory_decay`
 - `session_begin` / `session_message` / `session_end`
 - `skill_lookup` / `skill_feedback` / `skill_mine` / `skill_evolve`
 - `system_status`
@@ -446,7 +443,7 @@ The MCP server exposes the same capabilities as the REST API. Key tools:
 ```python
 from opencortex import MemoryOrchestrator, CortexConfig, init_config
 
-init_config(CortexConfig(tenant_id="myteam", user_id="alice"))
+init_config(CortexConfig())
 orch = MemoryOrchestrator(embedder=my_embedder)
 await orch.init()
 

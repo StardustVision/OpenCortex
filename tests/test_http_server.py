@@ -159,8 +159,18 @@ class InMemoryStorage(VikingDBInterface):
             del self._records[collection][rid]
         return len(to_remove)
 
-    async def search(self, collection, query_vector=None, sparse_query_vector=None,
-                     filter=None, limit=10, offset=0, output_fields=None, with_vector=False):
+    async def search(
+        self,
+        collection,
+        query_vector=None,
+        sparse_query_vector=None,
+        filter=None,
+        limit=10,
+        offset=0,
+        output_fields=None,
+        with_vector=False,
+        text_query=None,
+    ):
         self._ensure(collection)
         candidates = list(self._records[collection].values())
         if filter:
