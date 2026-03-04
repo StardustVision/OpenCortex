@@ -226,7 +226,10 @@ class RuleExtractor:
         # 3. Exclude trivial command records
         if self._is_trivial_command(content):
             return False
-        # 4. Error fixes and workflows must have causal structure
+        # 4. Reject non-skill content (code, JSON, tables, tool records)
+        if self._is_non_skill_content(content):
+            return False
+        # 5. Error fixes and workflows must have causal structure
         if skill.section in ("error_fixes", "workflows") and not self._has_causal_structure(content):
             return False
         return True
@@ -252,6 +255,48 @@ class RuleExtractor:
     def _has_causal_structure(self, content: str) -> bool:
         """Check if content has a when-X-then-Y causal structure."""
         return bool(_CAUSAL_RE.search(content))
+
+    def _is_non_skill_content(self, content: str) -> bool:
+        """Reject content that is obviously not a learnable skill.
+
+        Catches code snippets, JSON/config fragments, tool-use records,
+        markdown tables, and code-heavy content from batch imports.
+        """
+        lines = content.strip().split("\n")
+        non_empty = [l for l in lines if l.strip()]
+        if not non_empty:
+            return False
+
+        first = non_empty[0].strip()
+
+        # Line-numbered code (cat -n output): starts with digit(s) + →
+        if re.match(r"^\d*→", first) or first.startswith("→"):
+            return True
+
+        # Code snippets: shebang or import statements
+        if first.startswith("#!") or first.startswith("import ") or re.match(r"^from\s+\S+\s+import\b", first):
+            return True
+
+        # JSON/config fragments: starts with { or [ and contains ":
+        if re.match(r"^\s*[{\[]", first) and '": ' in content:
+            return True
+
+        # Tool-use records
+        if "[tool-use]" in content or "mcp__" in content:
+            return True
+
+        # Markdown tables: ≥2 pipes per line on majority of lines
+        if len(non_empty) >= 2:
+            table_lines = sum(1 for l in non_empty if l.count("|") >= 2)
+            if table_lines > len(non_empty) / 2:
+                return True
+
+        # Code-heavy content: >30% code chars
+        code_chars = sum(1 for c in content if c in "{}[]();=")
+        if len(content) > 0 and code_chars / len(content) > 0.30:
+            return True
+
+        return False
 
     # -----------------------------------------------------------------
     # Helpers

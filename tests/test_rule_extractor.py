@@ -233,6 +233,75 @@ class TestRuleExtractor(unittest.TestCase):
             "The server processes requests"
         ))
 
+    # -----------------------------------------------------------------
+    # Non-skill content blockers
+    # -----------------------------------------------------------------
+
+    def test_21_code_snippet_rejected(self):
+        """Code snippets (shebang / import) are rejected."""
+        cases = [
+            ExtractedSkill(content="#!/usr/bin/env python\nimport sys\nuse run deploy", section="preferences"),
+            ExtractedSkill(content="import os\nimport sys\nuse run deploy stuff", section="preferences"),
+            ExtractedSkill(content="from opencortex.ace import rule_extractor\nuse this module", section="preferences"),
+        ]
+        for skill in cases:
+            self.assertFalse(
+                self.extractor._validate_granularity(skill),
+                f"Code snippet should be rejected: {skill.content[:40]}",
+            )
+
+    def test_22_json_fragment_rejected(self):
+        """JSON/config fragments are rejected."""
+        skill = ExtractedSkill(
+            content='{"name": "test", "version": "1.0"}\nuse this config to deploy',
+            section="preferences",
+        )
+        self.assertFalse(self.extractor._validate_granularity(skill))
+
+    def test_23_tool_use_record_rejected(self):
+        """Tool-use records are rejected."""
+        cases = [
+            ExtractedSkill(content="[tool-use] Called mcp server to run deploy action", section="preferences"),
+            ExtractedSkill(content="Called mcp__memory_store to add and use it", section="preferences"),
+        ]
+        for skill in cases:
+            self.assertFalse(
+                self.extractor._validate_granularity(skill),
+                f"Tool-use record should be rejected: {skill.content[:40]}",
+            )
+
+    def test_24_markdown_table_rejected(self):
+        """Markdown tables are rejected."""
+        skill = ExtractedSkill(
+            content="| Pattern | Use |\n| --- | --- |\n| always check | apply fix |\n| never skip | run test |",
+            section="preferences",
+        )
+        self.assertFalse(self.extractor._validate_granularity(skill))
+
+    def test_25_code_heavy_content_rejected(self):
+        """Content with >30% code chars is rejected."""
+        skill = ExtractedSkill(
+            content="function() { use(a); apply(b); run(c); return [d]; }",
+            section="preferences",
+        )
+        self.assertFalse(self.extractor._validate_granularity(skill))
+
+    def test_26_line_numbered_code_rejected(self):
+        """cat -n style line-numbered code is rejected."""
+        skill = ExtractedSkill(
+            content="1→  import os\n2→  use run deploy\n3→  apply config",
+            section="preferences",
+        )
+        self.assertFalse(self.extractor._validate_granularity(skill))
+
+    def test_27_normal_skill_not_blocked(self):
+        """Normal skill content is not falsely blocked by content filters."""
+        skill = ExtractedSkill(
+            content="Always use TypeScript for new frontend modules in the project",
+            section="preferences",
+        )
+        self.assertTrue(self.extractor._validate_granularity(skill))
+
 
 if __name__ == "__main__":
     unittest.main()

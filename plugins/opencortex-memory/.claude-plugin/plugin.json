@@ -1,6 +1,6 @@
 {
   "name": "opencortex-memory",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "description": "OpenCortex Memory Server — AI agent memory with reinforcement learning, automatic session capture via hooks, and multi-tenant isolation.",
   "author": {
     "name": "StardustVision"

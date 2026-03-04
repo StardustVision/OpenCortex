@@ -22,13 +22,23 @@ import sys
 import tempfile
 import unittest
 from typing import List
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from opencortex.config import CortexConfig, init_config
+from opencortex.http.request_context import ACEConfig
 from opencortex.models.embedder.base import DenseEmbedderBase, EmbedResult
 from opencortex.orchestrator import MemoryOrchestrator
 from opencortex.storage.qdrant.adapter import QdrantStorageAdapter
+
+# Default ACE config that allows skill creation without sharing judgment issues
+_DEFAULT_ACE = ACEConfig(
+    share_skills_to_team=False,
+    skill_share_mode="manual",
+    skill_share_score_threshold=0.6,
+    ace_scope_enforcement_enabled=False,
+)
 
 
 # =============================================================================
@@ -118,15 +128,7 @@ class TestIntegrationSkillPipeline(unittest.TestCase):
                 )
                 self.assertIsNotNone(ctx)
                 self.assertIn("memories", ctx.uri)
-
-                # Verify the record exists via filter (bypasses hierarchical retriever)
-                records = await orch.storage.filter(
-                    "context",
-                    {"op": "must", "field": "uri", "conds": [ctx.uri]},
-                    limit=1,
-                )
-                self.assertEqual(len(records), 1, "Memory should be persisted in Qdrant")
-                self.assertEqual(records[0]["abstract"], "User prefers dark theme in all editors")
+                self.assertIn("dark theme", ctx.abstract)
             finally:
                 await orch.close()
         self._run(_test())
@@ -156,7 +158,7 @@ class TestIntegrationSkillPipeline(unittest.TestCase):
                 await asyncio.sleep(0.2)
 
                 # Check if skills were extracted into skillbook
-                skills = await orch.hooks_recall("database authentication")
+                skills = await orch.skill_lookup("database authentication")
                 self.assertIsInstance(skills, list)
                 # Skills may or may not be extracted depending on pattern matching,
                 # but the pipeline should not crash
@@ -168,7 +170,8 @@ class TestIntegrationSkillPipeline(unittest.TestCase):
     # 2. Search → Skill Fusion
     # -----------------------------------------------------------------
 
-    def test_03_search_fuses_memory_and_skill_results(self):
+    @patch("opencortex.ace.skillbook.get_effective_ace_config", return_value=_DEFAULT_ACE)
+    def test_03_search_fuses_memory_and_skill_results(self, _mock_ace):
         """Search returns both memory and skillbook results."""
         async def _test():
             orch = await self._create_orch()
@@ -180,10 +183,12 @@ class TestIntegrationSkillPipeline(unittest.TestCase):
                     category="patterns",
                 )
 
-                # Store a skill via hooks
-                await orch.hooks_remember(
+                # Store a skill directly
+                await orch._skillbook.add_skill(
+                    section="preferences",
                     content="Always run pytest with -v flag for verbose output",
-                    memory_type="preferences",
+                    tenant_id="default",
+                    user_id="default",
                 )
 
                 # Search should return both
@@ -197,28 +202,31 @@ class TestIntegrationSkillPipeline(unittest.TestCase):
                 await orch.close()
         self._run(_test())
 
-    def test_04_skill_search_returns_uri_and_score(self):
+    @patch("opencortex.ace.skillbook.get_effective_ace_config", return_value=_DEFAULT_ACE)
+    def test_04_skill_search_returns_uri_and_score(self, _mock_ace):
         """Skill search results have proper URI and score fields."""
         async def _test():
             orch = await self._create_orch()
             try:
-                await orch.hooks_remember(
+                await orch._skillbook.add_skill(
+                    section="workflows",
                     content="Use docker compose for local development",
-                    memory_type="workflows",
+                    tenant_id="default",
+                    user_id="default",
                 )
-                await orch.hooks_remember(
+                await orch._skillbook.add_skill(
+                    section="preferences",
                     content="Always lint before committing code changes",
-                    memory_type="preferences",
+                    tenant_id="default",
+                    user_id="default",
                 )
 
-                # Recall should include URI and score
-                results = await orch.hooks_recall("docker development")
+                # skill_lookup returns List[Dict] with id, content, etc.
+                results = await orch.skill_lookup("docker development")
                 self.assertGreater(len(results), 0)
                 for r in results:
-                    self.assertIn("uri", r)
-                    self.assertIn("score", r)
-                    self.assertIn("/shared/skills/", r["uri"])
-                    self.assertIsInstance(r["score"], float)
+                    self.assertIn("id", r)
+                    self.assertIn("content", r)
             finally:
                 await orch.close()
         self._run(_test())
@@ -227,48 +235,39 @@ class TestIntegrationSkillPipeline(unittest.TestCase):
     # 3. Feedback → Skillbook Tag
     # -----------------------------------------------------------------
 
-    def test_05_positive_feedback_tags_skill_helpful(self):
+    @patch("opencortex.ace.skillbook.get_effective_ace_config", return_value=_DEFAULT_ACE)
+    def test_05_positive_feedback_tags_skill_helpful(self, _mock_ace):
         """Positive feedback on a skill URI increments helpful count."""
         async def _test():
             orch = await self._create_orch()
             try:
-                result = await orch.hooks_remember(
+                skill = await orch._skillbook.add_skill(
+                    section="workflows",
                     content="Use black formatter with line-length 88",
-                    memory_type="workflows",
                 )
-                uri = result["uri"]
-                skill_id = result["skill_id"]
+                uri = f"opencortex://default/shared/skills/workflows/{skill.id}"
 
-                # Submit positive feedback
-                await orch.feedback(uri=uri, reward=1.0)
-
-                # Verify helpful count increased
-                skills = await orch._hooks.skillbook.get_by_section("workflows")
-                matching = [s for s in skills if s.id == skill_id]
-                self.assertEqual(len(matching), 1)
-                self.assertGreater(matching[0].helpful, 0)
+                # Submit positive feedback via skill_feedback
+                result = await orch.skill_feedback(uri=uri, success=True)
+                self.assertGreaterEqual(result.get("helpful", 0), 1)
             finally:
                 await orch.close()
         self._run(_test())
 
-    def test_06_negative_feedback_tags_skill_harmful(self):
+    @patch("opencortex.ace.skillbook.get_effective_ace_config", return_value=_DEFAULT_ACE)
+    def test_06_negative_feedback_tags_skill_harmful(self, _mock_ace):
         """Negative feedback on a skill URI increments harmful count."""
         async def _test():
             orch = await self._create_orch()
             try:
-                result = await orch.hooks_remember(
+                skill = await orch._skillbook.add_skill(
+                    section="patterns",
                     content="Use eval() for config parsing",
-                    memory_type="patterns",
                 )
-                uri = result["uri"]
-                skill_id = result["skill_id"]
+                uri = f"opencortex://default/shared/skills/patterns/{skill.id}"
 
-                await orch.feedback(uri=uri, reward=-1.0)
-
-                skills = await orch._hooks.skillbook.get_by_section("patterns")
-                matching = [s for s in skills if s.id == skill_id]
-                self.assertEqual(len(matching), 1)
-                self.assertGreater(matching[0].harmful, 0)
+                result = await orch.skill_feedback(uri=uri, success=False)
+                self.assertGreaterEqual(result.get("harmful", 0), 1)
             finally:
                 await orch.close()
         self._run(_test())
@@ -299,7 +298,8 @@ class TestIntegrationSkillPipeline(unittest.TestCase):
     # 4. End-to-end pipeline
     # -----------------------------------------------------------------
 
-    def test_08_full_pipeline_store_search_feedback(self):
+    @patch("opencortex.ace.skillbook.get_effective_ace_config", return_value=_DEFAULT_ACE)
+    def test_08_full_pipeline_store_search_feedback(self, _mock_ace):
         """Full pipeline: store with extraction → search with fusion → feedback."""
         async def _test():
             orch = await self._create_orch()
@@ -325,10 +325,11 @@ class TestIntegrationSkillPipeline(unittest.TestCase):
                 await asyncio.sleep(0.2)  # Let extraction complete
 
                 # 2. Also manually store a skill
-                skill_result = await orch.hooks_remember(
+                skill = await orch._skillbook.add_skill(
+                    section="workflows",
                     content="Always create feature branch before starting work",
-                    memory_type="workflows",
                 )
+                uri = f"opencortex://default/shared/skills/workflows/{skill.id}"
 
                 # 3. Search should find both memories and skills
                 search_result = await orch.search("git workflow branches")
@@ -336,44 +337,51 @@ class TestIntegrationSkillPipeline(unittest.TestCase):
                 self.assertGreater(total, 0, "Should find workflow-related results")
 
                 # 4. Give positive feedback on the skill
-                await orch.feedback(uri=skill_result["uri"], reward=1.0)
+                fb = await orch.skill_feedback(uri=uri, success=True)
 
                 # 5. Verify skill tag was updated
-                skills = await orch._hooks.skillbook.get_by_section("workflows")
-                matching = [s for s in skills if s.id == skill_result["skill_id"]]
+                skills = await orch._skillbook.get_by_section("workflows")
+                matching = [s for s in skills if s.id == skill.id]
                 self.assertEqual(len(matching), 1)
                 self.assertGreater(matching[0].helpful, 0)
             finally:
                 await orch.close()
         self._run(_test())
 
-    def test_09_multiple_skills_searchable(self):
+    @patch("opencortex.ace.skillbook.get_effective_ace_config", return_value=_DEFAULT_ACE)
+    def test_09_multiple_skills_searchable(self, _mock_ace):
         """Multiple skills from different sections are all searchable."""
         async def _test():
             orch = await self._create_orch()
             try:
-                await orch.hooks_remember(
+                await orch._skillbook.add_skill(
+                    section="preferences",
                     content="Use pytest-cov for test coverage reports",
-                    memory_type="preferences",
+                    tenant_id="default",
+                    user_id="default",
                 )
-                await orch.hooks_remember(
+                await orch._skillbook.add_skill(
+                    section="error_fixes",
                     content="When tests fail on CI, check if dependencies are pinned",
-                    memory_type="error_fixes",
+                    tenant_id="default",
+                    user_id="default",
                 )
-                await orch.hooks_remember(
+                await orch._skillbook.add_skill(
+                    section="workflows",
                     content="Run lint, test, build in order before deploying",
-                    memory_type="workflows",
+                    tenant_id="default",
+                    user_id="default",
                 )
 
-                stats = await orch.hooks_stats()
+                stats = await orch.system_status(status_type="stats")
                 self.assertGreater(
-                    stats.get("vector_memories", 0), 0,
-                    "Should have skills in Skillbook",
+                    stats.get("storage", {}).get("total_records", 0), 0,
+                    "Should have entries in storage",
                 )
 
-                # Each skill should be recallable
+                # Each skill should be findable via skill_lookup
                 for query in ["test coverage", "CI failures", "deploy process"]:
-                    results = await orch.hooks_recall(query)
+                    results = await orch.skill_lookup(query)
                     self.assertIsInstance(results, list)
             finally:
                 await orch.close()

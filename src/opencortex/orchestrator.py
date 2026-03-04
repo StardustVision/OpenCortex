@@ -192,6 +192,7 @@ class MemoryOrchestrator:
             storage=self._storage,
             embedder=self._embedder,
             cortex_fs=self._fs,
+            embedding_dim=self._config.embedding_dimension,
         )
         await self._skillbook.init()
 
@@ -686,7 +687,7 @@ class MemoryOrchestrator:
 
         if self._rule_extractor and self._skillbook and content:
             source = (meta or {}).get("source", "")
-            if not str(source).startswith("hook:"):
+            if not any(str(source).startswith(p) for p in ("hook:", "batch:")):
                 asyncio.create_task(self._try_extract_skills(abstract, content, tid, uid))
 
         ctx.meta["dedup_action"] = "created"
@@ -2021,13 +2022,17 @@ class MemoryOrchestrator:
                 # LLM generate abstract + overview
                 abstract, overview = await self._generate_abstract_overview(content, file_path)
 
+                # Tag batch imports so they're gated at source
+                item_meta = dict(item.get("meta") or {})
+                item_meta.setdefault("source", "batch:scan")
+
                 result = await self.add(
                     abstract=abstract,
                     content=content,
                     overview=overview,
                     category=item.get("category", "documents"),
                     context_type=item.get("context_type", "resource"),
-                    meta=item.get("meta"),
+                    meta=item_meta,
                     dedup=False,  # Deterministic URIs handle dedup via upsert
                 )
                 uris.append(result.uri)

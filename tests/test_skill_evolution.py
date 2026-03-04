@@ -1401,5 +1401,33 @@ class TestSourceGating(unittest.TestCase):
             mock_extract.assert_called_once()
 
 
+    @patch("opencortex.ace.skillbook.get_effective_ace_config")
+    def test_batch_source_skips_extraction(self, mock_ace):
+        """add() with meta.source='batch:scan' should NOT trigger skill extraction."""
+        mock_ace.return_value = MagicMock(
+            share_skills_to_team=False, skill_share_mode="manual",
+            skill_share_score_threshold=0.5, ace_scope_enforcement_enabled=False,
+        )
+        orch = self._init_orch()
+
+        # Content that would normally trigger error_fix extraction
+        content = (
+            "When encountering a connection timeout error, then check firewall rules "
+            "and retry with exponential backoff. This pattern applies to all services."
+        )
+        content += "\n" * 50
+
+        with patch.object(orch, '_try_extract_skills', wraps=orch._try_extract_skills) as mock_extract:
+            _run(orch.add(
+                abstract="connection timeout fix",
+                content=content,
+                category="error_fixes",
+                meta={"source": "batch:scan"},
+            ))
+            # Allow any pending tasks to complete
+            _run(asyncio.sleep(0.1))
+            mock_extract.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
