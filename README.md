@@ -58,6 +58,8 @@ final_score = semantic_similarity + rl_weight * reward_score
 
 The self-learning subsystem. ACE watches what the agent stores and automatically extracts reusable **skills** &mdash; patterns like "when you see error X, apply fix Y" or "the user always wants dark theme". These skills are stored in a **Skillbook** and returned alongside regular memories during search.
 
+Skills evolve over time through a **confidence scoring** system: usage feedback adjusts confidence, and a **dual-track observation** mechanism lets new skill variants compete against old ones before committing to a replacement.
+
 ### MCP (Model Context Protocol)
 
 An open standard that lets AI agents call external tools. OpenCortex exposes 25 MCP tools (store, search, feedback, etc.) through a Node.js stdio server that Claude Code, Cursor, and other MCP-compatible clients can use directly.
@@ -354,6 +356,20 @@ The RuleExtractor watches stored memories and extracts reusable skills with zero
 
 Extracted skills are stored in the Skillbook and returned alongside regular memories during search.
 
+### Skill Evolution
+
+Skills improve over time through feedback-driven confidence scoring and dual-track observation:
+
+```
+confidence = success_rate * log(usage + 1) * freshness_decay
+
+skill_feedback(uri, success=True)  ->  helpful++, confidence recalculated, version bumped
+mine_skills(min_cases=5)           ->  cluster successful cases, LLM generates skill templates
+evolve_skill(uri)                  ->  low-confidence skill → mine replacement → dual-track observation
+```
+
+**Dual-track observation**: When a skill is replaced, the old version enters "observation" status while the new one runs in parallel. After enough usage, the higher-confidence skill wins and the loser is deprecated. If the replacement underperforms, the system rolls back automatically.
+
 ### Session Self-Iteration
 
 On each agent turn, the Stop hook automatically:
@@ -396,6 +412,15 @@ Complete data isolation between tenants and users. Team-level resources can be s
 | POST | `/api/v1/session/message` | Add a message to the session |
 | POST | `/api/v1/session/end` | End session, extract and store memories |
 
+#### Skill Evolution
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/v1/skill/lookup` | Search for relevant skills by objective |
+| POST | `/api/v1/skill/feedback` | Provide usage feedback, update confidence |
+| POST | `/api/v1/skill/mine` | Mine skills from successful case memories |
+| POST | `/api/v1/skill/evolve` | Trigger dual-track skill evolution |
+
 #### Hooks & Integration
 
 | Method | Endpoint | Description |
@@ -407,12 +432,13 @@ Complete data isolation between tenants and users. Team-level resources can be s
 | POST | `/api/v1/hooks/error/suggest` | Get fix suggestions for an error |
 | POST | `/api/v1/integration/route` | Route a task to the best agent |
 
-### MCP Tools (25 tools)
+### MCP Tools (29 tools)
 
 The MCP server exposes the same capabilities as the REST API. Key tools:
 
 - `memory_store` / `memory_search` / `memory_feedback` / `memory_stats` / `memory_decay` / `memory_health`
 - `session_begin` / `session_message` / `session_end`
+- `skill_lookup` / `skill_feedback` / `skill_mine` / `skill_evolve`
 - `memory_hooks_learn` / `memory_hooks_remember` / `memory_hooks_recall`
 - Trajectory, error, and integration tools
 
@@ -506,7 +532,7 @@ src/opencortex/
 
 plugins/opencortex-memory/       # Claude Code plugin (pure Node.js)
 
-tests/                           # 111+ Python tests + 8 Node.js tests
+tests/                           # 175+ Python tests + 8 Node.js tests
 ```
 
 ---
@@ -514,11 +540,11 @@ tests/                           # 111+ Python tests + 8 Node.js tests
 ## Testing
 
 ```bash
-# Core regression (103 tests, no external dependencies)
+# Core regression (176 tests, no external dependencies)
 uv run python3 -m unittest tests.test_e2e_phase1 \
   tests.test_ace_phase1 tests.test_ace_phase2 \
   tests.test_rule_extractor tests.test_skill_search_fusion \
-  tests.test_integration_skill_pipeline -v
+  tests.test_case_memory tests.test_skill_evolution -v
 
 # MCP server tests (requires running HTTP server)
 node --test tests/test_mcp_server.mjs

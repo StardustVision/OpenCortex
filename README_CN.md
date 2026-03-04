@@ -56,6 +56,8 @@ OpenCortex 将每条记忆存储为三个精度层级，最大程度减少 Token
 
 自学习子系统。ACE 监控 Agent 存储的内容，自动提取可复用的**技能**——比如「遇到错误 X 时应用修复 Y」或「用户总是要求暗色主题」。这些技能存储在 **Skillbook** 中，搜索时与普通记忆一起返回。
 
+技能通过**置信度评分**系统持续进化：使用反馈调整置信度，**双轨观察**机制让新旧技能变体并行运行、择优留存。
+
 ### MCP（模型上下文协议）
 
 一种开放标准，允许 AI Agent 调用外部工具。OpenCortex 通过 Node.js stdio 服务器暴露 25 个 MCP 工具（存储、搜索、反馈等），Claude Code、Cursor 等 MCP 兼容客户端可以直接使用。
@@ -350,6 +352,20 @@ RuleExtractor 监控存储的记忆，以零 LLM 开销提取可复用技能：
 
 提取的技能存储在 Skillbook 中，搜索时与普通记忆一起返回。
 
+### 技能进化
+
+技能通过反馈驱动的置信度评分和双轨观察机制持续进化：
+
+```
+置信度 = 成功率 * log(使用次数 + 1) * 新鲜度衰减
+
+skill_feedback(uri, success=True)  ->  helpful++，重算置信度，版本递增
+mine_skills(min_cases=5)           ->  聚类成功案例，LLM 生成技能模板
+evolve_skill(uri)                  ->  低置信度技能 → 挖掘替代 → 双轨观察
+```
+
+**双轨观察**：替换技能时，旧版本进入"观察"状态，新版本并行运行。累计足够使用后，置信度更高的技能胜出，落败者标记为 deprecated。若替代版本表现不佳，系统自动回滚。
+
 ### 上下文自迭代
 
 每次 Agent 响应后，Stop hook 自动：
@@ -392,6 +408,15 @@ opencortex://{tenant}/user/{uid}/{type}/{category}/{node_id}
 | POST | `/api/v1/session/message` | 向会话添加消息 |
 | POST | `/api/v1/session/end` | 结束会话，提取并存储记忆 |
 
+#### 技能进化
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| POST | `/api/v1/skill/lookup` | 按目标搜索相关技能 |
+| POST | `/api/v1/skill/feedback` | 提供使用反馈，更新置信度 |
+| POST | `/api/v1/skill/mine` | 从成功案例中挖掘技能 |
+| POST | `/api/v1/skill/evolve` | 触发双轨技能进化 |
+
 #### Hooks 与集成
 
 | 方法 | 端点 | 说明 |
@@ -403,12 +428,13 @@ opencortex://{tenant}/user/{uid}/{type}/{category}/{node_id}
 | POST | `/api/v1/hooks/error/suggest` | 获取错误修复建议 |
 | POST | `/api/v1/integration/route` | 将任务路由到最佳 Agent |
 
-### MCP 工具 (25 个)
+### MCP 工具 (29 个)
 
 MCP 服务器暴露与 REST API 相同的能力。主要工具：
 
 - `memory_store` / `memory_search` / `memory_feedback` / `memory_stats` / `memory_decay` / `memory_health`
 - `session_begin` / `session_message` / `session_end`
+- `skill_lookup` / `skill_feedback` / `skill_mine` / `skill_evolve`
 - `memory_hooks_learn` / `memory_hooks_remember` / `memory_hooks_recall`
 - 轨迹、错误和集成工具
 
@@ -502,7 +528,7 @@ src/opencortex/
 
 plugins/opencortex-memory/       # Claude Code 插件（纯 Node.js）
 
-tests/                           # 111+ Python 测试 + 8 Node.js 测试
+tests/                           # 175+ Python 测试 + 8 Node.js 测试
 ```
 
 ---
@@ -510,11 +536,11 @@ tests/                           # 111+ Python 测试 + 8 Node.js 测试
 ## 运行测试
 
 ```bash
-# 核心回归测试 (103 tests, 无外部依赖)
+# 核心回归测试 (176 tests, 无外部依赖)
 uv run python3 -m unittest tests.test_e2e_phase1 \
   tests.test_ace_phase1 tests.test_ace_phase2 \
   tests.test_rule_extractor tests.test_skill_search_fusion \
-  tests.test_integration_skill_pipeline -v
+  tests.test_case_memory tests.test_skill_evolution -v
 
 # MCP 服务器测试（需要运行中的 HTTP 服务器）
 node --test tests/test_mcp_server.mjs

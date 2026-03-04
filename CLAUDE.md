@@ -22,7 +22,7 @@ Core subsystems:
 - Embedding: Volcengine doubao-embedding-vision (1024 dim) / OpenAI-compatible
 - HTTP: FastAPI + uvicorn + httpx
 - MCP: Node.js stdio proxy (25 tools → HTTP API)
-- Tests: unittest (111+ Python) + node:test (8 Node.js MCP)
+- Tests: unittest (175+ Python) + node:test (8 Node.js MCP)
 
 ## Directory Structure
 
@@ -71,11 +71,13 @@ plugins/opencortex-memory/       # Claude Code plugin (pure Node.js)
   lib/common.mjs                 # Config discovery, state, uv/python detection
   lib/http-client.mjs            # Native fetch wrapper + buildClientHeaders()
   lib/transcript.mjs             # JSONL parsing
-  lib/mcp-server.mjs             # MCP stdio server (25 tools)
+  lib/mcp-server.mjs             # MCP stdio server (29 tools)
   bin/oc-cli.mjs                 # CLI tool
 
 tests/
   test_e2e_phase1.py             # 24 E2E tests
+  test_skill_evolution.py        # 51 skill evolution tests (unit + data flow)
+  test_case_memory.py            # 8 case memory tests
   test_mcp_server.mjs            # 8 MCP tests (Node.js)
   test_ace_phase1.py             # 21 ACE tests
   test_ace_phase2.py             # 17 ACE Phase 2 tests
@@ -153,7 +155,7 @@ docker compose up -d
 
 ```bash
 # Python core tests (no external dependencies)
-uv run python3 -m unittest tests.test_e2e_phase1 tests.test_ace_phase1 tests.test_ace_phase2 tests.test_rule_extractor tests.test_skill_search_fusion tests.test_integration_skill_pipeline -v
+uv run python3 -m unittest tests.test_e2e_phase1 tests.test_ace_phase1 tests.test_ace_phase2 tests.test_rule_extractor tests.test_skill_search_fusion tests.test_case_memory tests.test_skill_evolution -v
 
 # Node.js MCP tests (requires running HTTP server)
 node --test tests/test_mcp_server.mjs
