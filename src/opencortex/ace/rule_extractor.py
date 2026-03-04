@@ -175,8 +175,15 @@ class RuleExtractor:
         if len(step_matches) < 3:
             return skills
 
-        # Extract the full workflow region
+        # Extract the full workflow region, including the preceding line
+        # for trigger context (e.g. "When deploying, then:")
         start = step_matches[0].start()
+        prev_newline = content.rfind("\n", 0, start)
+        if prev_newline > 0:
+            prev_prev = content.rfind("\n", 0, prev_newline)
+            start = (prev_prev + 1) if prev_prev >= 0 else 0
+        elif prev_newline == 0:
+            start = 0
         end = step_matches[-1].end()
         # Extend end to include the rest of the last step's line
         next_newline = content.find("\n", end)
@@ -219,8 +226,8 @@ class RuleExtractor:
         # 3. Exclude trivial command records
         if self._is_trivial_command(content):
             return False
-        # 4. Error fixes must have causal structure
-        if skill.section == "error_fixes" and not self._has_causal_structure(content):
+        # 4. Error fixes and workflows must have causal structure
+        if skill.section in ("error_fixes", "workflows") and not self._has_causal_structure(content):
             return False
         return True
 

@@ -112,9 +112,9 @@ class TestRuleExtractor(unittest.TestCase):
     # -----------------------------------------------------------------
 
     def test_08_workflow_extraction(self):
-        """Multi-step workflow with ≥3 steps is extracted."""
+        """Multi-step workflow with causal structure and ≥3 steps is extracted."""
         content = (
-            "Deployment procedure:\n"
+            "When deploying to production, then follow this procedure:\n"
             "1. Run lint checks on the codebase\n"
             "2. Execute the full test suite\n"
             "3. Build the Docker image with version tag\n"
@@ -126,6 +126,23 @@ class TestRuleExtractor(unittest.TestCase):
         skills = self.extractor.extract("Deployment", content)
         workflows = [s for s in skills if s.section == "workflows"]
         self.assertGreater(len(workflows), 0, "Should extract workflow pattern")
+
+    def test_08b_workflow_requires_causal_structure(self):
+        """Multi-step workflow without causal connectors is rejected."""
+        content = (
+            "Project architecture overview:\n"
+            "1. The HTTP server handles incoming requests\n"
+            "2. The orchestrator coordinates all components\n"
+            "3. The storage layer persists data to Qdrant\n"
+            "4. The embedder generates vector representations\n"
+            "5. The retriever searches across collections\n"
+            "This is a standard layered architecture.\n"
+        )
+        content += "\n" * 30
+        skills = self.extractor.extract("Architecture", content)
+        workflows = [s for s in skills if s.section == "workflows"]
+        self.assertEqual(len(workflows), 0,
+                         "Workflow without causal structure should be rejected")
 
     def test_09_too_few_steps_not_workflow(self):
         """Fewer than 3 steps is not extracted as a workflow."""

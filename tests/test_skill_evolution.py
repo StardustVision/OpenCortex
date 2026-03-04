@@ -1285,5 +1285,121 @@ class TestSkillEvolutionDataFlow(unittest.TestCase):
         self.assertEqual(records[0]["version"], 2)
 
 
+# =============================================================================
+# 12. Source Gating Tests (hook:* skips extraction)
+# =============================================================================
+
+
+class TestSourceGating(unittest.TestCase):
+    """Test that hook-sourced content skips skill extraction."""
+
+    def setUp(self):
+        from opencortex.config import CortexConfig, init_config
+        from opencortex.http.request_context import set_request_identity
+
+        self.temp_dir = tempfile.mkdtemp(prefix="source_gate_")
+        self.config = CortexConfig(
+            data_root=self.temp_dir,
+            embedding_dimension=MockEmbedder.DIMENSION,
+        )
+        init_config(self.config)
+        self._identity_tokens = set_request_identity("testteam", "alice")
+        self.storage = InMemoryStorage()
+        self.embedder = MockEmbedder()
+
+    def tearDown(self):
+        from opencortex.http.request_context import reset_request_identity
+        reset_request_identity(self._identity_tokens)
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _init_orch(self):
+        from opencortex.orchestrator import MemoryOrchestrator
+        orch = MemoryOrchestrator(
+            config=self.config,
+            storage=self.storage,
+            embedder=self.embedder,
+        )
+        _run(orch.init())
+        return orch
+
+    @patch("opencortex.ace.skillbook.get_effective_ace_config")
+    def test_hook_source_skips_extraction(self, mock_ace):
+        """add() with meta.source='hook:stop' should NOT trigger skill extraction."""
+        mock_ace.return_value = MagicMock(
+            share_skills_to_team=False, skill_share_mode="manual",
+            skill_share_score_threshold=0.5, ace_scope_enforcement_enabled=False,
+        )
+        orch = self._init_orch()
+
+        # Content that would normally trigger error_fix extraction
+        content = (
+            "When encountering a connection timeout error, then check firewall rules "
+            "and retry with exponential backoff. This pattern applies to all services."
+        )
+        content += "\n" * 50
+
+        with patch.object(orch, '_try_extract_skills', wraps=orch._try_extract_skills) as mock_extract:
+            _run(orch.add(
+                abstract="connection timeout fix",
+                content=content,
+                category="error_fixes",
+                meta={"source": "hook:stop"},
+            ))
+            # Allow any pending tasks to complete
+            _run(asyncio.sleep(0.1))
+            mock_extract.assert_not_called()
+
+    @patch("opencortex.ace.skillbook.get_effective_ace_config")
+    def test_non_hook_source_triggers_extraction(self, mock_ace):
+        """add() with meta.source='user' should trigger skill extraction."""
+        mock_ace.return_value = MagicMock(
+            share_skills_to_team=False, skill_share_mode="manual",
+            skill_share_score_threshold=0.5, ace_scope_enforcement_enabled=False,
+        )
+        orch = self._init_orch()
+
+        content = (
+            "When encountering a connection timeout error, then check firewall rules "
+            "and retry with exponential backoff. This pattern applies to all services."
+        )
+        content += "\n" * 50
+
+        with patch.object(orch, '_try_extract_skills', wraps=orch._try_extract_skills) as mock_extract:
+            _run(orch.add(
+                abstract="connection timeout fix",
+                content=content,
+                category="error_fixes",
+                meta={"source": "user"},
+            ))
+            # Allow any pending tasks to complete
+            _run(asyncio.sleep(0.1))
+            mock_extract.assert_called_once()
+
+    @patch("opencortex.ace.skillbook.get_effective_ace_config")
+    def test_no_source_meta_triggers_extraction(self, mock_ace):
+        """add() without meta.source should trigger skill extraction."""
+        mock_ace.return_value = MagicMock(
+            share_skills_to_team=False, skill_share_mode="manual",
+            skill_share_score_threshold=0.5, ace_scope_enforcement_enabled=False,
+        )
+        orch = self._init_orch()
+
+        content = (
+            "When encountering a connection timeout error, then check firewall rules "
+            "and retry with exponential backoff. This pattern applies to all services."
+        )
+        content += "\n" * 50
+
+        with patch.object(orch, '_try_extract_skills', wraps=orch._try_extract_skills) as mock_extract:
+            _run(orch.add(
+                abstract="connection timeout fix",
+                content=content,
+                category="error_fixes",
+            ))
+            # Allow any pending tasks to complete
+            _run(asyncio.sleep(0.1))
+            mock_extract.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

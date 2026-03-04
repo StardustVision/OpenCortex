@@ -685,7 +685,9 @@ class MemoryOrchestrator:
         )
 
         if self._rule_extractor and self._skillbook and content:
-            asyncio.create_task(self._try_extract_skills(abstract, content, tid, uid))
+            source = (meta or {}).get("source", "")
+            if not str(source).startswith("hook:"):
+                asyncio.create_task(self._try_extract_skills(abstract, content, tid, uid))
 
         ctx.meta["dedup_action"] = "created"
         logger.info("[MemoryOrchestrator] Added context: %s", uri)
@@ -703,12 +705,34 @@ class MemoryOrchestrator:
                 )
                 if existing and getattr(existing[0], '_score', 0) > 0.85:
                     continue
+                # LLM quality gate
+                if not await self._llm_quality_check(skill.content, skill.section):
+                    logger.debug("[Orchestrator] Skill rejected by LLM quality check: %s", skill.content[:80])
+                    continue
                 await self._skillbook.add_skill(
                     skill.section, skill.content,
                     tenant_id=tenant_id, user_id=user_id,
                 )
         except Exception:
             logger.debug("[Orchestrator] Skill extraction failed silently")
+
+    async def _llm_quality_check(self, skill_content: str, skill_section: str) -> bool:
+        """LLM quality gate for extracted skills. Returns True if skill passes."""
+        if not self._llm_completion:
+            return True  # No LLM configured → pass through (graceful degradation)
+        try:
+            prompt = (
+                "You are a skill quality evaluator. Given an extracted skill, decide if it is a genuine, "
+                "actionable, reusable skill with clear cause-effect structure.\n\n"
+                f"Skill type: {skill_section}\n"
+                f"Skill content: {skill_content}\n\n"
+                "Reply with ONLY 'yes' or 'no'. 'yes' means the skill is high quality and should be kept."
+            )
+            answer = await self._llm_completion(prompt)
+            return answer.strip().lower().startswith("yes")
+        except Exception:
+            logger.debug("[Orchestrator] LLM quality check failed, allowing skill")
+            return True  # Fail-open
 
     # ------------------------------------------------------------------
     # Write-time dedup helpers
