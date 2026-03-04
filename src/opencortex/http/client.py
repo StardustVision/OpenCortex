@@ -3,7 +3,7 @@
 Async HTTP client for the OpenCortex HTTP Server.
 
 Provides :class:`OpenCortexClient` — a thin wrapper around ``httpx.AsyncClient``
-that mirrors the 25 REST endpoints exposed by ``opencortex.http.server``.
+that mirrors the current REST API exposed by ``opencortex.http.server``.
 
 Usage::
 
@@ -14,7 +14,7 @@ Usage::
 """
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 
@@ -76,9 +76,9 @@ class OpenCortexClient:
         """POST with retry logic."""
         return await self._request("POST", path, json=json)
 
-    async def _get(self, path: str) -> Any:
+    async def _get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
         """GET with retry logic."""
-        return await self._request("GET", path)
+        return await self._request("GET", path, params=params)
 
     def _build_headers(self) -> Dict[str, str]:
         """Build per-request HTTP headers for identity and client config."""
@@ -99,7 +99,11 @@ class OpenCortexClient:
         return hdrs
 
     async def _request(
-        self, method: str, path: str, json: Optional[Dict[str, Any]] = None
+        self,
+        method: str,
+        path: str,
+        json: Optional[Dict[str, Any]] = None,
+        params: Optional[Dict[str, Any]] = None,
     ) -> Any:
         if not self._client:
             raise OpenCortexClientError("Client not connected — call connect() first")
@@ -108,7 +112,9 @@ class OpenCortexClient:
         last_exc: Optional[Exception] = None
         for attempt in range(_MAX_RETRIES + 1):
             try:
-                resp = await self._client.request(method, path, json=json, headers=headers)
+                resp = await self._client.request(
+                    method, path, json=json, params=params, headers=headers
+                )
                 resp.raise_for_status()
                 return resp.json()
             except httpx.HTTPStatusError as exc:
@@ -157,6 +163,26 @@ class OpenCortexClient:
             payload["meta"] = meta
         return await self._post("/api/v1/memory/store", payload)
 
+    async def memory_batch_store(
+        self,
+        items: List[Dict[str, Any]],
+        source_path: str = "",
+        scan_meta: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"items": items, "source_path": source_path}
+        if scan_meta is not None:
+            payload["scan_meta"] = scan_meta
+        return await self._post("/api/v1/memory/batch_store", payload)
+
+    async def memory_promote_to_shared(
+        self,
+        uris: List[str],
+        project_id: str,
+    ) -> Dict[str, Any]:
+        return await self._post("/api/v1/memory/promote_to_shared", {
+            "uris": uris, "project_id": project_id,
+        })
+
     async def memory_search(
         self,
         query: str,
@@ -175,6 +201,20 @@ class OpenCortexClient:
     async def memory_feedback(self, uri: str, reward: float) -> Dict[str, Any]:
         return await self._post("/api/v1/memory/feedback", {"uri": uri, "reward": reward})
 
+    async def memory_list(
+        self,
+        category: Optional[str] = None,
+        context_type: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {"limit": limit, "offset": offset}
+        if category is not None:
+            params["category"] = category
+        if context_type is not None:
+            params["context_type"] = context_type
+        return await self._get("/api/v1/memory/list", params=params)
+
     async def memory_stats(self) -> Dict[str, Any]:
         return await self._get("/api/v1/memory/stats")
 
@@ -185,73 +225,11 @@ class OpenCortexClient:
         return await self._get("/api/v1/memory/health")
 
     # =====================================================================
-    # Hooks Learn
+    # Intent / Session / Skill
     # =====================================================================
 
-    async def hooks_learn(
-        self,
-        state: str,
-        action: str,
-        reward: float,
-        available_actions: str = "",
-    ) -> Dict[str, Any]:
-        return await self._post("/api/v1/hooks/learn", {
-            "state": state, "action": action,
-            "reward": reward, "available_actions": available_actions,
-        })
-
-    async def hooks_remember(self, content: str, memory_type: str = "general") -> Dict[str, Any]:
-        return await self._post("/api/v1/hooks/remember", {
-            "content": content, "memory_type": memory_type,
-        })
-
-    async def hooks_recall(self, query: str, limit: int = 5) -> Any:
-        return await self._post("/api/v1/hooks/recall", {"query": query, "limit": limit})
-
-    async def hooks_stats(self) -> Dict[str, Any]:
-        return await self._get("/api/v1/hooks/stats")
-
-    # =====================================================================
-    # Trajectory
-    # =====================================================================
-
-    async def trajectory_begin(self, trajectory_id: str, initial_state: str) -> Dict[str, Any]:
-        return await self._post("/api/v1/hooks/trajectory/begin", {
-            "trajectory_id": trajectory_id, "initial_state": initial_state,
-        })
-
-    async def trajectory_step(
-        self,
-        trajectory_id: str,
-        action: str,
-        reward: float,
-        next_state: str = "",
-    ) -> Dict[str, Any]:
-        return await self._post("/api/v1/hooks/trajectory/step", {
-            "trajectory_id": trajectory_id, "action": action,
-            "reward": reward, "next_state": next_state,
-        })
-
-    async def trajectory_end(self, trajectory_id: str, quality_score: float) -> Dict[str, Any]:
-        return await self._post("/api/v1/hooks/trajectory/end", {
-            "trajectory_id": trajectory_id, "quality_score": quality_score,
-        })
-
-    # =====================================================================
-    # Error
-    # =====================================================================
-
-    async def error_record(self, error: str, fix: str, context: str = "") -> Dict[str, Any]:
-        return await self._post("/api/v1/hooks/error/record", {
-            "error": error, "fix": fix, "context": context,
-        })
-
-    async def error_suggest(self, error: str) -> Any:
-        return await self._post("/api/v1/hooks/error/suggest", {"error": error})
-
-    # =====================================================================
-    # Session
-    # =====================================================================
+    async def intent_should_recall(self, query: str) -> Dict[str, Any]:
+        return await self._post("/api/v1/intent/should_recall", {"query": query})
 
     async def session_begin(self, session_id: str) -> Dict[str, Any]:
         return await self._post("/api/v1/session/begin", {"session_id": session_id})
@@ -266,27 +244,61 @@ class OpenCortexClient:
             "session_id": session_id, "quality_score": quality_score,
         })
 
-    # =====================================================================
-    # Integration
-    # =====================================================================
+    async def session_extract_turn(
+        self, session_id: str, quality_score: float = 0.5,
+    ) -> Dict[str, Any]:
+        return await self._post("/api/v1/session/extract_turn", {
+            "session_id": session_id, "quality_score": quality_score,
+        })
 
-    async def integration_route(self, task: str, agents: str = "") -> Dict[str, Any]:
-        return await self._post("/api/v1/integration/route", {"task": task, "agents": agents})
+    async def skill_lookup(self, objective: str, section: str = "", limit: int = 5) -> Dict[str, Any]:
+        return await self._post("/api/v1/skill/lookup", {
+            "objective": objective, "section": section, "limit": limit,
+        })
 
-    async def integration_init(self, project_path: str = ".") -> Dict[str, Any]:
-        return await self._post("/api/v1/integration/init", {"project_path": project_path})
+    async def skill_feedback(
+        self,
+        uri: str,
+        session_id: str = "",
+        turn_uuid: str = "",
+        success: bool = True,
+        score: float = 1.0,
+    ) -> Dict[str, Any]:
+        return await self._post("/api/v1/skill/feedback", {
+            "uri": uri,
+            "session_id": session_id,
+            "turn_uuid": turn_uuid,
+            "success": success,
+            "score": score,
+        })
 
-    async def integration_pretrain(self, repo_path: str = ".") -> Dict[str, Any]:
-        return await self._post("/api/v1/integration/pretrain", {"repo_path": repo_path})
+    async def skill_mine(
+        self,
+        section: str = "",
+        min_cases: int = 5,
+        max_cases: int = 200,
+        max_clusters: int = 10,
+        llm_budget: int = 5,
+    ) -> Dict[str, Any]:
+        return await self._post("/api/v1/skill/mine", {
+            "section": section,
+            "min_cases": min_cases,
+            "max_cases": max_cases,
+            "max_clusters": max_clusters,
+            "llm_budget": llm_budget,
+        })
 
-    async def integration_verify(self) -> Dict[str, Any]:
-        return await self._get("/api/v1/integration/verify")
+    async def skill_evolve(
+        self,
+        uri: str,
+        confidence_threshold: float = 0.3,
+        observation_turns: int = 10,
+    ) -> Dict[str, Any]:
+        return await self._post("/api/v1/skill/evolve", {
+            "uri": uri,
+            "confidence_threshold": confidence_threshold,
+            "observation_turns": observation_turns,
+        })
 
-    async def integration_doctor(self) -> Dict[str, Any]:
-        return await self._get("/api/v1/integration/doctor")
-
-    async def integration_export(self, format: str = "json") -> Dict[str, Any]:
-        return await self._post("/api/v1/integration/export", {"format": format})
-
-    async def integration_build_agents(self) -> Dict[str, Any]:
-        return await self._get("/api/v1/integration/build-agents")
+    async def system_status(self, status_type: str = "doctor") -> Dict[str, Any]:
+        return await self._get("/api/v1/system/status", params={"type": status_type})
