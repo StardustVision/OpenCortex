@@ -146,3 +146,40 @@ class SkillEvolveRequest(BaseModel):
     uri: str
     confidence_threshold: float = 0.3
     observation_turns: int = 10
+
+
+# =========================================================================
+# Cortex Alpha
+# =========================================================================
+
+class SessionMessagesRequest(BaseModel):
+    """Batch message recording (Observer debounce buffer)."""
+    session_id: str
+    messages: List[Dict[str, Any]]  # [{role, content, timestamp?}]
+
+
+class KnowledgeSearchRequest(BaseModel):
+    query: str
+    types: Optional[List[str]] = None
+    limit: int = 10
+
+
+class KnowledgeApproveRequest(BaseModel):
+    knowledge_id: str
+
+
+class KnowledgeRejectRequest(BaseModel):
+    knowledge_id: str
+
+
+class KnowledgePromoteRequest(BaseModel):
+    knowledge_id: str
+    new_scope: str
+
+
+class TraceSplitRequest(BaseModel):
+    session_id: str
+
+
+class TraceListRequest(BaseModel):
+    session_id: str

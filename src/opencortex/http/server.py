@@ -42,6 +42,11 @@ from opencortex.http.models import (
     SkillFeedbackRequest,
     SkillLookupRequest,
     SkillMineRequest,
+    # Cortex Alpha
+    SessionMessagesRequest,
+    KnowledgeSearchRequest,
+    KnowledgeApproveRequest,
+    KnowledgeRejectRequest,
 )
 from opencortex.orchestrator import MemoryOrchestrator
 from opencortex.retrieve.intent_router import IntentRouter
@@ -338,6 +343,50 @@ def _register_routes(app: FastAPI) -> None:
             session_id=req.session_id,
             quality_score=req.quality_score,
         )
+
+    # =====================================================================
+    # Cortex Alpha
+    # =====================================================================
+
+    @app.post("/api/v1/session/messages")
+    async def session_messages_batch(req: SessionMessagesRequest) -> Dict[str, Any]:
+        """Batch message recording (Observer debounce buffer)."""
+        if _orchestrator._observer:
+            from opencortex.http.request_context import get_effective_identity
+            tid, uid = get_effective_identity()
+            _orchestrator._observer.record_batch(
+                session_id=req.session_id,
+                messages=req.messages,
+                tenant_id=tid,
+                user_id=uid,
+            )
+        return {"ok": True, "count": len(req.messages)}
+
+    @app.post("/api/v1/knowledge/search")
+    async def knowledge_search(req: KnowledgeSearchRequest) -> Dict[str, Any]:
+        return await _orchestrator.knowledge_search(
+            query=req.query, types=req.types, limit=req.limit,
+        )
+
+    @app.post("/api/v1/knowledge/approve")
+    async def knowledge_approve(req: KnowledgeApproveRequest) -> Dict[str, Any]:
+        return await _orchestrator.knowledge_approve(req.knowledge_id)
+
+    @app.post("/api/v1/knowledge/reject")
+    async def knowledge_reject(req: KnowledgeRejectRequest) -> Dict[str, Any]:
+        return await _orchestrator.knowledge_reject(req.knowledge_id)
+
+    @app.get("/api/v1/knowledge/candidates")
+    async def knowledge_candidates() -> Dict[str, Any]:
+        return await _orchestrator.knowledge_list_candidates()
+
+    @app.post("/api/v1/archivist/trigger")
+    async def archivist_trigger() -> Dict[str, Any]:
+        return await _orchestrator.archivist_trigger()
+
+    @app.get("/api/v1/archivist/status")
+    async def archivist_status() -> Dict[str, Any]:
+        return await _orchestrator.archivist_status()
 
     # =====================================================================
     # System Status
