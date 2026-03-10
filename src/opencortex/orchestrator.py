@@ -203,6 +203,13 @@ class MemoryOrchestrator:
         except Exception as exc:
             logger.warning("[Orchestrator] Migration skipped: %s", exc)
 
+        # 7d. Run v0.4.0 project_id backfill (idempotent)
+        try:
+            from opencortex.migration.v040_project_backfill import backfill_project_id
+            await backfill_project_id(self._storage, _CONTEXT_COLLECTION)
+        except Exception as exc:
+            logger.warning("[Orchestrator] Project backfill skipped: %s", exc)
+
         # 8. Cortex Alpha components
         await self._init_alpha()
 
@@ -833,6 +840,11 @@ class MemoryOrchestrator:
                     ],
                 }
             )
+            # Project isolation: only dedup within same project
+            project_id = get_effective_project_id()
+            if project_id:
+                conds.append({"op": "must", "field": "project_id", "conds": [project_id]})
+
             dedup_filter = {"op": "and", "conds": conds}
 
             results = await self._storage.search(
@@ -1079,13 +1091,11 @@ class MemoryOrchestrator:
         else:
             combined_conds = [staging_exclude, scope_filter]
 
-        # Project-scoped filter: isolate resources by project_id
+        # Project-scoped filter: strict isolation by project_id
         project_id = get_effective_project_id()
         if project_id and project_id != "public":
-            # Include records matching this project, "public", empty, or missing project_id
             project_filter = {"op": "or", "conds": [
-                {"op": "must", "field": "project_id", "conds": [project_id, "public", ""]},
-                {"op": "is_null", "field": "project_id"},
+                {"op": "must", "field": "project_id", "conds": [project_id, "public"]},
             ]}
             combined_conds.append(project_filter)
 
@@ -1295,12 +1305,11 @@ class MemoryOrchestrator:
         if context_type:
             conds.append({"op": "must", "field": "context_type", "conds": [context_type]})
 
-        # Project filter
+        # Project filter: strict isolation
         project_id = get_effective_project_id()
         if project_id and project_id != "public":
             conds.append({"op": "or", "conds": [
-                {"op": "must", "field": "project_id", "conds": [project_id, "public", ""]},
-                {"op": "is_null", "field": "project_id"},
+                {"op": "must", "field": "project_id", "conds": [project_id, "public"]},
             ]})
 
         combined: Dict[str, Any] = {"op": "and", "conds": conds}
@@ -1321,6 +1330,7 @@ class MemoryOrchestrator:
                 "category": r.get("category", ""),
                 "context_type": r.get("context_type", ""),
                 "scope": r.get("scope", ""),
+                "project_id": r.get("project_id", ""),
                 "updated_at": r.get("updated_at", ""),
                 "created_at": r.get("created_at", ""),
             }
