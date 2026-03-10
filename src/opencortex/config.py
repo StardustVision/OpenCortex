@@ -85,7 +85,7 @@ class CortexConfig:
 
     data_root: str = "./data"
     embedding_dimension: int = 1024
-    embedding_provider: str = ""
+    embedding_provider: str = "local"
     embedding_model: str = ""
     embedding_api_key: str = ""
     embedding_api_base: str = ""
@@ -94,7 +94,7 @@ class CortexConfig:
     llm_api_key: str = ""         # LLM API key (defaults to embedding_api_key if empty)
     llm_api_base: str = ""        # LLM API base URL
     # Rerank
-    rerank_provider: str = ""       # "volcengine" | "jina" | "cohere" | "local" | "llm"
+    rerank_provider: str = "local"  # "volcengine" | "jina" | "cohere" | "local" | "llm"
     rerank_model: str = ""          # Rerank model name
     rerank_api_key: str = ""        # API key (defaults to embedding_api_key)
     rerank_api_base: str = ""       # API endpoint
