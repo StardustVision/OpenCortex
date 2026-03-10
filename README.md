@@ -18,21 +18,20 @@ LLM-based agents operate within finite context windows. When a session ends, eve
 
 OpenCortex solves this by giving agents a **persistent, searchable, self-improving memory**. Think of it as long-term memory for AI: the agent stores what it learns, recalls relevant context when needed, and surfaces the most useful memories first through reinforcement learning.
 
-It is not a key-value store. It is a complete memory engine with layered summaries, semantic retrieval, intent-aware routing, and reinforcement-driven ranking.
+It is not a key-value store. It is a complete memory engine with layered summaries, semantic retrieval, intent-aware routing, reinforcement-driven ranking, and automatic knowledge extraction from conversations.
 
 ### What it does, concretely
 
 - **Remembers** user preferences, coding conventions, and past decisions across sessions
 - **Recalls** relevant context automatically when the agent processes a new prompt
 - **Learns** from feedback &mdash; memories that prove useful rank higher; stale ones decay
-- **Extracts** reusable skills from conversations without requiring LLM calls
+- **Extracts** reusable knowledge from conversation traces via the Cortex Alpha pipeline
 - **Isolates** data per tenant and user through URI-based namespaces
+- **Portable** &mdash; a single `memory_context` MCP tool replaces platform-specific hooks
 
 ---
 
 ## Key Concepts
-
-Before diving into the architecture, here is a glossary of terms used throughout this project.
 
 ### Memory Layers: L0 / L1 / L2
 
@@ -51,18 +50,37 @@ When you store a memory, L1 is generated automatically. When you search, the sys
 The reinforcement learning system that ranks memories. When an agent gives positive feedback to a memory, its reward score increases and it surfaces higher in future searches. Unused memories decay over time. The formula:
 
 ```
-final_score = semantic_similarity + rl_weight * reward_score
+final_score = beta * rerank_score + (1 - beta) * retrieval_score + rl_weight * reward_score
 ```
 
-### ACE (Agentic Context Engine)
+### Cortex Alpha
 
-The self-learning subsystem. ACE watches what the agent stores and automatically extracts reusable **skills** &mdash; patterns like "when you see error X, apply fix Y" or "the user always wants dark theme". These skills are stored in a **Skillbook** and returned alongside regular memories during search.
+The knowledge extraction pipeline. When a session ends, Cortex Alpha automatically:
 
-Skills evolve over time through a **confidence scoring** system: usage feedback adjusts confidence, and a **dual-track observation** mechanism lets new skill variants compete against old ones before committing to a replacement.
+1. **Observer** records the conversation transcript in real time
+2. **TraceSplitter** decomposes the transcript into discrete task traces via LLM
+3. **TraceStore** persists traces to Qdrant for future retrieval
+4. **Archivist** extracts reusable knowledge candidates from traces
+5. **Sandbox** quality-gates each candidate (statistical + LLM verification)
+6. **KnowledgeStore** persists approved knowledge for search
+
+No manual curation needed. The agent's knowledge base grows automatically.
+
+### Memory Context Protocol
+
+A platform-agnostic three-phase lifecycle that replaces Claude Code hooks:
+
+| Phase | When | What it does |
+|-------|------|-------------|
+| **prepare** | Before generating a response | Recalls relevant memories and knowledge, returns context to the agent |
+| **commit** | After generating a response | Records the conversation turn, applies RL reward to cited memories |
+| **end** | Session complete | Flushes transcripts, triggers trace splitting and knowledge extraction |
+
+Any MCP-compatible client can use the single `memory_context` tool &mdash; no hooks required.
 
 ### MCP (Model Context Protocol)
 
-An open standard that lets AI agents call external tools. OpenCortex exposes 13 MCP tools (store, search, feedback, etc.) through a Node.js stdio server that Claude Code, Cursor, and other MCP-compatible clients can use directly.
+An open standard that lets AI agents call external tools. OpenCortex exposes 10 MCP tools through a Node.js stdio server that Claude Code, Cursor, and other MCP-compatible clients can use directly.
 
 ### CortexFS
 
@@ -78,7 +96,7 @@ An open-source vector database. OpenCortex uses Qdrant in **embedded mode** &mda
 
 ### Embedding
 
-The process of converting text into a numerical vector that captures its semantic meaning. OpenCortex supports Volcengine (doubao-embedding), OpenAI, and other embedding providers. These vectors power the semantic search capability.
+The process of converting text into a numerical vector that captures its semantic meaning. OpenCortex supports local embedding (multilingual-e5-large via FastEmbed), Volcengine (doubao-embedding), OpenAI, and other providers. Local reranking is also supported (jina-reranker-v2-base-multilingual).
 
 ### URI Namespace
 
@@ -98,27 +116,27 @@ This ensures complete data isolation between tenants and users.
 AI Agent (Claude Code / Cursor / Custom)
   |
   |--- MCP Protocol (stdio) ----> Node.js MCP Server ---- HTTP ----> FastAPI HTTP Server (:8921)
-  |                                (13 tools)                              |
+  |                                (10 tools)                              |
   |                                                                        v
   |                                                                  MemoryOrchestrator
   |                                                                  (unified API layer)
   |                                                                        |
   |                                                         +--------------+--------------+
   |                                                         |              |              |
-  |                                                    IntentRouter   SessionManager   Skillbook
-  |                                                         |                        (self-learning)
-  |                                                         v
-  |                                                  HierarchicalRetriever
-  |                                                         |
-  |                                                         v
-  |                                                  CortexFS + Qdrant Adapter
+  |                                                    IntentRouter   ContextManager   Observer
+  |                                                         |         (prepare/       (transcript
+  |                                                         v          commit/end)     recording)
+  |                                                  HierarchicalRetriever     |
+  |                                                         |                  v
+  |                                                         v            TraceSplitter → Archivist
+  |                                                  CortexFS + Qdrant       → KnowledgeStore
   |                                                  (L0/L1/L2)  (vectors + RL)
   |
-  |--- Hooks (lifecycle events) -> Node.js run.mjs
+  |--- Hooks (Claude Code only) -> Node.js run.mjs
          |-- session-start      -> Start HTTP server / health check
          |-- user-prompt-submit -> Proactive memory recall via search API
-         |-- stop               -> Parse transcript, store turn summary
-         |-- session-end        -> Store session summary, stop server
+         |-- stop               -> Batch record messages to Observer
+         |-- session-end        -> End session, trigger knowledge extraction
 ```
 
 ### Data Flow: Store
@@ -132,7 +150,6 @@ MemoryOrchestrator.add()
   |-- Auto-generate L1 overview (short content reused; long content summarized)
   |-- Write to CortexFS:  .abstract.md / .overview.md / content.md
   |-- Write to Qdrant:    vector + metadata + RL fields (reward_score=0)
-  |-- Async: RuleExtractor extracts reusable skills -> Skillbook
   |
   v
 Returns: { uri, context_type, category, abstract }
@@ -161,6 +178,43 @@ HierarchicalRetriever
   |
   v
 Returns: { results: [{ uri, abstract, score, overview? }], total }
+```
+
+### Data Flow: Memory Context Protocol
+
+```
+Agent calls memory_context(phase="prepare", session_id="s1", turn_id="t1",
+                           messages=[{role: "user", content: "..."}])
+  |
+  v
+ContextManager._prepare()
+  |-- Auto-create session (Observer.begin_session if not active)
+  |-- IntentRouter.route(query) → SearchIntent
+  |-- orchestrator.search() → memory items
+  |-- orchestrator.knowledge_search() → knowledge items
+  |-- Return { memory, knowledge, instructions, intent }
+  |
+  v  (Agent generates response)
+  v
+Agent calls memory_context(phase="commit", session_id="s1", turn_id="t1",
+                           messages=[...], cited_uris=[...])
+  |
+  v
+ContextManager._commit()
+  |-- Observer.record_batch() → in-memory transcript buffer
+  |-- Async: apply RL reward to cited_uris
+  |-- Return { accepted: true }
+  |
+  v  (Session ends)
+  v
+Agent calls memory_context(phase="end", session_id="s1")
+  |
+  v
+ContextManager._end()
+  |-- Observer.flush() → TraceSplitter → TraceStore
+  |-- Archivist → Sandbox → KnowledgeStore
+  |-- Cleanup all session state
+  |-- Return { status: "closed", traces, knowledge_candidates }
 ```
 
 ### Data Flow: Feedback Loop
@@ -219,8 +273,6 @@ Create a configuration file. The system searches in this order:
 
 ```json
 {
-  "tenant_id": "my-team",
-  "user_id": "my-name",
   "embedding_provider": "volcengine",
   "embedding_model": "doubao-embedding-vision-250615",
   "embedding_api_key": "YOUR_API_KEY",
@@ -230,20 +282,26 @@ Create a configuration file. The system searches in this order:
 }
 ```
 
-**Without embedding (filter/scroll fallback, RL ranking still works):**
+**With local embedding (no API key needed):**
 
 ```json
 {
-  "tenant_id": "my-team",
-  "user_id": "my-name",
-  "embedding_provider": "none",
+  "embedding_provider": "local",
   "http_server_port": 8921
 }
 ```
 
-All fields can be overridden via environment variables with the `OPENCORTEX_` prefix:
+Identity is configured per-client in `mcp.json`:
+
+```json
+{
+  "tenant_id": "my-team",
+  "user_id": "my-name"
+}
+```
+
+All server fields can be overridden via environment variables with the `OPENCORTEX_` prefix:
 ```bash
-export OPENCORTEX_TENANT_ID=my-team
 export OPENCORTEX_EMBEDDING_API_KEY=sk-xxx
 ```
 
@@ -337,47 +395,50 @@ The Intent Router analyzes each query and selects the retrieval strategy automat
 Positive feedback boosts a memory's score; negative feedback suppresses it. Time decay ensures stale memories fade:
 
 ```
-final_score = similarity + 0.05 * reward_score
+final_score = beta * rerank + (1-beta) * retrieval + rl_weight * reward
 
 feedback(uri, reward=+1.0)  ->  +0.05 boost in future searches
 feedback(uri, reward=-1.0)  ->  -0.05 penalty
 decay()                     ->  reward *= 0.95 (protected: 0.99)
 ```
 
-### ACE Self-Learning
+### Knowledge Extraction (Cortex Alpha)
 
-The RuleExtractor watches stored memories and extracts reusable skills with zero LLM cost:
-
-| Pattern | Detection | Example |
-|---------|-----------|---------|
-| Error -> Fix | Regex: error/traceback + resolution | "When UTF-8 error occurs, detect encoding with chardet first" |
-| Preference | Keywords: always/never/must | "Always use black to format Python code" |
-| Workflow | 3+ sequential ordered steps | "lint -> test -> build -> push deployment pipeline" |
-
-Extracted skills are stored in the Skillbook and returned alongside regular memories during search.
-
-### Skill Evolution
-
-Skills improve over time through feedback-driven confidence scoring and dual-track observation:
+When a session ends, the Alpha pipeline automatically extracts reusable knowledge:
 
 ```
-confidence = success_rate * log(usage + 1) * freshness_decay
-
-skill_feedback(uri, success=True)  ->  helpful++, confidence recalculated, version bumped
-mine_skills(min_cases=5)           ->  cluster successful cases, LLM generates skill templates
-evolve_skill(uri)                  ->  low-confidence skill → mine replacement → dual-track observation
+Observer transcript → TraceSplitter (LLM) → task traces
+                                              |
+                                     Archivist (LLM) → knowledge candidates
+                                              |
+                                     Sandbox (quality gate) → approved knowledge
+                                              |
+                                     KnowledgeStore (vector search)
 ```
 
-**Dual-track observation**: When a skill is replaced, the old version enters "observation" status while the new one runs in parallel. After enough usage, the higher-confidence skill wins and the loser is deprecated. If the replacement underperforms, the system rolls back automatically.
+Knowledge is searchable via `knowledge_search` and surfaced alongside memories during `memory_context` prepare.
 
-### Session Self-Iteration
+### Memory Context Protocol
 
-On each agent turn, the Stop hook automatically:
-1. Parses the conversation transcript
-2. Extracts a summary (LLM for long turns, local fallback for short ones)
-3. Stores it as a new memory
+A platform-agnostic lifecycle that works with any MCP client:
 
-No manual curation needed. The agent's knowledge base grows automatically.
+```python
+# 1. Before generating a response — get relevant context
+prepare = memory_context(phase="prepare", session_id="s1", turn_id="t1",
+                         messages=[{"role": "user", "content": "..."}])
+# Returns: { memory: [...], knowledge: [...], instructions: {...} }
+
+# 2. After generating a response — record the turn
+memory_context(phase="commit", session_id="s1", turn_id="t1",
+               messages=[...user + assistant...], cited_uris=["opencortex://..."])
+# Returns: { accepted: true }
+
+# 3. When done — close the session
+memory_context(phase="end", session_id="s1")
+# Returns: { status: "closed", traces: 3, knowledge_candidates: 1 }
+```
+
+Features: idempotent by `(session_id, turn_id)`, idle session auto-close, fallback JSONL on failure, async RL reward for cited URIs.
 
 ### Multi-Tenant Isolation
 
@@ -398,44 +459,51 @@ Complete data isolation between tenants and users. Team-level resources can be s
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/api/v1/memory/store` | Store a memory (auto-generates L1, embedding, URI) |
+| POST | `/api/v1/memory/batch_store` | Batch store multiple documents |
 | POST | `/api/v1/memory/search` | Semantic search with intent routing and RL fusion |
 | POST | `/api/v1/memory/feedback` | Submit RL reward (+1 = useful, -1 = not useful) |
 | GET | `/api/v1/memory/stats` | Storage statistics and configuration |
 | POST | `/api/v1/memory/decay` | Trigger global reward decay |
 | GET | `/api/v1/memory/health` | Component health check |
 
+#### Context Protocol
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/v1/context` | Unified lifecycle: prepare / commit / end |
+
 #### Session
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/v1/session/begin` | Start a new session |
+| POST | `/api/v1/session/begin` | Start a new session (Observer recording) |
 | POST | `/api/v1/session/message` | Add a message to the session |
-| POST | `/api/v1/session/extract_turn` | Extract memories from the latest turn (session remains active) |
-| POST | `/api/v1/session/end` | End session, extract and store memories |
+| POST | `/api/v1/session/end` | End session, trigger trace splitting and knowledge extraction |
 
-#### Skill Evolution
+#### Knowledge (Cortex Alpha)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/v1/skill/lookup` | Search for relevant skills by objective |
-| POST | `/api/v1/skill/feedback` | Provide usage feedback, update confidence |
-| POST | `/api/v1/skill/mine` | Mine skills from successful case memories |
-| POST | `/api/v1/skill/evolve` | Trigger dual-track skill evolution |
+| POST | `/api/v1/knowledge/search` | Search approved knowledge |
+| POST | `/api/v1/knowledge/approve` | Approve a knowledge candidate |
+| POST | `/api/v1/knowledge/reject` | Reject a knowledge candidate |
+| GET | `/api/v1/knowledge/candidates` | List pending knowledge candidates |
+| POST | `/api/v1/archivist/trigger` | Manually trigger knowledge extraction |
 
-#### Intent & System
+#### System
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/api/v1/intent/should_recall` | Decide whether recall is needed for a query |
 | GET | `/api/v1/system/status` | Unified health/stats/doctor status |
 
-### MCP Tools (13 tools)
+### MCP Tools (10 tools)
 
-The MCP server exposes the same capabilities as the REST API. Key tools:
+The MCP server exposes the same capabilities as the REST API:
 
 - `memory_store` / `memory_batch_store` / `memory_search` / `memory_feedback` / `memory_decay`
 - `session_begin` / `session_message` / `session_end`
-- `skill_lookup` / `skill_feedback` / `skill_mine` / `skill_evolve`
+- `memory_context` (unified lifecycle: prepare / commit / end)
 - `system_status`
 
 ### Python API
@@ -456,7 +524,7 @@ ctx = await orch.add(
 
 # Search (Intent Router auto-selects strategy)
 result = await orch.search("What theme does the user prefer?")
-for m in result.memories:
+for m in result:
     print(m.uri, m.abstract, m.score)
 
 # Feedback + Decay
@@ -467,7 +535,10 @@ await orch.decay()
 await orch.session_begin(session_id="s1")
 await orch.session_message("s1", "user", "Help me fix this bug")
 await orch.session_message("s1", "assistant", "The issue is...")
-await orch.session_end("s1", quality_score=0.9)  # auto-extracts memories
+await orch.session_end("s1", quality_score=0.9)
+
+# Knowledge search
+results = await orch.knowledge_search("deployment workflow")
 
 await orch.close()
 ```
@@ -476,7 +547,7 @@ await orch.close()
 
 ## Plugin System
 
-The `plugins/opencortex-memory` plugin combines hooks (passive memory collection), MCP server (tool proxy), and skills (active memory tools). All implemented in pure Node.js with zero external dependencies.
+The `plugins/opencortex-memory` plugin provides hooks (passive memory collection for Claude Code) and the MCP server (tool proxy for any client). All implemented in pure Node.js with zero external dependencies.
 
 ```
 plugins/opencortex-memory/
@@ -484,18 +555,17 @@ plugins/opencortex-memory/
     handlers/
       session-start.mjs          # Start HTTP server, init state
       user-prompt-submit.mjs     # Proactive memory recall
-      stop.mjs                   # Parse transcript, store summary
-      session-end.mjs            # Final summary, stop server
+      stop.mjs                   # Batch record messages to Observer
+      session-end.mjs            # End session, trigger knowledge extraction
   lib/
-    mcp-server.mjs               # MCP stdio server (13 tools -> HTTP)
+    mcp-server.mjs               # MCP stdio server (10 tools -> HTTP)
     common.mjs                   # Config discovery, state, uv/python detection
-    http-client.mjs              # Native fetch wrapper
+    http-client.mjs              # Native fetch wrapper + identity headers
     transcript.mjs               # JSONL parsing
-  skills/                        # 6 skill definitions
   bin/oc-cli.mjs                 # CLI: health, status, recall, store
 ```
 
-### Hook Lifecycle
+### Hook Lifecycle (Claude Code only)
 
 ```
 SessionStart -----> Start HTTP server (local) or health check (remote)
@@ -504,12 +574,21 @@ SessionStart -----> Start HTTP server (local) or health check (remote)
 UserPromptSubmit -> Search memories relevant to the prompt (3s timeout)
                     Inject results into agent's system context
                          |
-Stop (async) -----> Parse transcript, extract turn summary
-                    POST /api/v1/memory/store (fire-and-forget)
+Stop (async) -----> Batch record messages to Observer
                          |
-SessionEnd -------> Store session summary
+SessionEnd -------> End session → TraceSplitter → Archivist → KnowledgeStore
                     Kill HTTP server PID (local mode)
 ```
+
+### Platform-Agnostic Usage (non-Claude Code)
+
+For non-Claude Code clients, use the `memory_context` MCP tool directly:
+
+```
+prepare (before response) → commit (after response) → end (session done)
+```
+
+No hooks needed. Any MCP-compatible client works.
 
 ---
 
@@ -517,18 +596,18 @@ SessionEnd -------> Store session summary
 
 ```
 src/opencortex/
-  orchestrator.py                # MemoryOrchestrator (unified API, ~1500 lines)
+  orchestrator.py                # MemoryOrchestrator (unified API)
   config.py                      # CortexConfig (dataclass + env overrides)
-  http/                          # FastAPI server + async client
+  http/                          # FastAPI server + async client + request context
   retrieve/                      # IntentRouter + HierarchicalRetriever + Rerank
-  session/                       # SessionManager + MemoryExtractor
-  ace/                           # Skillbook + RuleExtractor
+  context/                       # ContextManager (Memory Context Protocol)
+  alpha/                         # Cortex Alpha: Observer, TraceSplitter, Archivist, KnowledgeStore
   storage/                       # VikingDBInterface + CortexFS + Qdrant adapter
-  models/                        # Embedder abstractions + LLM factory
+  models/                        # Embedder abstractions (local/API) + LLM factory
 
 plugins/opencortex-memory/       # Claude Code plugin (pure Node.js)
 
-tests/                           # 175+ Python tests + 8 Node.js tests
+tests/                           # 140+ Python tests + 8 Node.js tests
 ```
 
 ---
@@ -536,11 +615,8 @@ tests/                           # 175+ Python tests + 8 Node.js tests
 ## Testing
 
 ```bash
-# Core regression (176 tests, no external dependencies)
-uv run python3 -m unittest tests.test_e2e_phase1 \
-  tests.test_ace_phase1 \
-  tests.test_rule_extractor tests.test_skill_search_fusion \
-  tests.test_case_memory tests.test_skill_evolution -v
+# Core tests (no external dependencies)
+uv run python3 -m unittest tests.test_e2e_phase1 tests.test_write_dedup tests.test_context_manager -v
 
 # MCP server tests (requires running HTTP server)
 node --test tests/test_mcp_server.mjs
@@ -558,7 +634,8 @@ uv run python3 -m unittest discover -s tests -v
 | Backend | Python 3.10+, async-first |
 | Plugin & MCP | Node.js >= 18, pure ESM, zero external deps |
 | Vector Store | Qdrant (embedded local mode, no separate process) |
-| Embedding | Volcengine doubao-embedding (1024-dim) / OpenAI-compatible |
+| Embedding | Local (multilingual-e5-large) / Volcengine / OpenAI-compatible |
+| Reranking | Local (jina-reranker-v2-base-multilingual) / API |
 | HTTP | FastAPI + uvicorn |
 | Package Manager | uv |
 
@@ -571,4 +648,3 @@ uv run python3 -m unittest discover -s tests -v
 OpenCortex is ported and evolved from:
 
 - [OpenViking](https://github.com/volcengine/openviking) &mdash; CortexFS three-layer storage, hierarchical retrieval algorithm, VikingDBInterface storage abstraction
-- [Agentic Context Engine (ACE)](https://github.com/kayba-ai/agentic-context-engine) &mdash; Skillbook concept, Reflector mechanism, trajectory management

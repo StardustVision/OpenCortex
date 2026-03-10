@@ -9,6 +9,7 @@ Core subsystems:
 - **CortexFS** — three-layer filesystem (L0 abstract / L1 overview / L2 content)
 - **HierarchicalRetriever** — frontier-batching wave search with RL score fusion
 - **IntentRouter** — 3-layer query analysis (keywords → LLM → memory triggers)
+- **ContextManager** — three-phase lifecycle for Memory Context Protocol (prepare/commit/end)
 - **Observer** — real-time session transcript recording
 - **TraceSplitter** — LLM-driven conversation → task trace decomposition
 - **TraceStore** — persistent trace storage (Qdrant + CortexFS)
@@ -23,9 +24,10 @@ Core subsystems:
 - Python 3.10+, async-first (HTTP server backend)
 - Node.js >= 18 (MCP server + plugin hooks, zero external deps)
 - Vector store: Qdrant (embedded local mode, no separate process)
-- Embedding: Volcengine doubao-embedding-vision (1024 dim) / OpenAI-compatible
+- Embedding: Local (multilingual-e5-large) / Volcengine / OpenAI-compatible
+- Reranking: Local (jina-reranker-v2-base-multilingual) / API
 - HTTP: FastAPI + uvicorn + httpx
-- MCP: Node.js stdio proxy (9 tools → HTTP API)
+- MCP: Node.js stdio proxy (10 tools → HTTP API)
 - Tests: unittest (140+ Python) + node:test (8 Node.js MCP)
 
 ## Directory Structure
@@ -36,10 +38,12 @@ src/opencortex/
   orchestrator.py                # MemoryOrchestrator — top-level API
   http/
     server.py                    # FastAPI app + REST routes + RequestContextMiddleware
-    request_context.py           # Per-request contextvars (identity + ACEConfig)
+    request_context.py           # Per-request contextvars (identity)
     client.py                    # OpenCortexClient (async HTTP client)
     models.py                    # Pydantic request models
     __main__.py                  # CLI entry point (opencortex-server)
+  context/
+    manager.py                   # ContextManager — Memory Context Protocol lifecycle
   storage/
     vikingdb_interface.py        # Abstract interface (25 async methods)
     cortex_fs.py                 # CortexFS three-layer filesystem (formerly VikingFS)
@@ -52,7 +56,7 @@ src/opencortex/
     hierarchical_retriever.py    # Wave-based frontier batching + RL fusion
     intent_router.py             # IntentRouter (keyword + LLM + memory triggers)
     intent_analyzer.py           # LLM intent analysis → QueryPlan
-    rerank_client.py             # RerankClient (API / LLM / disabled)
+    rerank_client.py             # RerankClient (API / local / LLM / disabled)
     types.py                     # TypedQuery / SearchIntent / FindResult / DetailLevel
   alpha/
     observer.py                  # Observer — real-time transcript recording
@@ -72,14 +76,14 @@ plugins/opencortex-memory/       # Claude Code plugin (pure Node.js)
   lib/common.mjs                 # Config discovery, state, uv/python detection
   lib/http-client.mjs            # Native fetch wrapper + buildClientHeaders()
   lib/transcript.mjs             # JSONL parsing
-  lib/mcp-server.mjs             # MCP stdio server (9 tools)
+  lib/mcp-server.mjs             # MCP stdio server (10 tools)
   bin/oc-cli.mjs                 # CLI tool
 
 tests/
   test_e2e_phase1.py             # 24 E2E tests
   test_mcp_server.mjs            # 8 MCP tests (Node.js)
   test_write_dedup.py            # Write dedup tests
-  test_migration_skillbook.py    # Skillbook → Knowledge migration tests
+  test_context_manager.py        # Memory Context Protocol tests (8 scenarios)
   test_alpha_*.py                # Cortex Alpha component tests
 ```
 
@@ -105,6 +109,16 @@ Hooks path: Agent → node run.mjs <hook> → fetch + headers → HTTP Server
 
 Headers:    mcp.json → buildClientHeaders() → X-Tenant-ID, X-User-ID
             → RequestContextMiddleware → contextvars → get_effective_identity()
+```
+
+### Memory Context Protocol
+
+```
+memory_context(prepare)  → ContextManager → IntentRouter + search() + knowledge_search()
+                           → returns { memory, knowledge, instructions }
+memory_context(commit)   → ContextManager → Observer.record_batch() + async RL reward
+memory_context(end)      → ContextManager → orchestrator.session_end()
+                           → Observer.flush → TraceSplitter → TraceStore → Archivist
 ```
 
 ### Knowledge Pipeline (Cortex Alpha)
@@ -153,7 +167,7 @@ docker compose up -d
 
 ```bash
 # Python core tests (no external dependencies)
-uv run python3 -m unittest tests.test_e2e_phase1 tests.test_write_dedup tests.test_migration_skillbook -v
+uv run python3 -m unittest tests.test_e2e_phase1 tests.test_write_dedup tests.test_context_manager -v
 
 # Node.js MCP tests (requires running HTTP server)
 node --test tests/test_mcp_server.mjs
@@ -161,4 +175,3 @@ node --test tests/test_mcp_server.mjs
 # Full regression
 uv run python3 -m unittest discover -s tests -v
 ```
-

@@ -18,15 +18,16 @@
 
 OpenCortex 赋予 Agent **持久的、可检索的、会自我进化的记忆**。可以把它理解为 AI 的长期记忆：Agent 存储学到的知识，在需要时自动召回相关上下文，并通过强化学习让最有价值的记忆优先浮现。
 
-它不是简单的键值存储，而是一个完整的记忆引擎——三层摘要、语义检索、意图感知路由、强化学习排序。
+它不是简单的键值存储，而是一个完整的记忆引擎——三层摘要、语义检索、意图感知路由、强化学习排序、对话知识自动提取。
 
 ### 具体能做什么
 
 - **记住**用户偏好、编码规范、历史决策，跨会话保持
 - **召回**——每次 Agent 处理新 prompt 时自动搜索并注入相关记忆
 - **学习**——有用的记忆通过反馈排名上升，无用的自然衰减
-- **提取**——从对话中自动提取可复用技能（零 LLM 开销）
+- **提取**——通过 Cortex Alpha 管线从对话轨迹自动提取可复用知识
 - **隔离**——基于 URI 命名空间实现多租户、多用户数据隔离
+- **可移植**——单个 `memory_context` MCP 工具替代平台特定的 hooks
 
 ---
 
@@ -49,18 +50,37 @@ OpenCortex 将每条记忆存储为三个精度层级，最大程度减少 Token
 基于强化学习的记忆排序系统。Agent 给记忆正反馈时，其奖励分数增加，在未来的搜索中排名更高。长期不用的记忆自然衰减。公式：
 
 ```
-最终分数 = 语义相似度 + rl_weight * 奖励分数
+最终分数 = beta * 精排分数 + (1 - beta) * 检索分数 + rl_weight * 奖励分数
 ```
 
-### ACE（Agent 上下文引擎）
+### Cortex Alpha
 
-自学习子系统。ACE 监控 Agent 存储的内容，自动提取可复用的**技能**——比如「遇到错误 X 时应用修复 Y」或「用户总是要求暗色主题」。这些技能存储在 **Skillbook** 中，搜索时与普通记忆一起返回。
+知识提取管线。会话结束时，Cortex Alpha 自动执行：
 
-技能通过**置信度评分**系统持续进化：使用反馈调整置信度，**双轨观察**机制让新旧技能变体并行运行、择优留存。
+1. **Observer** 实时记录对话 transcript
+2. **TraceSplitter** 通过 LLM 将 transcript 拆解为离散任务轨迹
+3. **TraceStore** 将轨迹持久化到 Qdrant
+4. **Archivist** 从轨迹中提取可复用知识候选
+5. **Sandbox** 质量门控（统计 + LLM 验证）
+6. **KnowledgeStore** 持久化已批准的知识，支持搜索
+
+无需手动整理，Agent 的知识库自动增长。
+
+### Memory Context Protocol（记忆上下文协议）
+
+平台无关的三阶段生命周期，替代 Claude Code hooks：
+
+| 阶段 | 时机 | 作用 |
+|------|------|------|
+| **prepare** | 生成响应前 | 召回相关记忆和知识，返回上下文给 Agent |
+| **commit** | 生成响应后 | 记录对话轮次，对引用的记忆施加 RL 奖励 |
+| **end** | 会话结束 | 刷新 transcript，触发轨迹拆分和知识提取 |
+
+任何 MCP 兼容客户端都可以使用单个 `memory_context` 工具——无需 hooks。
 
 ### MCP（模型上下文协议）
 
-一种开放标准，允许 AI Agent 调用外部工具。OpenCortex 通过 Node.js stdio 服务器暴露 13 个 MCP 工具（存储、搜索、反馈等），Claude Code、Cursor 等 MCP 兼容客户端可以直接使用。
+一种开放标准，允许 AI Agent 调用外部工具。OpenCortex 通过 Node.js stdio 服务器暴露 10 个 MCP 工具，Claude Code、Cursor 等 MCP 兼容客户端可以直接使用。
 
 ### CortexFS
 
@@ -76,7 +96,7 @@ OpenCortex 将每条记忆存储为三个精度层级，最大程度减少 Token
 
 ### Embedding（嵌入向量）
 
-将文本转换为捕获语义含义的数值向量的过程。OpenCortex 支持火山引擎（doubao-embedding）、OpenAI 等嵌入模型。这些向量驱动语义搜索能力。
+将文本转换为捕获语义含义的数值向量的过程。OpenCortex 支持本地嵌入（multilingual-e5-large via FastEmbed）、火山引擎（doubao-embedding）、OpenAI 等。本地精排也已支持（jina-reranker-v2-base-multilingual）。
 
 ### URI 命名空间
 
@@ -96,27 +116,27 @@ opencortex://{tenant}/user/{user_id}/{type}/{category}/{node_id}
 AI Agent (Claude Code / Cursor / Custom)
   |
   |--- MCP 协议 (stdio) ----> Node.js MCP Server ---- HTTP ----> FastAPI HTTP Server (:8921)
-  |                            (13 个工具)                              |
+  |                            (10 个工具)                              |
   |                                                                     v
   |                                                               MemoryOrchestrator
   |                                                               (统一 API 层)
   |                                                                     |
   |                                                      +--------------+--------------+
   |                                                      |              |              |
-  |                                                 IntentRouter   SessionManager   Skillbook
-  |                                                      |                            |
-  |                                                      v                            v
-  |                                               HierarchicalRetriever          Skillbook
-  |                                                      |                       (自学习)
-  |                                                      v
-  |                                               CortexFS + Qdrant Adapter
+  |                                                 IntentRouter   ContextManager   Observer
+  |                                                      |         (prepare/       (transcript
+  |                                                      v          commit/end)     记录)
+  |                                               HierarchicalRetriever     |
+  |                                                      |                  v
+  |                                                      v            TraceSplitter → Archivist
+  |                                               CortexFS + Qdrant       → KnowledgeStore
   |                                               (L0/L1/L2)  (向量 + RL)
   |
-  |--- Hooks (生命周期事件) -> Node.js run.mjs
+  |--- Hooks (仅 Claude Code) -> Node.js run.mjs
          |-- session-start      -> 启动 HTTP server / 健康检查
          |-- user-prompt-submit -> 主动记忆召回（搜索 API）
-         |-- stop               -> 解析 transcript，存储摘要
-         |-- session-end        -> 存储会话摘要，停止服务
+         |-- stop               -> 批量记录消息到 Observer
+         |-- session-end        -> 结束会话，触发知识提取
 ```
 
 ### 数据流：存储
@@ -130,7 +150,6 @@ MemoryOrchestrator.add()
   |-- 自动生成 L1 概要（短内容直接复用；长内容 LLM 摘要）
   |-- 写入 CortexFS:  .abstract.md / .overview.md / content.md
   |-- 写入 Qdrant:    向量 + 元数据 + RL 字段 (reward_score=0)
-  |-- 异步: RuleExtractor 提取可复用技能 -> Skillbook
   |
   v
 返回: { uri, context_type, category, abstract }
@@ -159,6 +178,43 @@ HierarchicalRetriever
   |
   v
 返回: { results: [{ uri, abstract, score, overview? }], total }
+```
+
+### 数据流：Memory Context Protocol
+
+```
+Agent 调用 memory_context(phase="prepare", session_id="s1", turn_id="t1",
+                          messages=[{role: "user", content: "..."}])
+  |
+  v
+ContextManager._prepare()
+  |-- 自动创建会话（如未激活则 Observer.begin_session）
+  |-- IntentRouter.route(query) → SearchIntent
+  |-- orchestrator.search() → 记忆条目
+  |-- orchestrator.knowledge_search() → 知识条目
+  |-- 返回 { memory, knowledge, instructions, intent }
+  |
+  v  (Agent 生成响应)
+  v
+Agent 调用 memory_context(phase="commit", session_id="s1", turn_id="t1",
+                          messages=[...], cited_uris=[...])
+  |
+  v
+ContextManager._commit()
+  |-- Observer.record_batch() → 内存 transcript 缓冲
+  |-- 异步: 对 cited_uris 施加 RL 奖励
+  |-- 返回 { accepted: true }
+  |
+  v  (会话结束)
+  v
+Agent 调用 memory_context(phase="end", session_id="s1")
+  |
+  v
+ContextManager._end()
+  |-- Observer.flush() → TraceSplitter → TraceStore
+  |-- Archivist → Sandbox → KnowledgeStore
+  |-- 清理所有会话状态
+  |-- 返回 { status: "closed", traces, knowledge_candidates }
 ```
 
 ### 数据流：反馈闭环
@@ -217,8 +273,6 @@ uv sync
 
 ```json
 {
-  "tenant_id": "my-team",
-  "user_id": "my-name",
   "embedding_provider": "volcengine",
   "embedding_model": "doubao-embedding-vision-250615",
   "embedding_api_key": "YOUR_API_KEY",
@@ -228,20 +282,26 @@ uv sync
 }
 ```
 
-**无嵌入模型（filter/scroll 降级，RL 排序仍生效）：**
+**本地嵌入（无需 API Key）：**
 
 ```json
 {
-  "tenant_id": "my-team",
-  "user_id": "my-name",
-  "embedding_provider": "none",
+  "embedding_provider": "local",
   "http_server_port": 8921
 }
 ```
 
-所有字段可通过 `OPENCORTEX_` 前缀的环境变量覆盖：
+身份信息在客户端 `mcp.json` 中配置：
+
+```json
+{
+  "tenant_id": "my-team",
+  "user_id": "my-name"
+}
+```
+
+所有服务端字段可通过 `OPENCORTEX_` 前缀的环境变量覆盖：
 ```bash
-export OPENCORTEX_TENANT_ID=my-team
 export OPENCORTEX_EMBEDDING_API_KEY=sk-xxx
 ```
 
@@ -333,47 +393,50 @@ Intent Router 分析每个查询，自动选择检索策略：
 正反馈提升记忆分数，负反馈抑制。时间衰减确保陈旧记忆淡出：
 
 ```
-最终分数 = 相似度 + 0.05 * 奖励分数
+最终分数 = beta * 精排分数 + (1-beta) * 检索分数 + rl_weight * 奖励分数
 
 feedback(uri, reward=+1.0)  ->  未来搜索 +0.05 加成
 feedback(uri, reward=-1.0)  ->  -0.05 惩罚
 decay()                     ->  reward *= 0.95（受保护: 0.99）
 ```
 
-### ACE 自学习
+### 知识提取（Cortex Alpha）
 
-RuleExtractor 监控存储的记忆，以零 LLM 开销提取可复用技能：
-
-| 模式 | 检测方式 | 示例 |
-|------|---------|------|
-| 错误->修复 | 正则: error/traceback + 解决方案 | "遇到 UTF-8 错误时，先用 chardet 检测编码" |
-| 用户偏好 | 关键词: always/never/必须 | "必须使用 black 格式化 Python 代码" |
-| 工作流 | 3+ 步有序操作 | "lint -> test -> build -> push 部署流程" |
-
-提取的技能存储在 Skillbook 中，搜索时与普通记忆一起返回。
-
-### 技能进化
-
-技能通过反馈驱动的置信度评分和双轨观察机制持续进化：
+会话结束时，Alpha 管线自动提取可复用知识：
 
 ```
-置信度 = 成功率 * log(使用次数 + 1) * 新鲜度衰减
-
-skill_feedback(uri, success=True)  ->  helpful++，重算置信度，版本递增
-mine_skills(min_cases=5)           ->  聚类成功案例，LLM 生成技能模板
-evolve_skill(uri)                  ->  低置信度技能 → 挖掘替代 → 双轨观察
+Observer transcript → TraceSplitter (LLM) → 任务轨迹
+                                              |
+                                     Archivist (LLM) → 知识候选
+                                              |
+                                     Sandbox（质量门控）→ 已批准知识
+                                              |
+                                     KnowledgeStore（向量搜索）
 ```
 
-**双轨观察**：替换技能时，旧版本进入"观察"状态，新版本并行运行。累计足够使用后，置信度更高的技能胜出，落败者标记为 deprecated。若替代版本表现不佳，系统自动回滚。
+知识可通过 `knowledge_search` 搜索，在 `memory_context` prepare 阶段与记忆一起返回。
 
-### 上下文自迭代
+### Memory Context Protocol（记忆上下文协议）
 
-每次 Agent 响应后，Stop hook 自动：
-1. 解析对话 transcript
-2. 提取摘要（长对话用 LLM，短对话用本地 fallback）
-3. 存储为新记忆
+平台无关的生命周期，适用于任何 MCP 客户端：
 
-无需手动整理，Agent 的知识库自动增长。
+```python
+# 1. 生成响应前——获取相关上下文
+prepare = memory_context(phase="prepare", session_id="s1", turn_id="t1",
+                         messages=[{"role": "user", "content": "..."}])
+# 返回: { memory: [...], knowledge: [...], instructions: {...} }
+
+# 2. 生成响应后——记录对话轮次
+memory_context(phase="commit", session_id="s1", turn_id="t1",
+               messages=[...user + assistant...], cited_uris=["opencortex://..."])
+# 返回: { accepted: true }
+
+# 3. 完成后——关闭会话
+memory_context(phase="end", session_id="s1")
+# 返回: { status: "closed", traces: 3, knowledge_candidates: 1 }
+```
+
+特性：按 `(session_id, turn_id)` 幂等、空闲会话自动关闭、失败时写 fallback JSONL、异步 RL 奖励引用的 URI。
 
 ### 多租户隔离
 
@@ -394,44 +457,51 @@ opencortex://{tenant}/user/{uid}/{type}/{category}/{node_id}
 | 方法 | 端点 | 说明 |
 |------|------|------|
 | POST | `/api/v1/memory/store` | 存储记忆（自动生成 L1、嵌入向量、URI） |
+| POST | `/api/v1/memory/batch_store` | 批量存储文档 |
 | POST | `/api/v1/memory/search` | 语义搜索（含意图路由和 RL 融合） |
 | POST | `/api/v1/memory/feedback` | 提交 RL 反馈（+1 = 有用，-1 = 无用） |
 | GET | `/api/v1/memory/stats` | 存储统计和配置信息 |
 | POST | `/api/v1/memory/decay` | 触发全局奖励衰减 |
 | GET | `/api/v1/memory/health` | 组件健康检查 |
 
+#### 上下文协议
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| POST | `/api/v1/context` | 统一生命周期：prepare / commit / end |
+
 #### 会话
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
-| POST | `/api/v1/session/begin` | 开始新会话 |
+| POST | `/api/v1/session/begin` | 开始新会话（Observer 记录） |
 | POST | `/api/v1/session/message` | 向会话添加消息 |
-| POST | `/api/v1/session/extract_turn` | 仅提取最新轮记忆（会话保持激活） |
-| POST | `/api/v1/session/end` | 结束会话，提取并存储记忆 |
+| POST | `/api/v1/session/end` | 结束会话，触发轨迹拆分和知识提取 |
 
-#### 技能进化
+#### 知识（Cortex Alpha）
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
-| POST | `/api/v1/skill/lookup` | 按目标搜索相关技能 |
-| POST | `/api/v1/skill/feedback` | 提供使用反馈，更新置信度 |
-| POST | `/api/v1/skill/mine` | 从成功案例中挖掘技能 |
-| POST | `/api/v1/skill/evolve` | 触发双轨技能进化 |
+| POST | `/api/v1/knowledge/search` | 搜索已批准知识 |
+| POST | `/api/v1/knowledge/approve` | 批准知识候选 |
+| POST | `/api/v1/knowledge/reject` | 拒绝知识候选 |
+| GET | `/api/v1/knowledge/candidates` | 列出待审知识候选 |
+| POST | `/api/v1/archivist/trigger` | 手动触发知识提取 |
 
-#### 意图与系统状态
+#### 系统
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
 | POST | `/api/v1/intent/should_recall` | 判断查询是否需要检索记忆 |
 | GET | `/api/v1/system/status` | 统一 health/stats/doctor 状态 |
 
-### MCP 工具 (13 个)
+### MCP 工具 (10 个)
 
-MCP 服务器暴露与 REST API 相同的能力。主要工具：
+MCP 服务器暴露与 REST API 相同的能力：
 
 - `memory_store` / `memory_batch_store` / `memory_search` / `memory_feedback` / `memory_decay`
 - `session_begin` / `session_message` / `session_end`
-- `skill_lookup` / `skill_feedback` / `skill_mine` / `skill_evolve`
+- `memory_context`（统一生命周期：prepare / commit / end）
 - `system_status`
 
 ### Python API
@@ -452,7 +522,7 @@ ctx = await orch.add(
 
 # 搜索（Intent Router 自动选择策略）
 result = await orch.search("用户喜欢什么主题？")
-for m in result.memories:
+for m in result:
     print(m.uri, m.abstract, m.score)
 
 # 反馈 + 衰减
@@ -463,7 +533,10 @@ await orch.decay()
 await orch.session_begin(session_id="s1")
 await orch.session_message("s1", "user", "帮我修复这个 bug")
 await orch.session_message("s1", "assistant", "问题是...")
-await orch.session_end("s1", quality_score=0.9)  # 自动提取记忆
+await orch.session_end("s1", quality_score=0.9)
+
+# 知识搜索
+results = await orch.knowledge_search("部署工作流")
 
 await orch.close()
 ```
@@ -472,7 +545,7 @@ await orch.close()
 
 ## 插件系统
 
-`plugins/opencortex-memory` 插件结合 Hooks（被动记忆采集）、MCP 服务器（工具代理）和 Skills（主动记忆工具）。全部使用纯 Node.js 实现，零外部依赖。
+`plugins/opencortex-memory` 插件提供 Hooks（Claude Code 被动记忆采集）和 MCP 服务器（工具代理，适用于任何客户端）。全部使用纯 Node.js 实现，零外部依赖。
 
 ```
 plugins/opencortex-memory/
@@ -480,18 +553,17 @@ plugins/opencortex-memory/
     handlers/
       session-start.mjs          # 启动 HTTP 服务，初始化状态
       user-prompt-submit.mjs     # 主动记忆召回
-      stop.mjs                   # 解析 transcript，存储摘要
-      session-end.mjs            # 最终摘要，停止服务
+      stop.mjs                   # 批量记录消息到 Observer
+      session-end.mjs            # 结束会话，触发知识提取
   lib/
-    mcp-server.mjs               # MCP stdio 服务器 (13 工具 -> HTTP)
+    mcp-server.mjs               # MCP stdio 服务器 (10 工具 -> HTTP)
     common.mjs                   # 配置发现、状态管理、uv/python 检测
-    http-client.mjs              # native fetch 封装
+    http-client.mjs              # native fetch 封装 + 身份请求头
     transcript.mjs               # JSONL 解析
-  skills/                        # 6 个 skill 定义
   bin/oc-cli.mjs                 # CLI: health, status, recall, store
 ```
 
-### Hook 生命周期
+### Hook 生命周期（仅 Claude Code）
 
 ```
 SessionStart -----> 启动 HTTP 服务 (local) 或健康检查 (remote)
@@ -500,12 +572,21 @@ SessionStart -----> 启动 HTTP 服务 (local) 或健康检查 (remote)
 UserPromptSubmit -> 搜索与 prompt 相关的记忆（3 秒超时）
                     将结果注入 Agent 的系统上下文
                          |
-Stop (异步) ------> 解析 transcript，提取轮次摘要
-                    POST /api/v1/memory/store（即发即忘）
+Stop (异步) ------> 批量记录消息到 Observer
                          |
-SessionEnd -------> 存储会话摘要
+SessionEnd -------> 结束会话 → TraceSplitter → Archivist → KnowledgeStore
                     Kill HTTP 服务 PID (local 模式)
 ```
+
+### 平台无关使用（非 Claude Code）
+
+对于非 Claude Code 客户端，直接使用 `memory_context` MCP 工具：
+
+```
+prepare（响应前）→ commit（响应后）→ end（会话结束）
+```
+
+无需 hooks，任何 MCP 兼容客户端均可使用。
 
 ---
 
@@ -513,18 +594,18 @@ SessionEnd -------> 存储会话摘要
 
 ```
 src/opencortex/
-  orchestrator.py                # MemoryOrchestrator（统一 API，~1500 行）
+  orchestrator.py                # MemoryOrchestrator（统一 API）
   config.py                      # CortexConfig（dataclass + 环境变量覆盖）
-  http/                          # FastAPI 服务器 + 异步客户端
+  http/                          # FastAPI 服务器 + 异步客户端 + 请求上下文
   retrieve/                      # IntentRouter + HierarchicalRetriever + Rerank
-  session/                       # SessionManager + MemoryExtractor
-  ace/                           # Skillbook + RuleExtractor
+  context/                       # ContextManager（Memory Context Protocol）
+  alpha/                         # Cortex Alpha: Observer, TraceSplitter, Archivist, KnowledgeStore
   storage/                       # VikingDBInterface + CortexFS + Qdrant adapter
-  models/                        # Embedder 抽象 + LLM 工厂
+  models/                        # Embedder 抽象（本地/API）+ LLM 工厂
 
 plugins/opencortex-memory/       # Claude Code 插件（纯 Node.js）
 
-tests/                           # 175+ Python 测试 + 8 Node.js 测试
+tests/                           # 140+ Python 测试 + 8 Node.js 测试
 ```
 
 ---
@@ -532,11 +613,8 @@ tests/                           # 175+ Python 测试 + 8 Node.js 测试
 ## 运行测试
 
 ```bash
-# 核心回归测试 (176 tests, 无外部依赖)
-uv run python3 -m unittest tests.test_e2e_phase1 \
-  tests.test_ace_phase1 tests.test_ace_phase2 \
-  tests.test_rule_extractor tests.test_skill_search_fusion \
-  tests.test_case_memory tests.test_skill_evolution -v
+# 核心测试（无外部依赖）
+uv run python3 -m unittest tests.test_e2e_phase1 tests.test_write_dedup tests.test_context_manager -v
 
 # MCP 服务器测试（需要运行中的 HTTP 服务器）
 node --test tests/test_mcp_server.mjs
@@ -554,7 +632,8 @@ uv run python3 -m unittest discover -s tests -v
 | 后端 | Python 3.10+，async-first |
 | 插件和 MCP | Node.js >= 18，纯 ESM，零外部依赖 |
 | 向量存储 | Qdrant（嵌入式本地模式，无独立进程） |
-| Embedding | 火山引擎 doubao-embedding (1024 维) / OpenAI 兼容 |
+| Embedding | 本地 (multilingual-e5-large) / 火山引擎 / OpenAI 兼容 |
+| 精排 | 本地 (jina-reranker-v2-base-multilingual) / API |
 | HTTP | FastAPI + uvicorn |
 | 包管理 | uv |
 
@@ -567,4 +646,3 @@ uv run python3 -m unittest discover -s tests -v
 OpenCortex 从以下开源项目移植并重构：
 
 - [OpenViking](https://github.com/volcengine/openviking) — CortexFS 三层存储、层级检索算法、VikingDBInterface 存储抽象
-- [Agentic Context Engine (ACE)](https://github.com/kayba-ai/agentic-context-engine) — Skillbook 概念、Reflector 反思机制、轨迹管理
