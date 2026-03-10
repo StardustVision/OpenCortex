@@ -362,6 +362,61 @@ def _register_routes(app: FastAPI) -> None:
         count = await _orchestrator.reembed_all()
         return {"status": "ok", "updated": count}
 
+    @app.post("/api/v1/admin/search_debug")
+    async def admin_search_debug(req: MemorySearchRequest) -> Dict[str, Any]:
+        """Diagnostic: show raw vector scores, rerank scores, and fused scores."""
+        import asyncio
+
+        storage = _orchestrator._storage
+        embedder = _orchestrator._embedder
+        retriever = _orchestrator._retriever
+
+        # 1. Raw vector search scores from Qdrant
+        loop = asyncio.get_running_loop()
+        embed_result = await asyncio.wait_for(
+            loop.run_in_executor(None, embedder.embed_query, req.query),
+            timeout=2.0,
+        )
+        raw_results = await storage.search(
+            "context",
+            query_vector=embed_result.dense_vector,
+            sparse_query_vector=embed_result.sparse_vector,
+            limit=req.limit or 10,
+        )
+
+        # 2. Rerank scores (if available)
+        rerank_scores = None
+        if retriever._rerank_client:
+            docs = [r.get("abstract", "") for r in raw_results]
+            rerank_scores = await retriever._rerank_client.rerank(req.query, docs)
+
+        # 3. Build comparison
+        rows = []
+        beta = retriever._fusion_beta
+        for i, r in enumerate(raw_results):
+            raw_score = r.get("_score", 0.0)
+            rr_score = rerank_scores[i] if rerank_scores else None
+            fused = (
+                beta * rr_score + (1 - beta) * raw_score
+                if rr_score is not None
+                else raw_score
+            )
+            rows.append({
+                "rank": i + 1,
+                "abstract": r.get("abstract", "")[:80],
+                "raw_vector_score": round(raw_score, 5),
+                "rerank_score": round(rr_score, 5) if rr_score is not None else None,
+                "fused_score": round(fused, 5),
+                "uri": r.get("uri", ""),
+            })
+
+        return {
+            "query": req.query,
+            "fusion_beta": beta,
+            "rerank_mode": retriever._rerank_client.mode if retriever._rerank_client else "disabled",
+            "results": rows,
+        }
+
     # =====================================================================
     # Migration
     # =====================================================================
