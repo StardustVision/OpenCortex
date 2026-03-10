@@ -108,6 +108,13 @@ class MemoryOrchestrator:
         self._rule_extractor: Optional[RuleExtractor] = RuleExtractor()
         self._initialized = False
 
+        # Cortex Alpha components (initialized in init() if enabled)
+        self._observer = None
+        self._trace_store = None
+        self._trace_splitter = None
+        self._knowledge_store = None
+        self._archivist = None
+
     # =========================================================================
     # Initialization
     # =========================================================================
@@ -213,9 +220,63 @@ class MemoryOrchestrator:
         # 8. Session manager for context self-iteration
         self._session_manager = self._create_session_manager()
 
+        # 9. Cortex Alpha components
+        await self._init_alpha()
+
         self._initialized = True
         logger.info("[MemoryOrchestrator] Initialized (data_root=%s)", self._config.data_root)
         return self
+
+    async def _init_alpha(self) -> None:
+        """Initialize Cortex Alpha components if enabled."""
+        alpha_cfg = self._config.cortex_alpha
+
+        # Observer — always initialized (lightweight in-memory)
+        from opencortex.alpha.observer import Observer
+        self._observer = Observer()
+
+        if self._storage and self._embedder:
+            # TraceStore
+            from opencortex.alpha.trace_store import TraceStore
+            self._trace_store = TraceStore(
+                storage=self._storage,
+                embedder=self._embedder,
+                cortex_fs=self._fs,
+                collection_name=alpha_cfg.trace_collection_name,
+                embedding_dim=self._config.embedding_dimension,
+            )
+            await self._trace_store.init()
+
+            # KnowledgeStore
+            from opencortex.alpha.knowledge_store import KnowledgeStore
+            self._knowledge_store = KnowledgeStore(
+                storage=self._storage,
+                embedder=self._embedder,
+                cortex_fs=self._fs,
+                collection_name=alpha_cfg.knowledge_collection_name,
+                embedding_dim=self._config.embedding_dimension,
+            )
+            await self._knowledge_store.init()
+
+        # TraceSplitter (needs LLM)
+        if self._llm_completion and alpha_cfg.trace_splitter_enabled:
+            from opencortex.alpha.trace_splitter import TraceSplitter
+            self._trace_splitter = TraceSplitter(
+                llm_fn=self._llm_completion,
+                max_context_tokens=alpha_cfg.trace_splitter_max_context_tokens,
+            )
+
+        # Archivist (needs LLM)
+        if self._llm_completion and alpha_cfg.archivist_enabled:
+            from opencortex.alpha.archivist import Archivist
+            self._archivist = Archivist(
+                llm_fn=self._llm_completion,
+                embedder=self._embedder,
+                trigger_threshold=alpha_cfg.archivist_trigger_threshold,
+                trigger_mode=alpha_cfg.archivist_trigger_mode,
+            )
+
+        logger.info("[MemoryOrchestrator] Cortex Alpha initialized")
 
     def _create_default_embedder(self) -> Optional[EmbedderBase]:
         """
@@ -1915,6 +1976,14 @@ class MemoryOrchestrator:
             user_id=uid,
             meta=meta,
         )
+        # Cortex Alpha dual-write: Observer
+        if self._observer:
+            self._observer.begin_session(
+                session_id=session_id,
+                tenant_id=tid,
+                user_id=uid,
+                meta=meta,
+            )
         return {
             "session_id": ctx.session_id,
             "started_at": ctx.started_at,
@@ -1941,6 +2010,17 @@ class MemoryOrchestrator:
         """
         self._ensure_init()
         ok = await self._session_manager.add_message(session_id, role, content, meta)
+        # Cortex Alpha dual-write: Observer
+        tid, uid = get_effective_identity()
+        if self._observer:
+            self._observer.record_message(
+                session_id=session_id,
+                role=role,
+                content=content,
+                tenant_id=tid,
+                user_id=uid,
+                meta=meta,
+            )
         ctx = self._session_manager.get_session(session_id)
         return {
             "added": ok,
@@ -1955,6 +2035,7 @@ class MemoryOrchestrator:
         """End a session and trigger memory extraction.
 
         Performs LLM-driven memory analysis, deduplication, and storage.
+        Also triggers Cortex Alpha trace splitting (dual-write).
 
         Args:
             session_id: Session to end.
@@ -1965,6 +2046,36 @@ class MemoryOrchestrator:
         """
         self._ensure_init()
         result = await self._session_manager.end(session_id, quality_score)
+
+        # Cortex Alpha dual-write: flush Observer + split traces
+        alpha_traces_count = 0
+        if self._observer:
+            tid, uid = get_effective_identity()
+            transcript = self._observer.flush(session_id)
+            if transcript and self._trace_splitter and self._trace_store:
+                try:
+                    traces = await self._trace_splitter.split(
+                        messages=transcript,
+                        session_id=session_id,
+                        tenant_id=tid,
+                        user_id=uid,
+                    )
+                    for trace in traces:
+                        await self._trace_store.save(trace)
+                    alpha_traces_count = len(traces)
+                    logger.info(
+                        "[Alpha] Split session %s into %d traces",
+                        session_id, alpha_traces_count,
+                    )
+
+                    # Check Archivist trigger
+                    if self._archivist and self._trace_store:
+                        count = await self._trace_store.count_new_traces(tid)
+                        if self._archivist.should_trigger(count):
+                            asyncio.create_task(self._run_archivist(tid, uid))
+                except Exception as exc:
+                    logger.warning("[Alpha] Trace splitting failed: %s", exc)
+
         return {
             "session_id": result.session_id,
             "stored_count": result.stored_count,
@@ -1972,7 +2083,89 @@ class MemoryOrchestrator:
             "skipped_count": result.skipped_count,
             "quality_score": result.quality_score,
             "total_extracted": len(result.memories),
+            "alpha_traces": alpha_traces_count,
         }
+
+    async def _run_archivist(self, tenant_id: str, user_id: str) -> None:
+        """Run Archivist in background to extract knowledge from traces."""
+        if not self._archivist or not self._trace_store or not self._knowledge_store:
+            return
+        try:
+            from opencortex.alpha.types import KnowledgeScope
+            traces = await self._trace_store.list_by_session("", tenant_id, user_id)
+            if not traces:
+                return
+            knowledge_items = await self._archivist.run(
+                traces, tenant_id, user_id, KnowledgeScope.USER,
+            )
+            for k in knowledge_items:
+                await self._knowledge_store.save(k)
+            logger.info(
+                "[Alpha] Archivist extracted %d knowledge candidates",
+                len(knowledge_items),
+            )
+        except Exception as exc:
+            logger.warning("[Alpha] Archivist failed: %s", exc)
+
+    # =========================================================================
+    # Cortex Alpha: Knowledge API
+    # =========================================================================
+
+    async def knowledge_search(
+        self,
+        query: str,
+        types: Optional[List[str]] = None,
+        limit: int = 10,
+    ) -> Dict[str, Any]:
+        """Search the Knowledge Store."""
+        self._ensure_init()
+        if not self._knowledge_store:
+            return {"results": [], "error": "Knowledge store not initialized"}
+        tid, uid = get_effective_identity()
+        results = await self._knowledge_store.search(
+            query, tid, uid, types=types, limit=limit,
+        )
+        return {"results": results, "count": len(results)}
+
+    async def knowledge_approve(self, knowledge_id: str) -> Dict[str, Any]:
+        """Approve a knowledge candidate (move to active)."""
+        self._ensure_init()
+        if not self._knowledge_store:
+            return {"ok": False, "error": "Knowledge store not initialized"}
+        ok = await self._knowledge_store.approve(knowledge_id)
+        return {"ok": ok, "knowledge_id": knowledge_id, "status": "active" if ok else "not_found"}
+
+    async def knowledge_reject(self, knowledge_id: str) -> Dict[str, Any]:
+        """Reject a knowledge candidate (deprecate)."""
+        self._ensure_init()
+        if not self._knowledge_store:
+            return {"ok": False, "error": "Knowledge store not initialized"}
+        ok = await self._knowledge_store.reject(knowledge_id)
+        return {"ok": ok, "knowledge_id": knowledge_id, "status": "deprecated" if ok else "not_found"}
+
+    async def knowledge_list_candidates(self) -> Dict[str, Any]:
+        """List knowledge candidates pending approval."""
+        self._ensure_init()
+        if not self._knowledge_store:
+            return {"candidates": [], "error": "Knowledge store not initialized"}
+        tid, _ = get_effective_identity()
+        candidates = await self._knowledge_store.list_candidates(tid)
+        return {"candidates": candidates, "count": len(candidates)}
+
+    async def archivist_trigger(self) -> Dict[str, Any]:
+        """Manually trigger the Archivist."""
+        self._ensure_init()
+        if not self._archivist:
+            return {"ok": False, "error": "Archivist not initialized"}
+        tid, uid = get_effective_identity()
+        asyncio.create_task(self._run_archivist(tid, uid))
+        return {"ok": True, "status": "triggered"}
+
+    async def archivist_status(self) -> Dict[str, Any]:
+        """Get Archivist status."""
+        if not self._archivist:
+            return {"enabled": False}
+        return {"enabled": True, **self._archivist.status}
 
     async def session_extract_turn(
         self,
