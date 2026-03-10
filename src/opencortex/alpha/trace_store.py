@@ -41,7 +41,7 @@ class TraceStore:
         """Save trace to Qdrant + CortexFS."""
         embed_text = trace.abstract or trace.trace_id
         embed_result = self._embedder.embed(embed_text)
-        vector = embed_result.dense
+        vector = embed_result.dense_vector
 
         record = {
             "id": trace.trace_id,
@@ -107,7 +107,7 @@ class TraceStore:
             ],
         }
         return await self._storage.search(
-            self._collection, embed_result.dense, filter_expr, limit=limit
+            self._collection, embed_result.dense_vector, filter_expr, limit=limit
         )
 
     async def count_new_traces(self, tenant_id: str) -> int:

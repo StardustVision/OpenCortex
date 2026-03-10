@@ -12,7 +12,7 @@ class TestKnowledgeStore(unittest.IsolatedAsyncioTestCase):
         self.storage = AsyncMock()
         self.storage.collection_exists = AsyncMock(return_value=True)
         self.embedder = MagicMock()
-        self.embedder.embed = MagicMock(return_value=MagicMock(dense=[0.1]*4))
+        self.embedder.embed = MagicMock(return_value=MagicMock(dense_vector=[0.1]*4))
         self.cortex_fs = AsyncMock()
         self.store = KnowledgeStore(
             storage=self.storage,

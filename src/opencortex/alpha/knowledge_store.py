@@ -39,7 +39,7 @@ class KnowledgeStore:
         """Save knowledge to Qdrant + CortexFS."""
         embed_text = knowledge.abstract or knowledge.statement or knowledge.knowledge_id
         embed_result = self._embedder.embed(embed_text)
-        vector = embed_result.dense
+        vector = embed_result.dense_vector
 
         record = {
             "id": knowledge.knowledge_id,
@@ -90,7 +90,7 @@ class KnowledgeStore:
 
         filter_expr = {"op": "and", "conditions": conditions}
         return await self._storage.search(
-            self._collection, embed_result.dense, filter_expr, limit=limit
+            self._collection, embed_result.dense_vector, filter_expr, limit=limit
         )
 
     async def get(self, knowledge_id: str) -> Optional[Dict[str, Any]]:
