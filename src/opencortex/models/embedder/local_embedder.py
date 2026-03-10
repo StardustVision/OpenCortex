@@ -18,7 +18,7 @@ class LocalEmbedder(EmbedderBase):
 
     def __init__(
         self,
-        model_name: str = "BAAI/bge-m3",
+        model_name: str = "intfloat/multilingual-e5-large",
         config: Optional[Dict[str, Any]] = None,
     ):
         super().__init__(model_name=model_name, config=config)

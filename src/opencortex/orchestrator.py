@@ -432,7 +432,7 @@ class MemoryOrchestrator:
         try:
             from opencortex.models.embedder.local_embedder import LocalEmbedder
 
-            model_name = self._config.embedding_model or "BAAI/bge-m3"
+            model_name = self._config.embedding_model or "intfloat/multilingual-e5-large"
             embedder = LocalEmbedder(model_name=model_name)
             if not embedder.is_available:
                 logger.warning(
