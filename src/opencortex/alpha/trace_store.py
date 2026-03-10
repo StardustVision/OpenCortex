@@ -62,17 +62,18 @@ class TraceStore:
         }
         await self._storage.upsert(self._collection, record)
 
-        # Write L2 (full turns) to CortexFS
+        # Write L0/L1/L2 to CortexFS
         if self._fs and trace.turns:
             l2_content = orjson.dumps(
                 [t.to_dict() for t in trace.turns]
             ).decode()
             uri = f"opencortex://{trace.tenant_id}/user/{trace.user_id}/trace/{trace.trace_id}"
-            await self._fs.write(uri, l2_content, layer="content")
-            if trace.overview:
-                await self._fs.write(uri, trace.overview, layer="overview")
-            if trace.abstract:
-                await self._fs.write(uri, trace.abstract, layer="abstract")
+            await self._fs.write_context(
+                uri,
+                content=l2_content,
+                abstract=trace.abstract or "",
+                overview=trace.overview or "",
+            )
 
         return trace.trace_id
 
