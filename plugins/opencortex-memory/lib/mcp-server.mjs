@@ -14,68 +14,96 @@ import { buildClientHeaders } from './http-client.mjs';
 const TOOLS = {
   // ── Core Memory ──
   memory_store: ['POST', '/api/v1/memory/store',
-    'Store a new memory, resource, or skill. Returns the URI and metadata of the stored context.', {
-      abstract:     { type: 'string',  description: 'Short summary of the memory', required: true },
-      content:      { type: 'string',  description: 'Full content to store', default: '' },
-      category:     { type: 'string',  description: 'Category: profile, preferences, entities, events, cases, patterns, error_fixes, workflows, strategies, documents, plans', default: '' },
-      context_type: { type: 'string',  description: 'Type: memory, resource, skill, case, pattern', default: 'memory' },
-      meta:         { type: 'object',  description: 'Optional metadata key-value pairs' },
-      dedup:        { type: 'boolean', description: 'Check for semantic duplicates before storing (default true)', default: true },
+    'Persist a piece of knowledge the user wants remembered across sessions. '
+    + 'Use when the user explicitly shares a preference, fact, decision, or correction — '
+    + 'NOT for recording conversation turns (use memory_context commit for that). '
+    + 'Semantic dedup is on by default: if a similar memory exists, it will be merged instead of duplicated. '
+    + 'Returns {uri, context_type, category, abstract, dedup_action?}.', {
+      abstract:     { type: 'string',  description: 'One-sentence summary capturing the key point (used for retrieval ranking)', required: true },
+      content:      { type: 'string',  description: 'Full detailed content. If >500 chars, the system auto-generates a structured overview from it', default: '' },
+      category:     { type: 'string',  description: 'Semantic category. Choose the most specific: profile | preferences | entities | events | cases | patterns | error_fixes | workflows | strategies | documents | plans', default: '' },
+      context_type: { type: 'string',  description: 'Storage type: memory (default, for knowledge/facts) | resource (reference docs) | skill (reusable procedures)', default: 'memory' },
+      meta:         { type: 'object',  description: 'Arbitrary key-value metadata (e.g. {source: "user", language: "zh"})' },
+      dedup:        { type: 'boolean', description: 'Enable semantic dedup — merges into existing similar memory if found. Set false only for intentional duplicates', default: true },
     }],
   memory_batch_store: ['POST', '/api/v1/memory/batch_store',
-    'Batch store multiple documents. Use with oc-scan for deterministic import.', {
-      items:       { type: 'array',  description: 'Array of {content, category, context_type, meta}', required: true },
-      source_path: { type: 'string', description: 'Source directory path', default: '' },
-      scan_meta:   { type: 'object', description: 'Scan metadata {total_files, has_git, project_id}' },
+    'Import multiple documents in one call. Use for bulk ingestion of files, notes, or scan results. '
+    + 'Each item is stored independently with its own URI. '
+    + 'Returns {stored, skipped, errors}.', {
+      items:       { type: 'array',  description: 'Array of objects, each with: {abstract (required), content, category, context_type, meta}', required: true },
+      source_path: { type: 'string', description: 'Source directory path for provenance tracking', default: '' },
+      scan_meta:   { type: 'object', description: 'Import metadata: {total_files, has_git, project_id}' },
     }],
   memory_search: ['POST', '/api/v1/memory/search',
-    'Semantic search across stored memories, resources, and skills. Returns ranked results with relevance scores.', {
-      query:        { type: 'string',  description: 'Search query', required: true },
-      limit:        { type: 'integer', description: 'Max results to return', default: 5 },
-      context_type: { type: 'string',  description: 'Filter by type (memory, resource, skill, case, pattern)' },
-      category:     { type: 'string',  description: 'Filter by category (profile, preferences, entities, events, cases, patterns, etc.)' },
+    'Search stored memories by natural language query. Uses intent-aware retrieval: '
+    + 'the system analyzes your query to determine search strategy (top_k, detail level, reranking). '
+    + 'Returns {results: [{uri, abstract, overview?, content?, context_type, score}], total}. '
+    + 'Use when you need to recall facts, preferences, past decisions, or any previously stored knowledge.', {
+      query:        { type: 'string',  description: 'Natural language query describing what you need to recall', required: true },
+      limit:        { type: 'integer', description: 'Max results (system may return fewer based on relevance)', default: 5 },
+      context_type: { type: 'string',  description: 'Restrict to type: memory | resource | skill. Omit to search all types' },
+      category:     { type: 'string',  description: 'Restrict to category (e.g. "preferences", "error_fixes"). Omit to search all categories' },
     }],
   memory_feedback: ['POST', '/api/v1/memory/feedback',
-    'Submit reward feedback for a memory (reinforcement learning). Positive rewards reinforce retrieval; negative rewards penalize it.', {
-      uri:    { type: 'string', description: 'URI of the memory to reward', required: true },
-      reward: { type: 'number', description: 'Reward value (positive or negative)', required: true },
+    'Reinforce or penalize a memory via reward signal. Call with positive reward (+0.1 to +1.0) '
+    + 'when a retrieved memory was useful. Call with negative reward (-0.1 to -1.0) when it was '
+    + 'irrelevant or wrong. This adjusts future retrieval ranking through reinforcement learning.', {
+      uri:    { type: 'string', description: 'The opencortex:// URI of the memory to reward (from search results)', required: true },
+      reward: { type: 'number', description: 'Reward signal: positive reinforces retrieval, negative penalizes. Typical range: -1.0 to +1.0', required: true },
     }],
   memory_decay: ['POST', '/api/v1/memory/decay',
-    'Trigger time-decay across all stored memories. Reduces effective scores of inactive memories over time.', {}],
+    'Maintenance: apply time-decay to all memories, reducing scores of inactive ones. '
+    + 'Call periodically (e.g. daily) to let unused memories naturally fade. '
+    + 'Frequently accessed memories resist decay.', {}],
   system_status: ['GET', '/api/v1/system/status',
-    'Get system status (health, stats, or full doctor report).', {
-      type: { type: 'string', description: 'Status type: health | stats | doctor', default: 'doctor' },
+    'Check system health and diagnostics. Returns memory count, storage stats, and component status.', {
+      type: { type: 'string', description: 'Report depth: health (quick liveness) | stats (counts and sizes) | doctor (full diagnostic)', default: 'doctor' },
     }],
 
-  // ── Session ──
+  // ── Session (low-level) ──
+  // Prefer memory_context for most use cases — it handles session lifecycle automatically.
   session_begin: ['POST', '/api/v1/session/begin',
-    'Begin a new session. Starts Observer recording for trace splitting on session end.', {
+    'Low-level: start session recording. Prefer memory_context which auto-creates sessions. '
+    + 'Only use directly if you need explicit session control without the context lifecycle.', {
       session_id: { type: 'string', description: 'Unique session identifier', required: true },
     }],
   session_message: ['POST', '/api/v1/session/message',
-    'Add a message to an active session. Messages are recorded by the Observer for later trace splitting.', {
-      session_id: { type: 'string', description: 'Session identifier', required: true },
-      role:       { type: 'string', description: 'Message role (user/assistant)', required: true },
-      content:    { type: 'string', description: 'Message content', required: true },
+    'Low-level: record a single message to an active session. '
+    + 'Prefer memory_context commit which records the full turn and handles idempotency.', {
+      session_id: { type: 'string', description: 'Session identifier (must call session_begin first)', required: true },
+      role:       { type: 'string', description: 'Message role: user | assistant', required: true },
+      content:    { type: 'string', description: 'Message text content', required: true },
     }],
   session_end: ['POST', '/api/v1/session/end',
-    'End a session and trigger trace splitting. The system splits the conversation into task traces and extracts reusable knowledge via the Archivist pipeline.', {
-      session_id:    { type: 'string', description: 'Session identifier', required: true },
-      quality_score: { type: 'number', description: 'Session quality score', default: 0.5 },
+    'Low-level: end session and trigger knowledge extraction pipeline. '
+    + 'Prefer memory_context with phase="end". '
+    + 'The system splits the conversation into task traces and extracts reusable knowledge.', {
+      session_id:    { type: 'string', description: 'Session identifier to close', required: true },
+      quality_score: { type: 'number', description: 'Overall session quality (0.0-1.0). Higher scores prioritize knowledge extraction', default: 0.5 },
     }],
 
-  // ── Context Protocol ──
+  // ── Context Protocol (recommended) ──
   memory_context: ['POST', '/api/v1/context',
-    'Unified lifecycle tool for memory recall and session recording. '
-    + 'Call with phase="prepare" before generating a response to get relevant context. '
-    + 'Call with phase="commit" after generating a response to record the conversation turn. '
-    + 'Call with phase="end" to close the session.', {
-      session_id: { type: 'string', description: 'Session identifier (alphanumeric, hyphens, underscores, 1-128 chars)', required: true },
-      phase:      { type: 'string', description: 'Lifecycle phase: prepare | commit | end', required: true },
-      turn_id:    { type: 'string', description: 'Unique turn identifier for idempotency (required for prepare and commit)' },
-      messages:   { type: 'array',  description: 'Messages for this turn. prepare: user message only. commit: full turn (user + assistant).' },
-      cited_uris: { type: 'array',  description: 'URIs of memory items referenced by Agent in response (commit only, for RL reward)' },
-      config:     { type: 'object', description: 'Per-call config: {max_items, detail_level, recall_mode}. Only meaningful in prepare phase.' },
+    'Primary tool for memory-augmented conversations. Manages the full lifecycle in three phases:\n'
+    + '\n'
+    + 'PHASE 1 — prepare: Call BEFORE generating your response. Retrieves relevant memories and knowledge '
+    + 'based on the user\'s message. Returns {memory: [...], knowledge: [...], instructions, intent}. '
+    + 'Use the returned context to inform your response. Session is auto-created if needed.\n'
+    + '\n'
+    + 'PHASE 2 — commit: Call AFTER generating your response. Records the full conversation turn '
+    + '(user message + your response). Pass cited_uris to reward memories you actually used. '
+    + 'Returns {accepted, write_status, session_turns}. Idempotent — safe to retry.\n'
+    + '\n'
+    + 'PHASE 3 — end: Call when the conversation is over. Triggers knowledge extraction from the '
+    + 'session transcript. Returns {status: "closed", total_turns}.\n'
+    + '\n'
+    + 'Typical flow per turn: prepare → [generate response] → commit. Call end once at session close.', {
+      session_id: { type: 'string', description: 'Stable session identifier — reuse across all turns in one conversation. Alphanumeric, hyphens, underscores, 1-128 chars', required: true },
+      phase:      { type: 'string', description: 'Lifecycle phase: "prepare" (before response) | "commit" (after response) | "end" (session close)', required: true },
+      turn_id:    { type: 'string', description: 'Unique per-turn ID for idempotency. Required for prepare and commit. Use a counter (t1, t2...) or UUID' },
+      messages:   { type: 'array',  description: 'Array of {role, content}. prepare: pass [user message]. commit: pass [user message, assistant response]. Not needed for end' },
+      cited_uris: { type: 'array',  description: 'commit only: array of opencortex:// URIs from prepare results that you referenced in your response. Triggers +0.1 RL reward per URI' },
+      config:     { type: 'object', description: 'prepare only: {max_items: 1-20 (default 5), detail_level: "l0"|"l1"|"l2" (default "l1"), recall_mode: "auto"|"always"|"never" (default "auto")}' },
     }],
 };
 
@@ -114,7 +142,7 @@ async function callTool(name, args) {
     }
   }
 
-  // Build headers with identity + ACE config from MCP config
+  // Build headers with identity from MCP config
   const hdrs = buildClientHeaders();
 
   const opts = { method, signal: AbortSignal.timeout(30000) };
