@@ -58,6 +58,19 @@ class CachedEmbedder(EmbedderBase):
         self._cache[key] = (result, time.time())
         return result
 
+    def embed_query(self, text: str) -> EmbedResult:
+        key = self._key("q:" + text)
+        if key in self._cache and not self._expired(key):
+            self._hits += 1
+            self._cache.move_to_end(key)
+            return self._cache[key][0]
+
+        self._misses += 1
+        result = self._inner.embed_query(text)
+        self._evict()
+        self._cache[key] = (result, time.time())
+        return result
+
     def embed_batch(self, texts: List[str]) -> List[EmbedResult]:
         return [self.embed(t) for t in texts]
 

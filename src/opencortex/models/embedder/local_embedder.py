@@ -13,6 +13,13 @@ from opencortex.models.embedder.base import EmbedderBase, EmbedResult
 logger = logging.getLogger(__name__)
 
 
+_E5_PREFIXES = frozenset(("intfloat/e5-", "intfloat/multilingual-e5-"))
+
+
+def _is_e5_model(name: str) -> bool:
+    return any(name.startswith(p) for p in _E5_PREFIXES)
+
+
 class LocalEmbedder(EmbedderBase):
     """Local embedding using FastEmbed (ONNX inference)."""
 
@@ -24,6 +31,7 @@ class LocalEmbedder(EmbedderBase):
         super().__init__(model_name=model_name, config=config)
         self._model = None
         self._dimension = None
+        self._needs_prefix = _is_e5_model(model_name)
         self._init_model()
 
     def _init_model(self) -> None:
@@ -51,6 +59,20 @@ class LocalEmbedder(EmbedderBase):
                 f"Local model {self.model_name} not loaded. "
                 "Install fastembed: uv add fastembed"
             )
+        if self._needs_prefix:
+            text = "passage: " + text
+        embeddings = list(self._model.embed([text]))
+        vector = embeddings[0].tolist()
+        return EmbedResult(dense_vector=vector)
+
+    def embed_query(self, text: str) -> EmbedResult:
+        if self._model is None:
+            raise RuntimeError(
+                f"Local model {self.model_name} not loaded. "
+                "Install fastembed: uv add fastembed"
+            )
+        if self._needs_prefix:
+            text = "query: " + text
         embeddings = list(self._model.embed([text]))
         vector = embeddings[0].tolist()
         return EmbedResult(dense_vector=vector)
@@ -58,6 +80,8 @@ class LocalEmbedder(EmbedderBase):
     def embed_batch(self, texts: List[str]) -> List[EmbedResult]:
         if self._model is None:
             raise RuntimeError(f"Local model {self.model_name} not loaded")
+        if self._needs_prefix:
+            texts = ["passage: " + t for t in texts]
         embeddings = list(self._model.embed(texts))
         return [EmbedResult(dense_vector=e.tolist()) for e in embeddings]
 

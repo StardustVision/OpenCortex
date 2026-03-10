@@ -74,7 +74,7 @@ class EmbedderBase(ABC):
 
     @abstractmethod
     def embed(self, text: str) -> EmbedResult:
-        """Embed single text
+        """Embed single text (passage/document side).
 
         Args:
             text: Input text
@@ -83,6 +83,14 @@ class EmbedderBase(ABC):
             EmbedResult: Embedding result containing dense_vector, sparse_vector, or both
         """
         pass
+
+    def embed_query(self, text: str) -> EmbedResult:
+        """Embed a search query.
+
+        Some models (e.g. E5) use different prefixes for queries vs passages.
+        Default implementation delegates to :meth:`embed`.
+        """
+        return self.embed(text)
 
     def embed_batch(self, texts: List[str]) -> List[EmbedResult]:
         """Batch embedding (default implementation loops, subclasses can override for optimization)
@@ -232,9 +240,18 @@ class CompositeHybridEmbedder(HybridEmbedderBase):
         self.sparse_embedder = sparse_embedder
 
     def embed(self, text: str) -> EmbedResult:
-        """Combine results from both embedders"""
+        """Combine results from both embedders (passage side)."""
         dense_res = self.dense_embedder.embed(text)
         sparse_res = self.sparse_embedder.embed(text)
+
+        return EmbedResult(
+            dense_vector=dense_res.dense_vector, sparse_vector=sparse_res.sparse_vector
+        )
+
+    def embed_query(self, text: str) -> EmbedResult:
+        """Combine results from both embedders (query side)."""
+        dense_res = self.dense_embedder.embed_query(text)
+        sparse_res = self.sparse_embedder.embed_query(text)
 
         return EmbedResult(
             dense_vector=dense_res.dense_vector, sparse_vector=sparse_res.sparse_vector

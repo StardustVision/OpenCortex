@@ -76,7 +76,7 @@ class KnowledgeStore:
         limit: int = 10,
     ) -> List[Dict[str, Any]]:
         """Vector search over knowledge — only active items returned."""
-        embed_result = self._embedder.embed(query)
+        embed_result = self._embedder.embed_query(query)
 
         conditions = [
             {"field": "tenant_id", "op": "=", "value": tenant_id},

@@ -100,7 +100,7 @@ class TraceStore:
         limit: int = 10,
     ) -> List[Dict[str, Any]]:
         """Vector search over traces."""
-        embed_result = self._embedder.embed(query)
+        embed_result = self._embedder.embed_query(query)
         filter_expr = {
             "op": "and",
             "conditions": [

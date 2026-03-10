@@ -170,7 +170,7 @@ class HierarchicalRetriever:
         loop = asyncio.get_running_loop()
         try:
             result = await asyncio.wait_for(
-                loop.run_in_executor(None, self.embedder.embed, text),
+                loop.run_in_executor(None, self.embedder.embed_query, text),
                 timeout=self._embed_timeout,
             )
             return result
