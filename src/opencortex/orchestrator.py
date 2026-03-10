@@ -40,6 +40,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Union
 from uuid import uuid4
 
 from opencortex.config import CortexConfig, get_config
+from opencortex.prompts import build_doc_summarization_prompt, build_overview_prompt
 from opencortex.http.request_context import get_effective_identity, get_effective_project_id
 from opencortex.core.context import Context, ContextType as CoreContextType
 from opencortex.core.message import Message
@@ -460,12 +461,7 @@ class MemoryOrchestrator:
         if len(content) <= 500:
             return content
         if self._llm_completion:
-            prompt = (
-                "Generate a concise overview (3-8 sentences) of the following content. "
-                "The FIRST sentence must be a standalone summary of the key point. "
-                "Then provide supporting details: facts, decisions, and actionable information.\n\n"
-                f"Title: {abstract}\n\nContent:\n{content}\n\nOverview:"
-            )
+            prompt = build_overview_prompt(abstract, content)
             try:
                 overview = await self._llm_completion(prompt)
                 if overview and len(overview.strip()) > 10:
@@ -2064,13 +2060,7 @@ class MemoryOrchestrator:
             # Fallback: filename as abstract, first 500 chars as overview
             return file_path, content[:500]
 
-        prompt = f"""Summarize this document for a memory system.
-
-File: {file_path}
-Content (first 3000 chars):
-{content[:3000]}
-
-Return JSON: {{"abstract": "1-2 sentence summary", "overview": "1 paragraph overview"}}"""
+        prompt = build_doc_summarization_prompt(file_path, content)
 
         try:
             response = await self._llm_completion(prompt)

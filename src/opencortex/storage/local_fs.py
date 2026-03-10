@@ -6,7 +6,7 @@ Provides import_ovpack and export_ovpack functions for data portability.
 The vectorize parameter is not used (queue system not ported).
 """
 
-import json
+import orjson as json
 import logging
 import zipfile
 from pathlib import Path

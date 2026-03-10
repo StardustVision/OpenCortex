@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Shared helpers for extracting JSON from LLM responses."""
 
-import json
+import orjson as json
 import re
 from typing import Optional, Union
 

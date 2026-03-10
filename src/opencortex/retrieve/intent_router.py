@@ -11,6 +11,7 @@ import logging
 import re
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
+from opencortex.prompts import build_router_prompt
 from opencortex.retrieve.types import (
     ContextType,
     DetailLevel,
@@ -76,54 +77,6 @@ _INTENT_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "summarize":     {"top_k": 30, "detail_level": "l1", "need_rerank": True},
     "personalized":  {"top_k": 10, "detail_level": "l1", "need_rerank": True},
 }
-
-# =========================================================================
-# LLM prompt
-# =========================================================================
-
-_ROUTER_PROMPT_TEMPLATE = """You are OpenCortex's Intent Router. Analyze the user query and determine:
-
-1. **Should Recall**: Does this query need memory retrieval at all?
-   - Set false for greetings, farewells, simple acknowledgments, or chitchat
-   - Set true for any query that could benefit from past context or stored knowledge
-
-2. **Intent Type**: What kind of retrieval is needed?
-   - quick_lookup: Simple confirmation or fact check (top_k=3, l0)
-   - recent_recall: Recent context recall (top_k=5, l1)
-   - deep_analysis: Detailed analysis needing full content (top_k=10, l2)
-   - summarize: Aggregation over many memories (top_k=30, l1)
-   - personalized: Agent needs user metadata to give personalized advice (top_k=10, l1)
-
-3. **Memory Triggers**: What additional context does the Agent need to answer well?
-   Think from the Agent's perspective — what background information would help
-   provide a better answer? Return categories to proactively fetch:
-   - preferences: User preferences, habits, style
-   - goals: User goals, objectives, career direction
-   - experience: Past experiences, solutions tried
-   - patterns: Code patterns, architectural conventions
-   - error_fixes: Previous bug fixes, troubleshooting history
-   - architecture: System design decisions
-   - code_style: Coding conventions, formatting preferences
-
-{scope_section}Query: {query}
-
-Output JSON only:
-{{
-    "should_recall": true,
-    "intent_type": "...",
-    "top_k": N,
-    "detail_level": "l0|l1|l2",
-    "time_scope": "recent|session|all",
-    "trigger_categories": ["preferences", "goals", ...]
-}}"""
-
-
-def _build_router_prompt(query: str, context_type: Optional[ContextType] = None) -> str:
-    scope_section = ""
-    if context_type:
-        scope_section = f"Context type restriction: {context_type.value}\n\n"
-    return _ROUTER_PROMPT_TEMPLATE.format(query=query, scope_section=scope_section)
-
 
 # =========================================================================
 # IntentRouter
@@ -233,7 +186,9 @@ class IntentRouter:
         self, query: str, context_type: Optional[ContextType]
     ) -> Optional[SearchIntent]:
         """Layer 2+3: LLM semantic classification + Memory Trigger."""
-        prompt = _build_router_prompt(query, context_type)
+        prompt = build_router_prompt(
+            query, context_type.value if context_type else "",
+        )
         response = await self._llm(prompt)
         parsed = _parse_json_from_response(response)
         if not parsed:

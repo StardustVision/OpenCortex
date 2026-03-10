@@ -1,0 +1,335 @@
+# SPDX-License-Identifier: Apache-2.0
+"""
+Centralized prompt definitions for OpenCortex.
+
+All LLM prompts live here — zero internal dependencies (pure leaf module).
+Each prompt is either a build function (parameterized) or a template constant
+(.format() placeholders).
+"""
+
+from typing import Optional
+
+
+# =========================================================================
+# 1. Intent Analysis  (was: retrieve/intent_analyzer.py)
+# =========================================================================
+
+def build_intent_analysis_prompt(
+    compression_summary: str,
+    recent_messages: str,
+    current_message: str,
+    context_type: str = "",
+    target_abstract: str = "",
+) -> str:
+    """Build the intent analysis prompt for query planning."""
+    scope_section = ""
+    if context_type:
+        scope_section = f"""
+## Search Scope Constraints
+
+**Restricted Context Type**: {context_type}
+"""
+        if target_abstract:
+            scope_section += f"**Target Directory Abstract**: {target_abstract}\n"
+        scope_section += f"\n**Important**: You can only generate `{context_type}` type queries, do not generate other types."
+
+    return f"""You are OpenCortex's context query planner, responsible for analyzing task context gaps and generating queries.
+
+## Session Context
+
+### Session Summary
+{compression_summary}
+
+### Recent Conversation
+{recent_messages}
+
+### Current Message
+{current_message}
+{scope_section}
+
+## Your Task
+
+Analyze the current task, identify context gaps, and generate queries to fill in the required information.
+
+**Core Principle**: OpenCortex's external information takes priority over built-in knowledge, actively query external context.
+
+## Context Types and Query Styles
+
+OpenCortex supports the following context types, **each type has a different query style**:
+
+### 1. skill (Execution Capability)
+
+**Purpose**: Executable tools, functions, APIs, automation scripts
+
+**Query Style**: **Start with verbs, maintain operational intent**
+
+### 2. resource (Knowledge Resources)
+
+**Purpose**: Documents, specifications, guides, code, configurations, and other structured knowledge
+
+**Query Style**: **Noun phrases, describing knowledge content**
+
+### 3. memory (User/Agent Memory)
+
+**Purpose**: User personalization information or Agent execution experience
+
+**Query Style**: Distinguish by memory type
+
+## Output Format
+
+```json
+{{
+    "reasoning": "1. Task type; 2. What context is needed; 3. What is already in context; 4. What is missing",
+    "queries": [
+        {{
+            "query": "Specific query text",
+            "context_type": "skill|resource|memory",
+            "intent": "Purpose of the query",
+            "priority": 1
+        }}
+    ]
+}}
+```
+
+Please output JSON:"""
+
+
+# =========================================================================
+# 2. Intent Router  (was: retrieve/intent_router.py)
+# =========================================================================
+
+_ROUTER_PROMPT_TEMPLATE = """You are OpenCortex's Intent Router. Analyze the user query and determine:
+
+1. **Should Recall**: Does this query need memory retrieval at all?
+   - Set false for greetings, farewells, simple acknowledgments, or chitchat
+   - Set true for any query that could benefit from past context or stored knowledge
+
+2. **Intent Type**: What kind of retrieval is needed?
+   - quick_lookup: Simple confirmation or fact check (top_k=3, l0)
+   - recent_recall: Recent context recall (top_k=5, l1)
+   - deep_analysis: Detailed analysis needing full content (top_k=10, l2)
+   - summarize: Aggregation over many memories (top_k=30, l1)
+   - personalized: Agent needs user metadata to give personalized advice (top_k=10, l1)
+
+3. **Memory Triggers**: What additional context does the Agent need to answer well?
+   Think from the Agent's perspective — what background information would help
+   provide a better answer? Return categories to proactively fetch:
+   - preferences: User preferences, habits, style
+   - goals: User goals, objectives, career direction
+   - experience: Past experiences, solutions tried
+   - patterns: Code patterns, architectural conventions
+   - error_fixes: Previous bug fixes, troubleshooting history
+   - architecture: System design decisions
+   - code_style: Coding conventions, formatting preferences
+
+{scope_section}Query: {query}
+
+Output JSON only:
+{{
+    "should_recall": true,
+    "intent_type": "...",
+    "top_k": N,
+    "detail_level": "l0|l1|l2",
+    "time_scope": "recent|session|all",
+    "trigger_categories": ["preferences", "goals", ...]
+}}"""
+
+
+def build_router_prompt(query: str, context_type: Optional[str] = None) -> str:
+    """Build the intent router LLM prompt.
+
+    Args:
+        query: User query text.
+        context_type: Optional context type restriction value (e.g. "skill").
+    """
+    scope_section = ""
+    if context_type:
+        scope_section = f"Context type restriction: {context_type}\n\n"
+    return _ROUTER_PROMPT_TEMPLATE.format(query=query, scope_section=scope_section)
+
+
+# =========================================================================
+# 3. Memory Extraction  (was: session/extractor.py)
+# =========================================================================
+
+def build_extraction_prompt(
+    conversation: str,
+    quality_score: float,
+    session_summary: str = "",
+) -> str:
+    """Build the LLM prompt for session memory extraction.
+
+    Args:
+        conversation: Pre-formatted conversation text (e.g. "[ROLE] content" lines).
+        quality_score: Session quality score (0-1).
+        session_summary: Optional session summary text.
+    """
+    summary_section = f"\nSession Summary: {session_summary}\n" if session_summary else ""
+    return f"""You are a memory extraction system. Analyze the following conversation and extract persistent memories that should be saved for future sessions.
+
+{summary_section}
+Session Quality Score: {quality_score:.1f}/1.0
+
+Conversation:
+{conversation}
+
+Extract memories in these categories:
+
+User memories (private to this user):
+- **profile**: User identity, roles, background attributes
+- **preferences**: User preferences, settings, workflow habits
+- **entities**: Important entities — people, projects, paths, URLs, configurations
+- **events**: Decisions, milestones, key events (each unique, never merge)
+
+Agent knowledge (shared at project level):
+- **cases**: Problem + solution pairs (each unique, never merge)
+- **patterns**: Reusable patterns, best practices, recurring solutions
+
+For each memory, provide:
+- abstract: Short summary (1-2 sentences, used for vector search)
+- content: Full details
+- category: One of: profile, preferences, entities, events, cases, patterns
+- context_type: "memory" for user categories (profile/preferences/entities/events), "case" for cases, "pattern" for patterns
+- confidence: 0.0 to 1.0 (how confident this is a persistent, reusable memory)
+
+**For case-type memories ONLY** (context_type="case"), also include a "meta" object:
+- schema_version: 1 (integer, always 1)
+- task_objective: What the user was trying to accomplish (string)
+- action_path: Ordered list of key steps taken (array of strings)
+- result: What actually happened (string)
+- evaluation: {{"status": "success"|"partial"|"failure", "score": 0.0-1.0}}
+- error_cause: What went wrong (empty string if success)
+- improvement: What could be done better next time (string)
+
+Return ONLY a JSON array. Example:
+[
+  {{"abstract": "User prefers dark theme", "content": "User explicitly set dark theme in VS Code and terminal", "category": "preferences", "context_type": "memory", "confidence": 0.9}},
+  {{"abstract": "Fix import error by checking PYTHONPATH", "content": "When imports fail, check PYTHONPATH includes src/", "category": "cases", "context_type": "case", "confidence": 0.7, "meta": {{"schema_version": 1, "task_objective": "Fix Python import error", "action_path": ["Check PYTHONPATH", "Add src/ to path", "Verify import"], "result": "Import resolved after adding src/ to PYTHONPATH", "evaluation": {{"status": "success", "score": 0.9}}, "error_cause": "", "improvement": "Add src/ to PYTHONPATH in project setup"}}}}
+]
+
+If no meaningful memories can be extracted, return an empty array: []
+Memories:"""
+
+
+# =========================================================================
+# 4. Document Summarization  (was: orchestrator.py)
+# =========================================================================
+
+def build_doc_summarization_prompt(file_path: str, content: str) -> str:
+    """Build prompt for document abstract + overview generation.
+
+    Args:
+        file_path: Document file path.
+        content: Full document content (truncated to 3000 chars inside the prompt).
+    """
+    return f"""Summarize this document for a memory system.
+
+File: {file_path}
+Content (first 3000 chars):
+{content[:3000]}
+
+Return JSON: {{"abstract": "1-2 sentence summary", "overview": "1 paragraph overview"}}"""
+
+
+# =========================================================================
+# 5. L1 Overview Generation  (was: orchestrator.py)
+# =========================================================================
+
+def build_overview_prompt(abstract: str, content: str) -> str:
+    """Build prompt for L1 overview generation from content.
+
+    Args:
+        abstract: L0 abstract / title.
+        content: Full content text.
+    """
+    return (
+        "Generate a concise overview (3-8 sentences) of the following content. "
+        "The FIRST sentence must be a standalone summary of the key point. "
+        "Then provide supporting details: facts, decisions, and actionable information.\n\n"
+        f"Title: {abstract}\n\nContent:\n{content}\n\nOverview:"
+    )
+
+
+# =========================================================================
+# 6. Trace Split  (was: alpha/trace_splitter.py)
+# =========================================================================
+
+TRACE_SPLIT_PROMPT = """Analyze this conversation transcript and identify distinct tasks.
+For each task, provide:
+- summary: one-line description (L0)
+- key_steps: bullet-point steps taken (L1)
+- turn_indices: which turn indices (0-based) belong to this task
+- outcome: success/failure/timeout/cancelled
+- task_type: coding/debug/chat/config/docs/review/other
+
+Transcript ({turn_count} turns):
+{transcript}
+
+Return a JSON array of objects. Example:
+[{{"summary": "Fixed import error in auth.py", "key_steps": ["Read error", "Fixed typo"], "turn_indices": [0, 1, 2], "outcome": "success", "task_type": "debug"}}]
+
+Return ONLY the JSON array, no other text."""
+
+
+# =========================================================================
+# 7. Knowledge Extraction  (was: alpha/archivist.py)
+# =========================================================================
+
+KNOWLEDGE_EXTRACT_PROMPT = """Given these related task traces, extract reusable knowledge.
+
+Traces ({count} total):
+{traces_text}
+
+For each piece of knowledge you identify, classify it as one of:
+- belief: A judgment rule or best practice
+- sop: A standard operating procedure with ordered steps
+- negative_rule: Something that should never be done
+- root_cause: A recurring error pattern with its cause and fix
+
+Return a JSON array of knowledge items:
+[{{"type": "belief|sop|negative_rule|root_cause", "statement": "...", "objective": "...", "action_steps": ["step1", "step2"] (for sop only), "error_pattern": "..." (for root_cause), "cause": "..." (for root_cause), "fix_suggestion": "..." (for root_cause), "severity": "low|medium|high" (for negative_rule), "trigger_keywords": ["kw1", "kw2"]}}]
+
+Return ONLY the JSON array."""
+
+
+# =========================================================================
+# 8. Knowledge Verification  (was: alpha/sandbox.py)
+# =========================================================================
+
+KNOWLEDGE_VERIFY_PROMPT = """You are evaluating whether a knowledge item would have improved
+the outcome of a historical task trace.
+
+Knowledge item:
+Type: {knowledge_type}
+Statement: {statement}
+Objective: {objective}
+Action steps: {action_steps}
+
+Historical trace summary:
+{trace_summary}
+
+Question: If the agent had applied this knowledge during the trace above,
+would the outcome have improved? Answer with a JSON object:
+{{"improved": true/false, "reason": "brief explanation"}}"""
+
+
+# =========================================================================
+# 9. Rerank (LLM fallback)  (was: retrieve/rerank_client.py)
+# =========================================================================
+
+def build_rerank_prompt(query: str, docs_text: str) -> str:
+    """Build LLM prompt for listwise reranking.
+
+    Args:
+        query: Search query text.
+        docs_text: Pre-formatted document text (e.g. "[0] doc..." lines).
+    """
+    return (
+        "You are a relevance scoring system. "
+        "Score each document's relevance to the query on a scale of 0.0 to 1.0.\n\n"
+        f"Query: {query}\n\n"
+        f"Documents:\n{docs_text}\n\n"
+        "Return ONLY a JSON array of scores in the same order as the documents. "
+        "Example: [0.95, 0.3, 0.8]\n"
+        "Scores:"
+    )

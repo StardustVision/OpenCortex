@@ -9,10 +9,12 @@ Three-stage pipeline:
 Design doc §5.4, §10.3.
 """
 
-import json
+import orjson as json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Coroutine, Dict, List, Optional, Tuple
+
+from opencortex.prompts import KNOWLEDGE_VERIFY_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -100,23 +102,6 @@ def stat_gate(
 # Stage 2: LLM Simulation Verification
 # ---------------------------------------------------------------------------
 
-_LLM_VERIFY_PROMPT = """You are evaluating whether a knowledge item would have improved
-the outcome of a historical task trace.
-
-Knowledge item:
-Type: {knowledge_type}
-Statement: {statement}
-Objective: {objective}
-Action steps: {action_steps}
-
-Historical trace summary:
-{trace_summary}
-
-Question: If the agent had applied this knowledge during the trace above,
-would the outcome have improved? Answer with a JSON object:
-{{"improved": true/false, "reason": "brief explanation"}}"""
-
-
 @dataclass
 class LLMVerifyResult:
     """Result from LLM simulation verification."""
@@ -155,7 +140,7 @@ async def llm_verify(
     reasons = []
 
     for trace in sample_traces:
-        prompt = _LLM_VERIFY_PROMPT.format(
+        prompt = KNOWLEDGE_VERIFY_PROMPT.format(
             knowledge_type=knowledge_dict.get("knowledge_type", "unknown"),
             statement=knowledge_dict.get("statement", "N/A"),
             objective=knowledge_dict.get("objective", "N/A"),

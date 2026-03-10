@@ -7,7 +7,7 @@ Traces are stored with three-layer CortexFS architecture:
   L2 (content):  full conversation -> CortexFS
 """
 
-import json
+import orjson
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -64,9 +64,9 @@ class TraceStore:
 
         # Write L2 (full turns) to CortexFS
         if self._fs and trace.turns:
-            l2_content = json.dumps(
-                [t.to_dict() for t in trace.turns], ensure_ascii=False
-            )
+            l2_content = orjson.dumps(
+                [t.to_dict() for t in trace.turns]
+            ).decode()
             uri = f"opencortex://{trace.tenant_id}/user/{trace.user_id}/trace/{trace.trace_id}"
             await self._fs.write(uri, l2_content, layer="content")
             if trace.overview:

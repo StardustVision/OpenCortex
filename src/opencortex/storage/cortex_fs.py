@@ -13,7 +13,7 @@ Responsibilities:
 
 import asyncio
 import hashlib
-import json
+import orjson
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -830,7 +830,7 @@ class CortexFS:
         table_path = f"{dir_path}/.relations.json"
         try:
             content = self._handle_agfs_read(self.agfs.read(table_path))
-            data = json.loads(content.decode("utf-8"))
+            data = orjson.loads(content)
         except FileNotFoundError:
             return []
         except Exception:
@@ -855,10 +855,8 @@ class CortexFS:
         # Use flat list format
         data = [entry.to_dict() for entry in entries]
 
-        content = json.dumps(data, ensure_ascii=False, indent=2)
+        content = orjson.dumps(data, option=orjson.OPT_INDENT_2)
         table_path = f"{dir_path}/.relations.json"
-        if isinstance(content, str):
-            content = content.encode("utf-8")
         self.agfs.write(table_path, content)
 
     # ========== Batch Read (backward compatible) ==========

@@ -9,11 +9,12 @@ Supports three modes:
 3. Disabled — returns zero scores
 """
 
-import json
+import orjson as json
 import logging
 import re
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
+from opencortex.prompts import build_rerank_prompt
 from opencortex.retrieve.rerank_config import RerankConfig
 
 logger = logging.getLogger(__name__)
@@ -156,15 +157,7 @@ class RerankClient:
         docs_text = "\n".join(
             f"[{i}] {doc[:500]}" for i, doc in enumerate(documents)
         )
-        return (
-            "You are a relevance scoring system. "
-            "Score each document's relevance to the query on a scale of 0.0 to 1.0.\n\n"
-            f"Query: {query}\n\n"
-            f"Documents:\n{docs_text}\n\n"
-            "Return ONLY a JSON array of scores in the same order as the documents. "
-            "Example: [0.95, 0.3, 0.8]\n"
-            "Scores:"
-        )
+        return build_rerank_prompt(query, docs_text)
 
     def _parse_rerank_response(self, response: str, expected_count: int) -> List[float]:
         """Parse LLM response into a list of float scores."""

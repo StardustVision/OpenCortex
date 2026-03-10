@@ -10,32 +10,16 @@ Pipeline:
 Design doc §5.3, §10.1.
 """
 
-import json
+import orjson as json
 import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Coroutine, Dict, List, Optional, Tuple
 
 from opencortex.alpha.types import Knowledge, KnowledgeType, KnowledgeScope, KnowledgeStatus
+from opencortex.prompts import KNOWLEDGE_EXTRACT_PROMPT
 
 logger = logging.getLogger(__name__)
-
-
-_EXTRACT_PROMPT = """Given these related task traces, extract reusable knowledge.
-
-Traces ({count} total):
-{traces_text}
-
-For each piece of knowledge you identify, classify it as one of:
-- belief: A judgment rule or best practice
-- sop: A standard operating procedure with ordered steps
-- negative_rule: Something that should never be done
-- root_cause: A recurring error pattern with its cause and fix
-
-Return a JSON array of knowledge items:
-[{{"type": "belief|sop|negative_rule|root_cause", "statement": "...", "objective": "...", "action_steps": ["step1", "step2"] (for sop only), "error_pattern": "..." (for root_cause), "cause": "..." (for root_cause), "fix_suggestion": "..." (for root_cause), "severity": "low|medium|high" (for negative_rule), "trigger_keywords": ["kw1", "kw2"]}}]
-
-Return ONLY the JSON array."""
 
 
 def cluster_traces(
@@ -150,7 +134,7 @@ class Archivist:
             for t in cluster
         )
 
-        prompt = _EXTRACT_PROMPT.format(
+        prompt = KNOWLEDGE_EXTRACT_PROMPT.format(
             count=len(cluster),
             traces_text=traces_text,
         )

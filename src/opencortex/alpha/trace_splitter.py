@@ -10,30 +10,15 @@ Takes a full session transcript and uses LLM to:
 Design doc §5.2, §10.2.
 """
 
-import json
+import orjson as json
 import logging
 import uuid
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 
 from opencortex.alpha.types import Trace, Turn, TraceOutcome, TurnStatus
+from opencortex.prompts import TRACE_SPLIT_PROMPT
 
 logger = logging.getLogger(__name__)
-
-_SPLIT_PROMPT = """Analyze this conversation transcript and identify distinct tasks.
-For each task, provide:
-- summary: one-line description (L0)
-- key_steps: bullet-point steps taken (L1)
-- turn_indices: which turn indices (0-based) belong to this task
-- outcome: success/failure/timeout/cancelled
-- task_type: coding/debug/chat/config/docs/review/other
-
-Transcript ({turn_count} turns):
-{transcript}
-
-Return a JSON array of objects. Example:
-[{{"summary": "Fixed import error in auth.py", "key_steps": ["Read error", "Fixed typo"], "turn_indices": [0, 1, 2], "outcome": "success", "task_type": "debug"}}]
-
-Return ONLY the JSON array, no other text."""
 
 
 class TraceSplitter:
@@ -119,7 +104,7 @@ class TraceSplitter:
         source: str,
     ) -> List[Trace]:
         """Single LLM call for sessions within context window."""
-        prompt = _SPLIT_PROMPT.format(
+        prompt = TRACE_SPLIT_PROMPT.format(
             turn_count=len(messages),
             transcript=transcript_text,
         )
