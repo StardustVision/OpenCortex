@@ -13,6 +13,15 @@ export default async function userPromptSubmit(ctx) {
 
   const httpUrl = state.http_url || ctx.httpUrl;
 
+  // Record prompt in Observer (best-effort, non-blocking)
+  if (state.session_id) {
+    httpPost(`${httpUrl}/api/v1/session/message`, {
+      session_id: state.session_id,
+      role: 'user',
+      content: prompt.slice(0, 2000),
+    }, 3000).catch(() => {});
+  }
+
   // Ask server IntentRouter: keyword (< 1ms) + LLM classification (200ms-1s)
   try {
     const intent = await httpPost(

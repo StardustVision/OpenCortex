@@ -48,6 +48,19 @@ export async function httpGet(url, timeoutMs = 5000, extraHeaders = {}) {
   return res.json();
 }
 
+/**
+ * Batch message recording for Observer debounce buffer.
+ * @param {string} httpUrl - Server base URL
+ * @param {string} sessionId - Session identifier
+ * @param {Array<{role: string, content: string}>} messages - Messages to record
+ */
+export async function sessionMessagesBatch(httpUrl, sessionId, messages, timeoutMs = 5000) {
+  return httpPost(`${httpUrl}/api/v1/session/messages`, {
+    session_id: sessionId,
+    messages,
+  }, timeoutMs);
+}
+
 export async function healthCheck(httpUrl, timeoutMs = 3000) {
   try {
     const headers = buildClientHeaders();

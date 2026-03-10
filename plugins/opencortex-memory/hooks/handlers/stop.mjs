@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { loadState, saveState } from '../../lib/common.mjs';
-import { httpPost } from '../../lib/http-client.mjs';
+import { httpPost, sessionMessagesBatch } from '../../lib/http-client.mjs';
 import { extractLastTurn, summarizeTurn } from '../../lib/transcript.mjs';
 
 export default async function stop(ctx) {
@@ -44,22 +44,18 @@ export default async function stop(ctx) {
       },
     }, 15000);
 
-    // Buffer turn messages in SessionManager
+    // Buffer turn messages via Observer batch endpoint
     if (state.session_id) {
       try {
+        const messages = [];
         if (turn.userText) {
-          await httpPost(`${state.http_url}/api/v1/session/message`, {
-            session_id: state.session_id,
-            role: 'user',
-            content: turn.userText.slice(0, 2000),
-          }, 5000);
+          messages.push({ role: 'user', content: turn.userText.slice(0, 2000) });
         }
         if (turn.assistantText) {
-          await httpPost(`${state.http_url}/api/v1/session/message`, {
-            session_id: state.session_id,
-            role: 'assistant',
-            content: turn.assistantText.slice(0, 2000),
-          }, 5000);
+          messages.push({ role: 'assistant', content: turn.assistantText.slice(0, 2000) });
+        }
+        if (messages.length > 0) {
+          await sessionMessagesBatch(state.http_url, state.session_id, messages, 5000);
         }
 
         // Extract memories from this turn (LLM, best-effort)
