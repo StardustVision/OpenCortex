@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class TraceStore:
     def __init__(
         self,
-        storage,       # VikingDBInterface
+        storage,       # StorageInterface
         embedder,      # EmbedderBase
         cortex_fs,     # CortexFS
         collection_name: str = "traces",

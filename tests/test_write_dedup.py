@@ -25,9 +25,9 @@ from opencortex.http.request_context import (
 )
 from opencortex.models.embedder.base import DenseEmbedderBase, EmbedResult
 from opencortex.orchestrator import MemoryOrchestrator
-from opencortex.storage.vikingdb_interface import (
+from opencortex.storage.storage_interface import (
     CollectionNotFoundError,
-    VikingDBInterface,
+    StorageInterface,
 )
 
 
@@ -70,7 +70,7 @@ class MockEmbedder(DenseEmbedderBase):
 # =========================================================================
 
 
-class InMemoryStorage(VikingDBInterface):
+class InMemoryStorage(StorageInterface):
     def __init__(self):
         self._collections: Dict[str, Dict[str, Any]] = {}
         self._records: Dict[str, Dict[str, Dict[str, Any]]] = {}

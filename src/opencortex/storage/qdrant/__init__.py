@@ -2,7 +2,7 @@
 """
 Qdrant storage backend for OpenCortex.
 
-Provides QdrantStorageAdapter — a VikingDBInterface implementation using
+Provides QdrantStorageAdapter — a StorageInterface implementation using
 Qdrant's embedded local mode (AsyncQdrantClient with path).
 """
 

@@ -1,5 +1,3 @@
-# Copyright (c) 2026 Beijing Volcano Engine Technology Co., Ltd.
-# Ported from OpenViking (https://github.com/volcengine/openviking)
 # SPDX-License-Identifier: Apache-2.0
 """
 Collection schema definitions for OpenCortex.
@@ -12,7 +10,7 @@ import logging
 from typing import Any, Dict
 
 from opencortex.models.embedder.base import EmbedResult  # noqa: F401 - re-exported for convenience
-from opencortex.storage.vikingdb_interface import VikingDBInterface
+from opencortex.storage.storage_interface import StorageInterface
 
 logger = logging.getLogger(__name__)
 
@@ -94,70 +92,6 @@ class CollectionSchemas:
         }
 
 
-    @staticmethod
-    def skillbook_collection(name: str, vector_dim: int) -> Dict[str, Any]:
-        """
-        Get the schema for the skillbook collection (ACE skills).
-
-        Extends context_collection with helpful/harmful/neutral/status fields.
-
-        Args:
-            name: Collection name
-            vector_dim: Dimension of the dense vector field
-
-        Returns:
-            Schema definition for the skillbook collection
-        """
-        return {
-            "CollectionName": name,
-            "Description": "ACE Skillbook collection",
-            "Fields": [
-                {"FieldName": "id", "FieldType": "string", "IsPrimaryKey": True},
-                {"FieldName": "uri", "FieldType": "path"},
-                {"FieldName": "type", "FieldType": "string"},
-                {"FieldName": "context_type", "FieldType": "string"},
-                {"FieldName": "vector", "FieldType": "vector", "Dim": vector_dim},
-                {"FieldName": "created_at", "FieldType": "date_time"},
-                {"FieldName": "updated_at", "FieldType": "date_time"},
-                {"FieldName": "active_count", "FieldType": "int64"},
-                {"FieldName": "is_leaf", "FieldType": "bool"},
-                {"FieldName": "abstract", "FieldType": "string"},
-                {"FieldName": "helpful", "FieldType": "int64"},
-                {"FieldName": "harmful", "FieldType": "int64"},
-                {"FieldName": "neutral", "FieldType": "int64"},
-                {"FieldName": "status", "FieldType": "string"},
-                # Multi-tenant scope fields
-                {"FieldName": "tenant_id", "FieldType": "string"},
-                {"FieldName": "owner_user_id", "FieldType": "string"},
-                {"FieldName": "scope", "FieldType": "string"},
-                {"FieldName": "share_status", "FieldType": "string"},
-                {"FieldName": "share_score", "FieldType": "float"},
-                {"FieldName": "share_reason", "FieldType": "string"},
-                {"FieldName": "source_user_id", "FieldType": "string"},
-                {"FieldName": "source_tenant_id", "FieldType": "string"},
-            ],
-            "ScalarIndex": [
-                "uri",
-                "type",
-                "context_type",
-                "created_at",
-                "updated_at",
-                "active_count",
-                "is_leaf",
-                "helpful",
-                "harmful",
-                "neutral",
-                "status",
-                # Multi-tenant scope indexes
-                "tenant_id",
-                "owner_user_id",
-                "scope",
-                "share_status",
-                "source_user_id",
-                "source_tenant_id",
-            ],
-        }
-
 
     @staticmethod
     def trace_collection(name: str, vector_dim: int) -> Dict[str, Any]:
@@ -220,7 +154,7 @@ class CollectionSchemas:
 
 
 async def init_trace_collection(
-    storage: VikingDBInterface, name: str, vector_dim: int,
+    storage: StorageInterface, name: str, vector_dim: int,
 ) -> bool:
     """Initialize the trace collection with proper schema."""
     schema = CollectionSchemas.trace_collection(name, vector_dim)
@@ -228,7 +162,7 @@ async def init_trace_collection(
 
 
 async def init_knowledge_collection(
-    storage: VikingDBInterface, name: str, vector_dim: int,
+    storage: StorageInterface, name: str, vector_dim: int,
 ) -> bool:
     """Initialize the knowledge collection with proper schema."""
     schema = CollectionSchemas.knowledge_collection(name, vector_dim)
@@ -236,7 +170,7 @@ async def init_knowledge_collection(
 
 
 async def init_context_collection(
-    storage: VikingDBInterface,
+    storage: StorageInterface,
     name: str,
     vector_dim: int,
 ) -> bool:
@@ -255,21 +189,3 @@ async def init_context_collection(
     return await storage.create_collection(name, schema)
 
 
-async def init_skillbook_collection(
-    storage: VikingDBInterface,
-    name: str,
-    vector_dim: int,
-) -> bool:
-    """
-    Initialize the skillbook collection with proper schema.
-
-    Args:
-        storage: Storage interface instance
-        name: Collection name (default: "skillbooks")
-        vector_dim: Dimension of the embedding vector
-
-    Returns:
-        True if collection was created, False if already exists
-    """
-    schema = CollectionSchemas.skillbook_collection(name, vector_dim)
-    return await storage.create_collection(name, schema)

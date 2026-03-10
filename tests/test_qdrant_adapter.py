@@ -2,7 +2,7 @@
 Unit tests for the Qdrant storage adapter.
 
 Tests:
-- Filter translator (VikingDB DSL → Qdrant Filter)
+- Filter translator (Filter DSL → Qdrant Filter)
 - QdrantStorageAdapter CRUD operations
 - Vector search (dense)
 - scroll / count operations
@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from opencortex.storage.qdrant.adapter import QdrantStorageAdapter
 from opencortex.storage.qdrant.filter_translator import translate_filter
-from opencortex.storage.vikingdb_interface import CollectionNotFoundError
+from opencortex.storage.storage_interface import CollectionNotFoundError
 
 
 # =============================================================================
@@ -96,7 +96,7 @@ def _make_record(
 
 
 class TestFilterTranslator(unittest.TestCase):
-    """Unit tests for the VikingDB DSL → Qdrant Filter translator."""
+    """Unit tests for the Filter DSL → Qdrant Filter translator."""
 
     def test_empty_filter(self):
         """Empty dict returns empty filter."""

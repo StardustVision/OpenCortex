@@ -7,9 +7,9 @@ from opencortex.config import CortexConfig, CortexAlphaConfig
 
 class TestCutFlowConfig(unittest.TestCase):
 
-    def test_default_off(self):
+    def test_default_on(self):
         cfg = CortexAlphaConfig()
-        self.assertFalse(cfg.use_alpha_pipeline)
+        self.assertTrue(cfg.use_alpha_pipeline)
 
     def test_toggle_on(self):
         cfg = CortexAlphaConfig(use_alpha_pipeline=True)
@@ -66,20 +66,13 @@ class TestSessionEndCutFlow(unittest.IsolatedAsyncioTestCase):
 
 class TestSkillLookupCutFlow(unittest.IsolatedAsyncioTestCase):
 
-    def _make_orchestrator(self, use_alpha=False):
+    def _make_orchestrator(self):
         from opencortex.orchestrator import MemoryOrchestrator
         orch = MemoryOrchestrator.__new__(MemoryOrchestrator)
         orch._initialized = True
         orch._config = CortexConfig(
-            cortex_alpha=CortexAlphaConfig(use_alpha_pipeline=use_alpha)
+            cortex_alpha=CortexAlphaConfig(use_alpha_pipeline=True)
         )
-        # Skillbook mock
-        orch._skillbook = AsyncMock()
-        skill_mock = MagicMock()
-        skill_mock.status = "active"
-        skill_mock.confidence_score = 0.8
-        skill_mock.to_dict.return_value = {"id": "s1", "content": "test"}
-        orch._skillbook.search = AsyncMock(return_value=[skill_mock])
         # Knowledge store mock
         orch._knowledge_store = AsyncMock()
         orch._knowledge_store.search = AsyncMock(return_value=[
@@ -88,24 +81,22 @@ class TestSkillLookupCutFlow(unittest.IsolatedAsyncioTestCase):
         return orch
 
     @patch("opencortex.orchestrator.get_effective_identity", return_value=("team", "hugo"))
-    async def test_legacy_mode_uses_skillbook(self, _):
-        orch = self._make_orchestrator(use_alpha=False)
-        result = await orch.skill_lookup("deploy")
-        orch._skillbook.search.assert_called_once()
-        orch._knowledge_store.search.assert_not_called()
-        self.assertEqual(len(result), 1)
-
-    @patch("opencortex.orchestrator.get_effective_identity", return_value=("team", "hugo"))
-    async def test_alpha_mode_uses_knowledge_store(self, _):
-        orch = self._make_orchestrator(use_alpha=True)
+    async def test_skill_lookup_uses_knowledge_store(self, _):
+        orch = self._make_orchestrator()
         result = await orch.skill_lookup("deploy")
         orch._knowledge_store.search.assert_called_once()
-        orch._skillbook.search.assert_not_called()
         self.assertEqual(result[0]["knowledge_type"], "sop")
 
     @patch("opencortex.orchestrator.get_effective_identity", return_value=("team", "hugo"))
-    async def test_alpha_mode_error_fixes_section(self, _):
-        orch = self._make_orchestrator(use_alpha=True)
+    async def test_skill_lookup_returns_empty_without_store(self, _):
+        orch = self._make_orchestrator()
+        orch._knowledge_store = None
+        result = await orch.skill_lookup("deploy")
+        self.assertEqual(result, [])
+
+    @patch("opencortex.orchestrator.get_effective_identity", return_value=("team", "hugo"))
+    async def test_error_fixes_section(self, _):
+        orch = self._make_orchestrator()
         await orch.skill_lookup("fix error", section="error_fixes")
         call_args = orch._knowledge_store.search.call_args
         types = call_args[1].get("types") or call_args[0][3] if len(call_args[0]) > 3 else call_args[1].get("types")

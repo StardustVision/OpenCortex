@@ -1,5 +1,3 @@
-# Copyright (c) 2026 Beijing Volcano Engine Technology Co., Ltd.
-# Ported from OpenViking (https://github.com/volcengine/openviking)
 # SPDX-License-Identifier: Apache-2.0
 """
 Storage interface for OpenCortex.
@@ -12,7 +10,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple
 
 
-class VikingDBInterface(ABC):
+class StorageInterface(ABC):
     """
     Abstract vector indexing interface for OpenCortex.
 
@@ -550,14 +548,14 @@ class VikingDBInterface(ABC):
 # =============================================================================
 
 
-class VikingDBException(Exception):
-    """Base exception for VikingDB operations."""
+class StorageBackendError(Exception):
+    """Base exception for storage operations."""
 
     pass
 
 
-class StorageException(VikingDBException):
-    """Legacy alias for VikingDBException for backward compatibility."""
+class StorageException(StorageBackendError):
+    """Legacy alias for StorageBackendError for backward compatibility."""
 
     pass
 

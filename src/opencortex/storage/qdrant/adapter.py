@@ -2,11 +2,11 @@
 """
 Qdrant storage adapter for OpenCortex.
 
-Implements VikingDBInterface using Qdrant's AsyncQdrantClient in embedded
+Implements StorageInterface using Qdrant's AsyncQdrantClient in embedded
 (local path) mode — zero external process required.
 
 Architecture:
-    Orchestrator → VikingDBInterface → QdrantStorageAdapter → AsyncQdrantClient
+    Orchestrator → StorageInterface → QdrantStorageAdapter → AsyncQdrantClient
 """
 
 import hashlib
@@ -19,9 +19,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from qdrant_client import AsyncQdrantClient, models
 
 from opencortex.storage.qdrant.filter_translator import translate_filter
-from opencortex.storage.vikingdb_interface import (
+from opencortex.storage.storage_interface import (
     CollectionNotFoundError,
-    VikingDBInterface,
+    StorageInterface,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,8 +52,8 @@ def _compute_text_score(query: str, abstract: str, overview: str) -> float:
     return min(1.0, (abstract_hits * 2 + overview_hits) / (len(query_terms) * 2))
 
 
-class QdrantStorageAdapter(VikingDBInterface):
-    """VikingDBInterface implementation backed by Qdrant (embedded local mode).
+class QdrantStorageAdapter(StorageInterface):
+    """StorageInterface implementation backed by Qdrant (embedded local mode).
 
     Uses AsyncQdrantClient with a local path for zero-dependency vector storage.
 
@@ -733,7 +733,7 @@ class QdrantStorageAdapter(VikingDBInterface):
             raise CollectionNotFoundError(f"Collection '{name}' does not exist")
 
     def _to_point(self, data: Dict[str, Any]) -> models.PointStruct:
-        """Convert a VikingDBInterface data dict to a Qdrant PointStruct."""
+        """Convert a StorageInterface data dict to a Qdrant PointStruct."""
         # Extract and normalize ID
         raw_id = data.pop("id", None)
         if raw_id is None:
@@ -815,7 +815,7 @@ class QdrantStorageAdapter(VikingDBInterface):
     def _infer_payload_type(
         schema: Dict[str, Any], field_name: str,
     ) -> models.PayloadSchemaType:
-        """Infer Qdrant payload schema type from VikingDB field definition."""
+        """Infer Qdrant payload schema type from field definition."""
         for f in schema.get("Fields", []):
             if f.get("FieldName") == field_name:
                 ft = f.get("FieldType", "")
@@ -969,7 +969,7 @@ class QdrantStorageAdapter(VikingDBInterface):
 
     @staticmethod
     def _index_type_to_schema(index_type: str) -> models.PayloadSchemaType:
-        """Convert VikingDB index type string to Qdrant schema type."""
+        """Convert index type string to Qdrant schema type."""
         mapping = {
             "keyword": models.PayloadSchemaType.KEYWORD,
             "text": models.PayloadSchemaType.TEXT,

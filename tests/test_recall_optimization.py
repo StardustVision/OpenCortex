@@ -220,9 +220,9 @@ class TestSearchLexical(unittest.TestCase):
 
     def test_hasattr_detection_for_in_memory(self):
         """InMemoryStorage should NOT have search_lexical (graceful skip)."""
-        from opencortex.storage.vikingdb_interface import VikingDBInterface
-        # A bare VikingDBInterface instance should not have search_lexical
-        self.assertFalse(hasattr(VikingDBInterface, "search_lexical"))
+        from opencortex.storage.storage_interface import StorageInterface
+        # A bare StorageInterface instance should not have search_lexical
+        self.assertFalse(hasattr(StorageInterface, "search_lexical"))
 
 
 # =============================================================================

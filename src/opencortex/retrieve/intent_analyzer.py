@@ -1,5 +1,3 @@
-# Copyright (c) 2026 Beijing Volcano Engine Technology Co., Ltd.
-# Ported from OpenViking (https://github.com/volcengine/openviking)
 # SPDX-License-Identifier: Apache-2.0
 """
 Intent analyzer for OpenCortex retrieval.
@@ -31,7 +29,7 @@ def _build_intent_analysis_prompt(
     """
     Build the intent analysis prompt.
 
-    Implements the same template logic as the OpenViking
+    Implements the same template logic as the OpenCortex
     retrieval.intent_analysis YAML template.
 
     Args:

@@ -30,9 +30,9 @@ from opencortex.models.embedder.base import DenseEmbedderBase, EmbedResult
 from opencortex.orchestrator import MemoryOrchestrator
 from opencortex.retrieve.rerank_config import RerankConfig
 from opencortex.retrieve.types import ContextType, FindResult
-from opencortex.storage.vikingdb_interface import (
+from opencortex.storage.storage_interface import (
     CollectionNotFoundError,
-    VikingDBInterface,
+    StorageInterface,
 )
 from opencortex.utils.uri import CortexURI
 
@@ -95,8 +95,8 @@ class MockEmbedder(DenseEmbedderBase):
 # =============================================================================
 
 
-class InMemoryStorage(VikingDBInterface):
-    """Fully in-memory VikingDBInterface implementation with RL support.
+class InMemoryStorage(StorageInterface):
+    """Fully in-memory StorageInterface implementation with RL support.
 
     Stores records as dicts in a nested {collection: {id: record}} structure.
     Supports cosine similarity search and basic filter evaluation.
@@ -450,7 +450,7 @@ class InMemoryStorage(VikingDBInterface):
         return dot / (norm_a * norm_b)
 
     def _eval_filter(self, record: Dict[str, Any], filt: Dict[str, Any]) -> bool:
-        """Evaluate VikingDB-style filter DSL against a record."""
+        """Evaluate filter DSL against a record."""
         if not filt:
             return True
         op = filt.get("op", "")

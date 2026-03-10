@@ -1,5 +1,3 @@
-# Copyright (c) 2026 Beijing Volcano Engine Technology Co., Ltd.
-# Ported from OpenViking (https://github.com/volcengine/openviking)
 # SPDX-License-Identifier: Apache-2.0
 """
 CortexFS: OpenCortex file system abstraction layer.
@@ -23,7 +21,7 @@ from pathlib import PurePath
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 from opencortex.storage.local_agfs import LocalAGFS
-from opencortex.storage.vikingdb_interface import VikingDBInterface
+from opencortex.storage.storage_interface import StorageInterface
 from opencortex.utils.time_utils import format_simplified, get_current_timestamp, parse_iso_datetime
 from opencortex.utils.uri import CortexURI
 
@@ -67,7 +65,7 @@ def init_cortex_fs(
     data_root: str = "./data",
     query_embedder: Optional[Any] = None,
     rerank_config: Optional[Any] = None,
-    vector_store: Optional["VikingDBInterface"] = None,
+    vector_store: Optional["StorageInterface"] = None,
 ) -> "CortexFS":
     """Initialize CortexFS singleton.
 
@@ -87,19 +85,11 @@ def init_cortex_fs(
     return _instance
 
 
-# Backward-compatible aliases
-init_viking_fs = init_cortex_fs
-
-
 def get_cortex_fs() -> "CortexFS":
     """Get CortexFS singleton."""
     if _instance is None:
         raise RuntimeError("CortexFS not initialized. Call init_cortex_fs() first.")
     return _instance
-
-
-# Backward-compatible alias
-get_viking_fs = get_cortex_fs
 
 
 # ========== CortexFS Main Class ==========
@@ -118,7 +108,7 @@ class CortexFS:
         data_root: str = "./data",
         query_embedder: Optional[Any] = None,
         rerank_config: Optional[Any] = None,
-        vector_store: Optional["VikingDBInterface"] = None,
+        vector_store: Optional["StorageInterface"] = None,
     ):
         self.agfs = LocalAGFS(data_root=data_root)
         self.query_embedder = query_embedder
@@ -342,7 +332,7 @@ class CortexFS:
 
         return all_entries
 
-    # ========== VikingFS Specific Capabilities ==========
+    # ========== Vector Store Integration ==========
 
     async def abstract(
         self,
@@ -417,7 +407,7 @@ class CortexFS:
 
         storage = self._get_vector_store()
         if not storage:
-            raise RuntimeError("Vector store not initialized. Call init_viking_fs() first.")
+            raise RuntimeError("Vector store not initialized. Call init_cortex_fs() first.")
 
         embedder = self._get_embedder()
         if not embedder:
@@ -809,7 +799,7 @@ class CortexFS:
             except Exception as e:
                 logger.warning(f"[CortexFS] Failed to update {uri} in vector store: {e}")
 
-    def _get_vector_store(self) -> Optional["VikingDBInterface"]:
+    def _get_vector_store(self) -> Optional["StorageInterface"]:
         """Get vector store instance."""
         return self.vector_store
 
@@ -1145,6 +1135,3 @@ class CortexFS:
             logger.error(f"[CortexFS] Failed to write {uri}: {e}")
             raise IOError(f"Failed to write {uri}: {e}")
 
-
-# Backward-compatible alias
-VikingFS = CortexFS

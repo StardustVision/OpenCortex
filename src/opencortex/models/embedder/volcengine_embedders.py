@@ -3,7 +3,7 @@
 Volcengine Embedding implementations for OpenCortex.
 
 Supports doubao-embedding models via the Volcengine Ark SDK.
-Reads configuration from ~/.openviking/ov.conf or CortexConfig.
+Reads configuration from ~/.opencortex/ov.conf or CortexConfig.
 """
 
 import logging
@@ -167,10 +167,10 @@ class VolcengineDenseEmbedder(DenseEmbedderBase):
 def create_embedder_from_ov_conf(
     conf_path: Optional[str] = None,
 ) -> VolcengineDenseEmbedder:
-    """Create a VolcengineDenseEmbedder from ~/.openviking/ov.conf.
+    """Create a VolcengineDenseEmbedder from ~/.opencortex/ov.conf.
 
     Args:
-        conf_path: Path to ov.conf (default: ~/.openviking/ov.conf)
+        conf_path: Path to ov.conf (default: ~/.opencortex/ov.conf)
 
     Returns:
         Configured VolcengineDenseEmbedder

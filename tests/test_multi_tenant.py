@@ -30,7 +30,7 @@ from opencortex.http.request_context import (
 from opencortex.models.embedder.base import DenseEmbedderBase, EmbedResult
 from opencortex.orchestrator import MemoryOrchestrator
 from opencortex.retrieve.types import ContextType
-from opencortex.storage.vikingdb_interface import VikingDBInterface
+from opencortex.storage.storage_interface import StorageInterface
 
 
 # =============================================================================
@@ -66,7 +66,7 @@ class MockEmbedder(DenseEmbedderBase):
 # In-Memory Storage (same as test_e2e_phase1)
 # =============================================================================
 
-class InMemoryStorage(VikingDBInterface):
+class InMemoryStorage(StorageInterface):
     def __init__(self):
         self._collections: Dict[str, Dict[str, Any]] = {}
         self._records: Dict[str, Dict[str, Dict[str, Any]]] = {}
@@ -228,7 +228,7 @@ class InMemoryStorage(VikingDBInterface):
 
     def _ensure(self, collection):
         if collection not in self._collections:
-            from opencortex.storage.vikingdb_interface import CollectionNotFoundError
+            from opencortex.storage.storage_interface import CollectionNotFoundError
             raise CollectionNotFoundError(collection)
 
     @staticmethod

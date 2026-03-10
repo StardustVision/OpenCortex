@@ -1,5 +1,4 @@
 # src/opencortex/utils/id_generator.py
-# Ported from OpenViking (https://github.com/volcengine/openviking)
 # SPDX-License-Identifier: Apache-2.0
 """
 Distributed unique ID generator based on Twitter's Snowflake algorithm.

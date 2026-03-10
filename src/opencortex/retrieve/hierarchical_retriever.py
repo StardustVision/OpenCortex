@@ -1,5 +1,3 @@
-# Copyright (c) 2026 Beijing Volcano Engine Technology Co., Ltd.
-# Ported from OpenViking (https://github.com/volcengine/openviking)
 # SPDX-License-Identifier: Apache-2.0
 """
 Hierarchical retriever for OpenCortex.
@@ -26,7 +24,7 @@ from opencortex.retrieve.types import (
     RelatedContext,
     TypedQuery,
 )
-from opencortex.storage import VikingDBInterface
+from opencortex.storage import StorageInterface
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +62,7 @@ class HierarchicalRetriever:
 
     def __init__(
         self,
-        storage: VikingDBInterface,
+        storage: StorageInterface,
         embedder: Optional[Any],
         rerank_config: Optional[RerankConfig] = None,
         llm_completion: Optional[Any] = None,
@@ -77,7 +75,7 @@ class HierarchicalRetriever:
         """Initialize hierarchical retriever with rerank_config.
 
         Args:
-            storage: VikingDBInterface instance
+            storage: StorageInterface instance
             embedder: Embedder instance (supports dense/sparse/hybrid)
             rerank_config: Rerank configuration (optional, will fallback to vector search only)
             llm_completion: Async LLM callable for RerankClient LLM fallback
@@ -1016,15 +1014,15 @@ class HierarchicalRetriever:
                 L1: abstract + overview (from Qdrant payload, zero I/O)
                 L2: abstract + overview + content (filesystem read)
         """
-        viking_fs = _get_cortex_fs()
+        cortex_fs = _get_cortex_fs()
 
         async def _build_one(c: Dict[str, Any]) -> MatchedContext:
             # Fetch relations concurrently
             relations: list = []
-            if viking_fs:
-                related_uris = await viking_fs.get_relations(c.get("uri", ""))
+            if cortex_fs:
+                related_uris = await cortex_fs.get_relations(c.get("uri", ""))
                 if related_uris:
-                    related_abstracts = await viking_fs.read_batch(
+                    related_abstracts = await cortex_fs.read_batch(
                         related_uris[: self.MAX_RELATIONS], level="l0"
                     )
                     for uri in related_uris[: self.MAX_RELATIONS]:
@@ -1042,10 +1040,10 @@ class HierarchicalRetriever:
 
             # L2: content from filesystem (on-demand)
             content = None
-            if detail_level == DetailLevel.L2 and viking_fs:
+            if detail_level == DetailLevel.L2 and cortex_fs:
                 node_uri = c.get("uri", "")
                 try:
-                    raw = await viking_fs.read(node_uri + "/content.md")
+                    raw = await cortex_fs.read(node_uri + "/content.md")
                     content = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
                 except Exception:
                     pass

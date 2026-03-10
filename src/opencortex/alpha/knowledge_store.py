@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 class KnowledgeStore:
     def __init__(
         self,
-        storage,       # VikingDBInterface
+        storage,       # StorageInterface
         embedder,      # EmbedderBase
         cortex_fs,     # CortexFS
         collection_name: str = "knowledge",

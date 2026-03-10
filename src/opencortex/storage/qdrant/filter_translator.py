@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-VikingDB filter DSL → Qdrant Filter model translator.
+Filter DSL → Qdrant Filter model translator.
 
-Translates the VikingDB-style filter DSL used throughout OpenCortex into
+Translates the filter DSL used throughout OpenCortex into
 Qdrant's native Filter/FieldCondition models.
 
-Supported VikingDB operators:
+Supported operators:
     must, must_not, range, prefix, contains, and, or, is_null
 """
 
@@ -15,10 +15,10 @@ from qdrant_client import models
 
 
 def translate_filter(dsl: Dict[str, Any]) -> models.Filter:
-    """Translate a VikingDB filter DSL dict into a Qdrant Filter.
+    """Translate a Filter DSL dict into a Qdrant Filter.
 
     Args:
-        dsl: VikingDB-style filter dictionary with "op" key.
+        dsl: filter dictionary with "op" key.
 
     Returns:
         Qdrant Filter model.

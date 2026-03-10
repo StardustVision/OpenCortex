@@ -2,7 +2,7 @@
 """
 Semantic node naming for OpenCortex URIs.
 
-Ported from OpenViking's VikingURI.sanitize_segment pattern.
+Generates filesystem-safe semantic names from text.
 Produces deterministic, human-readable URI segments from arbitrary text.
 """
 import hashlib

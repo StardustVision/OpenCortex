@@ -1,10 +1,8 @@
-# Copyright (c) 2026 Beijing Volcano Engine Technology Co., Ltd.
-# Ported from OpenViking (https://github.com/volcengine/openviking)
 # SPDX-License-Identifier: Apache-2.0
 """
 OpenCortex: Memory and context management for AI agents.
 
-Ported and adapted from OpenViking with tenant-based multi-user isolation.
+Tenant-based multi-user memory and context management system.
 """
 
 __version__ = "0.3.3"

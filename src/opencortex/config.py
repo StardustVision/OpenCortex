@@ -64,7 +64,7 @@ class CortexAlphaConfig:
     user_auto_approve_confidence: float = 0.95
     # Cut-flow toggle: when True, session_end uses Alpha pipeline only
     # (skip legacy SessionManager) and skill_lookup proxies to knowledge_search
-    use_alpha_pipeline: bool = False
+    use_alpha_pipeline: bool = True
 
 
 @dataclass
@@ -106,8 +106,6 @@ class CortexConfig:
     # OpenCortex HTTP Server (FastAPI)
     http_server_host: str = "127.0.0.1"
     http_server_port: int = 8921
-    # ACE (Agentic Context Engine) self-learning
-    ace_enabled: bool = False
     # Cortex Alpha
     cortex_alpha: CortexAlphaConfig = field(default_factory=CortexAlphaConfig)
 
