@@ -266,17 +266,15 @@ class MemoryOrchestrator:
         Auto-create an embedder based on CortexConfig.
 
         Resolution order:
-        1. If ``embedding_provider == "volcengine"`` in config, create a
-           :class:`VolcengineDenseEmbedder` using config values.  The API key
-           is taken from ``config.embedding_api_key`` first, then from the
-           environment variable ``OPENCORTEX_EMBEDDING_API_KEY``.
-        2. If ``embedding_provider == "openai"`` in config, create an
+        1. If ``embedding_provider == "local"``, create a
+           :class:`LocalEmbedder` using FastEmbed ONNX inference (BGE-M3).
+        2. If ``embedding_provider == "volcengine"``, create a
+           :class:`VolcengineDenseEmbedder` using config values.
+        3. If ``embedding_provider == "openai"``, create an
            :class:`OpenAIDenseEmbedder` (works with any OpenAI-compatible API).
-        3. If no provider is configured (or the above attempts failed),
-           try loading from ``~/.opencortex/ov.conf`` via
-           :func:`create_embedder_from_ov_conf`.
-        4. If nothing works, log a warning and return ``None`` so that tests
-           that supply their own mock embedder are not affected.
+        4. If nothing works, log a warning and return ``None``.
+
+        All embedders are wrapped with :class:`CachedEmbedder` for LRU caching.
 
         Returns:
             An :class:`EmbedderBase` instance, or ``None`` if creation fails.
@@ -293,6 +291,9 @@ class MemoryOrchestrator:
                 provider,
             )
             return None
+
+        if provider == "local":
+            return self._create_local_embedder()
 
         if provider == "volcengine":
             try:
@@ -418,6 +419,70 @@ class MemoryOrchestrator:
             provider,
         )
         return None
+
+    def _create_local_embedder(self) -> Optional[EmbedderBase]:
+        """Create a local FastEmbed embedder with BM25 sparse + LRU cache."""
+        try:
+            from opencortex.models.embedder.local_embedder import LocalEmbedder
+
+            model_name = self._config.embedding_model or "BAAI/bge-m3"
+            embedder = LocalEmbedder(model_name=model_name)
+            if not embedder.is_available:
+                logger.warning(
+                    "[MemoryOrchestrator] LocalEmbedder failed to load '%s'. "
+                    "Install with: uv add fastembed",
+                    model_name,
+                )
+                return None
+
+            # Update dimension from detected model
+            detected_dim = embedder.get_dimension()
+            if detected_dim and detected_dim != self._config.embedding_dimension:
+                logger.info(
+                    "[MemoryOrchestrator] Updating embedding_dimension %d → %d "
+                    "from local model",
+                    self._config.embedding_dimension, detected_dim,
+                )
+                self._config.embedding_dimension = detected_dim
+
+            logger.info(
+                "[MemoryOrchestrator] Auto-created LocalEmbedder "
+                "(model=%s, dim=%d)",
+                model_name, detected_dim,
+            )
+
+            # Wrap with BM25 sparse for hybrid search
+            from opencortex.models.embedder.sparse import BM25SparseEmbedder
+            from opencortex.models.embedder.base import CompositeHybridEmbedder
+            hybrid = CompositeHybridEmbedder(embedder, BM25SparseEmbedder())
+
+            # Wrap with LRU cache
+            return self._wrap_with_cache(hybrid)
+
+        except ImportError as exc:
+            logger.warning(
+                "[MemoryOrchestrator] Cannot create local embedder — "
+                "fastembed not installed: %s",
+                exc,
+            )
+            return None
+        except Exception as exc:
+            logger.warning(
+                "[MemoryOrchestrator] Failed to create local embedder: %s",
+                exc,
+            )
+            return None
+
+    def _wrap_with_cache(self, embedder: EmbedderBase) -> EmbedderBase:
+        """Wrap an embedder with LRU cache."""
+        try:
+            from opencortex.models.embedder.cache import CachedEmbedder
+            cached = CachedEmbedder(embedder, max_size=10000, ttl_seconds=3600)
+            logger.info("[MemoryOrchestrator] Wrapped embedder with LRU cache (max=10000, ttl=3600s)")
+            return cached
+        except Exception as exc:
+            logger.warning("[MemoryOrchestrator] Failed to wrap with cache: %s", exc)
+            return embedder
 
     def _build_rerank_config(self) -> RerankConfig:
         """Build RerankConfig by merging explicit rerank_config with CortexConfig fields.

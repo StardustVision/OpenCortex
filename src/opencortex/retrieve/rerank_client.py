@@ -37,9 +37,12 @@ class RerankClient:
     ):
         self._config = config
         self._llm_completion = llm_completion
+        self._local_reranker = None
         self._mode = self._detect_mode()
         # Reusable HTTP client for connection pooling (lazy-created on first API call)
         self._http_client: Optional[Any] = None
+        # Initialize local reranker if mode is "local"
+        self._init_local_reranker()
         logger.info("[RerankClient] Initialized in '%s' mode", self._mode)
 
     @property
@@ -52,11 +55,38 @@ class RerankClient:
 
     def _detect_mode(self) -> str:
         """Detect rerank mode based on available configuration."""
+        if self._config.provider == "local":
+            return "local"
         if self._config.model and self._config.api_key:
             return "api"
         if self._config.use_llm_fallback and self._llm_completion:
             return "llm"
         return "disabled"
+
+    def _init_local_reranker(self) -> None:
+        """Initialize FastEmbed TextCrossEncoder for local reranking."""
+        if self._mode != "local":
+            return
+        try:
+            from fastembed.rerank.cross_encoder import TextCrossEncoder
+            model_name = self._config.model or "jinaai/jina-reranker-v2-base-multilingual"
+            self._local_reranker = TextCrossEncoder(model_name=model_name)
+            logger.info(
+                "[RerankClient] Loaded local reranker: %s", model_name,
+            )
+        except ImportError:
+            logger.warning(
+                "[RerankClient] fastembed not installed — "
+                "local rerank disabled. Install with: uv add fastembed"
+            )
+            self._mode = "disabled"
+            self._local_reranker = None
+        except Exception as exc:
+            logger.warning(
+                "[RerankClient] Failed to load local reranker: %s", exc,
+            )
+            self._mode = "disabled"
+            self._local_reranker = None
 
     async def rerank(self, query: str, documents: List[str]) -> List[float]:
         """Score each document against query, return scores in same order.
@@ -75,7 +105,9 @@ class RerankClient:
         max_k = self._config.max_candidates
         truncated = documents[:max_k]
 
-        if self._mode == "api":
+        if self._mode == "local":
+            scores = await self._rerank_via_local(query, truncated)
+        elif self._mode == "api":
             scores = await self._rerank_via_api(query, truncated)
         elif self._mode == "llm":
             scores = await self._rerank_via_llm(query, truncated)
@@ -87,6 +119,32 @@ class RerankClient:
             scores.extend([0.0] * (len(documents) - max_k))
 
         return scores
+
+    async def _rerank_via_local(self, query: str, documents: List[str]) -> List[float]:
+        """Score documents using local FastEmbed cross-encoder."""
+        if not self._local_reranker:
+            return [0.0] * len(documents)
+        try:
+            import asyncio
+            loop = asyncio.get_running_loop()
+            # TextCrossEncoder.rerank is sync — run in thread pool
+            results = await loop.run_in_executor(
+                None,
+                lambda: list(self._local_reranker.rerank(query, documents)),
+            )
+            # results is list of dicts with 'score' and 'index'
+            scores = [0.0] * len(documents)
+            for item in results:
+                idx = item.get("index", 0) if isinstance(item, dict) else 0
+                score = item.get("score", 0.0) if isinstance(item, dict) else float(item)
+                if 0 <= idx < len(scores):
+                    scores[idx] = max(0.0, min(1.0, float(score)))
+            return scores
+        except Exception as exc:
+            logger.warning("[RerankClient] Local rerank failed: %s", exc)
+            if self._llm_completion and self._config.use_llm_fallback:
+                return await self._rerank_via_llm(query, documents)
+            return [0.0] * len(documents)
 
     def _get_http_client(self):
         """Return a reusable httpx.AsyncClient (lazy-created)."""
