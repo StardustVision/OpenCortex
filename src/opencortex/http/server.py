@@ -40,6 +40,8 @@ from opencortex.http.models import (
     KnowledgeSearchRequest,
     KnowledgeApproveRequest,
     KnowledgeRejectRequest,
+    # Context Protocol
+    ContextRequest,
 )
 from opencortex.orchestrator import MemoryOrchestrator
 from opencortex.retrieve.intent_router import IntentRouter
@@ -316,6 +318,26 @@ def _register_routes(app: FastAPI) -> None:
     @app.get("/api/v1/archivist/status")
     async def archivist_status() -> Dict[str, Any]:
         return await _orchestrator.archivist_status()
+
+    # =====================================================================
+    # Context Protocol
+    # =====================================================================
+
+    @app.post("/api/v1/context")
+    async def context_handler(req: ContextRequest) -> Dict[str, Any]:
+        """Unified memory_context lifecycle: prepare / commit / end."""
+        from opencortex.http.request_context import get_effective_identity
+        tid, uid = get_effective_identity()
+        return await _orchestrator._context_manager.handle(
+            session_id=req.session_id,
+            phase=req.phase,
+            tenant_id=tid,
+            user_id=uid,
+            turn_id=req.turn_id,
+            messages=[m.model_dump() for m in req.messages] if req.messages else None,
+            cited_uris=req.cited_uris,
+            config=req.config.model_dump() if req.config else None,
+        )
 
     # =====================================================================
     # System Status

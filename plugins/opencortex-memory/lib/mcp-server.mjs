@@ -63,6 +63,20 @@ const TOOLS = {
       session_id:    { type: 'string', description: 'Session identifier', required: true },
       quality_score: { type: 'number', description: 'Session quality score', default: 0.5 },
     }],
+
+  // ── Context Protocol ──
+  memory_context: ['POST', '/api/v1/context',
+    'Unified lifecycle tool for memory recall and session recording. '
+    + 'Call with phase="prepare" before generating a response to get relevant context. '
+    + 'Call with phase="commit" after generating a response to record the conversation turn. '
+    + 'Call with phase="end" to close the session.', {
+      session_id: { type: 'string', description: 'Session identifier (alphanumeric, hyphens, underscores, 1-128 chars)', required: true },
+      phase:      { type: 'string', description: 'Lifecycle phase: prepare | commit | end', required: true },
+      turn_id:    { type: 'string', description: 'Unique turn identifier for idempotency (required for prepare and commit)' },
+      messages:   { type: 'array',  description: 'Messages for this turn. prepare: user message only. commit: full turn (user + assistant).' },
+      cited_uris: { type: 'array',  description: 'URIs of memory items referenced by Agent in response (commit only, for RL reward)' },
+      config:     { type: 'object', description: 'Per-call config: {max_items, detail_level, recall_mode}. Only meaningful in prepare phase.' },
+    }],
 };
 
 // ── Build JSON Schema for tools/list ───────────────────────────────────

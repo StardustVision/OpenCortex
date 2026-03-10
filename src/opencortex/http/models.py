@@ -146,3 +146,29 @@ class TraceSplitRequest(BaseModel):
 
 class TraceListRequest(BaseModel):
     session_id: str
+
+
+# =========================================================================
+# Context Protocol
+# =========================================================================
+
+class ContextMessage(BaseModel):
+    role: str
+    content: str
+
+
+class ContextConfig(BaseModel):
+    max_items: int = Field(default=5, ge=1, le=20)
+    detail_level: str = "l1"      # l0 | l1 | l2
+    recall_mode: str = "auto"     # auto | always | never
+
+
+class ContextRequest(BaseModel):
+    session_id: str = Field(..., pattern=r"^[a-zA-Z0-9_-]{1,128}$")
+    turn_id: Optional[str] = Field(
+        default=None, pattern=r"^[a-zA-Z0-9_-]{1,128}$",
+    )
+    phase: str                     # prepare | commit | end
+    messages: Optional[List[ContextMessage]] = None
+    cited_uris: Optional[List[str]] = None
+    config: Optional[ContextConfig] = None

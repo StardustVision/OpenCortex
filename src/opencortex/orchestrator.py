@@ -111,6 +111,7 @@ class MemoryOrchestrator:
         self._trace_splitter = None
         self._knowledge_store = None
         self._archivist = None
+        self._context_manager = None
 
     # =========================================================================
     # Initialization
@@ -271,6 +272,14 @@ class MemoryOrchestrator:
                 trigger_threshold=alpha_cfg.archivist_trigger_threshold,
                 trigger_mode=alpha_cfg.archivist_trigger_mode,
             )
+
+        # ContextManager — three-phase lifecycle for memory_context protocol
+        from opencortex.context import ContextManager
+        self._context_manager = ContextManager(
+            orchestrator=self,
+            observer=self._observer,
+        )
+        await self._context_manager.start()
 
         logger.info("[MemoryOrchestrator] Cortex Alpha initialized")
 
@@ -1955,6 +1964,8 @@ class MemoryOrchestrator:
 
     async def close(self) -> None:
         """Close storage and release resources."""
+        if self._context_manager:
+            await self._context_manager.close()
         if self._storage:
             await self._storage.close()
         self._initialized = False
