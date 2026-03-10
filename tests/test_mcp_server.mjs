@@ -156,11 +156,10 @@ describe('MCP Server (Node.js stdio proxy)', async () => {
         'memory_store', 'memory_batch_store', 'memory_search', 'memory_feedback', 'memory_decay',
         'system_status',
         'session_begin', 'session_message', 'session_end',
-        'skill_lookup', 'skill_feedback', 'skill_mine', 'skill_evolve',
       ]) {
         assert.ok(names.includes(expected), `Missing tool: ${expected}`);
       }
-      assert.equal(names.length, 13, 'Expected 13 tools');
+      assert.equal(names.length, 9, 'Expected 9 tools');
     } finally {
       client.close();
     }

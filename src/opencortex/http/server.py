@@ -20,10 +20,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from opencortex.config import get_config
 from opencortex.http.request_context import (
-    reset_request_ace_config,
     reset_request_identity,
     reset_request_project_id,
-    set_request_ace_config,
     set_request_identity,
     set_request_project_id,
 )
@@ -36,12 +34,7 @@ from opencortex.http.models import (
     PromoteToSharedRequest,
     SessionBeginRequest,
     SessionEndRequest,
-    SessionExtractTurnRequest,
     SessionMessageRequest,
-    SkillEvolveRequest,
-    SkillFeedbackRequest,
-    SkillLookupRequest,
-    SkillMineRequest,
     # Cortex Alpha
     SessionMessagesRequest,
     KnowledgeSearchRequest,
@@ -63,52 +56,27 @@ _orchestrator: Optional[MemoryOrchestrator] = None
 # ---------------------------------------------------------------------------
 
 class RequestContextMiddleware(BaseHTTPMiddleware):
-    """Extract per-request identity and client config from HTTP headers.
+    """Extract per-request identity from HTTP headers.
 
     Identity headers:
         X-Tenant-ID  — tenant identifier (default: "default")
         X-User-ID    — user identifier (default: "default")
         X-Project-ID — project identifier (default: "public")
-
-    ACE skill sharing headers:
-        X-Share-Skills-To-Team        — "true"/"false" (default: "false")
-        X-Skill-Share-Mode            — "manual"/"auto_safe"/"auto_aggressive"
-        X-Skill-Share-Score-Threshold — float (default: "0.85")
-        X-ACE-Scope-Enforcement       — "true"/"false" (default: "false")
     """
 
     async def dispatch(self, request: Request, call_next) -> Response:
-        # Identity
         tenant_id = request.headers.get("x-tenant-id", "default")
         user_id = request.headers.get("x-user-id", "default")
         id_tokens = set_request_identity(tenant_id, user_id)
 
-        # Project ID
         project_id = request.headers.get("x-project-id", "public")
         project_token = set_request_project_id(project_id)
-
-        # ACE config
-        ace_tokens = set_request_ace_config(
-            share_skills_to_team=request.headers.get(
-                "x-share-skills-to-team", "false"
-            ).lower() in ("1", "true", "yes"),
-            skill_share_mode=request.headers.get(
-                "x-skill-share-mode", "manual"
-            ),
-            skill_share_score_threshold=float(request.headers.get(
-                "x-skill-share-score-threshold", "0.85"
-            )),
-            ace_scope_enforcement=request.headers.get(
-                "x-ace-scope-enforcement", "false"
-            ).lower() in ("1", "true", "yes"),
-        )
 
         try:
             return await call_next(request)
         finally:
             reset_request_identity(id_tokens)
             reset_request_project_id(project_token)
-            reset_request_ace_config(ace_tokens)
 
 
 # ---------------------------------------------------------------------------
@@ -283,38 +251,6 @@ def _register_routes(app: FastAPI) -> None:
         }
 
     # =====================================================================
-    # Skill Evolution
-    # =====================================================================
-
-    @app.post("/api/v1/skill/lookup")
-    async def skill_lookup(req: SkillLookupRequest) -> Dict[str, Any]:
-        return {"skills": await _orchestrator.skill_lookup(
-            objective=req.objective, section=req.section, limit=req.limit,
-        )}
-
-    @app.post("/api/v1/skill/feedback")
-    async def skill_feedback(req: SkillFeedbackRequest) -> Dict[str, Any]:
-        return await _orchestrator.skill_feedback(
-            uri=req.uri, session_id=req.session_id,
-            turn_uuid=req.turn_uuid, success=req.success, score=req.score,
-        )
-
-    @app.post("/api/v1/skill/mine")
-    async def skill_mine(req: SkillMineRequest) -> Dict[str, Any]:
-        return await _orchestrator.mine_skills(
-            section=req.section, min_cases=req.min_cases,
-            max_cases=req.max_cases, max_clusters=req.max_clusters,
-            llm_budget=req.llm_budget,
-        )
-
-    @app.post("/api/v1/skill/evolve")
-    async def skill_evolve(req: SkillEvolveRequest) -> Dict[str, Any]:
-        return await _orchestrator.evolve_skill(
-            uri=req.uri, confidence_threshold=req.confidence_threshold,
-            observation_turns=req.observation_turns,
-        )
-
-    # =====================================================================
     # Session
     # =====================================================================
 
@@ -333,13 +269,6 @@ def _register_routes(app: FastAPI) -> None:
     @app.post("/api/v1/session/end")
     async def session_end(req: SessionEndRequest) -> Dict[str, Any]:
         return await _orchestrator.session_end(
-            session_id=req.session_id,
-            quality_score=req.quality_score,
-        )
-
-    @app.post("/api/v1/session/extract_turn")
-    async def session_extract_turn(req: SessionExtractTurnRequest) -> Dict[str, Any]:
-        return await _orchestrator.session_extract_turn(
             session_id=req.session_id,
             quality_score=req.quality_score,
         )

@@ -103,7 +103,6 @@ class MemoryOrchestrator:
         self._retriever: Optional[HierarchicalRetriever] = None
         self._analyzer: Optional[IntentAnalyzer] = None
         self._user: Optional[UserIdentifier] = None
-        self._session_manager = None
         self._initialized = False
 
         # Cortex Alpha components (initialized in init() if enabled)
@@ -204,10 +203,7 @@ class MemoryOrchestrator:
         except Exception as exc:
             logger.warning("[Orchestrator] Migration skipped: %s", exc)
 
-        # 8. Session manager for context self-iteration
-        self._session_manager = self._create_session_manager()
-
-        # 9. Cortex Alpha components
+        # 8. Cortex Alpha components
         await self._init_alpha()
 
         self._initialized = True
@@ -1489,141 +1485,17 @@ class MemoryOrchestrator:
             return {**health, **st, "issues": issues}
 
     # =========================================================================
-    # Skill Evolution
+    # Session Management (Observer + Trace Pipeline)
     # =========================================================================
-
-    async def skill_lookup(self, objective: str, section: str = "", limit: int = 5) -> List[Dict]:
-        """Search for relevant knowledge by objective.
-
-        Proxies to KnowledgeStore with type filtering based on section.
-        """
-        self._ensure_init()
-        if not self._knowledge_store:
-            return []
-        tid, uid = get_effective_identity()
-        types = ["sop", "negative_rule", "root_cause"]
-        if section == "error_fixes":
-            types = ["root_cause"]
-        elif section == "patterns":
-            types = ["belief"]
-        return await self._knowledge_store.search(
-            objective, tid, uid, types=types, limit=limit,
-        )
-
-    async def skill_feedback(
-        self, uri: str, session_id: str = "", turn_uuid: str = "",
-        success: bool = True, score: float = 1.0,
-    ) -> Dict:
-        """Provide usage feedback for a knowledge item.
-
-        Updates confidence by adjusting it toward 1.0 (success) or 0.0 (failure).
-        """
-        self._ensure_init()
-        if not self._knowledge_store:
-            return {"error": "knowledge store not available", "uri": uri}
-
-        knowledge_id = uri.rsplit("/", 1)[-1]
-        record = await self._knowledge_store.get(knowledge_id)
-        if not record:
-            return {"error": "knowledge not found", "uri": uri}
-
-        old_confidence = record.get("confidence", 0.5)
-        # Exponential moving average toward target
-        target = 1.0 if success else 0.0
-        alpha = 0.2
-        new_confidence = round(old_confidence + alpha * (target - old_confidence), 4)
-
-        from opencortex.utils.time_utils import get_current_timestamp
-        now = get_current_timestamp()
-        await self._storage.update(
-            self._knowledge_store._collection, knowledge_id,
-            {"confidence": new_confidence, "updated_at": now},
-        )
-
-        return {
-            "status": "updated", "uri": uri,
-            "confidence": new_confidence,
-            "previous_confidence": old_confidence,
-        }
-
-    async def mine_skills(
-        self, section: str = "", min_cases: int = 5,
-        max_cases: int = 200, max_clusters: int = 10, llm_budget: int = 5,
-    ) -> Dict:
-        """Mine knowledge from traces via Archivist pipeline.
-
-        Legacy ACE skill mining has been replaced by the Cortex Alpha
-        Archivist → Sandbox → KnowledgeStore pipeline. This endpoint
-        triggers the Archivist if available.
-        """
-        self._ensure_init()
-        if not self._archivist:
-            return {"error": "archivist not available", "mined": 0}
-        result = await self._archivist.run()
-        return {"mined": result.get("promoted", 0), **result}
-
-    async def evolve_skill(
-        self, uri: str, confidence_threshold: float = 0.3, observation_turns: int = 10,
-    ) -> Dict:
-        """Deprecate low-confidence knowledge.
-
-        In Cortex Alpha, evolution is handled by the Sandbox quality gate.
-        This endpoint simply deprecates knowledge below the threshold.
-        """
-        self._ensure_init()
-        if not self._knowledge_store:
-            return {"error": "knowledge store not available", "uri": uri}
-
-        knowledge_id = uri.rsplit("/", 1)[-1]
-        record = await self._knowledge_store.get(knowledge_id)
-        if not record:
-            return {"error": "knowledge not found", "uri": uri}
-
-        confidence = record.get("confidence", 0.5)
-        if confidence >= confidence_threshold:
-            return {"status": "no_evolution_needed", "uri": uri, "confidence": confidence}
-
-        await self._knowledge_store.deprecate(knowledge_id)
-        return {"status": "deprecated", "uri": uri, "confidence": confidence}
-
-    # =========================================================================
-    # Session Management (Context Self-Iteration)
-    # =========================================================================
-
-    def _create_session_manager(self):
-        """Create a SessionManager wired to the orchestrator's storage pipeline."""
-        from opencortex.session.manager import SessionManager
-
-        async def _store_fn(abstract: str, content: str = "", category: str = "", context_type: str = "memory", meta: dict = None):
-            await self.add(abstract=abstract, content=content, category=category, context_type=context_type, meta=meta)
-
-        async def _search_fn(query: str):
-            result = await self.search(query=query, limit=3, score_threshold=0.5)
-            items = []
-            for m in result:
-                items.append({"uri": m.uri, "score": m.score, "content": m.abstract})
-            return items
-
-        async def _update_fn(uri: str, abstract: str, content: str):
-            await self.update(uri=uri, abstract=abstract, content=content)
-
-        async def _feedback_fn(uri: str, reward: float):
-            await self.feedback(uri=uri, reward=reward)
-
-        return SessionManager(
-            llm_completion=self._llm_completion,
-            store_fn=_store_fn,
-            search_fn=_search_fn,
-            update_fn=_update_fn,
-            feedback_fn=_feedback_fn,
-        )
 
     async def session_begin(
         self,
         session_id: str,
         meta: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Begin a new session for context self-iteration.
+        """Begin a new session.
+
+        Starts Observer recording for the session.
 
         Args:
             session_id: Unique session identifier.
@@ -1634,13 +1506,6 @@ class MemoryOrchestrator:
         """
         self._ensure_init()
         tid, uid = get_effective_identity()
-        ctx = await self._session_manager.begin(
-            session_id=session_id,
-            tenant_id=tid,
-            user_id=uid,
-            meta=meta,
-        )
-        # Cortex Alpha dual-write: Observer
         if self._observer:
             self._observer.begin_session(
                 session_id=session_id,
@@ -1648,9 +1513,10 @@ class MemoryOrchestrator:
                 user_id=uid,
                 meta=meta,
             )
+        from opencortex.utils.time_utils import get_current_timestamp
         return {
-            "session_id": ctx.session_id,
-            "started_at": ctx.started_at,
+            "session_id": session_id,
+            "started_at": get_current_timestamp(),
             "status": "active",
         }
 
@@ -1663,6 +1529,8 @@ class MemoryOrchestrator:
     ) -> Dict[str, Any]:
         """Add a message to an active session.
 
+        Records the message via Observer for later trace splitting.
+
         Args:
             session_id: Session identifier.
             role: Message role.
@@ -1673,9 +1541,8 @@ class MemoryOrchestrator:
             Dict with message count.
         """
         self._ensure_init()
-        ok = await self._session_manager.add_message(session_id, role, content, meta)
-        # Cortex Alpha dual-write: Observer
         tid, uid = get_effective_identity()
+        message_count = 0
         if self._observer:
             self._observer.record_message(
                 session_id=session_id,
@@ -1685,10 +1552,10 @@ class MemoryOrchestrator:
                 user_id=uid,
                 meta=meta,
             )
-        ctx = self._session_manager.get_session(session_id)
+            message_count = len(self._observer.get_transcript(session_id))
         return {
-            "added": ok,
-            "message_count": len(ctx.messages) if ctx else 0,
+            "added": True,
+            "message_count": message_count,
         }
 
     async def session_end(
@@ -1696,27 +1563,21 @@ class MemoryOrchestrator:
         session_id: str,
         quality_score: float = 0.5,
     ) -> Dict[str, Any]:
-        """End a session and trigger memory extraction.
+        """End a session and trigger trace splitting.
 
-        Performs LLM-driven memory analysis, deduplication, and storage.
-        Also triggers Cortex Alpha trace splitting (dual-write).
+        Flushes Observer transcript, splits into traces via TraceSplitter,
+        and persists traces via TraceStore. May trigger Archivist for
+        knowledge extraction.
 
         Args:
             session_id: Session to end.
             quality_score: Session quality (0-1).
 
         Returns:
-            Dict with extraction results.
+            Dict with trace results.
         """
         self._ensure_init()
-        use_alpha = self._config.cortex_alpha.use_alpha_pipeline
 
-        # Legacy path: SessionManager extraction (skipped in alpha-only mode)
-        result = None
-        if not use_alpha:
-            result = await self._session_manager.end(session_id, quality_score)
-
-        # Alpha path: flush Observer + split traces
         alpha_traces_count = 0
         if self._observer:
             tid, uid = get_effective_identity()
@@ -1745,24 +1606,9 @@ class MemoryOrchestrator:
                 except Exception as exc:
                     logger.warning("[Alpha] Trace splitting failed: %s", exc)
 
-        if result:
-            return {
-                "session_id": result.session_id,
-                "stored_count": result.stored_count,
-                "merged_count": result.merged_count,
-                "skipped_count": result.skipped_count,
-                "quality_score": result.quality_score,
-                "total_extracted": len(result.memories),
-                "alpha_traces": alpha_traces_count,
-            }
-        # Alpha-only mode response
         return {
             "session_id": session_id,
-            "stored_count": 0,
-            "merged_count": 0,
-            "skipped_count": 0,
             "quality_score": quality_score,
-            "total_extracted": 0,
             "alpha_traces": alpha_traces_count,
         }
 
@@ -1846,29 +1692,6 @@ class MemoryOrchestrator:
         if not self._archivist:
             return {"enabled": False}
         return {"enabled": True, **self._archivist.status}
-
-    async def session_extract_turn(
-        self,
-        session_id: str,
-        quality_score: float = 0.5,
-    ) -> Dict[str, Any]:
-        """Extract memories from the latest turn without ending the session."""
-        self._ensure_init()
-        if not self._session_manager:
-            return {"status": "error", "error": "Session manager not initialized"}
-
-        result = await self._session_manager.extract_turn(
-            session_id=session_id,
-            quality_score=quality_score,
-        )
-        return {
-            "status": "ok",
-            "session_id": session_id,
-            "stored": result.stored_count,
-            "merged": result.merged_count,
-            "skipped": result.skipped_count,
-            "total_extracted": len(result.memories),
-        }
 
     # =========================================================================
     # Batch Import

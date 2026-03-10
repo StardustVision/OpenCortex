@@ -37,20 +37,11 @@ class OpenCortexClient:
         timeout: float = _DEFAULT_TIMEOUT,
         tenant_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        # ACE skill sharing config
-        share_skills_to_team: bool = False,
-        skill_share_mode: str = "manual",
-        skill_share_score_threshold: float = 0.85,
-        ace_scope_enforcement: bool = False,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._tenant_id = tenant_id
         self._user_id = user_id
-        self._share_skills_to_team = share_skills_to_team
-        self._skill_share_mode = skill_share_mode
-        self._skill_share_score_threshold = skill_share_score_threshold
-        self._ace_scope_enforcement = ace_scope_enforcement
         self._client: Optional[httpx.AsyncClient] = None
 
     async def connect(self) -> None:
@@ -81,21 +72,12 @@ class OpenCortexClient:
         return await self._request("GET", path, params=params)
 
     def _build_headers(self) -> Dict[str, str]:
-        """Build per-request HTTP headers for identity and client config."""
+        """Build per-request HTTP headers for identity."""
         hdrs: Dict[str, str] = {}
         if self._tenant_id:
             hdrs["X-Tenant-ID"] = self._tenant_id
         if self._user_id:
             hdrs["X-User-ID"] = self._user_id
-        # ACE skill sharing
-        if self._share_skills_to_team:
-            hdrs["X-Share-Skills-To-Team"] = "true"
-        if self._skill_share_mode != "manual":
-            hdrs["X-Skill-Share-Mode"] = self._skill_share_mode
-        if self._skill_share_score_threshold != 0.85:
-            hdrs["X-Skill-Share-Score-Threshold"] = str(self._skill_share_score_threshold)
-        if self._ace_scope_enforcement:
-            hdrs["X-ACE-Scope-Enforcement"] = "true"
         return hdrs
 
     async def _request(
@@ -225,7 +207,7 @@ class OpenCortexClient:
         return await self._get("/api/v1/memory/health")
 
     # =====================================================================
-    # Intent / Session / Skill
+    # Intent / Session
     # =====================================================================
 
     async def intent_should_recall(self, query: str) -> Dict[str, Any]:
@@ -242,62 +224,6 @@ class OpenCortexClient:
     async def session_end(self, session_id: str, quality_score: float = 0.5) -> Dict[str, Any]:
         return await self._post("/api/v1/session/end", {
             "session_id": session_id, "quality_score": quality_score,
-        })
-
-    async def session_extract_turn(
-        self, session_id: str, quality_score: float = 0.5,
-    ) -> Dict[str, Any]:
-        return await self._post("/api/v1/session/extract_turn", {
-            "session_id": session_id, "quality_score": quality_score,
-        })
-
-    async def skill_lookup(self, objective: str, section: str = "", limit: int = 5) -> Dict[str, Any]:
-        return await self._post("/api/v1/skill/lookup", {
-            "objective": objective, "section": section, "limit": limit,
-        })
-
-    async def skill_feedback(
-        self,
-        uri: str,
-        session_id: str = "",
-        turn_uuid: str = "",
-        success: bool = True,
-        score: float = 1.0,
-    ) -> Dict[str, Any]:
-        return await self._post("/api/v1/skill/feedback", {
-            "uri": uri,
-            "session_id": session_id,
-            "turn_uuid": turn_uuid,
-            "success": success,
-            "score": score,
-        })
-
-    async def skill_mine(
-        self,
-        section: str = "",
-        min_cases: int = 5,
-        max_cases: int = 200,
-        max_clusters: int = 10,
-        llm_budget: int = 5,
-    ) -> Dict[str, Any]:
-        return await self._post("/api/v1/skill/mine", {
-            "section": section,
-            "min_cases": min_cases,
-            "max_cases": max_cases,
-            "max_clusters": max_clusters,
-            "llm_budget": llm_budget,
-        })
-
-    async def skill_evolve(
-        self,
-        uri: str,
-        confidence_threshold: float = 0.3,
-        observation_turns: int = 10,
-    ) -> Dict[str, Any]:
-        return await self._post("/api/v1/skill/evolve", {
-            "uri": uri,
-            "confidence_threshold": confidence_threshold,
-            "observation_turns": observation_turns,
         })
 
     async def system_status(self, status_type: str = "doctor") -> Dict[str, Any]:

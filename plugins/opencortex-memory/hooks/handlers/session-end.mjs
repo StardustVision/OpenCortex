@@ -7,16 +7,16 @@ export default async function sessionEnd(ctx) {
 
   let extractionMsg = '';
 
-  // Trigger full session extraction via SessionManager
+  // End session and trigger trace splitting + knowledge extraction
   if (state.active && state.session_id) {
     try {
       const result = await httpPost(`${state.http_url}/api/v1/session/end`, {
         session_id: state.session_id,
         quality_score: 0.5,
-      }, 30000);  // LLM analysis needs time
+      }, 30000);  // Trace splitting + archivist needs time
 
-      if (result && (result.stored_count > 0 || result.merged_count > 0)) {
-        extractionMsg = ` extraction: stored=${result.stored_count} merged=${result.merged_count} skipped=${result.skipped_count}`;
+      if (result && result.alpha_traces > 0) {
+        extractionMsg = ` traces=${result.alpha_traces}`;
       }
     } catch {
       // best-effort

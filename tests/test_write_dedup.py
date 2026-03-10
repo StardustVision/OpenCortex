@@ -533,49 +533,6 @@ class TestWriteDedup(unittest.TestCase):
         self.assertEqual(ctx1.meta.get("dedup_action"), "created")
         self.assertEqual(ctx2.meta.get("dedup_action"), "created")
 
-    # -----------------------------------------------------------------
-    # 10. SessionManager dedup via store_fn
-    # -----------------------------------------------------------------
-
-    def test_session_manager_dedup_via_store_fn(self):
-        """SessionManager should report merged/skipped via add(dedup=True)."""
-        from opencortex.session.manager import SessionManager
-        from opencortex.session.types import ExtractedMemory
-
-        orch = self._make_orch()
-
-        async def mock_llm(prompt: str) -> str:
-            return "[]"
-
-        # Wire store_fn to orchestrator.add
-        async def store_fn(**kwargs):
-            return await orch.add(**kwargs)
-
-        mgr = SessionManager(
-            llm_completion=mock_llm,
-            store_fn=store_fn,
-        )
-
-        async def run():
-            # Pre-populate a memory (no content → no enrichment)
-            await orch.add(
-                abstract="User likes Python programming language",
-                category="preferences",
-            )
-
-            # Manually call _store_memory with same abstract → dedup merge
-            mem = ExtractedMemory(
-                abstract="User likes Python programming language",
-                category="preferences",
-                context_type="memory",
-                confidence=0.9,
-            )
-            action = await mgr._store_memory(mem)
-            return action
-
-        action = self._run(run())
-        self.assertEqual(action, "merged")
-
 
 if __name__ == "__main__":
     unittest.main()

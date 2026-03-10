@@ -149,70 +149,7 @@ def build_router_prompt(query: str, context_type: Optional[str] = None) -> str:
 
 
 # =========================================================================
-# 3. Memory Extraction  (was: session/extractor.py)
-# =========================================================================
-
-def build_extraction_prompt(
-    conversation: str,
-    quality_score: float,
-    session_summary: str = "",
-) -> str:
-    """Build the LLM prompt for session memory extraction.
-
-    Args:
-        conversation: Pre-formatted conversation text (e.g. "[ROLE] content" lines).
-        quality_score: Session quality score (0-1).
-        session_summary: Optional session summary text.
-    """
-    summary_section = f"\nSession Summary: {session_summary}\n" if session_summary else ""
-    return f"""You are a memory extraction system. Analyze the following conversation and extract persistent memories that should be saved for future sessions.
-
-{summary_section}
-Session Quality Score: {quality_score:.1f}/1.0
-
-Conversation:
-{conversation}
-
-Extract memories in these categories:
-
-User memories (private to this user):
-- **profile**: User identity, roles, background attributes
-- **preferences**: User preferences, settings, workflow habits
-- **entities**: Important entities — people, projects, paths, URLs, configurations
-- **events**: Decisions, milestones, key events (each unique, never merge)
-
-Agent knowledge (shared at project level):
-- **cases**: Problem + solution pairs (each unique, never merge)
-- **patterns**: Reusable patterns, best practices, recurring solutions
-
-For each memory, provide:
-- abstract: Short summary (1-2 sentences, used for vector search)
-- content: Full details
-- category: One of: profile, preferences, entities, events, cases, patterns
-- context_type: "memory" for user categories (profile/preferences/entities/events), "case" for cases, "pattern" for patterns
-- confidence: 0.0 to 1.0 (how confident this is a persistent, reusable memory)
-
-**For case-type memories ONLY** (context_type="case"), also include a "meta" object:
-- schema_version: 1 (integer, always 1)
-- task_objective: What the user was trying to accomplish (string)
-- action_path: Ordered list of key steps taken (array of strings)
-- result: What actually happened (string)
-- evaluation: {{"status": "success"|"partial"|"failure", "score": 0.0-1.0}}
-- error_cause: What went wrong (empty string if success)
-- improvement: What could be done better next time (string)
-
-Return ONLY a JSON array. Example:
-[
-  {{"abstract": "User prefers dark theme", "content": "User explicitly set dark theme in VS Code and terminal", "category": "preferences", "context_type": "memory", "confidence": 0.9}},
-  {{"abstract": "Fix import error by checking PYTHONPATH", "content": "When imports fail, check PYTHONPATH includes src/", "category": "cases", "context_type": "case", "confidence": 0.7, "meta": {{"schema_version": 1, "task_objective": "Fix Python import error", "action_path": ["Check PYTHONPATH", "Add src/ to path", "Verify import"], "result": "Import resolved after adding src/ to PYTHONPATH", "evaluation": {{"status": "success", "score": 0.9}}, "error_cause": "", "improvement": "Add src/ to PYTHONPATH in project setup"}}}}
-]
-
-If no meaningful memories can be extracted, return an empty array: []
-Memories:"""
-
-
-# =========================================================================
-# 4. Document Summarization  (was: orchestrator.py)
+# 3. Document Summarization  (was: orchestrator.py)
 # =========================================================================
 
 def build_doc_summarization_prompt(file_path: str, content: str) -> str:

@@ -62,9 +62,6 @@ class CortexAlphaConfig:
     trace_collection_name: str = "traces"
     # User scope auto-approval
     user_auto_approve_confidence: float = 0.95
-    # Cut-flow toggle: when True, session_end uses Alpha pipeline only
-    # (skip legacy SessionManager) and skill_lookup proxies to knowledge_search
-    use_alpha_pipeline: bool = True
 
 
 @dataclass

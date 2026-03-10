@@ -49,53 +49,19 @@ const TOOLS = {
 
   // ── Session ──
   session_begin: ['POST', '/api/v1/session/begin',
-    'Begin a new session for context self-iteration. The session will buffer messages and extract persistent memories on end.', {
+    'Begin a new session. Starts Observer recording for trace splitting on session end.', {
       session_id: { type: 'string', description: 'Unique session identifier', required: true },
     }],
   session_message: ['POST', '/api/v1/session/message',
-    'Add a message to an active session. Messages are buffered for memory extraction when the session ends.', {
+    'Add a message to an active session. Messages are recorded by the Observer for later trace splitting.', {
       session_id: { type: 'string', description: 'Session identifier', required: true },
       role:       { type: 'string', description: 'Message role (user/assistant)', required: true },
       content:    { type: 'string', description: 'Message content', required: true },
     }],
   session_end: ['POST', '/api/v1/session/end',
-    'End a session and trigger memory extraction. The system will analyze the conversation and automatically extract persistent memories (preferences, patterns, skills, errors).', {
+    'End a session and trigger trace splitting. The system splits the conversation into task traces and extracts reusable knowledge via the Archivist pipeline.', {
       session_id:    { type: 'string', description: 'Session identifier', required: true },
       quality_score: { type: 'number', description: 'Session quality score', default: 0.5 },
-    }],
-
-  // ── Skill Evolution ──
-  skill_lookup: ['POST', '/api/v1/skill/lookup',
-    'Search for relevant learned skills by objective. Returns ranked skills with confidence scores and action templates.',
-    {
-      objective:  { type: 'string',  description: 'What you are trying to accomplish', required: true },
-      section:    { type: 'string',  description: 'Filter by section (e.g. "strategies", "error_fixes")', default: '' },
-      limit:      { type: 'integer', description: 'Max results to return', default: 5 },
-    }],
-  skill_feedback: ['POST', '/api/v1/skill/feedback',
-    'Provide feedback on skill usage. Reports success/failure to update confidence scores via reinforcement learning.',
-    {
-      uri:        { type: 'string',  description: 'URI of the skill to provide feedback on', required: true },
-      session_id: { type: 'string',  description: 'Current session ID', default: '' },
-      turn_uuid:  { type: 'string',  description: 'Current turn UUID', default: '' },
-      success:    { type: 'boolean', description: 'Whether the skill was used successfully', default: true },
-      score:      { type: 'number',  description: 'Quality score (0.0-1.0)', default: 1.0 },
-    }],
-  skill_mine: ['POST', '/api/v1/skill/mine',
-    'Mine reusable skills from successful case memories. Clusters similar cases and extracts skill templates using LLM.',
-    {
-      section:      { type: 'string',  description: 'Filter cases by section', default: '' },
-      min_cases:    { type: 'integer', description: 'Minimum cases needed per cluster', default: 5 },
-      max_cases:    { type: 'integer', description: 'Maximum cases to scan', default: 200 },
-      max_clusters: { type: 'integer', description: 'Maximum skills to produce', default: 10 },
-      llm_budget:   { type: 'integer', description: 'Maximum LLM calls allowed', default: 5 },
-    }],
-  skill_evolve: ['POST', '/api/v1/skill/evolve',
-    'Trigger skill evolution. If confidence is below threshold, mines for a replacement and starts dual-track observation.',
-    {
-      uri:                   { type: 'string',  description: 'URI of the skill to evolve', required: true },
-      confidence_threshold:  { type: 'number',  description: 'Confidence threshold to trigger evolution', default: 0.3 },
-      observation_turns:     { type: 'integer', description: 'Number of uses before resolving observation', default: 10 },
     }],
 };
 

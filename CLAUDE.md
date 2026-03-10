@@ -2,17 +2,21 @@
 
 ## Overview
 
-OpenCortex is a memory and context management system for AI agents. It provides persistent, searchable, self-improving memory through three-layer summaries, reinforcement learning ranking, and self-learning skill extraction.
+OpenCortex is a memory and context management system for AI agents. It provides persistent, searchable, self-improving memory through three-layer summaries, reinforcement learning ranking, and trace-based knowledge extraction.
 
 Core subsystems:
-- **MemoryOrchestrator** — unified API layer (~1500 lines) wiring all components
+- **MemoryOrchestrator** — unified API layer wiring all components
 - **CortexFS** — three-layer filesystem (L0 abstract / L1 overview / L2 content)
 - **HierarchicalRetriever** — frontier-batching wave search with RL score fusion
 - **IntentRouter** — 3-layer query analysis (keywords → LLM → memory triggers)
-- **Skillbook + RuleExtractor** — skill extraction and evolution (direct on orchestrator)
-- **SessionManager** — session lifecycle with LLM memory extraction
+- **Observer** — real-time session transcript recording
+- **TraceSplitter** — LLM-driven conversation → task trace decomposition
+- **TraceStore** — persistent trace storage (Qdrant + CortexFS)
+- **Archivist** — knowledge extraction from traces
+- **Sandbox** — quality gate for knowledge candidates (stat + LLM verification)
+- **KnowledgeStore** — approved knowledge persistence and search
 - **QdrantStorageAdapter** — embedded Qdrant with RL fields (reward, decay, protect)
-- **RequestContextMiddleware** — per-request identity + ACE config via HTTP headers
+- **RequestContextMiddleware** — per-request identity via HTTP headers
 
 ## Tech Stack
 
@@ -21,7 +25,7 @@ Core subsystems:
 - Vector store: Qdrant (embedded local mode, no separate process)
 - Embedding: Volcengine doubao-embedding-vision (1024 dim) / OpenAI-compatible
 - HTTP: FastAPI + uvicorn + httpx
-- MCP: Node.js stdio proxy (13 tools → HTTP API)
+- MCP: Node.js stdio proxy (9 tools → HTTP API)
 - Tests: unittest (140+ Python) + node:test (8 Node.js MCP)
 
 ## Directory Structure
@@ -50,14 +54,14 @@ src/opencortex/
     intent_analyzer.py           # LLM intent analysis → QueryPlan
     rerank_client.py             # RerankClient (API / LLM / disabled)
     types.py                     # TypedQuery / SearchIntent / FindResult / DetailLevel
-  ace/
-    skillbook.py                 # Skillbook CRUD + vector search + CortexFS persistence
-    rule_extractor.py            # RuleExtractor — zero-LLM skill extraction
-    types.py                     # Skill / Learning / UpdateOperation
-  session/
-    manager.py                   # SessionManager (begin/message/end)
-    extractor.py                 # MemoryExtractor (LLM-driven)
-    types.py                     # SessionContext / ExtractedMemory
+  alpha/
+    observer.py                  # Observer — real-time transcript recording
+    trace_splitter.py            # TraceSplitter — conversation → task traces
+    trace_store.py               # TraceStore — persistent trace storage
+    archivist.py                 # Archivist — knowledge extraction from traces
+    sandbox.py                   # Sandbox — quality gate for knowledge candidates
+    knowledge_store.py           # KnowledgeStore — approved knowledge persistence
+    types.py                     # Trace / KnowledgeItem / KnowledgeScope enums
   models/embedder/               # EmbedderBase / Dense / Sparse / Hybrid abstractions
   utils/
     uri.py                       # CortexURI tenant-isolated URI scheme
@@ -68,29 +72,25 @@ plugins/opencortex-memory/       # Claude Code plugin (pure Node.js)
   lib/common.mjs                 # Config discovery, state, uv/python detection
   lib/http-client.mjs            # Native fetch wrapper + buildClientHeaders()
   lib/transcript.mjs             # JSONL parsing
-  lib/mcp-server.mjs             # MCP stdio server (13 tools)
+  lib/mcp-server.mjs             # MCP stdio server (9 tools)
   bin/oc-cli.mjs                 # CLI tool
 
 tests/
   test_e2e_phase1.py             # 24 E2E tests
-  test_skill_evolution.py        # 51 skill evolution tests (unit + data flow)
-  test_case_memory.py            # 8 case memory tests
   test_mcp_server.mjs            # 8 MCP tests (Node.js)
-  test_ace_phase1.py             # 15 ACE tests (Skillbook + CortexFS)
-  test_rule_extractor.py         # 20 rule extraction tests
-  test_skill_search_fusion.py    # 11 skill fusion search tests
-  test_integration_skill_pipeline.py  # 10 Qdrant integration tests
+  test_write_dedup.py            # Write dedup tests
+  test_migration_skillbook.py    # Skillbook → Knowledge migration tests
+  test_alpha_*.py                # Cortex Alpha component tests
 ```
 
 ## Development Conventions
 
 - All storage operations go through `VikingDBInterface` — every method is `async`
 - URI format: `opencortex://{team}/user/{uid}/{type}/{category}/{node_id}`
-- **Client-side config via HTTP headers**: identity and ACE skill sharing settings are NOT in server-side `CortexConfig`. They are sent per-request by the client (MCP plugin reads from `mcp.json`). `RequestContextMiddleware` parses headers → contextvars.
+- **Client-side config via HTTP headers**: identity settings are NOT in server-side `CortexConfig`. They are sent per-request by the client (MCP plugin reads from `mcp.json`). `RequestContextMiddleware` parses headers → contextvars.
   - Identity: `X-Tenant-ID` / `X-User-ID` → `get_effective_identity()`
-  - ACE: `X-Share-Skills-To-Team` / `X-Skill-Share-Mode` / `X-Skill-Share-Score-Threshold` / `X-ACE-Scope-Enforcement` → `get_effective_ace_config()`
 - **Server config** (`CortexConfig`): only server-side settings — storage, embedding, LLM, rerank, HTTP bind. Loads from `server.json` or `~/.opencortex/server.json`.
-- **Client config** (`mcp.json`): identity + ACE settings. Loads from `mcp.json` or `~/.opencortex/mcp.json`. Node.js `buildClientHeaders()` attaches them to every HTTP request.
+- **Client config** (`mcp.json`): identity settings. Loads from `mcp.json` or `~/.opencortex/mcp.json`. Node.js `buildClientHeaders()` attaches them to every HTTP request.
 - RL methods (`update_reward`, `get_profile`, `apply_decay`, `set_protected`) are not in the interface — detected via `hasattr` on the adapter
 - Package management uses `uv` (not pip)
 - VikingFS has been renamed to CortexFS; old name retained for backward compatibility
@@ -103,16 +103,18 @@ tests/
 MCP path:   Agent → node mcp-server.mjs (stdio) → fetch + headers → HTTP Server (FastAPI) → Orchestrator → Qdrant
 Hooks path: Agent → node run.mjs <hook> → fetch + headers → HTTP Server
 
-Headers:    mcp.json → buildClientHeaders() → X-Tenant-ID, X-User-ID, X-Share-Skills-To-Team, ...
-            → RequestContextMiddleware → contextvars → get_effective_identity() / get_effective_ace_config()
+Headers:    mcp.json → buildClientHeaders() → X-Tenant-ID, X-User-ID
+            → RequestContextMiddleware → contextvars → get_effective_identity()
 ```
 
-### Self-Learning Loop
+### Knowledge Pipeline (Cortex Alpha)
 
 ```
-memory_store (add)     → RuleExtractor async-extracts skills → Skillbook persists
-memory_search (search) → parallel search contexts + skillbooks → hybrid sort + return
-memory_feedback        → update RL reward / Skillbook tag (helpful/harmful)
+session_begin/message   → Observer records transcript
+session_end             → TraceSplitter → traces → TraceStore
+                        → Archivist (if threshold met) → knowledge candidates
+                        → Sandbox quality gate → KnowledgeStore (approved)
+knowledge_search        → vector search over approved knowledge
 ```
 
 ### Score Fusion Formula
@@ -151,7 +153,7 @@ docker compose up -d
 
 ```bash
 # Python core tests (no external dependencies)
-uv run python3 -m unittest tests.test_e2e_phase1 tests.test_ace_phase1 tests.test_rule_extractor tests.test_skill_search_fusion tests.test_case_memory tests.test_skill_evolution -v
+uv run python3 -m unittest tests.test_e2e_phase1 tests.test_write_dedup tests.test_migration_skillbook -v
 
 # Node.js MCP tests (requires running HTTP server)
 node --test tests/test_mcp_server.mjs
@@ -160,8 +162,3 @@ node --test tests/test_mcp_server.mjs
 uv run python3 -m unittest discover -s tests -v
 ```
 
-## ACE Learned Strategies
-
-<!-- ACE:START - Do not edit manually -->
-<!-- ACE is disabled by default (ace_enabled: false). Enable in server.json to resume skill extraction. -->
-<!-- ACE:END -->

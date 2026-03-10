@@ -57,11 +57,6 @@ export default async function stop(ctx) {
         if (messages.length > 0) {
           await sessionMessagesBatch(state.http_url, state.session_id, messages, 5000);
         }
-
-        // Extract memories from this turn (LLM, best-effort)
-        await httpPost(`${state.http_url}/api/v1/session/extract_turn`, {
-          session_id: state.session_id,
-        }, 15000);
       } catch {
         // Best-effort — don't fail the hook
       }

@@ -91,23 +91,22 @@ export default async function sessionStart(ctx) {
     // best-effort
   }
 
-  // Inject learned skills into system message (best-effort)
-  let skillSummary = '';
+  // Inject knowledge into system message (best-effort)
+  let knowledgeSummary = '';
   try {
-    const lookupRes = await httpPost(`${httpUrl}/api/v1/skill/lookup`, {
-      objective: 'general task execution', limit: 5,
+    const searchRes = await httpPost(`${httpUrl}/api/v1/knowledge/search`, {
+      query: 'general task execution', limit: 5,
     }, 5000);
-    const skills = (lookupRes && lookupRes.skills) || [];
-    const relevant = skills.filter(s =>
-      (s.confidence_score ?? 0) >= 0.3 && s.status !== 'deprecated'
+    const items = (searchRes && searchRes.results) || [];
+    const relevant = items.filter(k =>
+      (k.confidence ?? 0) >= 0.3 && k.status !== 'deprecated'
     );
     if (relevant.length > 0) {
-      const lines = relevant.map(s => {
-        const triggers = (s.trigger_conditions || []).join(', ');
-        const steps = (s.action_template || []).join(' → ');
-        return `- ${s.content} [confidence: ${(s.confidence_score ?? 0).toFixed(2)}]\n  When: ${triggers}\n  Steps: ${steps}`;
+      const lines = relevant.map(k => {
+        const type = k.type || 'knowledge';
+        return `- [${type}] ${k.statement || k.abstract || ''} [confidence: ${(k.confidence ?? 0).toFixed(2)}]`;
       });
-      skillSummary = `\n\n[Learned Skills]\n${lines.join('\n')}`;
+      knowledgeSummary = `\n\n[Knowledge]\n${lines.join('\n')}`;
     }
   } catch {
     // best-effort — don't block session start
@@ -118,7 +117,7 @@ export default async function sessionStart(ctx) {
     : httpUrl;
 
   return {
-    systemMessage: `[opencortex-memory] ${mode} mode — ${portInfo} tenant=${tenantId} user=${userId}${skillSummary}`,
+    systemMessage: `[opencortex-memory] ${mode} mode — ${portInfo} tenant=${tenantId} user=${userId}${knowledgeSummary}`,
   };
 }
 

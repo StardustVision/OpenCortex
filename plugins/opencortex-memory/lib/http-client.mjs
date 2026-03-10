@@ -3,26 +3,15 @@ import { getMcpConfig, getProjectId } from './common.mjs';
 
 /**
  * Build per-request HTTP headers from MCP config.
- * Includes identity (X-Tenant-ID, X-User-ID) and ACE skill sharing headers.
+ * Includes identity (X-Tenant-ID, X-User-ID, X-Project-ID).
  */
 export function buildClientHeaders() {
   const hdrs = {};
-  // Identity
   const tenantId = getMcpConfig('tenant_id', 'default');
   const userId = getMcpConfig('user_id', 'default');
   if (tenantId) hdrs['X-Tenant-ID'] = tenantId;
   if (userId) hdrs['X-User-ID'] = userId;
-  // Project ID
   hdrs['X-Project-ID'] = getProjectId();
-  // ACE skill sharing
-  const shareSkills = getMcpConfig('share_skills_to_team');
-  if (shareSkills) hdrs['X-Share-Skills-To-Team'] = String(shareSkills);
-  const shareMode = getMcpConfig('skill_share_mode');
-  if (shareMode) hdrs['X-Skill-Share-Mode'] = shareMode;
-  const shareThreshold = getMcpConfig('skill_share_score_threshold');
-  if (shareThreshold != null) hdrs['X-Skill-Share-Score-Threshold'] = String(shareThreshold);
-  const enforcement = getMcpConfig('ace_scope_enforcement');
-  if (enforcement) hdrs['X-ACE-Scope-Enforcement'] = String(enforcement);
   return hdrs;
 }
 
