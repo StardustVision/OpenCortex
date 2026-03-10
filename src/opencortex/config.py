@@ -36,6 +36,35 @@ _MCP_ONLY_FIELDS = {"mcp_transport", "mcp_port", "mcp_mode"}
 
 
 @dataclass
+class CortexAlphaConfig:
+    """Cortex Alpha sub-configuration (Design doc §11)."""
+    # Observer
+    observer_enabled: bool = True
+    # Trace Splitter
+    trace_splitter_enabled: bool = True
+    trace_splitter_max_context_tokens: int = 128000
+    # Archivist
+    archivist_enabled: bool = True
+    archivist_trigger_mode: str = "auto"        # "auto" | "manual"
+    archivist_trigger_threshold: int = 20       # traces per trigger
+    archivist_max_delay_hours: int = 24
+    archivist_llm_model: str = ""               # defaults to main llm_model
+    # Sandbox
+    sandbox_min_traces: int = 3
+    sandbox_min_success_rate: float = 0.7
+    sandbox_min_source_users: int = 2
+    sandbox_min_source_users_private: int = 1
+    sandbox_llm_sample_size: int = 5
+    sandbox_llm_min_pass_rate: float = 0.6
+    sandbox_require_human_approval: bool = True
+    # Knowledge Store
+    knowledge_collection_name: str = "knowledge"
+    trace_collection_name: str = "traces"
+    # User scope auto-approval
+    user_auto_approve_confidence: float = 0.95
+
+
+@dataclass
 class CortexConfig:
     """Global configuration for OpenCortex.
 
@@ -76,6 +105,8 @@ class CortexConfig:
     http_server_port: int = 8921
     # ACE (Agentic Context Engine) self-learning
     ace_enabled: bool = False
+    # Cortex Alpha
+    cortex_alpha: CortexAlphaConfig = field(default_factory=CortexAlphaConfig)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -140,6 +171,9 @@ class CortexConfig:
         # Only use known fields
         known_fields = {f.name for f in cls.__dataclass_fields__.values()}
         filtered = {k: v for k, v in data.items() if k in known_fields}
+        # Handle nested dataclass fields
+        if "cortex_alpha" in filtered and isinstance(filtered["cortex_alpha"], dict):
+            filtered["cortex_alpha"] = CortexAlphaConfig(**filtered["cortex_alpha"])
         config = cls(**filtered)
         config._apply_env_overrides()
         logger.info(f"[CortexConfig] Loaded from {path}")
