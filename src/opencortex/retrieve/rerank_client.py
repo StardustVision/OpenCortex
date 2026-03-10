@@ -126,6 +126,7 @@ class RerankClient:
             return [0.0] * len(documents)
         try:
             import asyncio
+            import math
             loop = asyncio.get_running_loop()
             # TextCrossEncoder.rerank is sync — run in thread pool
             results = await loop.run_in_executor(
@@ -133,12 +134,13 @@ class RerankClient:
                 lambda: list(self._local_reranker.rerank(query, documents)),
             )
             # results is list of dicts with 'score' and 'index'
+            # Scores are raw logits (can be negative) — apply sigmoid to normalize to [0,1]
             scores = [0.0] * len(documents)
             for item in results:
                 idx = item.get("index", 0) if isinstance(item, dict) else 0
-                score = item.get("score", 0.0) if isinstance(item, dict) else float(item)
+                raw = item.get("score", 0.0) if isinstance(item, dict) else float(item)
                 if 0 <= idx < len(scores):
-                    scores[idx] = max(0.0, min(1.0, float(score)))
+                    scores[idx] = 1.0 / (1.0 + math.exp(-float(raw)))
             return scores
         except Exception as exc:
             logger.warning("[RerankClient] Local rerank failed: %s", exc)
