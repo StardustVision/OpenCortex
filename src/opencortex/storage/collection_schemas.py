@@ -159,6 +159,82 @@ class CollectionSchemas:
         }
 
 
+    @staticmethod
+    def trace_collection(name: str, vector_dim: int) -> Dict[str, Any]:
+        """Schema for the trace collection (Cortex Alpha)."""
+        return {
+            "CollectionName": name,
+            "Description": "Cortex Alpha trace collection",
+            "Fields": [
+                {"FieldName": "id", "FieldType": "string", "IsPrimaryKey": True},
+                {"FieldName": "trace_id", "FieldType": "string"},
+                {"FieldName": "session_id", "FieldType": "string"},
+                {"FieldName": "tenant_id", "FieldType": "string"},
+                {"FieldName": "user_id", "FieldType": "string"},
+                {"FieldName": "source", "FieldType": "string"},
+                {"FieldName": "source_version", "FieldType": "string"},
+                {"FieldName": "task_type", "FieldType": "string"},
+                {"FieldName": "outcome", "FieldType": "string"},
+                {"FieldName": "error_code", "FieldType": "string"},
+                {"FieldName": "training_ready", "FieldType": "bool"},
+                {"FieldName": "vector", "FieldType": "vector", "Dim": vector_dim},
+                {"FieldName": "abstract", "FieldType": "string"},
+                {"FieldName": "overview", "FieldType": "string"},
+                {"FieldName": "created_at", "FieldType": "date_time"},
+            ],
+            "ScalarIndex": [
+                "trace_id", "session_id", "tenant_id", "user_id",
+                "source", "task_type", "outcome", "training_ready",
+                "created_at",
+            ],
+        }
+
+    @staticmethod
+    def knowledge_collection(name: str, vector_dim: int) -> Dict[str, Any]:
+        """Schema for the knowledge collection (Cortex Alpha)."""
+        return {
+            "CollectionName": name,
+            "Description": "Cortex Alpha knowledge collection",
+            "Fields": [
+                {"FieldName": "id", "FieldType": "string", "IsPrimaryKey": True},
+                {"FieldName": "knowledge_id", "FieldType": "string"},
+                {"FieldName": "knowledge_type", "FieldType": "string"},
+                {"FieldName": "tenant_id", "FieldType": "string"},
+                {"FieldName": "user_id", "FieldType": "string"},
+                {"FieldName": "scope", "FieldType": "string"},
+                {"FieldName": "status", "FieldType": "string"},
+                {"FieldName": "confidence", "FieldType": "float"},
+                {"FieldName": "training_ready", "FieldType": "bool"},
+                {"FieldName": "vector", "FieldType": "vector", "Dim": vector_dim},
+                {"FieldName": "abstract", "FieldType": "string"},
+                {"FieldName": "overview", "FieldType": "string"},
+                {"FieldName": "created_at", "FieldType": "date_time"},
+                {"FieldName": "updated_at", "FieldType": "date_time"},
+            ],
+            "ScalarIndex": [
+                "knowledge_id", "knowledge_type", "tenant_id", "user_id",
+                "scope", "status", "confidence", "training_ready",
+                "created_at", "updated_at",
+            ],
+        }
+
+
+async def init_trace_collection(
+    storage: VikingDBInterface, name: str, vector_dim: int,
+) -> bool:
+    """Initialize the trace collection with proper schema."""
+    schema = CollectionSchemas.trace_collection(name, vector_dim)
+    return await storage.create_collection(name, schema)
+
+
+async def init_knowledge_collection(
+    storage: VikingDBInterface, name: str, vector_dim: int,
+) -> bool:
+    """Initialize the knowledge collection with proper schema."""
+    schema = CollectionSchemas.knowledge_collection(name, vector_dim)
+    return await storage.create_collection(name, schema)
+
+
 async def init_context_collection(
     storage: VikingDBInterface,
     name: str,
