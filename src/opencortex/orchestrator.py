@@ -1191,6 +1191,12 @@ class MemoryOrchestrator:
         result = self._aggregate_results(query_results)
         result.search_intent = intent
 
+        # Filter out directory nodes (is_leaf=False) — they exist for
+        # hierarchical traversal but have no abstract/content of their own.
+        result.memories = [m for m in result.memories if m.is_leaf]
+        result.resources = [m for m in result.resources if m.is_leaf]
+        result.skills = [m for m in result.skills if m.is_leaf]
+
         # Fire-and-forget: resolve URIs → record IDs → update access stats
         all_matched = result.memories + result.resources + result.skills
         if all_matched:
