@@ -183,7 +183,7 @@ async function handleMessage(msg) {
       return jsonrpcResult(id, {
         protocolVersion: '2024-11-05',
         capabilities: { tools: {} },
-        serverInfo: { name: 'opencortex', version: '1.0.0' },
+        serverInfo: { name: 'opencortex', version: '0.4.1' },
       });
 
     case 'notifications/initialized':
