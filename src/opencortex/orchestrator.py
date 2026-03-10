@@ -210,6 +210,12 @@ class MemoryOrchestrator:
         except Exception as exc:
             logger.warning("[Orchestrator] Project backfill skipped: %s", exc)
 
+        # 7e. Auto re-embed if embedding model changed
+        try:
+            await self._check_and_reembed()
+        except Exception as exc:
+            logger.warning("[Orchestrator] Auto re-embed skipped: %s", exc)
+
         # 8. Cortex Alpha components
         await self._init_alpha()
 
@@ -490,6 +496,61 @@ class MemoryOrchestrator:
         except Exception as exc:
             logger.warning("[MemoryOrchestrator] Failed to wrap with cache: %s", exc)
             return embedder
+
+    async def _check_and_reembed(self) -> None:
+        """Auto re-embed if the embedding model has changed since last run."""
+        current_model = getattr(self._embedder, "model_name", "")
+        if not current_model or not self._embedder:
+            return
+
+        marker = Path(self._config.data_root) / ".embedding_model"
+        previous_model = marker.read_text().strip() if marker.exists() else ""
+
+        if previous_model == current_model:
+            return
+
+        # Only re-embed if there are existing records
+        try:
+            count = await self._storage.count(_CONTEXT_COLLECTION)
+        except Exception:
+            count = 0
+
+        if count == 0:
+            # No data yet — just write the marker
+            marker.write_text(current_model)
+            return
+
+        logger.info(
+            "[Orchestrator] Embedding model changed: %s → %s. "
+            "Re-embedding %d records ...",
+            previous_model or "(none)", current_model, count,
+        )
+        from opencortex.migration.v040_reembed import reembed_all as _reembed_all
+        updated = await _reembed_all(
+            self._storage, _CONTEXT_COLLECTION, self._embedder,
+        )
+        logger.info(
+            "[Orchestrator] Re-embedded %d records (model: %s → %s)",
+            updated, previous_model or "(none)", current_model,
+        )
+        marker.write_text(current_model)
+
+    async def reembed_all(self) -> int:
+        """Re-embed all records with the current embedder.
+
+        Can be called manually or via the admin HTTP endpoint.
+
+        Returns:
+            Number of records updated.
+        """
+        from opencortex.migration.v040_reembed import reembed_all as _reembed_all
+        count = await _reembed_all(
+            self._storage, _CONTEXT_COLLECTION, self._embedder,
+        )
+        # Update model marker
+        marker = Path(self._config.data_root) / ".embedding_model"
+        marker.write_text(getattr(self._embedder, "model_name", ""))
+        return count
 
     def _build_rerank_config(self) -> RerankConfig:
         """Build RerankConfig by merging explicit rerank_config with CortexConfig fields.

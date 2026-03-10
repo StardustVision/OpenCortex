@@ -353,6 +353,16 @@ def _register_routes(app: FastAPI) -> None:
         return {"status": "ok", "result": text}
 
     # =====================================================================
+    # Admin
+    # =====================================================================
+
+    @app.post("/api/v1/admin/reembed")
+    async def admin_reembed() -> Dict[str, Any]:
+        """Re-embed all records with the current embedding model."""
+        count = await _orchestrator.reembed_all()
+        return {"status": "ok", "updated": count}
+
+    # =====================================================================
     # Migration
     # =====================================================================
 
