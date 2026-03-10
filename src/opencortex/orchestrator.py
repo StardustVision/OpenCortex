@@ -1563,9 +1563,26 @@ class MemoryOrchestrator:
     # =========================================================================
 
     async def skill_lookup(self, objective: str, section: str = "", limit: int = 5) -> List[Dict]:
-        """Search for relevant skills by objective."""
+        """Search for relevant skills by objective.
+
+        When use_alpha_pipeline is enabled, proxies to knowledge_search
+        with types=["sop", "negative_rule", "root_cause"].
+        """
         self._ensure_init()
         tid, uid = get_effective_identity()
+
+        if self._config.cortex_alpha.use_alpha_pipeline and self._knowledge_store:
+            # Proxy to Knowledge Store
+            types = ["sop", "negative_rule", "root_cause"]
+            if section == "error_fixes":
+                types = ["root_cause"]
+            elif section == "patterns":
+                types = ["belief"]
+            results = await self._knowledge_store.search(
+                objective, tid, uid, types=types, limit=limit,
+            )
+            return results
+
         skills = await self._skillbook.search(
             query=objective, limit=limit * 2, section=section or None,
             tenant_id=tid, user_id=uid,
@@ -2045,9 +2062,14 @@ class MemoryOrchestrator:
             Dict with extraction results.
         """
         self._ensure_init()
-        result = await self._session_manager.end(session_id, quality_score)
+        use_alpha = self._config.cortex_alpha.use_alpha_pipeline
 
-        # Cortex Alpha dual-write: flush Observer + split traces
+        # Legacy path: SessionManager extraction (skipped in alpha-only mode)
+        result = None
+        if not use_alpha:
+            result = await self._session_manager.end(session_id, quality_score)
+
+        # Alpha path: flush Observer + split traces
         alpha_traces_count = 0
         if self._observer:
             tid, uid = get_effective_identity()
@@ -2076,13 +2098,24 @@ class MemoryOrchestrator:
                 except Exception as exc:
                     logger.warning("[Alpha] Trace splitting failed: %s", exc)
 
+        if result:
+            return {
+                "session_id": result.session_id,
+                "stored_count": result.stored_count,
+                "merged_count": result.merged_count,
+                "skipped_count": result.skipped_count,
+                "quality_score": result.quality_score,
+                "total_extracted": len(result.memories),
+                "alpha_traces": alpha_traces_count,
+            }
+        # Alpha-only mode response
         return {
-            "session_id": result.session_id,
-            "stored_count": result.stored_count,
-            "merged_count": result.merged_count,
-            "skipped_count": result.skipped_count,
-            "quality_score": result.quality_score,
-            "total_extracted": len(result.memories),
+            "session_id": session_id,
+            "stored_count": 0,
+            "merged_count": 0,
+            "skipped_count": 0,
+            "quality_score": quality_score,
+            "total_extracted": 0,
             "alpha_traces": alpha_traces_count,
         }
 
