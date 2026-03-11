@@ -16,8 +16,10 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Request, Response
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from opencortex.auth.token import decode_token, ensure_secret
 from opencortex.config import get_config
 from opencortex.http.request_context import (
     reset_request_identity,
@@ -52,23 +54,62 @@ logger = logging.getLogger(__name__)
 # Module-level orchestrator, initialized in lifespan
 _orchestrator: Optional[MemoryOrchestrator] = None
 
+# Module-level JWT secret, loaded once at startup
+_jwt_secret: Optional[str] = None
+
+# Paths that do NOT require authentication
+_AUTH_WHITELIST = {
+    "/api/v1/memory/health",
+    "/docs",
+    "/openapi.json",
+}
+
 
 # ---------------------------------------------------------------------------
 # Request Context Middleware
 # ---------------------------------------------------------------------------
 
 class RequestContextMiddleware(BaseHTTPMiddleware):
-    """Extract per-request identity from HTTP headers.
+    """Authenticate requests via JWT Bearer token and set per-request identity.
 
-    Identity headers:
-        X-Tenant-ID  — tenant identifier (default: "default")
-        X-User-ID    — user identifier (default: "default")
-        X-Project-ID — project identifier (default: "public")
+    The ``Authorization: Bearer <token>`` header is required on all paths
+    except those in ``_AUTH_WHITELIST``.  Identity (tenant_id, user_id) is
+    extracted from the JWT claims (``tid``, ``uid``).
     """
 
     async def dispatch(self, request: Request, call_next) -> Response:
-        tenant_id = request.headers.get("x-tenant-id", "default")
-        user_id = request.headers.get("x-user-id", "default")
+        path = request.url.path
+
+        # Whitelisted paths bypass authentication
+        if path in _AUTH_WHITELIST:
+            id_tokens = set_request_identity("default", "default")
+            project_id = request.headers.get("x-project-id", "public")
+            project_token = set_request_project_id(project_id)
+            try:
+                return await call_next(request)
+            finally:
+                reset_request_identity(id_tokens)
+                reset_request_project_id(project_token)
+
+        # Extract and validate JWT
+        auth_header = request.headers.get("authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Missing or invalid token"},
+            )
+
+        token = auth_header[7:]  # strip "Bearer "
+        try:
+            claims = decode_token(token, _jwt_secret)
+        except Exception:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Missing or invalid token"},
+            )
+
+        tenant_id = claims.get("tid", "default")
+        user_id = claims.get("uid", "default")
         id_tokens = set_request_identity(tenant_id, user_id)
 
         project_id = request.headers.get("x-project-id", "public")
@@ -88,8 +129,9 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     """Initialize and teardown the MemoryOrchestrator."""
-    global _orchestrator
+    global _orchestrator, _jwt_secret
     config = get_config()
+    _jwt_secret = ensure_secret(config.data_root)
     _orchestrator = MemoryOrchestrator(config=config)
     await _orchestrator.init()
     logger.info("[HTTP] Orchestrator initialized (data_root=%s)", config.data_root)

@@ -37,11 +37,13 @@ class OpenCortexClient:
         timeout: float = _DEFAULT_TIMEOUT,
         tenant_id: Optional[str] = None,
         user_id: Optional[str] = None,
+        token: Optional[str] = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._tenant_id = tenant_id
         self._user_id = user_id
+        self._token = token
         self._client: Optional[httpx.AsyncClient] = None
 
     async def connect(self) -> None:
@@ -72,12 +74,20 @@ class OpenCortexClient:
         return await self._request("GET", path, params=params)
 
     def _build_headers(self) -> Dict[str, str]:
-        """Build per-request HTTP headers for identity."""
+        """Build per-request HTTP headers for authentication.
+
+        Prefers JWT Bearer token when available.  Falls back to legacy
+        identity headers (X-Tenant-ID / X-User-ID) for backward-compatible
+        testing scenarios.
+        """
         hdrs: Dict[str, str] = {}
-        if self._tenant_id:
-            hdrs["X-Tenant-ID"] = self._tenant_id
-        if self._user_id:
-            hdrs["X-User-ID"] = self._user_id
+        if self._token:
+            hdrs["Authorization"] = f"Bearer {self._token}"
+        elif self._tenant_id or self._user_id:
+            if self._tenant_id:
+                hdrs["X-Tenant-ID"] = self._tenant_id
+            if self._user_id:
+                hdrs["X-User-ID"] = self._user_id
         return hdrs
 
     async def _request(

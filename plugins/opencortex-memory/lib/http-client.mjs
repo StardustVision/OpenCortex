@@ -3,14 +3,15 @@ import { getMcpConfig, getProjectId } from './common.mjs';
 
 /**
  * Build per-request HTTP headers from MCP config.
- * Includes identity (X-Tenant-ID, X-User-ID, X-Project-ID).
+ * Uses JWT Bearer token for authentication (identity extracted from claims).
+ * Retains X-Project-ID (project dimension is not in the JWT).
  */
 export function buildClientHeaders() {
   const hdrs = {};
-  const tenantId = getMcpConfig('tenant_id', 'default');
-  const userId = getMcpConfig('user_id', 'default');
-  if (tenantId) hdrs['X-Tenant-ID'] = tenantId;
-  if (userId) hdrs['X-User-ID'] = userId;
+  const token = getMcpConfig('token', '');
+  if (token) {
+    hdrs['Authorization'] = `Bearer ${token}`;
+  }
   hdrs['X-Project-ID'] = getProjectId();
   return hdrs;
 }
@@ -52,9 +53,7 @@ export async function sessionMessagesBatch(httpUrl, sessionId, messages, timeout
 
 export async function healthCheck(httpUrl, timeoutMs = 3000) {
   try {
-    const headers = buildClientHeaders();
     await fetch(`${httpUrl}/api/v1/memory/health`, {
-      headers,
       signal: AbortSignal.timeout(timeoutMs),
     });
     return true;

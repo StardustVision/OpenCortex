@@ -16,6 +16,7 @@ export const STATE_FILE = join(STATE_DIR, 'session_state.json');
 // ── Default MCP config ──────────────────────────────────────────────────
 const DEFAULT_MCP_CONFIG = {
   mode: 'local',
+  token: '',
   tenant_id: 'default',
   user_id: 'default',
   local: { http_port: 8921 },
@@ -134,6 +135,7 @@ function _loadMcpConfig() {
  */
 function _applyEnvOverrides(cfg) {
   const env = process.env;
+  if (env.OPENCORTEX_TOKEN) cfg.token = env.OPENCORTEX_TOKEN;
   if (env.OPENCORTEX_TENANT_ID) cfg.tenant_id = env.OPENCORTEX_TENANT_ID;
   if (env.OPENCORTEX_USER_ID) cfg.user_id = env.OPENCORTEX_USER_ID;
   if (env.OPENCORTEX_MODE) cfg.mode = env.OPENCORTEX_MODE;
