@@ -34,13 +34,12 @@ Typical usage::
 
 import asyncio
 import logging
-import re
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Union
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 from uuid import uuid4
 
 from opencortex.config import CortexConfig, get_config
-from opencortex.prompts import build_doc_summarization_prompt, build_overview_prompt
+from opencortex.prompts import build_doc_summarization_prompt, build_layer_derivation_prompt
 from opencortex.http.request_context import get_effective_identity, get_effective_project_id
 from opencortex.core.context import Context, ContextType as CoreContextType
 from opencortex.core.message import Message
@@ -582,85 +581,48 @@ class MemoryOrchestrator:
             use_llm_fallback=getattr(base, "use_llm_fallback", True),
         )
 
-    async def _generate_overview(self, abstract: str, content: str) -> str:
-        """Generate L1 overview from content (overview-first).
+    async def _derive_layers(
+        self, user_abstract: str, content: str, user_overview: str = "",
+    ) -> Dict[str, str]:
+        """Derive L0/L1/keywords from L2 in a single LLM call.
 
-        Strategy:
-        - No content -> empty
-        - Short content (<=500 chars) -> use content as-is
-        - Long content + LLM available -> LLM summarization
-        - Long content + no LLM -> truncated paragraphs
-
-        The first sentence of the overview is designed to be a standalone
-        summary (usable as L0 abstract via _extract_abstract_from_overview).
+        Returns {"abstract": str, "overview": str, "keywords": str}
+        keywords is a comma-separated string (for Qdrant MatchText).
         """
-        if not content:
-            return ""
-        if len(content) <= 500:
-            return content
+        # Fast path: user already provided both abstract and overview
+        if user_abstract and user_overview:
+            return {"abstract": user_abstract, "overview": user_overview, "keywords": ""}
+
         if self._llm_completion:
-            prompt = build_overview_prompt(abstract, content)
+            prompt = build_layer_derivation_prompt(content, user_abstract)
             try:
-                overview = await self._llm_completion(prompt)
-                if overview and len(overview.strip()) > 10:
-                    return overview.strip()
+                response = await self._llm_completion(prompt)
+                from opencortex.utils.json_parse import parse_json_from_response
+                data = parse_json_from_response(response)
+                if isinstance(data, dict):
+                    llm_abstract = (data.get("abstract") or "").strip()
+                    llm_overview = (data.get("overview") or "").strip()
+                    keywords_list = data.get("keywords") or []
+                    if isinstance(keywords_list, list):
+                        keywords = ", ".join(str(k) for k in keywords_list if k)
+                    else:
+                        keywords = str(keywords_list)
+                    return {
+                        "abstract": user_abstract or llm_abstract,
+                        "overview": user_overview or llm_overview,
+                        "keywords": keywords,
+                    }
             except Exception as e:
-                logger.warning("[Orchestrator] L1 generation failed: %s", e)
-        # Fallback: truncate by paragraphs
-        paragraphs = content.split("\n\n")
-        truncated, total = [], 0
-        for p in paragraphs:
-            p = p.strip()
-            if not p:
-                continue
-            if total + len(p) > 500:
-                break
-            truncated.append(p)
-            total += len(p)
-        return "\n\n".join(truncated) if truncated else content[:500] + "..."
+                logger.warning("[Orchestrator] _derive_layers LLM failed: %s", e)
 
-    @staticmethod
-    def _extract_abstract_from_overview(overview: str) -> str:
-        """Extract L0 abstract from L1 overview (overview-first flow).
-
-        Takes the first paragraph (before ## or double newline).
-        For plain paragraphs, takes the first 1-2 sentences.
-        """
-        if not overview:
-            return ""
-
-        lines = overview.split("\n")
-        content_lines = []
-        in_header = True
-
-        for line in lines:
-            # Skip leading markdown headers
-            if in_header and line.startswith("#"):
-                continue
-            elif in_header and line.strip():
-                in_header = False
-
-            if not in_header:
-                if line.startswith("##"):
-                    break
-                if line.strip():
-                    content_lines.append(line.strip())
-
-        text = " ".join(content_lines).strip()
-        if not text:
-            return ""
-
-        # Take first 1-2 sentences (split on sentence-ending punctuation)
-        sentences = re.split(r'(?<=[.。!！?？])\s+', text)
-        abstract = sentences[0]
-        if len(sentences) > 1 and len(abstract) < 80:
-            abstract += " " + sentences[1]
-
-        # Cap at ~200 chars
-        if len(abstract) > 200:
-            abstract = abstract[:197] + "..."
-
-        return abstract
+        # No-LLM fallback
+        abstract = user_abstract or content
+        overview = user_overview
+        if not overview and content and len(content) <= 500:
+            overview = content
+        if not user_abstract and not self._llm_completion:
+            logger.warning("[Orchestrator] No LLM configured — abstract uses raw content")
+        return {"abstract": abstract, "overview": overview, "keywords": ""}
 
     def _ensure_init(self) -> None:
         """Raise if not initialized."""
@@ -752,23 +714,23 @@ class MemoryOrchestrator:
         if not parent_uri:
             parent_uri = self._derive_parent_uri(uri)
 
-        # Step 1: Generate L1 overview from content (overview-first)
-        if not overview and content and is_leaf:
-            overview = await self._generate_overview(abstract, content)
-
-        # Step 2: Extract L0 from L1 (overview-first flow)
-        if overview and content and is_leaf:
-            extracted = self._extract_abstract_from_overview(overview)
-            if extracted:
-                abstract = extracted
+        # Derive L0/L1/keywords from L2 in a single structured LLM call
+        keywords = ""
+        if content and is_leaf:
+            layers = await self._derive_layers(
+                user_abstract=abstract,
+                content=content,
+                user_overview=overview,
+            )
+            if not abstract:
+                abstract = layers["abstract"]
+            if not overview:
+                overview = layers["overview"]
+            keywords = layers["keywords"]
 
         # Build effective user identity (per-request or config default)
         tid, uid = get_effective_identity()
         effective_user = UserIdentifier(tid, uid)
-
-        # Step 3: Enrich L0 with key terms from content
-        if content and is_leaf:
-            abstract = self._enrich_abstract(abstract, content)
 
         # Create context object
         ctx = Context(
@@ -848,6 +810,7 @@ class MemoryOrchestrator:
         record["ttl_expires_at"] = ""
         record["project_id"] = get_effective_project_id()
         record["source_tenant_id"] = tid
+        record["keywords"] = keywords
 
         # Set TTL for staging records (24 hours from now)
         if context_type == "staging":
@@ -2146,49 +2109,6 @@ class MemoryOrchestrator:
                     if len(candidate) != 12:
                         return candidate
         return ""
-
-    # Regexes for key term extraction (mirrors intent_router.py)
-    _CAMEL_RE = re.compile(r"[a-z]+[A-Z][a-zA-Z]*|[A-Z][a-z]+(?:[A-Z][a-z]+)+")
-    _CAPS_RE = re.compile(r"\b[A-Z]{2,}\b")
-    _PATH_RE = re.compile(r"[a-zA-Z0-9]+[_./-][a-zA-Z0-9]+")
-
-    @staticmethod
-    def _enrich_abstract(abstract: str, content: str) -> str:
-        """Enrich abstract with key terms from content if coverage is low.
-
-        Extracts CamelCase, ALL_CAPS, and path/symbol patterns from content,
-        checks how many appear in the abstract. If coverage < 70%, appends
-        missing terms (up to 10) to the abstract.
-        """
-        if not content:
-            return abstract
-
-        # Extract key terms from content
-        terms: Set[str] = set()
-        terms.update(MemoryOrchestrator._CAMEL_RE.findall(content))
-        terms.update(MemoryOrchestrator._CAPS_RE.findall(content))
-        terms.update(MemoryOrchestrator._PATH_RE.findall(content))
-
-        # Filter out very short / generic terms
-        terms = {t for t in terms if len(t) >= 2}
-        if not terms:
-            return abstract
-
-        # Check coverage in abstract
-        abstract_lower = abstract.lower()
-        covered = {t for t in terms if t.lower() in abstract_lower}
-        coverage = len(covered) / len(terms)
-
-        if coverage >= 0.7:
-            return abstract
-
-        # Append missing terms (up to 10)
-        missing = sorted(terms - covered)[:10]
-        if missing:
-            suffix = " [" + ", ".join(missing) + "]"
-            return abstract + suffix
-
-        return abstract
 
     def _derive_parent_uri(self, uri: str) -> str:
         """Derive parent URI by removing the last path segment."""

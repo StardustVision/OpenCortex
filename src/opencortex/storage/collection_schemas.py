@@ -53,6 +53,7 @@ class CollectionSchemas:
                 {"FieldName": "tags", "FieldType": "string"},
                 {"FieldName": "abstract", "FieldType": "string"},
                 {"FieldName": "overview", "FieldType": "string"},
+                {"FieldName": "keywords", "FieldType": "string"},
                 {"FieldName": "reward_score", "FieldType": "float"},
                 {"FieldName": "positive_feedback_count", "FieldType": "int64"},
                 {"FieldName": "negative_feedback_count", "FieldType": "int64"},

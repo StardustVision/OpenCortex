@@ -37,19 +37,21 @@ def _tokenize_for_scoring(text: str) -> set:
     return words | chinese_chars
 
 
-def _compute_text_score(query: str, abstract: str, overview: str) -> float:
+def _compute_text_score(query: str, abstract: str, overview: str, keywords: str = "") -> float:
     """Term-overlap scoring for lexical search results.
 
-    Abstract matches are weighted 2x higher than overview matches.
+    Abstract matches weighted 2x, keywords 1.5x, overview 1x.
     """
     query_terms = _tokenize_for_scoring(query)
     if not query_terms:
         return 0.0
     abstract_terms = _tokenize_for_scoring(abstract)
     overview_terms = _tokenize_for_scoring(overview)
+    keywords_terms = _tokenize_for_scoring(keywords)
     abstract_hits = len(query_terms & abstract_terms)
     overview_hits = len(query_terms & overview_terms)
-    return min(1.0, (abstract_hits * 2 + overview_hits) / (len(query_terms) * 2))
+    keywords_hits = len(query_terms & keywords_terms)
+    return min(1.0, (abstract_hits * 2 + keywords_hits * 1.5 + overview_hits) / (len(query_terms) * 2))
 
 
 class QdrantStorageAdapter(StorageInterface):
@@ -92,7 +94,7 @@ class QdrantStorageAdapter(StorageInterface):
         existing = {c.name for c in collections.collections}
 
         for coll_name in existing:
-            for field in ("abstract", "overview"):
+            for field in ("abstract", "overview", "keywords"):
                 try:
                     await client.create_payload_index(
                         collection_name=coll_name,
@@ -432,7 +434,7 @@ class QdrantStorageAdapter(StorageInterface):
             points = results.points[offset:]
         else:
             if text_query:
-                # Lexical fallback: MatchText on abstract OR overview
+                # Lexical fallback: MatchText on abstract OR overview OR keywords
                 text_conditions = [
                     models.FieldCondition(
                         key="abstract",
@@ -440,6 +442,10 @@ class QdrantStorageAdapter(StorageInterface):
                     ),
                     models.FieldCondition(
                         key="overview",
+                        match=models.MatchText(text=text_query),
+                    ),
+                    models.FieldCondition(
+                        key="keywords",
                         match=models.MatchText(text=text_query),
                     ),
                 ]
@@ -462,6 +468,7 @@ class QdrantStorageAdapter(StorageInterface):
                         text_query,
                         payload.get("abstract", ""),
                         payload.get("overview", ""),
+                        payload.get("keywords", ""),
                     )
                     p.payload = payload
                 points_list.sort(
@@ -510,6 +517,10 @@ class QdrantStorageAdapter(StorageInterface):
                 key="overview",
                 match=models.MatchText(text=text_query),
             ),
+            models.FieldCondition(
+                key="keywords",
+                match=models.MatchText(text=text_query),
+            ),
         ]
         combined_filter = models.Filter(
             must=[qdrant_filter] if qdrant_filter else [],
@@ -531,6 +542,7 @@ class QdrantStorageAdapter(StorageInterface):
                 text_query,
                 record.get("abstract", ""),
                 record.get("overview", ""),
+                record.get("keywords", ""),
             )
             results.append(record)
 

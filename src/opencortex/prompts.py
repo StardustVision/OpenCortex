@@ -172,6 +172,38 @@ Return JSON: {{"abstract": "1-2 sentence summary", "overview": "1 paragraph over
 # 5. L1 Overview Generation  (was: orchestrator.py)
 # =========================================================================
 
+def build_layer_derivation_prompt(content: str, user_abstract: str = "") -> str:
+    """Build prompt for parallel L0/L1/keywords derivation from L2 content.
+
+    Args:
+        content: Full content text (truncated to 4000 chars in the prompt).
+        user_abstract: Optional user-supplied abstract to guide generation.
+    """
+    user_hint = ""
+    if user_abstract:
+        user_hint = (
+            f"\nThe user described this memory as: \"{user_abstract}\"\n"
+            "Use this as the abstract verbatim and generate the overview and keywords to complement it.\n"
+        )
+    return f"""Analyze the following content and produce a structured summary for a memory system.
+{user_hint}
+Content:
+{content[:4000]}
+
+Return a JSON object with exactly these fields:
+{{
+  "abstract": "1-2 sentence standalone summary, max 200 chars",
+  "overview": "3-8 sentence overview covering key facts, decisions, and actionable details",
+  "keywords": ["term1", "term2", "..."]
+}}
+
+Rules:
+- abstract: A concise, self-contained summary. If user description is provided above, use it as-is.
+- overview: Covers the main points, decisions, and context. Do NOT repeat the abstract verbatim.
+- keywords: 3-15 key terms (names, tools, technologies, concepts) that aid search. No generic words.
+- Return ONLY the JSON object, no other text."""
+
+
 def build_overview_prompt(abstract: str, content: str) -> str:
     """Build prompt for L1 overview generation from content.
 
