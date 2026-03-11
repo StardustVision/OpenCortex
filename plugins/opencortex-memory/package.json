@@ -1,6 +1,6 @@
 {
   "name": "opencortex-memory",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "OpenCortex MCP server and CLI for memory tools, hooks, and session intelligence.",
   "type": "module",
   "license": "MIT",
