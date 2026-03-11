@@ -192,6 +192,8 @@ def _register_routes(app: FastAPI) -> None:
                 item["overview"] = matched.overview
             if matched.content is not None:
                 item["content"] = matched.content
+            if matched.keywords:
+                item["keywords"] = matched.keywords
             items.append(item)
         resp: Dict[str, Any] = {"results": items, "total": result.total}
         if result.search_intent:

@@ -320,6 +320,7 @@ class MatchedContext:
     abstract: str = ""
     overview: Optional[str] = None
     content: Optional[str] = None
+    keywords: str = ""
     category: str = ""
     score: float = 0.0
     match_reason: str = ""
@@ -447,6 +448,7 @@ class FindResult:
                 abstract=d.get("abstract", ""),
                 overview=d.get("overview"),
                 content=d.get("content"),
+                keywords=d.get("keywords", ""),
                 category=d.get("category", ""),
                 score=d.get("score", 0.0),
                 match_reason=d.get("match_reason", ""),
