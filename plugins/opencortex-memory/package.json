@@ -1,7 +1,7 @@
 {
   "name": "opencortex-memory",
-  "version": "0.4.2",
-  "description": "OpenCortex MCP server and CLI for memory tools, hooks, and session intelligence.",
+  "version": "0.5.0",
+  "description": "OpenCortex MCP server and CLI for AI agent memory with reinforcement learning and multi-tenant isolation.",
   "type": "module",
   "license": "MIT",
   "author": "StardustVision",
@@ -30,8 +30,6 @@
   "files": [
     "bin",
     "lib",
-    "hooks",
-    ".claude-plugin",
     ".mcp.json",
     "gemini-extension.json",
     "README.md"

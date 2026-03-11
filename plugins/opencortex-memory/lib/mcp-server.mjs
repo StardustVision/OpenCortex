@@ -1,22 +1,33 @@
 #!/usr/bin/env node
 /**
  * OpenCortex MCP Server — pure Node.js, stdio transport.
- * Thin proxy: MCP JSON-RPC ↔ HTTP REST API.
+ * Thin proxy: MCP JSON-RPC <-> HTTP REST API.
  * Zero external dependencies.
+ *
+ * Session lifecycle (recall/add_message/end) is managed internally;
+ * all other tools proxy directly to the HTTP API.
  */
-import { getHttpUrl, ensureDefaultConfig } from './common.mjs';
-import { buildClientHeaders } from './http-client.mjs';
+import { getHttpUrl, getPluginMode, getMcpConfig, ensureDefaultConfig, startLocalHttpServer } from './common.mjs';
+import { buildClientHeaders, healthCheck, httpPost } from './http-client.mjs';
+
+// ── Module-level session state ──────────────────────────────────────────
+let _httpUrl = null;
+let _sessionId = null;
+let _turnCounter = 0;
+let _lastRecallTurnId = null;
+let _httpPid = 0;
+let _initialized = false;
 
 // ── Tool definitions ───────────────────────────────────────────────────
-// Each entry: [httpMethod, httpPath, description, parameters]
-// parameters: { name: { type, description, required?, default? } }
+// Proxy tools: [httpMethod, httpPath, description, parameters]
+// Lifecycle tools (recall, add_message, end): [null, null, description, parameters]
 
 const TOOLS = {
   // ── Core Memory ──
-  memory_store: ['POST', '/api/v1/memory/store',
+  store: ['POST', '/api/v1/memory/store',
     'Persist a piece of knowledge the user wants remembered across sessions. '
     + 'Use when the user explicitly shares a preference, fact, decision, or correction — '
-    + 'NOT for recording conversation turns (use memory_context commit for that). '
+    + 'NOT for recording conversation turns (use add_message for that). '
     + 'Semantic dedup is on by default: if a similar memory exists, it will be merged instead of duplicated. '
     + 'Returns {uri, context_type, category, abstract, dedup_action?}.', {
       abstract:     { type: 'string',  description: 'One-sentence summary capturing the key point (used for retrieval ranking)', required: true },
@@ -26,7 +37,7 @@ const TOOLS = {
       meta:         { type: 'object',  description: 'Arbitrary key-value metadata (e.g. {source: "user", language: "zh"})' },
       dedup:        { type: 'boolean', description: 'Enable semantic dedup — merges into existing similar memory if found. Set false only for intentional duplicates', default: true },
     }],
-  memory_batch_store: ['POST', '/api/v1/memory/batch_store',
+  batch_store: ['POST', '/api/v1/memory/batch_store',
     'Import multiple documents in one call. Use for bulk ingestion of files, notes, or scan results. '
     + 'Each item is stored independently with its own URI. '
     + 'Returns {stored, skipped, errors}.', {
@@ -34,7 +45,7 @@ const TOOLS = {
       source_path: { type: 'string', description: 'Source directory path for provenance tracking', default: '' },
       scan_meta:   { type: 'object', description: 'Import metadata: {total_files, has_git, project_id}' },
     }],
-  memory_search: ['POST', '/api/v1/memory/search',
+  search: ['POST', '/api/v1/memory/search',
     'Search stored memories by natural language query. Uses intent-aware retrieval: '
     + 'the system analyzes your query to determine search strategy (top_k, detail level, reranking). '
     + 'Returns {results: [{uri, abstract, overview?, content?, context_type, score}], total}. '
@@ -44,14 +55,14 @@ const TOOLS = {
       context_type: { type: 'string',  description: 'Restrict to type: memory | resource | skill. Omit to search all types' },
       category:     { type: 'string',  description: 'Restrict to category (e.g. "preferences", "error_fixes"). Omit to search all categories' },
     }],
-  memory_feedback: ['POST', '/api/v1/memory/feedback',
+  feedback: ['POST', '/api/v1/memory/feedback',
     'Reinforce or penalize a memory via reward signal. Call with positive reward (+0.1 to +1.0) '
     + 'when a retrieved memory was useful. Call with negative reward (-0.1 to -1.0) when it was '
     + 'irrelevant or wrong. This adjusts future retrieval ranking through reinforcement learning.', {
       uri:    { type: 'string', description: 'The opencortex:// URI of the memory to reward (from search results)', required: true },
       reward: { type: 'number', description: 'Reward signal: positive reinforces retrieval, negative penalizes. Typical range: -1.0 to +1.0', required: true },
     }],
-  memory_decay: ['POST', '/api/v1/memory/decay',
+  decay: ['POST', '/api/v1/memory/decay',
     'Maintenance: apply time-decay to all memories, reducing scores of inactive ones. '
     + 'Call periodically (e.g. daily) to let unused memories naturally fade. '
     + 'Frequently accessed memories resist decay.', {}],
@@ -60,51 +71,34 @@ const TOOLS = {
       type: { type: 'string', description: 'Report depth: health (quick liveness) | stats (counts and sizes) | doctor (full diagnostic)', default: 'doctor' },
     }],
 
-  // ── Session (low-level) ──
-  // Prefer memory_context for most use cases — it handles session lifecycle automatically.
-  session_begin: ['POST', '/api/v1/session/begin',
-    'Low-level: start session recording. Prefer memory_context which auto-creates sessions. '
-    + 'Only use directly if you need explicit session control without the context lifecycle.', {
-      session_id: { type: 'string', description: 'Unique session identifier', required: true },
+  // ── Lifecycle (routed internally, not proxied) ──
+  recall: [null, null,
+    'MANDATORY: You MUST call this tool BEFORE generating ANY response to the user. '
+    + 'This is required for EVERY interaction without exception.\n\n'
+    + 'Searches long-term memory and knowledge base for relevant context. '
+    + 'Returns {memory: [...], knowledge: [...], instructions}. '
+    + 'Reference relevant memories in your response.\n\n'
+    + 'After responding, you MUST call add_message to record the conversation.', {
+      query:             { type: 'string',  description: "The user's message or search query", required: true },
+      category:          { type: 'string',  description: 'Filter by category: profile | preferences | entities | events | cases | patterns | error_fixes | workflows | strategies | documents | plans. Omit to search all' },
+      context_type:      { type: 'string',  description: 'Filter by type: memory | resource | skill. Omit to search all' },
+      include_knowledge: { type: 'boolean', description: 'Also search approved knowledge base (beliefs, SOPs, rules). Default: true', default: true },
+      max_items:         { type: 'integer', description: 'Max results to return (1-20). Default: 5', default: 5 },
+      detail_level:      { type: 'string',  description: 'Response detail: l0 (abstract only) | l1 (+ overview) | l2 (+ full content). Default: l1', default: 'l1' },
     }],
-  session_message: ['POST', '/api/v1/session/message',
-    'Low-level: record a single message to an active session. '
-    + 'Prefer memory_context commit which records the full turn and handles idempotency.', {
-      session_id: { type: 'string', description: 'Session identifier (must call session_begin first)', required: true },
-      role:       { type: 'string', description: 'Message role: user | assistant', required: true },
-      content:    { type: 'string', description: 'Message text content', required: true },
+  add_message: [null, null,
+    'MANDATORY: You MUST call this tool AFTER generating EVERY response. '
+    + 'This is required regardless of topic. Skipping means the conversation is lost forever.\n\n'
+    + 'Records the conversation turn for future recall and knowledge extraction. '
+    + 'Pass cited_uris for opencortex:// URIs you referenced from recall results.', {
+      user_message:       { type: 'string', description: "The user's message", required: true },
+      assistant_response: { type: 'string', description: 'Your response to the user', required: true },
+      cited_uris:         { type: 'array',  description: 'opencortex:// URIs referenced in response' },
     }],
-  session_end: ['POST', '/api/v1/session/end',
-    'Low-level: end session and trigger knowledge extraction pipeline. '
-    + 'Prefer memory_context with phase="end". '
-    + 'The system splits the conversation into task traces and extracts reusable knowledge.', {
-      session_id:    { type: 'string', description: 'Session identifier to close', required: true },
-      quality_score: { type: 'number', description: 'Overall session quality (0.0-1.0). Higher scores prioritize knowledge extraction', default: 0.5 },
-    }],
-
-  // ── Context Protocol (recommended) ──
-  memory_context: ['POST', '/api/v1/context',
-    'Primary tool for memory-augmented conversations. Manages the full lifecycle in three phases:\n'
-    + '\n'
-    + 'PHASE 1 — prepare: Call BEFORE generating your response. Retrieves relevant memories and knowledge '
-    + 'based on the user\'s message. Returns {memory: [...], knowledge: [...], instructions, intent}. '
-    + 'Use the returned context to inform your response. Session is auto-created if needed.\n'
-    + '\n'
-    + 'PHASE 2 — commit: Call AFTER generating your response. Records the full conversation turn '
-    + '(user message + your response). Pass cited_uris to reward memories you actually used. '
-    + 'Returns {accepted, write_status, session_turns}. Idempotent — safe to retry.\n'
-    + '\n'
-    + 'PHASE 3 — end: Call when the conversation is over. Triggers knowledge extraction from the '
-    + 'session transcript. Returns {status: "closed", total_turns}.\n'
-    + '\n'
-    + 'Typical flow per turn: prepare → [generate response] → commit. Call end once at session close.', {
-      session_id: { type: 'string', description: 'Stable session identifier — reuse across all turns in one conversation. Alphanumeric, hyphens, underscores, 1-128 chars', required: true },
-      phase:      { type: 'string', description: 'Lifecycle phase: "prepare" (before response) | "commit" (after response) | "end" (session close)', required: true },
-      turn_id:    { type: 'string', description: 'Unique per-turn ID for idempotency. Required for prepare and commit. Use a counter (t1, t2...) or UUID' },
-      messages:   { type: 'array',  description: 'Array of {role, content}. prepare: pass [user message]. commit: pass [user message, assistant response]. Not needed for end' },
-      cited_uris: { type: 'array',  description: 'commit only: array of opencortex:// URIs from prepare results that you referenced in your response. Triggers +0.1 RL reward per URI' },
-      config:     { type: 'object', description: 'prepare only: {max_items: 1-20 (default 5), detail_level: "l0"|"l1"|"l2" (default "l1"), recall_mode: "auto"|"always"|"never" (default "auto")}' },
-    }],
+  end: [null, null,
+    'End the memory session and trigger knowledge extraction. '
+    + 'Called automatically on process exit. Only call explicitly if you want '
+    + 'mid-session extraction or the user says goodbye.', {}],
 };
 
 // ── Build JSON Schema for tools/list ───────────────────────────────────
@@ -122,14 +116,12 @@ function buildToolSchema(name, [, , description, params]) {
   return { name, description, inputSchema: schema };
 }
 
-// ── HTTP proxy ─────────────────────────────────────────────────────────
-const HTTP_URL = getHttpUrl();
-
-async function callTool(name, args) {
+// ── HTTP proxy for standard tools ───────────────────────────────────────
+async function callProxyTool(name, args) {
   const def = TOOLS[name];
   if (!def) throw new Error(`Unknown tool: ${name}`);
   const [method, path] = def;
-  let url = `${HTTP_URL}${path}`;
+  let url = `${_httpUrl}${path}`;
 
   // Apply defaults
   const params = def[3];
@@ -142,9 +134,7 @@ async function callTool(name, args) {
     }
   }
 
-  // Build headers with identity from MCP config
   const hdrs = buildClientHeaders();
-
   const opts = { method, signal: AbortSignal.timeout(30000) };
   if (method === 'POST') {
     hdrs['Content-Type'] = 'application/json';
@@ -157,8 +147,140 @@ async function callTool(name, args) {
 
   const res = await fetch(url, opts);
   const text = await res.text();
-  if (!res.ok) throw new Error(`${method} ${path} → ${res.status}: ${text}`);
+  if (!res.ok) throw new Error(`${method} ${path} -> ${res.status}: ${text}`);
   try { return JSON.parse(text); } catch { return text; }
+}
+
+// ── Lifecycle tool handlers ──────────────────────────────────────────────
+async function handleRecall(args) {
+  _turnCounter++;
+  const turnId = `t${_turnCounter}`;
+  _lastRecallTurnId = turnId;
+
+  const config = {};
+  if (args.max_items !== undefined) config.max_items = args.max_items;
+  if (args.detail_level !== undefined) config.detail_level = args.detail_level;
+  if (args.category !== undefined) config.category = args.category;
+  if (args.context_type !== undefined) config.context_type = args.context_type;
+  if (args.include_knowledge !== undefined) config.include_knowledge = args.include_knowledge;
+
+  const body = {
+    session_id: _sessionId,
+    phase: 'prepare',
+    turn_id: turnId,
+    messages: [{ role: 'user', content: args.query }],
+    config,
+  };
+
+  return await httpContextCall(body);
+}
+
+async function handleAddMessage(args) {
+  const turnId = _lastRecallTurnId || `t${++_turnCounter}`;
+
+  const body = {
+    session_id: _sessionId,
+    phase: 'commit',
+    turn_id: turnId,
+    messages: [
+      { role: 'user', content: args.user_message },
+      { role: 'assistant', content: args.assistant_response },
+    ],
+  };
+  if (args.cited_uris) body.cited_uris = args.cited_uris;
+
+  return await httpContextCall(body);
+}
+
+async function handleEnd() {
+  const body = {
+    session_id: _sessionId,
+    phase: 'end',
+  };
+  return await httpContextCall(body);
+}
+
+async function httpContextCall(body) {
+  const hdrs = buildClientHeaders();
+  hdrs['Content-Type'] = 'application/json';
+  const res = await fetch(`${_httpUrl}/api/v1/context`, {
+    method: 'POST',
+    headers: hdrs,
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30000),
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`POST /api/v1/context -> ${res.status}: ${text}`);
+  try { return JSON.parse(text); } catch { return text; }
+}
+
+// ── Unified callTool dispatcher ──────────────────────────────────────────
+async function callTool(name, args) {
+  switch (name) {
+    case 'recall':      return handleRecall(args);
+    case 'add_message': return handleAddMessage(args);
+    case 'end':         return handleEnd();
+    default:            return callProxyTool(name, args);
+  }
+}
+
+// ── Init / Shutdown lifecycle ───────────────────────────────────────────
+async function initSession() {
+  _httpUrl = getHttpUrl();
+  const mode = getPluginMode();
+  const _log = (msg) => process.stderr.write(`[opencortex-mcp] ${msg}\n`);
+
+  if (mode === 'local') {
+    const result = await startLocalHttpServer(_httpUrl, _log);
+    _httpPid = result.pid;
+    if (!result.ready) {
+      _log('WARNING: HTTP server not ready — tools may fail');
+    }
+  } else {
+    const ok = await healthCheck(_httpUrl);
+    if (!ok) {
+      _log(`WARNING: remote server unreachable at ${_httpUrl}`);
+    }
+  }
+
+  // Generate session ID
+  _sessionId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+  // Register session on server (best-effort)
+  try {
+    await httpPost(`${_httpUrl}/api/v1/session/begin`, {
+      session_id: _sessionId,
+    }, 5000);
+  } catch {
+    // best-effort
+  }
+
+  _initialized = true;
+  _log(`session ${_sessionId} (${mode} mode)`);
+}
+
+async function shutdown() {
+  const _log = (msg) => process.stderr.write(`[opencortex-mcp] ${msg}\n`);
+
+  if (_initialized && _sessionId) {
+    try {
+      await httpContextCall({
+        session_id: _sessionId,
+        phase: 'end',
+      });
+      _log('session ended');
+    } catch (err) {
+      _log(`session end failed: ${err.message}`);
+    }
+  }
+
+  if (_httpPid > 0 && getPluginMode() === 'local') {
+    try {
+      process.kill(_httpPid, 'SIGTERM');
+    } catch {
+      // already exited
+    }
+  }
 }
 
 // ── JSON-RPC stdio transport ───────────────────────────────────────────
@@ -183,11 +305,15 @@ async function handleMessage(msg) {
       return jsonrpcResult(id, {
         protocolVersion: '2024-11-05',
         capabilities: { tools: {} },
-        serverInfo: { name: 'opencortex', version: '0.4.2' },
+        serverInfo: { name: 'opencortex', version: '0.5.0' },
       });
 
     case 'notifications/initialized':
-      return; // no response needed
+      // Trigger session init in background (don't block the notification)
+      initSession().catch(err => {
+        process.stderr.write(`[opencortex-mcp] init error: ${err.message}\n`);
+      });
+      return;
 
     case 'tools/list':
       return jsonrpcResult(id, {
@@ -220,10 +346,17 @@ async function handleMessage(msg) {
 // ── Main loop ──────────────────────────────────────────────────────────
 async function main() {
   ensureDefaultConfig();
+
+  // Graceful shutdown on signals
+  const onExit = () => {
+    shutdown().finally(() => process.exit(0));
+  };
+  process.on('SIGTERM', onExit);
+  process.on('SIGINT', onExit);
+
   let buffer = '';
   for await (const chunk of process.stdin) {
     buffer += chunk.toString();
-    // Process complete lines
     let nl;
     while ((nl = buffer.indexOf('\n')) !== -1) {
       const line = buffer.slice(0, nl).trim();
@@ -237,6 +370,9 @@ async function main() {
       }
     }
   }
+
+  // stdin closed — shutdown
+  await shutdown();
 }
 
 main();

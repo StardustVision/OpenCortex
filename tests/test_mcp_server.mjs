@@ -2,7 +2,7 @@
  * MCP Server tests for the Node.js stdio MCP proxy.
  *
  * Requires a running HTTP server on port 8921.
- * Run: node tests/test_mcp_server.mjs
+ * Run: node --test tests/test_mcp_server.mjs
  */
 import { spawn } from 'node:child_process';
 import { describe, it, before, after } from 'node:test';
@@ -48,7 +48,7 @@ async function waitForServer(maxWaitMs = 15000) {
   return false;
 }
 
-/** Send a JSON-RPC request to the MCP server and return the response. */
+/** Create MCP client that spawns the MCP server process. */
 function createMcpClient() {
   const child = spawn('node', [MCP_SERVER], {
     cwd: PROJECT_ROOT,
@@ -57,7 +57,7 @@ function createMcpClient() {
   });
 
   let buffer = '';
-  const pending = new Map(); // id → { resolve, reject }
+  const pending = new Map(); // id -> { resolve, reject }
   let nextId = 1;
 
   child.stdout.on('data', (chunk) => {
@@ -98,7 +98,23 @@ function createMcpClient() {
       const res = await this.request('tools/call', { name, arguments: args });
       if (res.error) throw new Error(res.error.message);
       const text = res.result?.content?.[0]?.text;
-      return text ? JSON.parse(text) : res.result;
+      if (!text) return res.result;
+      // Check for tool-level error
+      if (res.result?.isError) throw new Error(text);
+      try { return JSON.parse(text); } catch { return text; }
+    },
+    async init() {
+      // Initialize + wait for notifications/initialized
+      await this.request('initialize', {
+        protocolVersion: '2024-11-05',
+        capabilities: {},
+        clientInfo: { name: 'test', version: '1.0' },
+      });
+      // Send notifications/initialized (no response expected)
+      const msg = JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} }) + '\n';
+      child.stdin.write(msg);
+      // Give the server time to run initSession()
+      await new Promise(r => setTimeout(r, 2000));
     },
     close() {
       child.stdin.end();
@@ -149,26 +165,36 @@ describe('MCP Server (Node.js stdio proxy)', async () => {
         clientInfo: { name: 'test', version: '1.0' },
       });
       assert.equal(initRes.result.serverInfo.name, 'opencortex');
+      assert.equal(initRes.result.serverInfo.version, '0.5.0');
 
       const toolsRes = await client.request('tools/list');
       const names = toolsRes.result.tools.map(t => t.name);
       for (const expected of [
-        'memory_store', 'memory_batch_store', 'memory_search', 'memory_feedback', 'memory_decay',
+        'store', 'batch_store', 'search', 'feedback', 'decay',
         'system_status',
-        'session_begin', 'session_message', 'session_end',
+        'recall', 'add_message', 'end',
       ]) {
         assert.ok(names.includes(expected), `Missing tool: ${expected}`);
       }
-      assert.equal(names.length, 9, 'Expected 9 tools');
+      assert.equal(names.length, 9, `Expected 9 tools, got ${names.length}: ${names.join(', ')}`);
+
+      // Verify old tools are NOT present
+      for (const removed of [
+        'memory_store', 'memory_batch_store', 'memory_search', 'memory_feedback', 'memory_decay',
+        'memory_context', 'session_begin', 'session_message', 'session_end',
+      ]) {
+        assert.ok(!names.includes(removed), `Tool should be removed: ${removed}`);
+      }
     } finally {
       client.close();
     }
   });
 
-  it('02 memory_store', async () => {
+  it('02 store', async () => {
     const client = createMcpClient();
     try {
-      const data = await client.callTool('memory_store', {
+      await client.init();
+      const data = await client.callTool('store', {
         abstract: 'User prefers dark theme',
         category: 'preferences',
       });
@@ -180,15 +206,16 @@ describe('MCP Server (Node.js stdio proxy)', async () => {
     }
   });
 
-  it('03 memory_search', async () => {
+  it('03 search', async () => {
     const client = createMcpClient();
     try {
+      await client.init();
       // Store then search
-      await client.callTool('memory_store', {
+      await client.callTool('store', {
         abstract: 'Project uses TypeScript and React',
         category: 'tech',
       });
-      const data = await client.callTool('memory_search', {
+      const data = await client.callTool('search', {
         query: 'What tech stack does the project use?',
         limit: 5,
       });
@@ -199,13 +226,14 @@ describe('MCP Server (Node.js stdio proxy)', async () => {
     }
   });
 
-  it('04 memory_feedback', async () => {
+  it('04 feedback', async () => {
     const client = createMcpClient();
     try {
-      const stored = await client.callTool('memory_store', {
+      await client.init();
+      const stored = await client.callTool('store', {
         abstract: 'Important design decision',
       });
-      const fb = await client.callTool('memory_feedback', {
+      const fb = await client.callTool('feedback', {
         uri: stored.uri,
         reward: 1.0,
       });
@@ -219,6 +247,7 @@ describe('MCP Server (Node.js stdio proxy)', async () => {
   it('05 system_status(stats)', async () => {
     const client = createMcpClient();
     try {
+      await client.init();
       const data = await client.callTool('system_status', { type: 'stats' });
       assert.ok('tenant_id' in data);
       assert.ok('storage' in data);
@@ -227,10 +256,11 @@ describe('MCP Server (Node.js stdio proxy)', async () => {
     }
   });
 
-  it('06 memory_decay', async () => {
+  it('06 decay', async () => {
     const client = createMcpClient();
     try {
-      const data = await client.callTool('memory_decay');
+      await client.init();
+      const data = await client.callTool('decay');
       assert.ok('records_processed' in data);
     } finally {
       client.close();
@@ -240,6 +270,7 @@ describe('MCP Server (Node.js stdio proxy)', async () => {
   it('07 system_status(health)', async () => {
     const client = createMcpClient();
     try {
+      await client.init();
       const data = await client.callTool('system_status', { type: 'health' });
       assert.ok(data.initialized);
       assert.ok(data.storage);
@@ -249,9 +280,10 @@ describe('MCP Server (Node.js stdio proxy)', async () => {
     }
   });
 
-  it('08 full pipeline: store → search → feedback → decay', async () => {
+  it('08 full pipeline: store -> search -> feedback -> decay', async () => {
     const client = createMcpClient();
     try {
+      await client.init();
       // Store
       const uris = [];
       for (const text of [
@@ -259,31 +291,69 @@ describe('MCP Server (Node.js stdio proxy)', async () => {
         'Team uses PostgreSQL for production',
         'Deploy via GitHub Actions CI/CD',
       ]) {
-        const r = await client.callTool('memory_store', {
+        const r = await client.callTool('store', {
           abstract: text, category: 'general',
         });
         uris.push(r.uri);
       }
 
       // Search
-      const search = await client.callTool('memory_search', {
+      const searchResult = await client.callTool('search', {
         query: 'database', limit: 3,
       });
-      assert.ok(search.total > 0, 'Should find results');
+      assert.ok(searchResult.total > 0, 'Should find results');
 
       // Feedback
-      const fb = await client.callTool('memory_feedback', {
+      const fb = await client.callTool('feedback', {
         uri: uris[0], reward: 1.0,
       });
       assert.equal(fb.status, 'ok');
 
       // Decay
-      const decay = await client.callTool('memory_decay');
-      assert.ok(decay.records_processed >= 0);
+      const decayResult = await client.callTool('decay');
+      assert.ok(decayResult.records_processed >= 0);
 
       // Health
       const health = await client.callTool('system_status', { type: 'health' });
       assert.ok(health.initialized);
+    } finally {
+      client.close();
+    }
+  });
+
+  it('09 lifecycle: recall -> add_message -> end', async () => {
+    const client = createMcpClient();
+    try {
+      await client.init();
+
+      // Store a memory first for recall to find
+      await client.callTool('store', {
+        abstract: 'The deploy pipeline uses Docker containers',
+        category: 'workflows',
+      });
+
+      // Recall
+      const recallResult = await client.callTool('recall', {
+        query: 'How do we deploy?',
+        max_items: 3,
+      });
+      assert.ok('memory' in recallResult, 'recall should return memory array');
+      assert.ok('knowledge' in recallResult, 'recall should return knowledge array');
+      assert.ok('instructions' in recallResult, 'recall should return instructions');
+      assert.ok('turn_id' in recallResult, 'recall should return turn_id');
+
+      // Add message
+      const commitResult = await client.callTool('add_message', {
+        user_message: 'How do we deploy?',
+        assistant_response: 'We use Docker containers for deployment.',
+      });
+      assert.ok(commitResult.accepted, 'commit should be accepted');
+      assert.ok(commitResult.turn_id, 'commit should return turn_id');
+
+      // End
+      const endResult = await client.callTool('end', {});
+      assert.ok(endResult.status, 'end should return status');
+      assert.ok('total_turns' in endResult, 'end should return total_turns');
     } finally {
       client.close();
     }

@@ -27,7 +27,7 @@ Core subsystems:
 - Embedding: Local (multilingual-e5-large) / Volcengine / OpenAI-compatible
 - Reranking: Local (jina-reranker-v2-base-multilingual) / API
 - HTTP: FastAPI + uvicorn + httpx
-- MCP: Node.js stdio proxy (10 tools → HTTP API)
+- MCP: Node.js stdio proxy (9 tools → HTTP API)
 - Tests: unittest (140+ Python) + node:test (8 Node.js MCP)
 
 ## Directory Structure
@@ -70,18 +70,16 @@ src/opencortex/
   utils/
     uri.py                       # CortexURI tenant-isolated URI scheme
 
-plugins/opencortex-memory/       # Claude Code plugin (pure Node.js)
-  hooks/run.mjs                  # Hook unified entry point
-  hooks/handlers/*.mjs           # 4 hook handlers (session-start, user-prompt-submit, stop, session-end)
-  lib/common.mjs                 # Config discovery, state, uv/python detection
+plugins/opencortex-memory/       # MCP plugin (pure Node.js, no hooks)
+  lib/common.mjs                 # Config discovery, state, uv/python detection, server launcher
   lib/http-client.mjs            # Native fetch wrapper + buildClientHeaders()
-  lib/transcript.mjs             # JSONL parsing
-  lib/mcp-server.mjs             # MCP stdio server (10 tools)
+  lib/transcript.mjs             # JSONL parsing (diagnostic utility)
+  lib/mcp-server.mjs             # MCP stdio server (9 tools + session lifecycle)
   bin/oc-cli.mjs                 # CLI tool
 
 tests/
   test_e2e_phase1.py             # 24 E2E tests
-  test_mcp_server.mjs            # 8 MCP tests (Node.js)
+  test_mcp_server.mjs            # 9 MCP tests (Node.js)
   test_write_dedup.py            # Write dedup tests
   test_context_manager.py        # Memory Context Protocol tests (8 scenarios)
   test_alpha_*.py                # Cortex Alpha component tests
@@ -105,7 +103,6 @@ tests/
 
 ```
 MCP path:   Agent → node mcp-server.mjs (stdio) → fetch + headers → HTTP Server (FastAPI) → Orchestrator → Qdrant
-Hooks path: Agent → node run.mjs <hook> → fetch + headers → HTTP Server
 
 Headers:    mcp.json → buildClientHeaders() → X-Tenant-ID, X-User-ID
             → RequestContextMiddleware → contextvars → get_effective_identity()
@@ -114,10 +111,10 @@ Headers:    mcp.json → buildClientHeaders() → X-Tenant-ID, X-User-ID
 ### Memory Context Protocol
 
 ```
-memory_context(prepare)  → ContextManager → IntentRouter + search() + knowledge_search()
+recall (prepare)         → ContextManager → IntentRouter + search() + knowledge_search()
                            → returns { memory, knowledge, instructions }
-memory_context(commit)   → ContextManager → Observer.record_batch() + async RL reward
-memory_context(end)      → ContextManager → orchestrator.session_end()
+add_message (commit)     → ContextManager → Observer.record_batch() + async RL reward
+end (end)                → ContextManager → orchestrator.session_end()
                            → Observer.flush → TraceSplitter → TraceStore → Archivist
 ```
 
@@ -149,7 +146,7 @@ Search returns L0/L1 from Qdrant (zero filesystem I/O). L2 requires a CortexFS r
 
 ### MCP Server
 
-Pure Node.js stdio proxy. Claude Code manages its lifecycle via `.mcp.json`. The server translates MCP tool calls into HTTP requests to the FastAPI server.
+Pure Node.js stdio proxy with built-in session lifecycle management. The MCP client manages its lifecycle via `.mcp.json`. The server translates MCP tool calls into HTTP requests to the FastAPI server. Session state (recall/add_message/end) is managed internally — no hooks required.
 
 ## HTTP Server
 

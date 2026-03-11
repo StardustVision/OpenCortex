@@ -1,8 +1,8 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync, accessSync, constants } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, accessSync, constants, openSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { execSync } from 'node:child_process';
+import { execSync, spawn } from 'node:child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -279,4 +279,54 @@ export function buildContext(input) {
     mode: getPluginMode(),
     httpUrl: getHttpUrl(),
   };
+}
+
+// ── Local HTTP server launcher ──────────────────────────────────────────
+/**
+ * Start the local HTTP server if not already running.
+ * - Health-checks first; if already running, returns immediately.
+ * - Spawns uv/python detached process, polls up to 10s.
+ * @param {string} httpUrl - e.g. "http://127.0.0.1:8921"
+ * @param {(msg: string) => void} [log] - optional logger (defaults to stderr)
+ * @returns {{ pid: number, ready: boolean }}
+ */
+export async function startLocalHttpServer(httpUrl, log) {
+  const _log = log || ((msg) => process.stderr.write(`[opencortex] ${msg}\n`));
+
+  // Already running?
+  const { healthCheck } = await import('./http-client.mjs');
+  if (await healthCheck(httpUrl)) {
+    return { pid: 0, ready: true };
+  }
+
+  const httpPort = getMcpConfig('local.http_port', 8921);
+  ensureStateDir();
+  const logPath = join(PROJECT_DIR, '.opencortex', 'memory', 'http_server.log');
+  const logFd = openSync(logPath, 'a');
+
+  // Prefer uv, fallback to python
+  const uv = findUv();
+  const spawnCmd = uv
+    ? [uv, ['run', 'opencortex-server', '--host', '127.0.0.1', '--port', String(httpPort), '--log-level', 'WARNING']]
+    : [findPython(), ['-m', 'opencortex.http', '--host', '127.0.0.1', '--port', String(httpPort), '--log-level', 'WARNING']];
+
+  const child = spawn(spawnCmd[0], spawnCmd[1], {
+    cwd: PROJECT_DIR,
+    detached: true,
+    stdio: ['ignore', logFd, logFd],
+  });
+  const pid = child.pid || 0;
+  child.unref();
+
+  // Poll up to 10s
+  for (let i = 0; i < 10; i++) {
+    await new Promise(r => setTimeout(r, 1000));
+    if (await healthCheck(httpUrl)) {
+      _log(`HTTP server ready on port ${httpPort} (pid ${pid})`);
+      return { pid, ready: true };
+    }
+  }
+
+  _log(`HTTP server failed to start on port ${httpPort}`);
+  return { pid, ready: false };
 }

@@ -21,7 +21,7 @@ from opencortex.http.request_context import (
     set_request_identity,
 )
 from opencortex.retrieve.intent_router import IntentRouter
-from opencortex.retrieve.types import DetailLevel, SearchIntent
+from opencortex.retrieve.types import ContextType, DetailLevel, SearchIntent
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +154,9 @@ class ContextManager:
         max_items = min(config.get("max_items", 5), 20)
         detail_level = config.get("detail_level", "l1")
         recall_mode = config.get("recall_mode", "auto")
+        category = config.get("category")
+        context_type_filter = config.get("context_type")
+        include_knowledge = config.get("include_knowledge", True)
         sk = self._make_session_key(tenant_id, user_id, session_id)
 
         # 1. Idempotent: cache hit → return directly
@@ -209,24 +212,30 @@ class ContextManager:
         if should_recall:
             # 5a. Memory search via orchestrator (includes tenant isolation + RL fusion)
             try:
-                find_result = await self._orchestrator.search(
-                    query=query,
-                    limit=max_items,
-                    detail_level=detail_level,
-                )
+                search_kwargs: Dict[str, Any] = {
+                    "query": query,
+                    "limit": max_items,
+                    "detail_level": detail_level,
+                }
+                if context_type_filter:
+                    search_kwargs["context_type"] = ContextType(context_type_filter)
+                if category:
+                    search_kwargs["metadata_filter"] = {"category": category}
+                find_result = await self._orchestrator.search(**search_kwargs)
                 memory_items = self._format_memories(find_result, detail_level)
             except Exception as exc:
                 logger.warning("[ContextManager] Memory search failed: %s", exc)
 
-            # 5b. Knowledge search via orchestrator
-            try:
-                k_result = await self._orchestrator.knowledge_search(
-                    query=query,
-                    limit=min(3, max_items),
-                )
-                knowledge_items = self._format_knowledge(k_result.get("results", []))
-            except Exception as exc:
-                logger.warning("[ContextManager] Knowledge search failed: %s", exc)
+            # 5b. Knowledge search via orchestrator (controlled by include_knowledge)
+            if include_knowledge:
+                try:
+                    k_result = await self._orchestrator.knowledge_search(
+                        query=query,
+                        limit=min(3, max_items),
+                    )
+                    knowledge_items = self._format_knowledge(k_result.get("results", []))
+                except Exception as exc:
+                    logger.warning("[ContextManager] Knowledge search failed: %s", exc)
 
         # 6. Build instructions
         instructions = self._build_instructions(intent, memory_items, knowledge_items)
