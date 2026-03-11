@@ -110,10 +110,19 @@ def save_token_record(
     tenant_id: str,
     user_id: str,
 ) -> None:
-    """Append a new token record to ``{data_root}/tokens.json``."""
+    """Save a token record to ``{data_root}/tokens.json``.
+
+    Deduplicates by (tenant_id, user_id) — if a record with the same
+    identity already exists, it is replaced with the new token.
+    """
     from datetime import datetime, timezone
 
     records = load_token_records(data_root)
+    # Remove existing record for the same tenant_id + user_id
+    records = [
+        r for r in records
+        if not (r["tenant_id"] == tenant_id and r["user_id"] == user_id)
+    ]
     records.append({
         "token": token,
         "tenant_id": tenant_id,
