@@ -757,6 +757,12 @@ class MemoryOrchestrator:
             user=effective_user,
         )
 
+        # Override vectorization with expanded text (abstract + keywords)
+        # This gives keyword-rich memories higher retrieval density.
+        if keywords:
+            from opencortex.core.context import Vectorize
+            ctx.vectorize = Vectorize(f"{abstract} {keywords}")
+
         # Embed (offload sync embedder to thread so we don't block the loop)
         result = None
         if self._embedder:
