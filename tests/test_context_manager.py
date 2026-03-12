@@ -332,6 +332,44 @@ class TestContextManager(unittest.TestCase):
 
         self._run(orch.close())
 
+    # -----------------------------------------------------------------
+    # 9. Prepare reuses routed intent inside search
+    # -----------------------------------------------------------------
+
+    def test_09_prepare_routes_once(self):
+        """prepare should not invoke IntentRouter twice for the same query."""
+        llm_calls = []
+
+        async def fake_llm(_prompt: str) -> str:
+            llm_calls.append(_prompt)
+            return (
+                '{"intent_type":"recent_recall","top_k":5,'
+                '"detail_level":"l1","time_scope":"all","should_recall":true}'
+            )
+
+        orch = MemoryOrchestrator(
+            config=self.config,
+            storage=self.storage,
+            embedder=self.embedder,
+            llm_completion=fake_llm,
+        )
+        self._run(orch.init())
+        cm = orch._context_manager
+
+        result = self._run(cm.handle(
+            session_id="sess_009",
+            phase="prepare",
+            tenant_id="testteam",
+            user_id="alice",
+            turn_id="t1",
+            messages=[{"role": "user", "content": "帮我回忆一下最近讨论的偏好"}],
+        ))
+
+        self.assertIn("intent", result)
+        self.assertEqual(len(llm_calls), 1)
+
+        self._run(orch.close())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -158,13 +158,17 @@ class ContextManager:
         context_type_filter = config.get("context_type")
         include_knowledge = config.get("include_knowledge", True)
         sk = self._make_session_key(tenant_id, user_id, session_id)
+        prepare_started = time.monotonic()
 
         # 1. Idempotent: cache hit → return directly
         cache_key: CacheKey = (tenant_id, user_id, session_id, turn_id)
         cached = self._get_cached_prepare(cache_key)
         if cached is not None:
             self._touch_session(sk)
-            logger.debug("[ContextManager] prepare CACHE_HIT sid=%s tid=%s", session_id, turn_id)
+            logger.debug(
+                "[ContextManager] prepare CACHE_HIT sid=%s turn=%s tenant=%s user=%s",
+                session_id, turn_id, tenant_id, user_id,
+            )
             return cached
 
         # 2. Session auto-create (session-level lock prevents concurrent begin)
@@ -183,6 +187,7 @@ class ContextManager:
 
         # 4. Intent analysis (2s timeout, degrade to default on failure)
         intent = SearchIntent()
+        intent_started = time.monotonic()
         if recall_mode != "never":
             try:
                 router = IntentRouter(
@@ -193,12 +198,15 @@ class ContextManager:
                 )
             except asyncio.TimeoutError:
                 logger.warning(
-                    "[ContextManager] IntentRouter timeout for turn %s", turn_id,
+                    "[ContextManager] IntentRouter timeout sid=%s turn=%s tenant=%s user=%s",
+                    session_id, turn_id, tenant_id, user_id,
                 )
             except Exception as exc:
                 logger.warning(
-                    "[ContextManager] IntentRouter failed: %s", exc,
+                    "[ContextManager] IntentRouter failed sid=%s turn=%s tenant=%s user=%s: %s",
+                    session_id, turn_id, tenant_id, user_id, exc,
                 )
+        intent_ms = int((time.monotonic() - intent_started) * 1000)
 
         should_recall = (
             recall_mode == "always"
@@ -208,34 +216,59 @@ class ContextManager:
         # 5. Retrieval
         memory_items: List[Dict[str, Any]] = []
         knowledge_items: List[Dict[str, Any]] = []
+        memory_ms = 0
+        knowledge_ms = 0
 
         if should_recall:
-            # 5a. Memory search via orchestrator (includes tenant isolation + RL fusion)
-            try:
-                search_kwargs: Dict[str, Any] = {
-                    "query": query,
-                    "limit": max_items,
-                    "detail_level": detail_level,
-                }
-                if context_type_filter:
-                    search_kwargs["context_type"] = ContextType(context_type_filter)
-                if category:
-                    search_kwargs["metadata_filter"] = {"category": category}
-                find_result = await self._orchestrator.search(**search_kwargs)
-                memory_items = self._format_memories(find_result, detail_level)
-            except Exception as exc:
-                logger.warning("[ContextManager] Memory search failed: %s", exc)
+            async def _memory_search() -> Tuple[List[Dict[str, Any]], int]:
+                started = time.monotonic()
+                try:
+                    search_kwargs: Dict[str, Any] = {
+                        "query": query,
+                        "limit": max_items,
+                        "detail_level": detail_level,
+                        "search_intent": intent,
+                    }
+                    if context_type_filter:
+                        search_kwargs["context_type"] = ContextType(context_type_filter)
+                    if category:
+                        search_kwargs["metadata_filter"] = {"category": category}
+                    find_result = await self._orchestrator.search(**search_kwargs)
+                    return self._format_memories(find_result, detail_level), int(
+                        (time.monotonic() - started) * 1000,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[ContextManager] Memory search failed sid=%s turn=%s tenant=%s user=%s: %s",
+                        session_id, turn_id, tenant_id, user_id, exc,
+                    )
+                    return [], int((time.monotonic() - started) * 1000)
 
-            # 5b. Knowledge search via orchestrator (controlled by include_knowledge)
-            if include_knowledge:
+            async def _knowledge_search() -> Tuple[List[Dict[str, Any]], int]:
+                started = time.monotonic()
                 try:
                     k_result = await self._orchestrator.knowledge_search(
                         query=query,
                         limit=min(3, max_items),
                     )
-                    knowledge_items = self._format_knowledge(k_result.get("results", []))
+                    return self._format_knowledge(k_result.get("results", [])), int(
+                        (time.monotonic() - started) * 1000,
+                    )
                 except Exception as exc:
-                    logger.warning("[ContextManager] Knowledge search failed: %s", exc)
+                    logger.warning(
+                        "[ContextManager] Knowledge search failed sid=%s turn=%s tenant=%s user=%s: %s",
+                        session_id, turn_id, tenant_id, user_id, exc,
+                    )
+                    return [], int((time.monotonic() - started) * 1000)
+
+            coros = [_memory_search()]
+            if include_knowledge:
+                coros.append(_knowledge_search())
+
+            results = await asyncio.gather(*coros)
+            memory_items, memory_ms = results[0]
+            if include_knowledge and len(results) > 1:
+                knowledge_items, knowledge_ms = results[1]
 
         # 6. Build instructions
         instructions = self._build_instructions(intent, memory_items, knowledge_items)
@@ -253,9 +286,23 @@ class ContextManager:
             "instructions": instructions,
         }
 
+        total_ms = int((time.monotonic() - prepare_started) * 1000)
         logger.info(
-            "[ContextManager] prepare sid=%s tid=%s intent=%s recall=%d latency_placeholder",
-            session_id, turn_id, intent.intent_type, len(memory_items),
+            "[ContextManager] prepare sid=%s turn=%s tenant=%s user=%s "
+            "intent=%s recall=%s memory=%d knowledge=%d "
+            "timing_ms(total=%d intent=%d memory=%d knowledge=%d)",
+            session_id,
+            turn_id,
+            tenant_id,
+            user_id,
+            intent.intent_type,
+            should_recall,
+            len(memory_items),
+            len(knowledge_items),
+            total_ms,
+            intent_ms,
+            memory_ms,
+            knowledge_ms,
         )
         self._cache_prepare(cache_key, sk, result)
         return result
@@ -278,7 +325,10 @@ class ContextManager:
 
         # Idempotent: same turn_id already committed → duplicate
         if turn_id in self._committed_turns.get(sk, set()):
-            logger.debug("[ContextManager] commit DUPLICATE sid=%s tid=%s", session_id, turn_id)
+            logger.debug(
+                "[ContextManager] commit DUPLICATE sid=%s turn=%s tenant=%s user=%s",
+                session_id, turn_id, tenant_id, user_id,
+            )
             return {
                 "accepted": True,
                 "write_status": "duplicate",
@@ -292,7 +342,9 @@ class ContextManager:
         except Exception as exc:
             observer_ok = False
             logger.warning(
-                "[ContextManager] Observer record failed: %s — writing to fallback", exc,
+                "[ContextManager] Observer record failed sid=%s turn=%s tenant=%s user=%s: %s "
+                "— writing to fallback",
+                session_id, turn_id, tenant_id, user_id, exc,
             )
             self._write_fallback(session_id, turn_id, messages, tenant_id, user_id)
 
@@ -310,12 +362,14 @@ class ContextManager:
         write_status = "ok" if observer_ok else "fallback"
         if not observer_ok:
             logger.warning(
-                "[ContextManager] commit FALLBACK sid=%s tid=%s", session_id, turn_id,
+                "[ContextManager] commit FALLBACK sid=%s turn=%s tenant=%s user=%s",
+                session_id, turn_id, tenant_id, user_id,
             )
         else:
             logger.info(
-                "[ContextManager] commit sid=%s tid=%s messages=%d cited=%d",
-                session_id, turn_id, len(messages),
+                "[ContextManager] commit sid=%s turn=%s tenant=%s user=%s messages=%d cited=%d",
+                session_id, turn_id, tenant_id, user_id,
+                len(messages),
                 len(cited_uris) if cited_uris else 0,
             )
 
@@ -354,7 +408,10 @@ class ContextManager:
             traces = result.get("alpha_traces", 0)
             knowledge_candidates = result.get("knowledge_candidates", 0)
         except Exception as exc:
-            logger.warning("[ContextManager] session_end failed: %s", exc)
+            logger.warning(
+                "[ContextManager] session_end failed sid=%s tenant=%s user=%s: %s",
+                session_id, tenant_id, user_id, exc,
+            )
             status = "partial"
 
         duration_ms = int((time.monotonic() - start_time) * 1000)
@@ -363,8 +420,8 @@ class ContextManager:
         self._cleanup_session(sk)
 
         logger.info(
-            "[ContextManager] end sid=%s turns=%d traces=%d latency=%dms",
-            session_id, total_turns, traces, duration_ms,
+            "[ContextManager] end sid=%s tenant=%s user=%s turns=%d traces=%d latency=%dms",
+            session_id, tenant_id, user_id, total_turns, traces, duration_ms,
         )
 
         return {

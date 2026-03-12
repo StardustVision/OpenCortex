@@ -704,6 +704,12 @@ class MemoryOrchestrator:
             ``"skipped"``.
         """
         self._ensure_init()
+        add_started = asyncio.get_running_loop().time()
+        derive_layers_ms = 0
+        embed_ms = 0
+        dedup_ms = 0
+        upsert_ms = 0
+        fs_write_ms = 0
 
         # Build URI if not provided
         if not uri:
@@ -717,10 +723,14 @@ class MemoryOrchestrator:
         # Derive L0/L1/keywords from L2 in a single structured LLM call
         keywords = ""
         if content and is_leaf:
+            derive_started = asyncio.get_running_loop().time()
             layers = await self._derive_layers(
                 user_abstract=abstract,
                 content=content,
                 user_overview=overview,
+            )
+            derive_layers_ms = int(
+                (asyncio.get_running_loop().time() - derive_started) * 1000,
             )
             if not abstract:
                 abstract = layers["abstract"]
@@ -751,14 +761,17 @@ class MemoryOrchestrator:
         result = None
         if self._embedder:
             loop = asyncio.get_event_loop()
+            embed_started = asyncio.get_running_loop().time()
             result = await loop.run_in_executor(
                 None, self._embedder.embed, ctx.get_vectorization_text()
             )
+            embed_ms = int((asyncio.get_running_loop().time() - embed_started) * 1000)
             ctx.vector = result.dense_vector
 
         # --- Write-time semantic dedup ---
         effective_category = category or self._extract_category_from_uri(uri)
         if dedup and ctx.vector and is_leaf:
+            dedup_started = asyncio.get_running_loop().time()
             dup = await self._check_duplicate(
                 vector=ctx.vector,
                 category=effective_category,
@@ -767,13 +780,27 @@ class MemoryOrchestrator:
                 tid=tid,
                 uid=uid,
             )
+            dedup_ms = int((asyncio.get_running_loop().time() - dedup_started) * 1000)
             if dup:
                 existing_uri, existing_score = dup
+                total_ms = int((asyncio.get_running_loop().time() - add_started) * 1000)
                 if effective_category in MERGEABLE_CATEGORIES:
                     await self._merge_into(existing_uri, abstract, content)
                     logger.info(
-                        "[MemoryOrchestrator] Dedup merged into %s (score=%.3f)",
-                        existing_uri, existing_score,
+                        "[MemoryOrchestrator] add tenant=%s user=%s uri=%s "
+                        "dedup_action=merged dedup_target=%s score=%.3f "
+                        "timing_ms(total=%d derive_layers=%d embed=%d dedup=%d upsert=%d fs_write=%d)",
+                        tid,
+                        uid,
+                        uri,
+                        existing_uri,
+                        existing_score,
+                        total_ms,
+                        derive_layers_ms,
+                        embed_ms,
+                        dedup_ms,
+                        upsert_ms,
+                        fs_write_ms,
                     )
                     ctx.uri = existing_uri
                     ctx.meta["dedup_action"] = "merged"
@@ -781,8 +808,20 @@ class MemoryOrchestrator:
                     return ctx
                 else:
                     logger.info(
-                        "[MemoryOrchestrator] Dedup skipped, duplicate of %s (score=%.3f)",
-                        existing_uri, existing_score,
+                        "[MemoryOrchestrator] add tenant=%s user=%s uri=%s "
+                        "dedup_action=skipped dedup_target=%s score=%.3f "
+                        "timing_ms(total=%d derive_layers=%d embed=%d dedup=%d upsert=%d fs_write=%d)",
+                        tid,
+                        uid,
+                        uri,
+                        existing_uri,
+                        existing_score,
+                        total_ms,
+                        derive_layers_ms,
+                        embed_ms,
+                        dedup_ms,
+                        upsert_ms,
+                        fs_write_ms,
                     )
                     ctx.uri = existing_uri
                     ctx.meta["dedup_action"] = "skipped"
@@ -818,9 +857,12 @@ class MemoryOrchestrator:
             expires = datetime.now(timezone.utc) + timedelta(hours=24)
             record["ttl_expires_at"] = expires.strftime("%Y-%m-%dT%H:%M:%SZ")
 
+        upsert_started = asyncio.get_running_loop().time()
         await self._storage.upsert(_CONTEXT_COLLECTION, record)
+        upsert_ms = int((asyncio.get_running_loop().time() - upsert_started) * 1000)
 
         # Write to filesystem (L0 abstract + L1 overview + L2 content)
+        fs_write_started = asyncio.get_running_loop().time()
         await self._fs.write_context(
             uri=uri,
             content=content,
@@ -828,9 +870,23 @@ class MemoryOrchestrator:
             overview=overview,
             is_leaf=is_leaf,
         )
+        fs_write_ms = int((asyncio.get_running_loop().time() - fs_write_started) * 1000)
 
         ctx.meta["dedup_action"] = "created"
-        logger.info("[MemoryOrchestrator] Added context: %s", uri)
+        total_ms = int((asyncio.get_running_loop().time() - add_started) * 1000)
+        logger.info(
+            "[MemoryOrchestrator] add tenant=%s user=%s uri=%s dedup_action=created "
+            "timing_ms(total=%d derive_layers=%d embed=%d dedup=%d upsert=%d fs_write=%d)",
+            tid,
+            uid,
+            uri,
+            total_ms,
+            derive_layers_ms,
+            embed_ms,
+            dedup_ms,
+            upsert_ms,
+            fs_write_ms,
+        )
         return ctx
 
     # ------------------------------------------------------------------
@@ -1037,6 +1093,7 @@ class MemoryOrchestrator:
         score_threshold: Optional[float] = None,
         metadata_filter: Optional[Dict[str, Any]] = None,
         detail_level: str = "l1",
+        search_intent: Optional[SearchIntent] = None,
     ) -> FindResult:
         """
         Search for relevant contexts.
@@ -1057,14 +1114,26 @@ class MemoryOrchestrator:
             FindResult with memories, resources, and skills.
         """
         self._ensure_init()
+        search_started = asyncio.get_running_loop().time()
+        tid, uid = get_effective_identity()
 
-        # Intent Router determines retrieval strategy
-        router = IntentRouter(llm_completion=self._llm_completion)
-        intent = await router.route(query, context_type)
+        # Allow callers that already performed routing to reuse the intent
+        # and avoid paying the LLM/classification cost twice.
+        intent = search_intent
+        intent_ms = 0
+        if intent is None:
+            intent_started = asyncio.get_running_loop().time()
+            router = IntentRouter(llm_completion=self._llm_completion)
+            intent = await router.route(query, context_type)
+            intent_ms = int((asyncio.get_running_loop().time() - intent_started) * 1000)
 
         # Gate: skip retrieval if intent says no recall needed
         if not intent.should_recall:
-            logger.debug("[search] should_recall=False, returning empty result")
+            total_ms = int((asyncio.get_running_loop().time() - search_started) * 1000)
+            logger.debug(
+                "[search] should_recall=False tenant=%s user=%s total_ms=%d",
+                tid, uid, total_ms,
+            )
             return FindResult(
                 memories=[], resources=[], skills=[],
                 search_intent=intent,
@@ -1107,7 +1176,6 @@ class MemoryOrchestrator:
         staging_exclude = {"op": "must_not", "field": "context_type", "conds": ["staging"]}
 
         # Scope-aware filter: return shared + user's private + legacy (no scope)
-        tid, uid = get_effective_identity()
         scope_filter = {"op": "or", "conds": [
             {"op": "must", "field": "scope", "conds": ["shared", ""]},
             {"op": "and", "conds": [
@@ -1150,6 +1218,7 @@ class MemoryOrchestrator:
         ]
 
         query_results = list(await asyncio.gather(*retrieval_coros))
+        retrieval_ms = int((asyncio.get_running_loop().time() - search_started) * 1000) - intent_ms
 
         result = self._aggregate_results(query_results)
         result.search_intent = intent
@@ -1165,6 +1234,20 @@ class MemoryOrchestrator:
         if all_matched:
             uris = [mc.uri for mc in all_matched]
             asyncio.create_task(self._resolve_and_update_access_stats(uris))
+
+        total_ms = int((asyncio.get_running_loop().time() - search_started) * 1000)
+        logger.info(
+            "[search] tenant=%s user=%s intent=%s queries=%d results=%d "
+            "timing_ms(total=%d intent=%d retrieval=%d)",
+            tid,
+            uid,
+            intent.intent_type,
+            len(typed_queries),
+            len(all_matched),
+            total_ms,
+            intent_ms,
+            max(retrieval_ms, 0),
+        )
 
         return result
 
