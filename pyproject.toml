@@ -21,6 +21,15 @@ dependencies = [
     "PyJWT>=2.8",
 ]
 
+[project.optional-dependencies]
+parsers = [
+    "python-docx>=1.0",
+    "openpyxl>=3.1",
+    "python-pptx>=0.6",
+    "pdfplumber>=0.10",
+    "ebooklib>=0.18",
+]
+
 [project.scripts]
 opencortex-mcp = "opencortex.mcp_server:main"
 opencortex-server = "opencortex.http.__main__:main"
