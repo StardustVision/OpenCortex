@@ -9,7 +9,9 @@ Layer 3: Memory Trigger (Agent reflection intent, output alongside LLM)
 
 import logging
 import re
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+import time
+from collections import OrderedDict
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from opencortex.prompts import build_router_prompt
 from opencortex.retrieve.types import (
@@ -82,11 +84,17 @@ _INTENT_DEFAULTS: Dict[str, Dict[str, Any]] = {
 # IntentRouter
 # =========================================================================
 
+_CACHE_TTL_SECONDS = 60
+_CACHE_MAX_SIZE = 128
+
+
 class IntentRouter:
     """Three-layer intent router: keywords -> LLM -> Memory Trigger."""
 
     def __init__(self, llm_completion: Optional[LLMCompletionCallable] = None):
         self._llm = llm_completion
+        # LRU cache: key -> (SearchIntent, timestamp)
+        self._cache: OrderedDict[str, Tuple["SearchIntent", float]] = OrderedDict()
 
     @staticmethod
     def _detect_hard_keywords(query: str) -> bool:
@@ -105,12 +113,15 @@ class IntentRouter:
         self,
         query: str,
         context_type: Optional[ContextType] = None,
+        session_context: Optional[Dict[str, Any]] = None,
     ) -> SearchIntent:
         """Route a query through the three-layer intent analysis pipeline.
 
         Args:
             query: User query text
             context_type: Optional context type restriction
+            session_context: Optional session context dict. When None, LLM
+                classification is skipped entirely (keyword-only path).
 
         Returns:
             SearchIntent with resolved parameters
@@ -123,17 +134,44 @@ class IntentRouter:
             return intent
 
         # Layer 2+3: LLM classification + Memory Trigger
-        if self._llm:
-            try:
-                llm_intent = await self._llm_classify(query, context_type)
-                if llm_intent:
-                    intent = self._merge(intent, llm_intent)
-            except Exception as exc:
-                logger.warning("[IntentRouter] LLM classification failed: %s", exc)
+        # Only when session_context is provided AND an LLM callable is available
+        if session_context is not None and self._llm:
+            # Check LRU cache first
+            cached = self._cache_get(query)
+            if cached is not None:
+                intent = self._merge(intent, cached)
+            else:
+                try:
+                    llm_intent = await self._llm_classify(query, context_type, session_context)
+                    if llm_intent:
+                        self._cache_put(query, llm_intent)
+                        intent = self._merge(intent, llm_intent)
+                except Exception as exc:
+                    logger.warning("[IntentRouter] LLM classification failed: %s", exc)
 
         # Build TypedQueries from intent
         intent.queries = self._build_queries(query, context_type, intent)
         return intent
+
+    def _cache_get(self, key: str) -> Optional["SearchIntent"]:
+        """Return cached SearchIntent if present and within TTL, else None."""
+        if key not in self._cache:
+            return None
+        intent, ts = self._cache[key]
+        if time.monotonic() - ts > _CACHE_TTL_SECONDS:
+            del self._cache[key]
+            return None
+        # Move to end (most recently used)
+        self._cache.move_to_end(key)
+        return intent
+
+    def _cache_put(self, key: str, intent: "SearchIntent") -> None:
+        """Insert or update a cache entry, evicting oldest if over maxsize."""
+        if key in self._cache:
+            self._cache.move_to_end(key)
+        self._cache[key] = (intent, time.monotonic())
+        while len(self._cache) > _CACHE_MAX_SIZE:
+            self._cache.popitem(last=False)
 
     def _keyword_extract(self, query: str) -> SearchIntent:
         """Layer 1: keyword matching for initial intent."""
@@ -183,7 +221,10 @@ class IntentRouter:
         )
 
     async def _llm_classify(
-        self, query: str, context_type: Optional[ContextType]
+        self,
+        query: str,
+        context_type: Optional[ContextType],
+        session_context: Optional[Dict[str, Any]] = None,
     ) -> Optional[SearchIntent]:
         """Layer 2+3: LLM semantic classification + Memory Trigger."""
         prompt = build_router_prompt(
@@ -221,6 +262,30 @@ class IntentRouter:
         if not isinstance(should_recall, bool):
             should_recall = True
 
+        # Parse multi-query array from LLM response (Task 15)
+        llm_queries: List[TypedQuery] = []
+        raw_queries = parsed.get("queries", [])
+        if isinstance(raw_queries, list):
+            for q in raw_queries:
+                if not isinstance(q, dict):
+                    continue
+                q_text = q.get("query", "")
+                if not q_text:
+                    continue
+                ct_str = q.get("context_type", "any")
+                try:
+                    ct = ContextType(ct_str)
+                except ValueError:
+                    ct = ContextType.ANY
+                q_intent = q.get("intent", itype)
+                llm_queries.append(TypedQuery(
+                    query=q_text,
+                    context_type=ct,
+                    intent=q_intent,
+                    priority=1,
+                    detail_level=dl,
+                ))
+
         return SearchIntent(
             intent_type=itype,
             top_k=top_k,
@@ -229,6 +294,7 @@ class IntentRouter:
             need_rerank=_INTENT_DEFAULTS.get(itype, {}).get("need_rerank", True),
             should_recall=should_recall,
             trigger_categories=trigger_categories,
+            queries=llm_queries,
         )
 
     def _merge(self, keyword_intent: SearchIntent, llm_intent: SearchIntent) -> SearchIntent:
@@ -246,6 +312,7 @@ class IntentRouter:
             should_recall=llm_intent.should_recall,
             trigger_categories=llm_intent.trigger_categories,
             lexical_boost=max(keyword_intent.lexical_boost, llm_intent.lexical_boost),
+            queries=llm_intent.queries,
         )
 
     def _build_queries(
@@ -254,23 +321,31 @@ class IntentRouter:
         context_type: Optional[ContextType],
         intent: SearchIntent,
     ) -> List[TypedQuery]:
-        """Build query list from intent, including trigger category queries."""
-        if context_type:
-            types = [context_type]
-        else:
-            # Single global query — no context_type filter
-            types = [ContextType.ANY]
+        """Build query list from intent, including trigger category queries.
 
-        queries = [
-            TypedQuery(
-                query=query,
-                context_type=ct,
-                intent=intent.intent_type,
-                priority=1,
-                detail_level=intent.detail_level,
-            )
-            for ct in types
-        ]
+        If the LLM returned a pre-built queries list (multi-query, Task 15),
+        use those as the base. Otherwise fall back to single-query construction.
+        """
+        # Use LLM-provided multi-query list when available
+        if intent.queries:
+            queries = list(intent.queries)
+        else:
+            if context_type:
+                types = [context_type]
+            else:
+                # Single global query — no context_type filter
+                types = [ContextType.ANY]
+
+            queries = [
+                TypedQuery(
+                    query=query,
+                    context_type=ct,
+                    intent=intent.intent_type,
+                    priority=1,
+                    detail_level=intent.detail_level,
+                )
+                for ct in types
+            ]
 
         # Memory Trigger: append extra category queries for triggered categories
         for cat in intent.trigger_categories:
