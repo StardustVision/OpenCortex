@@ -557,13 +557,22 @@ class HierarchicalRetriever:
 
             pre_filter_limit = max(limit * 2, 20)
 
+            if metadata_filter:
+                rec_dir_friendly = {"op": "or", "conds": [
+                    {"op": "must", "field": "is_leaf", "conds": [False]},
+                    metadata_filter,
+                ]}
+                rec_filter = merge_filter(
+                    {"op": "must", "field": "parent_uri", "conds": [current_uri]},
+                    rec_dir_friendly,
+                )
+            else:
+                rec_filter = {"op": "must", "field": "parent_uri", "conds": [current_uri]}
             results = await self.storage.search(
                 collection=collection,
                 query_vector=query_vector,
-                sparse_query_vector=sparse_query_vector,  # Pass sparse vector
-                filter=merge_filter(
-                    {"op": "must", "field": "parent_uri", "conds": [current_uri]}, metadata_filter
-                ),
+                sparse_query_vector=sparse_query_vector,
+                filter=rec_filter,
                 limit=pre_filter_limit,
                 text_query=text_query,
             )
@@ -732,10 +741,20 @@ class HierarchicalRetriever:
             parent_uris = [uri for uri, _ in frontier]
             frontier_scores = {uri: score for uri, score in frontier}
 
-            batch_filter = merge_filter(
-                {"op": "must", "field": "parent_uri", "conds": parent_uris},
-                metadata_filter,
-            )
+            # Directory records (is_leaf=False) have empty category by design,
+            # so they must bypass content filters (like category=X) to allow
+            # tree traversal. Leaf records still need to pass the full metadata_filter.
+            if metadata_filter:
+                dir_friendly = {"op": "or", "conds": [
+                    {"op": "must", "field": "is_leaf", "conds": [False]},
+                    metadata_filter,
+                ]}
+                batch_filter = merge_filter(
+                    {"op": "must", "field": "parent_uri", "conds": parent_uris},
+                    dir_friendly,
+                )
+            else:
+                batch_filter = {"op": "must", "field": "parent_uri", "conds": parent_uris}
             results = await self.storage.search(
                 collection=collection,
                 query_vector=query_vector,
@@ -775,10 +794,17 @@ class HierarchicalRetriever:
                 and uri not in visited_dirs
             ]
             if starved:
-                comp_filter = merge_filter(
-                    {"op": "must", "field": "parent_uri", "conds": starved},
-                    metadata_filter,
-                )
+                if metadata_filter:
+                    comp_dir_friendly = {"op": "or", "conds": [
+                        {"op": "must", "field": "is_leaf", "conds": [False]},
+                        metadata_filter,
+                    ]}
+                    comp_filter = merge_filter(
+                        {"op": "must", "field": "parent_uri", "conds": starved},
+                        comp_dir_friendly,
+                    )
+                else:
+                    comp_filter = {"op": "must", "field": "parent_uri", "conds": starved}
                 comp_results = await self.storage.search(
                     collection=collection,
                     query_vector=query_vector,
@@ -811,10 +837,17 @@ class HierarchicalRetriever:
                     if len(children_by_parent.get(uri, [])) < self.MIN_CHILDREN_PER_DIR
                 ]
                 for s_uri in still_starved:
-                    tiny_filter = merge_filter(
-                        {"op": "must", "field": "parent_uri", "conds": [s_uri]},
-                        metadata_filter,
-                    )
+                    if metadata_filter:
+                        tiny_dir_friendly = {"op": "or", "conds": [
+                            {"op": "must", "field": "is_leaf", "conds": [False]},
+                            metadata_filter,
+                        ]}
+                        tiny_filter = merge_filter(
+                            {"op": "must", "field": "parent_uri", "conds": [s_uri]},
+                            tiny_dir_friendly,
+                        )
+                    else:
+                        tiny_filter = {"op": "must", "field": "parent_uri", "conds": [s_uri]}
                     tiny_results = await self.storage.search(
                         collection=collection,
                         query_vector=query_vector,
