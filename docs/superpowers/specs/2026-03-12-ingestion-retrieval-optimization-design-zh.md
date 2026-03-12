@@ -205,7 +205,7 @@ session_end()
 
 #### 4.3.2 输出格式
 
-解析器不写入 VikingFS（已移除 OpenViking 依赖）。改为返回扁平列表：
+解析器写入 CortexFS（替代 OpenViking 的 VikingFS）。输出格式为扁平 chunk 列表，由编排器写入 CortexFS（L2 内容）+ Qdrant：
 
 ```python
 @dataclass
@@ -284,7 +284,7 @@ project-root (is_leaf=False, 整个项目摘要)
 | `openviking.parse.parsers.base_parser.BaseParser` | 新 `BaseParser`，返回 `List[ParsedChunk]` |
 | `openviking_cli.utils.config.parser_config.ParserConfig` | 简化为 `@dataclass ParserConfig(max_section_size, min_section_tokens)` |
 | `openviking_cli.utils.logger` | 标准 `logging.getLogger(__name__)` |
-| `openviking.storage.viking_fs` | 移除——解析器返回 chunk 列表，不做文件系统写入 |
+| `openviking.storage.viking_fs` | 替换为 `opencortex.storage.cortex_fs`（CortexFS） |
 | `openviking.parse.parsers.upload_utils` | 保留 `should_skip_file`、`should_skip_directory`、`detect_and_convert_encoding` 工具函数 |
 | `openviking.parse.parsers.constants` | 复制 `IGNORE_DIRS`、`IGNORE_EXTENSIONS`、`CODE_EXTENSIONS` 等 |
 | `openviking_cli.utils.config.get_openviking_config` | 移除——`github_domains` 硬编码默认值 |
@@ -464,7 +464,7 @@ query + session_context → IntentAnalyzer → [TypedQuery_1, TypedQuery_2, Type
 |------|------|---------|
 | 合并层删除即时记录时检索正在进行 | 短暂窗口内结果过时 | 接受最终一致性；合并为异步后台任务 |
 | LLM 推导延迟阻塞合并 | chunk 质量升级延迟 | 合并异步运行，即时记录在合并完成前继续服务 |
-| 解析器移植引入 OpenViking 耦合 | 维护负担 | 通过 `ParsedChunk` 接口清洁解耦；无 VikingFS 依赖 |
+| 解析器移植引入 OpenViking 耦合 | 维护负担 | 通过 `ParsedChunk` 接口清洁解耦；VikingFS 替换为 CortexFS |
 | 大型代码库产生数千个 chunk | Qdrant 存储压力，batch_add 变慢 | LLM 推导并发限制（semaphore），进度上报 |
 | 多查询并发检索增加 Qdrant 负载 | 向量存储 QPS 增高 | Qdrant embedded 可良好应对；限制 3-5 条并发查询 |
 | 意图缓存返回过时结果 | 搜索参数错误 | 短 TTL（60s）；缓存键包含完整查询文本 |

@@ -205,7 +205,7 @@ All parsers follow a single pattern: convert to Markdown → delegate to Markdow
 
 #### 4.3.2 Output Format
 
-Parsers do NOT write to VikingFS (OpenViking dependency removed). Instead they return a flat list:
+Parsers write to CortexFS (replacing OpenViking's VikingFS). Output format is a flat list of chunks, which the orchestrator writes to CortexFS (L2 content) + Qdrant:
 
 ```python
 @dataclass
@@ -284,7 +284,7 @@ project-root (is_leaf=False, summary of entire project)
 | `openviking.parse.parsers.base_parser.BaseParser` | New `BaseParser` returning `List[ParsedChunk]` |
 | `openviking_cli.utils.config.parser_config.ParserConfig` | Simplified `@dataclass ParserConfig(max_section_size, min_section_tokens)` |
 | `openviking_cli.utils.logger` | Standard `logging.getLogger(__name__)` |
-| `openviking.storage.viking_fs` | Removed — parsers return chunk lists, no filesystem writes |
+| `openviking.storage.viking_fs` | Replaced by `opencortex.storage.cortex_fs` (CortexFS) |
 | `openviking.parse.parsers.upload_utils` | Keep `should_skip_file`, `should_skip_directory`, `detect_and_convert_encoding` utilities |
 | `openviking.parse.parsers.constants` | Copy `IGNORE_DIRS`, `IGNORE_EXTENSIONS`, `CODE_EXTENSIONS`, etc. |
 | `openviking_cli.utils.config.get_openviking_config` | Remove — hardcode `github_domains` defaults |
@@ -465,7 +465,7 @@ Cache recent intent analysis results (TTL 60s, maxsize 128). Similar queries wit
 |------|--------|-----------|
 | Merge layer deletes immediate records while search is in progress | Stale results for brief window | Accept eventual consistency; merge is async background task |
 | LLM derivation latency blocks merge | Delayed chunk quality upgrade | Merge runs async, immediate records serve until complete |
-| Parser port introduces OpenViking coupling | Maintenance burden | Clean decoupling via `ParsedChunk` interface; no VikingFS dependency |
+| Parser port introduces OpenViking coupling | Maintenance burden | Clean decoupling via `ParsedChunk` interface; VikingFS replaced by CortexFS |
 | Large code repos produce thousands of chunks | Qdrant storage pressure, slow batch_add | Concurrency limit on LLM derive (semaphore), progress reporting |
 | Multi-query concurrent retrieval increases Qdrant load | Higher QPS on vector store | Qdrant embedded handles well; limit to 3-5 concurrent queries |
 | Intent cache returns stale results | Wrong search parameters | Short TTL (60s); cache key includes full query text |
