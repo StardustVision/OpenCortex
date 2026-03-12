@@ -2,19 +2,14 @@
 
 import re
 
+from opencortex.parse.base import estimate_tokens
+
 # Dialog patterns: "User:", "Assistant:", "Human:", "AI:"
 _DIALOG_RE = re.compile(
     r"^(User|Assistant|Human|AI|System)\s*:", re.MULTILINE | re.IGNORECASE
 )
 _HEADING_RE = re.compile(r"^#{1,6}\s+", re.MULTILINE)
 _SMALL_DOC_THRESHOLD = 4000  # tokens (estimated)
-
-
-def _estimate_tokens(text: str) -> int:
-    """Estimate token count (CJK chars * 0.7 + other * 0.3)."""
-    cjk = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
-    other = len(text) - cjk
-    return int(cjk * 0.7 + other * 0.3)
 
 
 class IngestModeResolver:
@@ -60,7 +55,7 @@ class IngestModeResolver:
 
         # Priority 5: headings + length
         if content and _HEADING_RE.search(content):
-            if _estimate_tokens(content) > _SMALL_DOC_THRESHOLD:
+            if estimate_tokens(content) > _SMALL_DOC_THRESHOLD:
                 return "document"
 
         # Priority 6: default

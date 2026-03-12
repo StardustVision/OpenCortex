@@ -160,7 +160,7 @@ add() → IngestModeResolver.resolve() → mode decision
 
 **IngestModeResolver priority** (highest first):
 1. Explicit `meta.ingest_mode` override
-2. `meta.source == "batch:*"` or `meta.source_path` present → memory
+2. `is_batch` or `source_path` or `scan_meta` present → document
 3. `session_id` present → conversation
 4. Dialog patterns (user:/assistant:) → conversation
 5. Headings + content > 4000 tokens → document

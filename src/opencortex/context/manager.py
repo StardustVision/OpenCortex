@@ -425,9 +425,8 @@ class ContextManager:
     @staticmethod
     def _estimate_tokens(text: str) -> int:
         """Estimate token count for merge threshold."""
-        cjk = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
-        other = len(text) - cjk
-        return int(cjk * 0.7 + other * 0.3)
+        from opencortex.parse.base import estimate_tokens
+        return estimate_tokens(text)
 
     async def _merge_buffer(self, sk, session_id, tenant_id, user_id):
         """Merge accumulated buffer into a high-quality LLM-derived chunk."""

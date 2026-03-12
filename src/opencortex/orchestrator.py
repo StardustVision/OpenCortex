@@ -111,6 +111,7 @@ class MemoryOrchestrator:
         self._knowledge_store = None
         self._archivist = None
         self._context_manager = None
+        self._parser_registry = None
 
     # =========================================================================
     # Initialization
@@ -594,7 +595,7 @@ class MemoryOrchestrator:
         # Embed without LLM
         vector = None
         if self._embedder:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             result = await asyncio.wait_for(
                 loop.run_in_executor(None, self._embedder.embed, text), timeout=2.0
             )
@@ -629,9 +630,10 @@ class MemoryOrchestrator:
         context_type, meta, session_id, source_path,
     ) -> "Context":
         """Document mode: parse content into chunks, write each to CortexFS + Qdrant."""
-        from opencortex.parse.registry import ParserRegistry
-
-        registry = ParserRegistry()
+        if self._parser_registry is None:
+            from opencortex.parse.registry import ParserRegistry
+            self._parser_registry = ParserRegistry()
+        registry = self._parser_registry
         if source_path:
             parser = registry.get_parser_for_file(source_path)
         else:
