@@ -66,6 +66,20 @@ src/opencortex/
     sandbox.py                   # Sandbox — quality gate for knowledge candidates
     knowledge_store.py           # KnowledgeStore — approved knowledge persistence
     types.py                     # Trace / KnowledgeItem / KnowledgeScope enums
+  ingest/
+    resolver.py                  # IngestModeResolver — three-mode routing (memory/document/conversation)
+  parse/
+    base.py                      # ParsedChunk dataclass, ParserConfig, estimate_tokens
+    parsers/
+      base_parser.py             # BaseParser ABC
+      markdown.py                # MarkdownParser — heading-based chunking with hierarchy
+      text.py                    # TextParser (delegates to MarkdownParser)
+      word.py                    # WordParser (python-docx → markdown → MarkdownParser)
+      excel.py                   # ExcelParser (openpyxl → markdown tables)
+      powerpoint.py              # PowerPointParser (python-pptx → markdown)
+      pdf.py                     # PDFParser (pdfplumber → markdown)
+      epub.py                    # EPUBParser (ebooklib → markdown)
+    registry.py                  # ParserRegistry — extension-based parser dispatch
   models/embedder/               # EmbedderBase / Dense / Sparse / Hybrid abstractions
   utils/
     uri.py                       # CortexURI tenant-isolated URI scheme
@@ -79,10 +93,17 @@ plugins/opencortex-memory/       # MCP plugin (pure Node.js, no hooks)
 
 tests/
   test_e2e_phase1.py             # 24 E2E tests
+  test_ingestion_e2e.py          # Ingestion pipeline E2E (memory/document/conversation modes)
   test_mcp_server.mjs            # 9 MCP tests (Node.js)
   test_write_dedup.py            # Write dedup tests
   test_context_manager.py        # Memory Context Protocol tests (8 scenarios)
   test_alpha_*.py                # Cortex Alpha component tests
+  test_parse_*.py                # Parser subsystem tests
+  test_ingest_resolver.py        # IngestModeResolver routing tests
+  test_batch_add_hierarchy.py    # batch_add directory tree tests
+  test_intent_*.py               # IntentRouter optimization tests
+  test_conversation_*.py         # Conversation mode tests
+  test_document_mode.py          # Document mode tests
 ```
 
 ## Development Conventions
@@ -127,6 +148,42 @@ session_end             → TraceSplitter → traces → TraceStore
                         → Sandbox quality gate → KnowledgeStore (approved)
 knowledge_search        → vector search over approved knowledge
 ```
+
+### Three-Mode Ingestion
+
+```
+add() → IngestModeResolver.resolve() → mode decision
+  ├─ memory:       pass-through (short text, batch items) → single record
+  ├─ document:     ParserRegistry → MarkdownParser → chunking → hierarchy → multiple records
+  └─ conversation: _write_immediate (per-message, zero-LLM) + merge layer (~1000 tokens → LLM chunk)
+```
+
+**IngestModeResolver priority** (highest first):
+1. Explicit `meta.ingest_mode` override
+2. `meta.source == "batch:*"` or `meta.source_path` present → memory
+3. `session_id` present → conversation
+4. Dialog patterns (user:/assistant:) → conversation
+5. Headings + content > 4000 tokens → document
+6. Default → memory
+
+**Document mode**: Large content parsed via `ParserRegistry` → `MarkdownParser` (heading-based chunking with parent-child hierarchy via `parent_index`). Each chunk gets LLM-derived abstract/overview/keywords. Chunks written as individual records with `parent_uri` linking.
+
+**Conversation mode**: Two-layer approach:
+- **Immediate layer**: `_write_immediate()` — per-message embed + Qdrant write, no LLM, instant searchability
+- **Merge layer**: `ConversationBuffer` accumulates messages; at ~1000 tokens threshold, LLM derives a merged chunk with full three-layer summary
+
+**batch_add**: When `scan_meta` present, builds directory tree from `meta.file_path` values (directory nodes with `is_leaf=False`), then assigns `parent_uri` to leaf items.
+
+### IntentRouter Optimization
+
+```
+route(query, session_context=None)
+  ├─ session_context is None → keyword-only (zero LLM) → single TypedQuery
+  └─ session_context present → LLM IntentAnalyzer → multi-query concurrent retrieval
+```
+
+- LRU cache (128 entries, 60s TTL) avoids repeated LLM calls for identical queries
+- Multi-query: LLM returns `queries[]` array → each becomes a separate `TypedQuery` for concurrent search
 
 ### Score Fusion Formula
 
