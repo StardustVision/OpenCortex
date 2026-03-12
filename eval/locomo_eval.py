@@ -316,6 +316,7 @@ class OCClient:
                         "content": content,
                         "category": category,
                         "context_type": "memory",
+                        "dedup": False,
                     },
                     headers=self._hdrs,
                 )

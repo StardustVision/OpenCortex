@@ -344,12 +344,14 @@ class TestWriteDedup(unittest.TestCase):
         ctx1 = self._run(orch.add(
             abstract="Server crashed at 3am due to OOM",
             category="events",
+            dedup=True,
         ))
         self.assertEqual(ctx1.meta.get("dedup_action"), "created")
 
         ctx2 = self._run(orch.add(
             abstract="Server crashed at 3am due to OOM",
             category="events",
+            dedup=True,
         ))
         self.assertEqual(ctx2.meta.get("dedup_action"), "skipped")
         self.assertEqual(ctx2.uri, ctx1.uri)
@@ -367,6 +369,7 @@ class TestWriteDedup(unittest.TestCase):
         ctx1 = self._run(orch.add(
             abstract="User prefers dark theme in all editors",
             category="preferences",
+            dedup=True,
         ))
         self.assertEqual(ctx1.meta.get("dedup_action"), "created")
 
@@ -374,6 +377,7 @@ class TestWriteDedup(unittest.TestCase):
         ctx2 = self._run(orch.add(
             abstract="User prefers dark theme in all editors",
             category="preferences",
+            dedup=True,
         ))
         self.assertEqual(ctx2.meta.get("dedup_action"), "merged")
         self.assertEqual(ctx2.uri, ctx1.uri)
@@ -390,10 +394,12 @@ class TestWriteDedup(unittest.TestCase):
         ctx1 = self._run(orch.add(
             abstract="User prefers dark theme",
             category="preferences",
+            dedup=True,
         ))
         ctx2 = self._run(orch.add(
             abstract="Database connection pool uses 20 connections",
             category="preferences",
+            dedup=True,
         ))
         self.assertEqual(ctx1.meta.get("dedup_action"), "created")
         self.assertEqual(ctx2.meta.get("dedup_action"), "created")
@@ -434,6 +440,7 @@ class TestWriteDedup(unittest.TestCase):
         ctx1 = self._run(orch.add(
             abstract="Shared knowledge item",
             category="patterns",
+            dedup=True,
         ))
         self.assertEqual(ctx1.meta.get("dedup_action"), "created")
 
@@ -444,6 +451,7 @@ class TestWriteDedup(unittest.TestCase):
         ctx2 = self._run(orch.add(
             abstract="Shared knowledge item",
             category="patterns",
+            dedup=True,
         ))
         self.assertEqual(ctx2.meta.get("dedup_action"), "created")
         self.assertNotEqual(ctx1.uri, ctx2.uri)
@@ -459,10 +467,12 @@ class TestWriteDedup(unittest.TestCase):
         ctx1 = self._run(orch.add(
             abstract="Important finding about performance",
             category="events",
+            dedup=True,
         ))
         ctx2 = self._run(orch.add(
             abstract="Important finding about performance",
             category="patterns",
+            dedup=True,
         ))
         self.assertEqual(ctx1.meta.get("dedup_action"), "created")
         self.assertEqual(ctx2.meta.get("dedup_action"), "created")
@@ -501,11 +511,13 @@ class TestWriteDedup(unittest.TestCase):
         self._run(orch.add(
             abstract="User prefers vim keybindings",
             category="preferences",
+            dedup=True,
         ))
         # Second add same abstract → triggers dedup merge
         ctx2 = self._run(orch.add(
             abstract="User prefers vim keybindings",
             category="preferences",
+            dedup=True,
         ))
         self.assertEqual(ctx2.meta.get("dedup_action"), "merged")
 
