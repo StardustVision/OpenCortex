@@ -658,8 +658,13 @@ class MemoryOrchestrator:
             )
 
         # Multi-chunk: create parent + children
+        # Title priority: source filename > caller-provided abstract > fallback "Document"
         from pathlib import Path
-        doc_title = chunks[0].title or (Path(source_path).stem if source_path else "Document")
+        doc_title = (
+            Path(source_path).stem if source_path
+            else abstract if abstract
+            else "Document"
+        )
 
         parent_ctx = await self.add(
             abstract=doc_title,

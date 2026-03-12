@@ -206,8 +206,13 @@ class ContextManager:
                 router = IntentRouter(
                     llm_completion=self._orchestrator._llm_completion,
                 )
+                session_ctx = {
+                    "session_id": session_id,
+                    "tenant_id": tenant_id,
+                    "user_id": user_id,
+                }
                 intent = await asyncio.wait_for(
-                    router.route(query), timeout=2.0,
+                    router.route(query, session_context=session_ctx), timeout=2.0,
                 )
             except asyncio.TimeoutError:
                 logger.warning(

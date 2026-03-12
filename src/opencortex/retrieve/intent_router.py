@@ -136,15 +136,17 @@ class IntentRouter:
         # Layer 2+3: LLM classification + Memory Trigger
         # Only when session_context is provided AND an LLM callable is available
         if session_context is not None and self._llm:
-            # Check LRU cache first
-            cached = self._cache_get(query)
+            # Cache key includes session_id to prevent cross-session pollution
+            sid = session_context.get("session_id", "")
+            cache_key = f"{sid}:{query}"
+            cached = self._cache_get(cache_key)
             if cached is not None:
                 intent = self._merge(intent, cached)
             else:
                 try:
                     llm_intent = await self._llm_classify(query, context_type, session_context)
                     if llm_intent:
-                        self._cache_put(query, llm_intent)
+                        self._cache_put(cache_key, llm_intent)
                         intent = self._merge(intent, llm_intent)
                 except Exception as exc:
                     logger.warning("[IntentRouter] LLM classification failed: %s", exc)
