@@ -581,6 +581,118 @@ class MemoryOrchestrator:
             use_llm_fallback=getattr(base, "use_llm_fallback", True),
         )
 
+    async def _write_immediate(self, session_id: str, msg_index: int, text: str) -> str:
+        """Write a single message for immediate searchability. No LLM, no CortexFS."""
+        from opencortex.http.request_context import get_effective_identity, get_effective_project_id
+        from opencortex.utils.uri import CortexURI
+        from uuid import uuid4
+
+        tid, uid = get_effective_identity()
+        nid = uuid4().hex[:12]
+        uri = CortexURI.build_private(tid, uid, "memories", "events", nid)
+
+        # Embed without LLM
+        vector = None
+        if self._embedder:
+            loop = asyncio.get_event_loop()
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, self._embedder.embed, text), timeout=2.0
+            )
+            vector = result.dense_vector
+
+        record = {
+            "uri": uri,
+            "parent_uri": CortexURI.build_private(tid, uid, "memories", "events", session_id),
+            "is_leaf": True,
+            "abstract": text[:500],
+            "overview": "",
+            "context_type": "memory",
+            "category": "events",
+            "scope": "private",
+            "source_user_id": uid,
+            "source_tenant_id": tid,
+            "keywords": "",
+            "meta": {"layer": "immediate", "msg_index": msg_index, "session_id": session_id},
+            "session_id": session_id,
+            "project_id": get_effective_project_id(),
+            "mergeable": False,
+            "ttl_expires_at": "",
+        }
+        if vector:
+            record["vector"] = vector
+
+        await self._storage.upsert(_CONTEXT_COLLECTION, record)
+        return uri
+
+    async def _add_document(
+        self, content, abstract, overview, category, parent_uri,
+        context_type, meta, session_id, source_path,
+    ) -> "Context":
+        """Document mode: parse content into chunks, write each to CortexFS + Qdrant."""
+        from opencortex.parse.registry import ParserRegistry
+
+        registry = ParserRegistry()
+        if source_path:
+            parser = registry.get_parser_for_file(source_path)
+        else:
+            parser = None
+
+        if parser:
+            chunks = await parser.parse_content(content, source_path=source_path)
+        else:
+            chunks = await registry.parse_content(content, source_format="markdown")
+
+        # Single chunk or no chunks → fall through to memory mode
+        if len(chunks) <= 1:
+            single_content = chunks[0].content if chunks else content
+            return await self.add(
+                abstract=abstract,
+                content=single_content,
+                category=category,
+                parent_uri=parent_uri,
+                context_type=context_type,
+                meta={**(meta or {}), "ingest_mode": "memory"},
+                session_id=session_id,
+            )
+
+        # Multi-chunk: create parent + children
+        from pathlib import Path
+        doc_title = chunks[0].title or (Path(source_path).stem if source_path else "Document")
+
+        parent_ctx = await self.add(
+            abstract=doc_title,
+            content="",
+            category=category,
+            parent_uri=parent_uri,
+            is_leaf=False,
+            context_type=context_type,
+            meta={**(meta or {}), "ingest_mode": "memory"},
+            session_id=session_id,
+        )
+        doc_parent_uri = parent_ctx.uri
+
+        # Process chunks sequentially to maintain parent_index references
+        chunk_results = []
+        for idx, chunk in enumerate(chunks):
+            chunk_parent = doc_parent_uri
+            if chunk.parent_index >= 0 and chunk.parent_index < len(chunk_results):
+                parent_result = chunk_results[chunk.parent_index]
+                if parent_result and not parent_result.is_leaf:
+                    chunk_parent = parent_result.uri
+
+            ctx = await self.add(
+                abstract="",
+                content=chunk.content,
+                category=category,
+                parent_uri=chunk_parent,
+                context_type=context_type,
+                meta={**(meta or {}), "ingest_mode": "memory", "chunk_index": idx},
+                session_id=session_id,
+            )
+            chunk_results.append(ctx)
+
+        return parent_ctx
+
     async def _derive_layers(
         self, user_abstract: str, content: str, user_overview: str = "",
     ) -> Dict[str, str]:
@@ -671,7 +783,7 @@ class MemoryOrchestrator:
         meta: Optional[Dict[str, Any]] = None,
         related_uri: Optional[List[str]] = None,
         session_id: Optional[str] = None,
-        dedup: bool = True,
+        dedup: bool = False,
         dedup_threshold: float = 0.82,
     ) -> Context:
         """
@@ -704,6 +816,31 @@ class MemoryOrchestrator:
             ``"skipped"``.
         """
         self._ensure_init()
+
+        # Determine ingestion mode
+        from opencortex.ingest.resolver import IngestModeResolver
+
+        ingest_mode = IngestModeResolver.resolve(
+            content=content,
+            meta=meta,
+            source_path=(meta or {}).get("source_path", ""),
+            session_id=session_id or "",
+        )
+
+        # Document mode: parse → chunks → write each with hierarchy
+        if ingest_mode == "document" and content and is_leaf:
+            return await self._add_document(
+                content=content,
+                abstract=abstract,
+                overview=overview,
+                category=category,
+                parent_uri=parent_uri,
+                context_type=context_type or "resource",
+                meta=meta,
+                session_id=session_id,
+                source_path=(meta or {}).get("source_path", ""),
+            )
+
         add_started = asyncio.get_running_loop().time()
         derive_layers_ms = 0
         embed_ms = 0

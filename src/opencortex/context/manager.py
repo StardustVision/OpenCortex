@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from dataclasses import dataclass, field as dc_field
+
 from opencortex.http.request_context import (
     get_effective_identity,
     reset_request_identity,
@@ -28,6 +30,15 @@ logger = logging.getLogger(__name__)
 # Type aliases — all internal state keyed by these to prevent cross-tenant collision
 SessionKey = Tuple[str, str, str]      # (tenant_id, user_id, session_id)
 CacheKey = Tuple[str, str, str, str]   # (tenant_id, user_id, session_id, turn_id)
+
+
+@dataclass
+class ConversationBuffer:
+    """Per-session buffer for conversation mode incremental chunking."""
+    messages: list = dc_field(default_factory=list)
+    token_count: int = 0
+    start_msg_index: int = 0
+    immediate_uris: list = dc_field(default_factory=list)
 
 
 class ContextManager:
@@ -67,6 +78,8 @@ class ContextManager:
         self._session_locks: Dict[SessionKey, asyncio.Lock] = {}
         # Pending async tasks (cited_uris reward, etc.)
         self._pending_tasks: Set[asyncio.Task] = set()
+        # Conversation buffers: per-session incremental chunking
+        self._conversation_buffers: Dict[SessionKey, ConversationBuffer] = {}
 
         # Config
         self._prepare_cache_ttl = prepare_cache_ttl
@@ -359,6 +372,35 @@ class ContextManager:
                 self._pending_tasks.add(task)
                 task.add_done_callback(self._pending_tasks.discard)
 
+        # Conversation mode: write immediate records for each message
+        buffer = self._conversation_buffers.setdefault(sk, ConversationBuffer())
+        for msg in messages:
+            text = msg.get("content", msg.get("assistant_response", msg.get("user_message", "")))
+            if text:
+                try:
+                    tokens_for_identity = set_request_identity(tenant_id, user_id)
+                    try:
+                        im_uri = await self._orchestrator._write_immediate(
+                            session_id=session_id,
+                            msg_index=buffer.start_msg_index + len(buffer.messages),
+                            text=text,
+                        )
+                        buffer.messages.append(text)
+                        buffer.immediate_uris.append(im_uri)
+                        buffer.token_count += self._estimate_tokens(text)
+                    finally:
+                        reset_request_identity(tokens_for_identity)
+                except Exception as exc:
+                    logger.warning("[ContextManager] Immediate write failed: %s", exc)
+
+        # Check merge threshold
+        if buffer.token_count >= 1000:
+            task = asyncio.create_task(
+                self._merge_buffer(sk, session_id, tenant_id, user_id)
+            )
+            self._pending_tasks.add(task)
+            task.add_done_callback(self._pending_tasks.discard)
+
         write_status = "ok" if observer_ok else "fallback"
         if not observer_ok:
             logger.warning(
@@ -380,6 +422,47 @@ class ContextManager:
             "session_turns": len(self._committed_turns.get(sk, set())),
         }
 
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        """Estimate token count for merge threshold."""
+        cjk = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
+        other = len(text) - cjk
+        return int(cjk * 0.7 + other * 0.3)
+
+    async def _merge_buffer(self, sk, session_id, tenant_id, user_id):
+        """Merge accumulated buffer into a high-quality LLM-derived chunk."""
+        buffer = self._conversation_buffers.get(sk)
+        if not buffer or not buffer.messages:
+            return
+        tokens_for_identity = None
+        try:
+            combined = "\n\n".join(buffer.messages)
+            tokens_for_identity = set_request_identity(tenant_id, user_id)
+            await self._orchestrator.add(
+                abstract="",
+                content=combined,
+                category="events",
+                context_type="memory",
+                meta={
+                    "layer": "merged",
+                    "ingest_mode": "memory",
+                    "msg_range": [
+                        buffer.start_msg_index,
+                        buffer.start_msg_index + len(buffer.messages) - 1,
+                    ],
+                    "session_id": session_id,
+                },
+                session_id=session_id,
+            )
+            # Reset buffer
+            new_start = buffer.start_msg_index + len(buffer.messages)
+            self._conversation_buffers[sk] = ConversationBuffer(start_msg_index=new_start)
+        except Exception as exc:
+            logger.error("[ContextManager] Merge failed: %s", exc)
+        finally:
+            if tokens_for_identity:
+                reset_request_identity(tokens_for_identity)
+
     # =========================================================================
     # Phase: end
     # =========================================================================
@@ -392,6 +475,14 @@ class ContextManager:
     ) -> Dict[str, Any]:
         sk = self._make_session_key(tenant_id, user_id, session_id)
         total_turns = len(self._committed_turns.get(sk, set()))
+
+        # Flush conversation buffer before Alpha pipeline
+        buffer = self._conversation_buffers.get(sk)
+        if buffer and buffer.messages:
+            try:
+                await self._merge_buffer(sk, session_id, tenant_id, user_id)
+            except Exception as exc:
+                logger.warning("[ContextManager] End-of-session buffer flush failed: %s", exc)
 
         # Delegate to orchestrator.session_end() — includes:
         # Observer.flush → TraceSplitter → TraceStore → Archivist
