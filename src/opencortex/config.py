@@ -41,10 +41,10 @@ class CortexAlphaConfig:
     # Observer
     observer_enabled: bool = True
     # Trace Splitter
-    trace_splitter_enabled: bool = True
+    trace_splitter_enabled: bool = False    # was True; Phase 1 shrinkage
     trace_splitter_max_context_tokens: int = 128000
     # Archivist
-    archivist_enabled: bool = True
+    archivist_enabled: bool = False         # was True; Phase 1 shrinkage
     archivist_trigger_mode: str = "auto"        # "auto" | "manual"
     archivist_trigger_threshold: int = 20       # traces per trigger
     archivist_max_delay_hours: int = 24
