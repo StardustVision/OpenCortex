@@ -2,7 +2,7 @@
 
 ## Goal
 
-Build a unified evaluation framework for OpenCortex covering all three ingestion modes (memory, conversation, document) with three result dimensions: QA accuracy, context token reduction, and recall latency.
+Build a unified evaluation framework for OpenCortex covering all three ingestion modes (memory, conversation, document) with four result dimensions: retrieval quality, QA accuracy, context token reduction, and recall latency.
 
 ## Background
 
@@ -11,7 +11,7 @@ OpenCortex currently has two separate eval tools:
 - `eval/locomo_eval.py` — conversation mode only (LoCoMo dataset, F1 scoring, token comparison, no latency)
 - `tests/benchmark/runner.py` — memory mode retrieval-only (50 memories, recall@k/precision@k/MRR, no LLM QA)
 
-Neither tool covers document mode. Neither tracks recall latency. The framework needs unification to produce consistent, comparable results across all three modes.
+Neither tool covers document mode. Neither tracks recall latency. The two tools use different metric models, making cross-mode comparison impossible. This framework unifies all evaluation into a single report model with consistent metrics across all three modes.
 
 ## Datasets
 
@@ -34,7 +34,7 @@ Datasets are downloaded to `eval/datasets/<name>/` (gitignored).
 eval/
   unified_eval.py          # Unified CLI entry point
   scoring.py               # F1 + LLM-as-Judge dual-track scoring
-  metrics.py               # Latency stats (p50/p95/p99) + token reduction
+  metrics.py               # Retrieval quality (recall@k, MRR, precision@k) + latency (p50/p95/p99) + token reduction
   report.py                # Unified report generation (JSON + terminal table)
   oc_client.py             # OCClient HTTP client (extracted from locomo_eval.py)
   llm_client.py            # LLMClient (extracted from locomo_eval.py)
@@ -50,17 +50,19 @@ eval/
 ### Existing File Changes
 
 - `eval/locomo_eval.py` — retained but marked deprecated; core logic migrated to `adapters/conversation.py`, `oc_client.py`, `llm_client.py`, and `scoring.py`
-- `tests/benchmark/runner.py` — retained as-is (P0 retrieval-only benchmark, different purpose)
-- `src/opencortex/eval/memory_eval.py` — retained as-is (used by `tests/benchmark/runner.py`). The new `eval/metrics.py` is independent and does NOT import from this module; the two serve different purposes (retrieval metrics vs QA+latency+token metrics).
+- `tests/benchmark/runner.py` — retained for backward compatibility; its retrieval metrics (recall@k, precision@k, MRR) are absorbed into `eval/metrics.py` so the unified framework produces a single authoritative report. No separate "Phase1 benchmark" vs "QA benchmark" split.
+- `src/opencortex/eval/memory_eval.py` — retrieval metric functions (`_query_metrics`, `_aggregate`, `compute_report`) are migrated into `eval/metrics.py`. The original file is retained for `tests/benchmark/runner.py` backward compatibility but is not used by the new framework.
 
 ### Unified Pipeline
 
 ```
-Dataset → Adapter.ingest() → Adapter.build_qa_items() →
-  ├─ OC path:  search/recall → build prompt → LLM answer → scoring
-  ├─ Baseline: full context → build prompt → LLM answer → scoring
-  └─ Latency:  each search/recall call timed
-→ Report (accuracy + token_reduction + latency)
+Dataset → Adapter.load_dataset() → Adapter.ingest() → Adapter.build_qa_items() →
+  ├─ Retrieval:  search/recall → compare URIs to ground truth → recall@k, precision@k, MRR
+  ├─ OC path:    retrieved context → build prompt → LLM answer → F1 / LLM-judge
+  ├─ Baseline:   full context (budget-truncated) → build prompt → LLM answer → F1 / LLM-judge
+  ├─ Token:      estimate_tokens(OC prompt) vs estimate_tokens(baseline prompt)
+  └─ Latency:    each search/recall call timed via perf_counter
+→ Report (retrieval + accuracy + token_reduction + latency)
 ```
 
 ### EvalAdapter ABC
@@ -72,7 +74,8 @@ class QAItem:
     answer: str
     category: str = ""
     difficulty: str = ""
-    evidence_ids: List[str] = field(default_factory=list)
+    expected_ids: List[str] = field(default_factory=list)   # ground truth IDs (mapped to URIs after ingest)
+    expected_uris: List[str] = field(default_factory=list)  # populated after ingest via id→uri mapping
     meta: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
@@ -109,7 +112,8 @@ class EvalAdapter(ABC):
 
     @abstractmethod
     async def retrieve(self, oc: OCClient, qa_item: QAItem, top_k: int) -> Tuple[List[Dict], float]:
-        """Retrieve relevant memories/chunks. Returns (results, latency_ms)."""
+        """Retrieve relevant memories/chunks. Returns (results, latency_ms).
+        Each result dict must contain 'uri' for retrieval quality measurement."""
         ...
 ```
 
@@ -137,7 +141,9 @@ class OCClient:
         ...
 
     async def search(self, query: str, limit: int = 10, category: str = "",
-                     detail_level: str = "l2") -> List[Dict]:
+                     detail_level: str = "l2",
+                     context_type: Optional[str] = None) -> List[Dict]:
+        """Search memories. context_type filters results (e.g. 'resource' for documents)."""
         ...
 
     async def context_recall(self, session_id: str, query: str,
@@ -203,7 +209,7 @@ Preserves: `_strip_thinking()` logic for reasoning models, `_resolve_api_style()
 }
 ```
 
-**Ingest**: Extract `persona_attributes` from the dataset. Each attribute is stored via `oc.store(abstract=attribute["attribute"], category=attribute["category"], context_type="memory")`. If attributes are not pre-extracted, the adapter parses conversations and extracts factual statements about the user.
+**Ingest**: Extract `persona_attributes` from the dataset. Each attribute is stored via `oc.store(abstract=attribute["attribute"], category=attribute["category"], context_type="memory")`. The adapter **requires** pre-extracted structured attributes in the dataset — no runtime extraction or LLM-based fact mining. If `persona_attributes` is missing or empty, the adapter raises a `ValueError` with a clear message. This ensures the benchmark measures OpenCortex's storage and retrieval quality, not an ad-hoc extraction pipeline.
 
 **QA**: The `questions` array provides QA pairs. Categories typically include: preference, biographical, relational, behavioral.
 
@@ -222,7 +228,7 @@ Reuses the proven ingest logic from `locomo_eval.py`.
 
 **QA**: 5 categories for LoCoMo (single-hop, temporal, commonsense, multi-hop, adversarial). LongMemEval has 5 different categories (information extraction, multi-session reasoning, knowledge updates, temporal reasoning, abstention).
 
-**Baseline context**: Full conversation text, truncated to 30k chars.
+**Baseline context**: Full conversation text, truncated to `--max-context-tokens` budget (see Baseline Prompt Budget).
 
 **Retrieve**: `oc.context_recall(session_id, question, top_k)` — session-aware retrieval via Context API prepare phase.
 
@@ -244,11 +250,38 @@ This triggers `_add_document()` → MarkdownParser → multi-chunk hierarchy.
 
 **QA**: QASPER has answer types (extractive, yes/no, free-form, unanswerable). LongBench has multiple-choice. CMRC has span-extraction. The adapter normalizes these to a common `QAItem` format.
 
-**Baseline context**: Full document text for the source document of each QA.
+**Baseline context**: Source document text, truncated to `--max-context-tokens` budget (see Baseline Prompt Budget).
 
-**Retrieve**: `oc.search(question, limit=top_k)` — direct search over document chunks.
+**Retrieve**: `oc.search(question, limit=top_k, context_type="resource")` — searches only document chunks, excluding memories from other context types in the same tenant. The `context_type="resource"` filter maps to the server's `MemorySearchRequest.context_type` field, ensuring document eval results are not contaminated by non-document records.
 
 **Dataset detection**: Adapter detects dataset type from JSON structure or `--dataset` flag. QASPER has `full_text` + `qas` fields; LongBench has `input` + `answers` fields; CMRC has `context` + `answers` with `answer_start`.
+
+## Baseline Prompt Budget
+
+All modes use a **unified truncation policy** controlled by `--max-context-tokens` (default: 32000). This prevents baseline failures caused by exceeding model context windows rather than by retrieval quality, and ensures token reduction metrics compare apples-to-apples across modes.
+
+```python
+def truncate_to_budget(text: str, max_tokens: int) -> str:
+    """Truncate text to fit within token budget using estimate_tokens().
+    Truncates at character boundaries, keeping the beginning of the text."""
+    if estimate_tokens(text) <= max_tokens:
+        return text
+    # Binary search for the right character cutoff
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if estimate_tokens(text[:mid]) <= max_tokens:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo]
+```
+
+The adapter's `get_baseline_context()` returns the **raw full context** (untruncated). The orchestration layer in `unified_eval.py` applies `truncate_to_budget()` uniformly before building the LLM prompt. This separation keeps adapters simple and the truncation policy consistent.
+
+**Token reduction is computed against the truncated baseline**, not the raw full context. This gives honest reduction numbers: "how much smaller is the OC prompt compared to what we would actually send to the LLM."
+
+The report also records `raw_baseline_tokens` (pre-truncation) so users can see if truncation was a factor.
 
 ## Scoring (scoring.py)
 
@@ -297,6 +330,36 @@ async def llm_judge_score(
 Both scores are computed when `--enable-llm-judge` is set. F1 is always computed.
 
 ## Metrics (metrics.py)
+
+### Retrieval Quality
+
+Absorbed from `src/opencortex/eval/memory_eval.py`. Computed for every QA item that has `expected_uris`:
+
+```python
+def compute_retrieval_metrics(records: List[Dict], ks: List[int] = [1, 3, 5]) -> Dict:
+    """Recall@k, Precision@k, MRR, Hit Rate@k over all QA items with ground truth URIs."""
+    # For each record:
+    #   retrieved_uris = [r["uri"] for r in record["results"]]
+    #   expected_uris = record["expected_uris"]
+    #   recall@k = |retrieved[:k] ∩ expected| / |expected|
+    #   precision@k = |retrieved[:k] ∩ expected| / k
+    #   hit@k = 1 if retrieved[:k] ∩ expected else 0
+    #   rr = 1 / (rank of first hit) or 0
+    return {
+        "recall@1": ..., "recall@3": ..., "recall@5": ...,
+        "precision@1": ..., "precision@3": ..., "precision@5": ...,
+        "hit_rate@1": ..., "hit_rate@3": ..., "hit_rate@5": ...,
+        "mrr": ...,
+        "by_category": {...},
+    }
+```
+
+QA items without `expected_uris` (e.g. some LongMemEval questions that only have text answers, not source IDs) are excluded from retrieval metrics but still included in QA accuracy metrics. The report clearly separates the two:
+
+- **retrieval**: recall@k, precision@k, MRR — measures "did we find the right chunks?"
+- **accuracy**: F1 / LLM-judge — measures "did we answer correctly?"
+
+Both are always computed when data is available. Neither depends on the other.
 
 ### Token Reduction
 
@@ -347,6 +410,15 @@ No external dependencies (numpy, etc.) — percentile computed with simple sorte
 {
   "mode": "conversation",
   "dataset": "locomo",
+  "retrieval": {
+    "recall@1": 0.57, "recall@3": 0.76, "recall@5": 0.79,
+    "precision@1": 0.58, "precision@3": 0.26, "precision@5": 0.16,
+    "hit_rate@1": 0.58, "hit_rate@3": 0.78, "hit_rate@5": 0.80,
+    "mrr": 0.664,
+    "evaluated_count": 450,
+    "skipped_no_ground_truth": 50,
+    "by_category": {}
+  },
   "accuracy": {
     "f1": {
       "overall": 0.72,
@@ -365,7 +437,10 @@ No external dependencies (numpy, etc.) — percentile computed with simple sorte
   "token_reduction": {
     "baseline_avg_tokens": 12500,
     "oc_avg_tokens": 1800,
-    "reduction_pct": 85.6
+    "reduction_pct": 85.6,
+    "raw_baseline_avg_tokens": 45000,
+    "truncation_applied": true,
+    "max_context_tokens": 32000
   },
   "latency": {
     "p50_ms": 125,
@@ -381,6 +456,7 @@ No external dependencies (numpy, etc.) — percentile computed with simple sorte
     "server": "http://127.0.0.1:8921",
     "dataset_path": "eval/datasets/locomo10.json",
     "top_k": 10,
+    "max_context_tokens": 32000,
     "concurrency": 5,
     "total_qa": 500,
     "enable_llm_judge": false
@@ -392,6 +468,10 @@ No external dependencies (numpy, etc.) — percentile computed with simple sorte
 ### Terminal Table
 
 ```
+--- Retrieval Quality ---
+          Recall@1  Recall@3  Recall@5    MRR
+Overall     0.57      0.76      0.79    0.664
+
 ========================================================
                     QA Accuracy (F1)
 --------------------------------------------------------
@@ -404,8 +484,8 @@ temporal             0.31         0.42       +0.11
 Overall              0.48         0.59       +0.11
 ========================================================
 
---- Token Reduction ---
-  Baseline avg:  12,500 tokens
+--- Token Reduction (budget: 32k tokens) ---
+  Baseline avg:  12,500 tokens (raw: 45,000, truncated)
   OpenCortex avg: 1,800 tokens
   Reduction:      85.6%
 
@@ -429,6 +509,7 @@ Overall              0.48         0.59       +0.11
 | `--llm-model` | LLM model name | Required |
 | `--llm-api-style` | auto / openai / anthropic | auto |
 | `--top-k` | Retrieval limit | 10 |
+| `--max-context-tokens` | Baseline prompt budget (unified truncation for all modes) | 32000 |
 | `--concurrency` | Concurrent QA evaluations | 5 |
 | `--enable-llm-judge` | Enable LLM-as-Judge scoring | False |
 | `--skip-ingest` | Skip ingestion (reuse existing data) | False |
@@ -503,16 +584,30 @@ Users download datasets manually (see Scope Exclusions). The `estimate_tokens` f
 
 ## Testing Strategy
 
-Unit tests for core modules:
-- `tests/test_eval_scoring.py` — F1 scoring edge cases, LLM judge parsing
-- `tests/test_eval_metrics.py` — percentile calculation, token reduction math
+### Unit Tests (no external deps)
 
-No E2E tests (requires external server + LLM API). Manual validation via `--max-qa 5`.
+- `tests/test_eval_scoring.py` — F1 scoring edge cases, LLM judge parsing, category-specific logic
+- `tests/test_eval_metrics.py` — percentile calculation, token reduction math, retrieval metrics (recall@k, MRR)
+
+### Contract / Smoke Tests (local, no external server)
+
+Uses `httpx.AsyncClient` + `ASGITransport` against the FastAPI app (same pattern as `tests/test_http_server.py`, bypasses JWT auth):
+
+- `tests/test_eval_contract.py` — verifies OCClient ↔ HTTP payload ↔ server contract:
+  - `test_store_with_meta` — `OCClient.store(meta={"ingest_mode": "document"})` produces correct HTTP payload, server accepts it
+  - `test_search_with_context_type` — `OCClient.search(context_type="resource")` sends correct filter, server returns only matching type
+  - `test_context_recall_response_shape` — `OCClient.context_recall()` response contains expected fields (`memory`, `intent`, `session_id`)
+
+These tests catch protocol drift between OCClient and the server without requiring a running server or LLM API. They run as part of `uv run python3 -m unittest tests.test_eval_contract`.
+
+### No full E2E tests
+
+Full pipeline E2E (ingest → QA → scoring) requires external LLM API and is validated manually via `--max-qa 5`.
 
 ## Scope Exclusions
 
 - No CI integration (external dependencies make this impractical)
 - No automatic dataset download CLI (`--download` deferred to future). Users manually download datasets to `eval/datasets/<name>/` following instructions in each adapter's docstring.
 - No server-side latency breakdown (embed/search/rerank phases) — client-side only
-- `tests/benchmark/runner.py` remains unchanged (separate P0 retrieval benchmark)
 - No cross-run comparison tooling (compare two reports manually via JSON)
+- `tests/benchmark/runner.py` retained for backward compatibility but superseded by this framework for all new evaluation work
