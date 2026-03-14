@@ -339,28 +339,40 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.post("/api/v1/knowledge/search")
     async def knowledge_search(req: KnowledgeSearchRequest) -> Dict[str, Any]:
+        if not _orchestrator._config.cortex_alpha.archivist_enabled:
+            return {"error": "feature disabled"}
         return await _orchestrator.knowledge_search(
             query=req.query, types=req.types, limit=req.limit,
         )
 
     @app.post("/api/v1/knowledge/approve")
     async def knowledge_approve(req: KnowledgeApproveRequest) -> Dict[str, Any]:
+        if not _orchestrator._config.cortex_alpha.archivist_enabled:
+            return {"error": "feature disabled"}
         return await _orchestrator.knowledge_approve(req.knowledge_id)
 
     @app.post("/api/v1/knowledge/reject")
     async def knowledge_reject(req: KnowledgeRejectRequest) -> Dict[str, Any]:
+        if not _orchestrator._config.cortex_alpha.archivist_enabled:
+            return {"error": "feature disabled"}
         return await _orchestrator.knowledge_reject(req.knowledge_id)
 
     @app.get("/api/v1/knowledge/candidates")
     async def knowledge_candidates() -> Dict[str, Any]:
+        if not _orchestrator._config.cortex_alpha.archivist_enabled:
+            return {"error": "feature disabled"}
         return await _orchestrator.knowledge_list_candidates()
 
     @app.post("/api/v1/archivist/trigger")
     async def archivist_trigger() -> Dict[str, Any]:
+        if not _orchestrator._config.cortex_alpha.archivist_enabled:
+            return {"error": "feature disabled"}
         return await _orchestrator.archivist_trigger()
 
     @app.get("/api/v1/archivist/status")
     async def archivist_status() -> Dict[str, Any]:
+        if not _orchestrator._config.cortex_alpha.archivist_enabled:
+            return {"error": "feature disabled"}
         return await _orchestrator.archivist_status()
 
     # =====================================================================
