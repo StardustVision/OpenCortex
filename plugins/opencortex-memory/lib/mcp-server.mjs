@@ -82,7 +82,7 @@ const TOOLS = {
       query:             { type: 'string',  description: "The user's message or search query", required: true },
       category:          { type: 'string',  description: 'Filter by category: profile | preferences | entities | events | cases | patterns | error_fixes | workflows | strategies | documents | plans. Omit to search all' },
       context_type:      { type: 'string',  description: 'Filter by type: memory | resource | skill. Omit to search all' },
-      include_knowledge: { type: 'boolean', description: 'Also search approved knowledge base (beliefs, SOPs, rules). Default: true', default: true },
+      include_knowledge: { type: 'boolean', description: 'Also search approved knowledge base. Default: false (Phase 2 feature)', default: false },
       max_items:         { type: 'integer', description: 'Max results to return (1-20). Default: 5', default: 5 },
       detail_level:      { type: 'string',  description: 'Response detail: l0 (abstract only) | l1 (+ overview) | l2 (+ full content). Default: l1', default: 'l1' },
     }],
