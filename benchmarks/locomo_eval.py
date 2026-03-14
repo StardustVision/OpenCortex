@@ -1,6 +1,19 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 """
+[DEPRECATED] LoCoMo Benchmark Evaluation for OpenCortex
+
+⚠️  This module is superseded by the unified evaluation framework:
+    benchmarks/unified_eval.py
+Core logic has been migrated to:
+    - benchmarks/oc_client.py (OCClient)
+    - benchmarks/llm_client.py (LLMClient)
+    - benchmarks/scoring.py (F1 scoring)
+    - benchmarks/adapters/conversation.py (conversation adapter)
+This file is retained for backward compatibility only.
+
+---
+
 LoCoMo Benchmark Evaluation for OpenCortex
 
 Simulates the real MCP flow:
