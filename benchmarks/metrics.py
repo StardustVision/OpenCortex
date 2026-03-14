@@ -5,13 +5,7 @@ Retrieval metrics migrated from src/opencortex/eval/memory_eval.py.
 No external dependencies (no numpy).
 """
 
-import sys
-from pathlib import Path
 from typing import Any, Dict, List, Sequence
-
-# Import estimate_tokens from the OpenCortex parser module
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from opencortex.parse.base import estimate_tokens
 
 
 def _percentile(sorted_data: List[float], pct: float) -> float:
@@ -57,7 +51,7 @@ def _single_retrieval_metrics(
 
 
 def compute_retrieval_metrics(
-    records: List[Dict[str, Any]], ks: List[int] = [1, 3, 5]
+    records: List[Dict[str, Any]], ks: Sequence[int] = (1, 3, 5)
 ) -> Dict[str, Any]:
     """Recall@k, Precision@k, MRR, Hit Rate@k over all records with ground truth URIs.
 
@@ -171,7 +165,11 @@ def truncate_to_budget(text: str, max_tokens: int) -> str:
 
     Truncates at character boundaries, keeping the beginning of the text.
     Uses binary search for efficient cutoff finding.
+
+    Requires src/ on sys.path (caller responsibility, e.g. unified_eval.py).
     """
+    from opencortex.parse.base import estimate_tokens
+
     if not text or estimate_tokens(text) <= max_tokens:
         return text
     lo, hi = 0, len(text)
