@@ -169,7 +169,7 @@ class ContextManager:
         recall_mode = config.get("recall_mode", "auto")
         category = config.get("category")
         context_type_filter = config.get("context_type")
-        include_knowledge = config.get("include_knowledge", True)
+        include_knowledge = config.get("include_knowledge", False)
         sk = self._make_session_key(tenant_id, user_id, session_id)
         prepare_started = time.monotonic()
 

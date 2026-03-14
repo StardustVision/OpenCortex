@@ -370,6 +370,45 @@ class TestContextManager(unittest.TestCase):
 
         self._run(orch.close())
 
+    # -----------------------------------------------------------------
+    # 10. include_knowledge defaults to False (Phase 1 shrinkage)
+    # -----------------------------------------------------------------
+
+    def test_10_include_knowledge_default_false(self):
+        """prepare() with default config does NOT call knowledge_search."""
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        cm = orch._context_manager
+
+        # Spy on orchestrator.knowledge_search to verify it's never called
+        ks_calls = []
+        original_ks = getattr(orch, 'knowledge_search', None)
+        async def spy_ks(*args, **kwargs):
+            ks_calls.append((args, kwargs))
+            if original_ks:
+                return await original_ks(*args, **kwargs)
+            return []
+        orch.knowledge_search = spy_ks
+
+        # recall_mode=always ensures retrieval path runs — isolates the
+        # include_knowledge variable from keyword routing behavior
+        result = self._run(cm.handle(
+            session_id="sess_know",
+            phase="prepare",
+            tenant_id="testteam",
+            user_id="alice",
+            turn_id="t1",
+            messages=[{"role": "user", "content": "test knowledge default"}],
+            config={"recall_mode": "always"},
+        ))
+        # knowledge_search must NOT be called when include_knowledge defaults to False
+        self.assertEqual(len(ks_calls), 0, "knowledge_search should not be called")
+        self.assertEqual(result.get("knowledge", []), [])
+
+        if original_ks:
+            orch.knowledge_search = original_ks
+        self._run(orch.close())
+
 
 if __name__ == "__main__":
     unittest.main()
