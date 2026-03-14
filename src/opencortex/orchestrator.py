@@ -232,7 +232,7 @@ class MemoryOrchestrator:
         from opencortex.alpha.observer import Observer
         self._observer = Observer()
 
-        if self._storage and self._embedder:
+        if self._storage and self._embedder and alpha_cfg.trace_splitter_enabled:
             # TraceStore
             from opencortex.alpha.trace_store import TraceStore
             self._trace_store = TraceStore(
@@ -244,6 +244,7 @@ class MemoryOrchestrator:
             )
             await self._trace_store.init()
 
+        if self._storage and self._embedder and alpha_cfg.archivist_enabled:
             # KnowledgeStore
             from opencortex.alpha.knowledge_store import KnowledgeStore
             self._knowledge_store = KnowledgeStore(
