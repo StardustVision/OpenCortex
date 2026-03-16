@@ -69,6 +69,25 @@ def score_qa(prediction: str, answer: Any, category: int) -> float:
     return f1_score(pred, ans)
 
 
+def exact_match(prediction: str, ground_truth: str) -> float:
+    """Normalized exact match (standard HotPotQA metric)."""
+    return 1.0 if _normalize(prediction) == _normalize(ground_truth) else 0.0
+
+
+def supporting_fact_f1(retrieved_titles: set, gold_titles: set) -> float:
+    """Set-based F1 over document titles (supporting fact retrieval quality)."""
+    if not gold_titles:
+        return 0.0
+    if not retrieved_titles:
+        return 0.0
+    common = retrieved_titles & gold_titles
+    if not common:
+        return 0.0
+    prec = len(common) / len(retrieved_titles)
+    rec = len(common) / len(gold_titles)
+    return (2 * prec * rec) / (prec + rec)
+
+
 def _parse_judge_score(response: str) -> float:
     """Parse LLM judge response to 0.0 / 0.5 / 1.0 score."""
     text = response.strip()

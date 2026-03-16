@@ -52,7 +52,14 @@ from benchmarks.metrics import (
 )
 from benchmarks.oc_client import OCClient
 from benchmarks.report import build_report, print_report, save_report
-from benchmarks.scoring import f1_score, jscore_judge, llm_judge_score, score_qa
+from benchmarks.scoring import (
+    exact_match,
+    f1_score,
+    jscore_judge,
+    llm_judge_score,
+    score_qa,
+    supporting_fact_f1,
+)
 
 
 # Answer prompt templates (Mem0-aligned: concise 5-6 word answers for cleaner judging)
@@ -84,8 +91,17 @@ def _default_dataset_path(mode: str, dataset_name: str = "") -> str:
     return ""
 
 
-def _get_adapter(mode: str):
-    """Import and return the adapter for the given mode."""
+def _get_adapter(mode: str, dataset: str = ""):
+    """Import and return the adapter for the given mode/dataset.
+
+    Dataset-specific adapters take priority over mode-based defaults.
+    """
+    # Dataset-specific adapters
+    if dataset == "hotpotqa":
+        from benchmarks.adapters.hotpotqa import HotPotQAAdapter
+        return HotPotQAAdapter()
+
+    # Default mode-based routing
     if mode == "memory":
         from benchmarks.adapters.memory import MemoryAdapter
         return MemoryAdapter()
@@ -126,7 +142,7 @@ async def run_mode(
 
     try:
         # Load adapter + dataset
-        adapter = _get_adapter(mode)
+        adapter = _get_adapter(mode, args.dataset)
         dataset_path = args.data or _default_dataset_path(mode, args.dataset)
         if not dataset_path:
             raise ValueError("--data is required (or use --mode all for default datasets)")
@@ -226,6 +242,23 @@ async def run_mode(
                 if bl_prediction:
                     record["bl_f1"] = score_qa(bl_prediction, qa_item.answer, cat)
 
+                # HotPotQA-specific: EM, SP F1, Joint F1
+                if getattr(adapter, "is_hotpotqa", False):
+                    if oc_prediction:
+                        record["oc_em"] = exact_match(oc_prediction, qa_item.answer)
+                    if bl_prediction:
+                        record["bl_em"] = exact_match(bl_prediction, qa_item.answer)
+                    # SP F1: retrieved titles vs gold titles
+                    gold_titles = set(qa_item.meta.get("gold_titles", []))
+                    retrieved_titles = {
+                        r.get("abstract", "") for r in results
+                        if isinstance(r, dict) and r.get("abstract")
+                    }
+                    sp = supporting_fact_f1(retrieved_titles, gold_titles)
+                    record["sp_f1"] = sp
+                    if "oc_f1" in record:
+                        record["joint_f1"] = record["oc_f1"] * sp
+
                 # LLM-as-Judge (optional, legacy 3-point scale)
                 if args.enable_llm_judge:
                     if oc_prediction:
@@ -312,6 +345,20 @@ async def run_mode(
             }
             if oc_f1s:
                 accuracy["delta_f1"] = f"{oc_overall - bl_overall:+.4f}"
+
+        # HotPotQA aggregate metrics (EM, SP F1, Joint F1)
+        oc_ems = [r["oc_em"] for r in records if "oc_em" in r]
+        bl_ems = [r["bl_em"] for r in records if "bl_em" in r]
+        sp_f1s = [r["sp_f1"] for r in records if "sp_f1" in r]
+        joint_f1s = [r["joint_f1"] for r in records if "joint_f1" in r]
+        if oc_ems:
+            accuracy["oc_em"] = round(sum(oc_ems) / len(oc_ems), 4)
+        if bl_ems:
+            accuracy["bl_em"] = round(sum(bl_ems) / len(bl_ems), 4)
+        if sp_f1s:
+            accuracy["sp_f1"] = round(sum(sp_f1s) / len(sp_f1s), 4)
+        if joint_f1s:
+            accuracy["joint_f1"] = round(sum(joint_f1s) / len(joint_f1s), 4)
 
         # LLM Judge (legacy)
         if args.enable_llm_judge:
@@ -459,7 +506,7 @@ def main():
 
     # Mode + dataset
     p.add_argument("--mode", required=True, choices=["memory", "conversation", "document", "all"])
-    p.add_argument("--dataset", default="", help="Dataset name (personamem, locomo, longmemeval, qasper, longbench, cmrc)")
+    p.add_argument("--dataset", default="", help="Dataset name (personamem, locomo, longmemeval, qasper, longbench, cmrc, hotpotqa)")
     p.add_argument("--data", default="", help="Dataset file path")
 
     # Server
