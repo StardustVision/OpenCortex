@@ -56,8 +56,8 @@ class HierarchicalRetriever:
     # Frontier batching constants
     MAX_FRONTIER_SIZE = 64          # Max directories per wave (prevents oversized IN)
     MIN_CHILDREN_PER_DIR = 2        # Min guaranteed children per parent directory
-    LATE_RERANK_FACTOR = 5          # Late rerank candidate multiplier
-    LATE_RERANK_CAP = 50            # Late rerank candidate cap
+    LATE_RERANK_FACTOR = 2          # Late rerank candidate multiplier
+    LATE_RERANK_CAP = 20            # Late rerank candidate cap
     DEFAULT_MAX_WAVES = 8           # Default max wave iterations
 
     def __init__(
@@ -71,6 +71,8 @@ class HierarchicalRetriever:
         use_frontier_batching: bool = True,
         max_waves: int = 8,
         embed_timeout: float = 2.0,
+        flat_rerank_multiplier: int = 5,
+        force_flat_search: bool = False,
     ):
         """Initialize hierarchical retriever with rerank_config.
 
@@ -93,6 +95,8 @@ class HierarchicalRetriever:
         self._use_frontier_batching = use_frontier_batching
         self._max_waves = max_waves
         self._embed_timeout = embed_timeout
+        self._flat_rerank_multiplier = flat_rerank_multiplier
+        self._force_flat_search = force_flat_search
 
         # Initialize rerank client only if config is available
         if rerank_config and rerank_config.is_available():
@@ -247,11 +251,14 @@ class HierarchicalRetriever:
             )
 
         # Generate query vectors with timeout protection
+        # Use HyDE text for dense embedding when available; keep original for lexical/rerank
         query_vector = None
         sparse_query_vector = None
-        text_query = query.query  # Always available for lexical fallback
+        text_query = query.query  # Always original for lexical + rerank
+        embed_text = getattr(query, "hyde_text", None) or query.query
+        _t0 = asyncio.get_event_loop().time()
         if self.embedder:
-            result = await self._embed_with_timeout(query.query)
+            result = await self._embed_with_timeout(embed_text)
             if result:
                 query_vector = result.dense_vector
                 sparse_query_vector = result.sparse_vector
@@ -290,6 +297,9 @@ class HierarchicalRetriever:
                 searched_directories=root_uris,
             )
 
+        _t1 = asyncio.get_event_loop().time()
+        logger.info("[Retrieve:timing] embed=%.1fms q=%s", (_t1 - _t0) * 1000, query.query[:40])
+
         # Step 2: Global vector search to supplement starting points
         global_results = await self._global_vector_search(
             collection=collection,
@@ -300,38 +310,74 @@ class HierarchicalRetriever:
             text_query=text_query,
         )
 
+        _t2 = asyncio.get_event_loop().time()
+        logger.info("[Retrieve:timing] global_search=%.1fms", (_t2 - _t1) * 1000)
+
         # Step 3: Merge starting points
         starting_points = await self._merge_starting_points(query.query, root_uris, global_results)
 
         # Step 4: Search (frontier batching or recursive fallback)
         # When query_vector is available, run dense + lexical in parallel for RRF fusion
         if query_vector is not None:
-            if self._use_frontier_batching:
-                dense_coro = self._frontier_search(
-                    query=query.query,
-                    collection=collection,
-                    query_vector=query_vector,
-                    sparse_query_vector=sparse_query_vector,
-                    starting_points=starting_points,
-                    limit=limit,
-                    mode=mode,
-                    threshold=effective_threshold,
-                    score_gte=score_gte,
-                    metadata_filter=final_metadata_filter,
-                    text_query=text_query,
+            # Flat-record fallback: when no directory starting points exist
+            # (or only root-URI starting points with no global matches),
+            # frontier search may miss flat records.  Fall back to direct
+            # vector search for better recall on non-hierarchical data.
+            # Also skip frontier when global results are all leaf nodes
+            # (no hierarchy to traverse — frontier waves are pure overhead).
+            has_real_starting_points = any(s for _, s in starting_points if s > 0)
+            # Skip frontier when:
+            # 1. force_flat_search is enabled (config-driven, e.g. for flat data)
+            # 2. Global results contain no directories to traverse
+            if self._force_flat_search:
+                has_real_starting_points = False
+            elif has_real_starting_points:
+                has_directory_results = any(
+                    not r.get("is_leaf", True) for r in global_results
                 )
+                if not has_directory_results:
+                    logger.info("[HierarchicalRetriever] No directory results — using flat search")
+                    has_real_starting_points = False
+            if has_real_starting_points:
+                if self._use_frontier_batching:
+                    dense_coro = self._frontier_search(
+                        query=query.query,
+                        collection=collection,
+                        query_vector=query_vector,
+                        sparse_query_vector=sparse_query_vector,
+                        starting_points=starting_points,
+                        limit=limit,
+                        mode=mode,
+                        threshold=effective_threshold,
+                        score_gte=score_gte,
+                        metadata_filter=final_metadata_filter,
+                        text_query=text_query,
+                    )
+                else:
+                    dense_coro = self._recursive_search(
+                        query=query.query,
+                        collection=collection,
+                        query_vector=query_vector,
+                        sparse_query_vector=sparse_query_vector,
+                        starting_points=starting_points,
+                        limit=limit,
+                        mode=mode,
+                        threshold=effective_threshold,
+                        score_gte=score_gte,
+                        metadata_filter=final_metadata_filter,
+                        text_query=text_query,
+                    )
             else:
-                dense_coro = self._recursive_search(
-                    query=query.query,
+                logger.info("[HierarchicalRetriever] No starting points — using flat vector search")
+                # Fetch a wider candidate pool for reranking when data is flat
+                # (all records under one parent, no hierarchy to exploit).
+                rerank_pool = limit * self._flat_rerank_multiplier if self._rerank_client else limit
+                dense_coro = self._flat_vector_search(
                     collection=collection,
                     query_vector=query_vector,
                     sparse_query_vector=sparse_query_vector,
-                    starting_points=starting_points,
-                    limit=limit,
-                    mode=mode,
-                    threshold=effective_threshold,
-                    score_gte=score_gte,
-                    metadata_filter=final_metadata_filter,
+                    filter=final_metadata_filter,
+                    limit=rerank_pool,
                     text_query=text_query,
                 )
             lexical_coro = self._lexical_search(
@@ -343,9 +389,37 @@ class HierarchicalRetriever:
             dense_candidates, lexical_candidates = await asyncio.gather(
                 dense_coro, lexical_coro,
             )
+            _t3 = asyncio.get_event_loop().time()
+            logger.info("[Retrieve:timing] dense+lexical=%.1fms dense=%d lex=%d",
+                        (_t3 - _t2) * 1000, len(dense_candidates), len(lexical_candidates))
             candidates = self._merge_rrf(
                 dense_candidates, lexical_candidates, lexical_weight=lexical_boost,
-            )[:limit]
+            )
+            # Rerank top candidates when in flat-search mode.
+            # Truncate to rerank_config.max_candidates to control local-reranker latency.
+            if (
+                not has_real_starting_points
+                and self._rerank_client
+                and len(candidates) > limit
+                and self._should_rerank(candidates)
+            ):
+                rerank_cap = (self.rerank_config.max_candidates or len(candidates)) if self.rerank_config else len(candidates)
+                rerank_slice = candidates[:rerank_cap]
+                remainder = candidates[rerank_cap:]
+                docs = [c.get("abstract", "") for c in rerank_slice]
+                _t_rr0 = asyncio.get_event_loop().time()
+                rerank_scores = await self._rerank_client.rerank(
+                    query.query, docs,
+                )
+                _t_rr1 = asyncio.get_event_loop().time()
+                logger.info("[Retrieve:timing] rerank=%.1fms n_docs=%d",
+                            (_t_rr1 - _t_rr0) * 1000, len(docs))
+                beta = self._fusion_beta
+                for c, rs in zip(rerank_slice, rerank_scores):
+                    c["_score"] = beta * rs + (1 - beta) * c.get("_score", 0.0)
+                candidates = rerank_slice + remainder
+                candidates.sort(key=lambda x: x.get("_score", 0.0), reverse=True)
+            candidates = candidates[:limit]
         else:
             # Embedding failed — adapter.search() already uses lexical fallback
             if self._use_frontier_batching:
@@ -397,7 +471,14 @@ class HierarchicalRetriever:
         filter: Optional[Dict[str, Any]] = None,
         text_query: str = "",
     ) -> List[Dict[str, Any]]:
-        """Global vector search to locate initial directories."""
+        """Global vector search to locate initial directories.
+
+        Applies the caller's metadata filter AND is_leaf=False.  This means
+        content-level filters (e.g. category=observation) will exclude
+        directories that don't carry that category — which is the desired
+        behaviour: flat records with no matching parent directories will
+        trigger the flat-search fallback path (better recall).
+        """
         if not query_vector:
             return []
         sparse_query_vector = sparse_query_vector or {}
@@ -406,6 +487,7 @@ class HierarchicalRetriever:
             "op": "and",
             "conds": [filter, {"op": "must", "field": "is_leaf", "conds": [False]}],
         }
+
         results = await self.storage.search(
             collection=collection,
             query_vector=query_vector,
@@ -733,10 +815,12 @@ class HierarchicalRetriever:
                 frontier = self._diverse_truncate(frontier, self.MAX_FRONTIER_SIZE)
 
             # 2. Batch query
+            # Use limit*5 base to give reranker enough candidates,
+            # especially for flat data where one parent holds many leaves.
             per_wave_limit = max(
-                limit * 3,
+                limit * 5,
                 len(frontier) * self.MIN_CHILDREN_PER_DIR * 2,
-                30,
+                50,
             )
             parent_uris = [uri for uri, _ in frontier]
             frontier_scores = {uri: score for uri, score in frontier}
@@ -938,6 +1022,38 @@ class HierarchicalRetriever:
             top_m.sort(key=lambda x: x.get("_final_score", 0.0), reverse=True)
 
         return top_m[:limit]
+
+    async def _flat_vector_search(
+        self,
+        collection: str,
+        query_vector: List[float],
+        sparse_query_vector: Optional[Dict[str, float]] = None,
+        filter: Optional[Dict[str, Any]] = None,
+        limit: int = 10,
+        text_query: str = "",
+    ) -> List[Dict[str, Any]]:
+        """Direct vector search for flat (non-hierarchical) records.
+
+        Fallback when no directory starting points exist — skips frontier
+        batching and does a simple nearest-neighbour query.  Applies RL +
+        hotness boosts identically to the frontier path.
+        """
+        results = await self.storage.search(
+            collection=collection,
+            query_vector=query_vector,
+            sparse_query_vector=sparse_query_vector or {},
+            filter=filter,
+            limit=limit,
+            text_query=text_query,
+        )
+        for r in results:
+            reward = r.get("reward_score", 0.0)
+            if reward != 0 and self._rl_weight:
+                r["_score"] = r.get("_score", 0.0) + self._rl_weight * reward
+            if self._hot_weight:
+                r["_score"] = r.get("_score", 0.0) + self._hot_weight * self._compute_hotness(r)
+        results.sort(key=lambda r: r.get("_score", 0.0), reverse=True)
+        return results
 
     async def _lexical_search(
         self,

@@ -100,6 +100,12 @@ class CortexConfig:
     rerank_api_base: str = ""       # API endpoint
     rerank_threshold: float = 0.0   # Score threshold
     rerank_fusion_beta: float = 0.7 # Rerank vs retrieval score weight (0-1)
+    rerank_max_candidates: int = 20 # Max docs sent to reranker per query (cost control)
+    rerank_flat_pool_multiplier: int = 3  # Flat-search rerank candidate multiplier (pool = limit * N)
+    # Search behavior
+    force_flat_search: bool = False  # Skip frontier/recursive, always use flat vector search
+    # HyDE (Hypothetical Document Embedding)
+    hyde_enabled: bool = False  # Generate hypothetical answer for dense embedding
     # OpenCortex HTTP Server (FastAPI)
     http_server_host: str = "127.0.0.1"
     http_server_port: int = 8921

@@ -188,6 +188,8 @@ class MemoryOrchestrator:
             embedder=self._embedder,
             rerank_config=rerank_cfg,
             llm_completion=self._llm_completion,
+            flat_rerank_multiplier=self._config.rerank_flat_pool_multiplier,
+            force_flat_search=self._config.force_flat_search,
         )
 
         # 7a. Ensure full-text indexes on existing collections (idempotent)
@@ -579,7 +581,7 @@ class MemoryOrchestrator:
             threshold=base.threshold or cfg.rerank_threshold,
             provider=getattr(base, "provider", "") or cfg.rerank_provider,
             fusion_beta=getattr(base, "fusion_beta", 0.0) or cfg.rerank_fusion_beta,
-            max_candidates=getattr(base, "max_candidates", 20),
+            max_candidates=getattr(base, "max_candidates", 0) or cfg.rerank_max_candidates,
             use_llm_fallback=getattr(base, "use_llm_fallback", True),
         )
 
@@ -595,18 +597,20 @@ class MemoryOrchestrator:
 
         # Embed without LLM
         vector = None
+        sparse_vector = None
         if self._embedder:
             loop = asyncio.get_running_loop()
             result = await asyncio.wait_for(
                 loop.run_in_executor(None, self._embedder.embed, text), timeout=2.0
             )
             vector = result.dense_vector
+            sparse_vector = result.sparse_vector
 
         record = {
             "uri": uri,
             "parent_uri": CortexURI.build_private(tid, uid, "memories", "events", session_id),
             "is_leaf": True,
-            "abstract": text[:500],
+            "abstract": text,
             "overview": "",
             "context_type": "memory",
             "category": "events",
@@ -622,6 +626,8 @@ class MemoryOrchestrator:
         }
         if vector:
             record["vector"] = vector
+        if sparse_vector:
+            record["sparse_vector"] = sparse_vector
 
         await self._storage.upsert(_CONTEXT_COLLECTION, record)
         return uri
@@ -793,6 +799,7 @@ class MemoryOrchestrator:
         session_id: Optional[str] = None,
         dedup: bool = False,
         dedup_threshold: float = 0.82,
+        embed_text: str = "",
     ) -> Context:
         """
         Add a new context (memory, resource, or skill).
@@ -801,7 +808,8 @@ class MemoryOrchestrator:
         write filesystem (L0/L1).
 
         Args:
-            abstract: Short summary (L0). Used as the vectorization text.
+            abstract: Short summary (L0). Used as the vectorization text
+                unless *embed_text* is provided.
             content: Full content (L2). Stored on filesystem.
             category: Category hint (e.g. "preferences", "entities", "patterns").
             parent_uri: Explicit parent URI. Auto-derived if not provided.
@@ -817,6 +825,9 @@ class MemoryOrchestrator:
                 categories skip silently. Set False for bulk import.
             dedup_threshold: Minimum similarity score to consider a duplicate
                 (default 0.82).
+            embed_text: Optional text used for embedding instead of abstract.
+                Useful when the display text (abstract) differs from the
+                optimal search text (e.g., omitting date prefixes).
 
         Returns:
             The created Context object.  ``meta["dedup_action"]`` indicates
@@ -902,11 +913,17 @@ class MemoryOrchestrator:
             user=effective_user,
         )
 
-        # Override vectorization with expanded text (abstract + keywords)
-        # This gives keyword-rich memories higher retrieval density.
+        # Override vectorization text.
+        # Priority: embed_text > abstract+keywords > abstract (default from Context)
+        from opencortex.core.context import Vectorize
+        if embed_text:
+            base_text = embed_text
+        else:
+            base_text = abstract
         if keywords:
-            from opencortex.core.context import Vectorize
-            ctx.vectorize = Vectorize(f"{abstract} {keywords}")
+            ctx.vectorize = Vectorize(f"{base_text} {keywords}")
+        elif embed_text:
+            ctx.vectorize = Vectorize(embed_text)
 
         # Embed (offload sync embedder to thread so we don't block the loop)
         result = None
@@ -1316,6 +1333,25 @@ class MemoryOrchestrator:
                 )
                 for ct in types_to_search
             ]
+
+        # HyDE: generate hypothetical answers for dense embedding
+        if self._config.hyde_enabled and self._llm_completion:
+            from opencortex.prompts import build_hyde_prompt
+
+            async def _hyde_rewrite(tq):
+                try:
+                    hyde_answer = await self._llm_completion(
+                        build_hyde_prompt(tq.query),
+                    )
+                    if hyde_answer and len(hyde_answer.strip()) > 10:
+                        tq.hyde_text = hyde_answer.strip()
+                except Exception:
+                    pass  # graceful degradation — use original query
+                return tq
+
+            typed_queries = list(
+                await asyncio.gather(*[_hyde_rewrite(tq) for tq in typed_queries])
+            )
 
         # Set target directories on queries if specified
         if target_uri:
