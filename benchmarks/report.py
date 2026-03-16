@@ -83,8 +83,49 @@ def print_report(report: Dict[str, Any]) -> None:
             cmrr = metrics.get("mrr", 0)
             print(f"{cat:>12} {cr1:>10.3f} {cr3:>10.3f} {cr5:>10.3f} {cmrr:>8.3f}")
 
-    # QA Accuracy
+    # J-Score (primary metric, Mem0-aligned binary LLM judge)
     accuracy_data = report.get("accuracy", {})
+    jscore_data = accuracy_data.get("jscore", {})
+    if jscore_data and jscore_data.get("overall") is not None:
+        print(f"\n{'=' * 60}")
+        print(f"{'J-Score (LLM-as-Judge) — Primary Metric':^60}")
+        print(f"{'-' * 60}")
+        bl_j = jscore_data.get("baseline_overall")
+        header = f"{'Category':<22} "
+        if bl_j is not None:
+            header += f"{'Baseline':>10} {'OpenCortex':>12} {'Delta':>8}"
+        else:
+            header += f"{'OpenCortex':>12} {'N':>6}"
+        print(header)
+        print(f"{'-' * 60}")
+
+        oc_j_by_cat = jscore_data.get("by_category", {})
+        bl_j_by_cat = jscore_data.get("baseline_by_category", {})
+        for cat in sorted(set(list(oc_j_by_cat.keys()) + list(bl_j_by_cat.keys()))):
+            oc_cat = oc_j_by_cat.get(cat, {})
+            bl_cat = bl_j_by_cat.get(cat, {})
+            oc_val = oc_cat.get("jscore", 0)
+            n = oc_cat.get("n", bl_cat.get("n", 0))
+            if bl_j is not None:
+                bl_val = bl_cat.get("jscore", "-")
+                if isinstance(bl_val, (int, float)):
+                    delta = f"{oc_val - bl_val:+.4f}"
+                else:
+                    delta = "-"
+                print(f"{cat:<22} {str(bl_val):>10} {oc_val:>12.4f} {delta:>8}")
+            else:
+                print(f"{cat:<22} {oc_val:>12.4f} {n:>6}")
+
+        print(f"{'-' * 60}")
+        overall_j = jscore_data.get("overall", 0)
+        if bl_j is not None:
+            delta_j = f"{overall_j - bl_j:+.4f}"
+            print(f"{'Overall (excl. 5)':<22} {bl_j:>10.4f} {overall_j:>12.4f} {delta_j:>8}")
+        else:
+            print(f"{'Overall (excl. 5)':<22} {overall_j:>12.4f}")
+        print(f"{'=' * 60}")
+
+    # QA Accuracy (F1 — secondary metric)
     f1_data = accuracy_data.get("f1", {})
     if f1_data:
         print(f"\n{'=' * 60}")
@@ -99,27 +140,32 @@ def print_report(report: Dict[str, Any]) -> None:
         print(header)
         print(f"{'-' * 60}")
 
+        excluded = set(f1_data.get("excluded_categories", []))
         by_cat = f1_data.get("by_category", {})
         for cat, cat_data in sorted(by_cat.items()):
             cat_f1 = cat_data.get("f1", 0)
             n = cat_data.get("n", 0)
+            label = f"{cat} *" if cat in excluded else cat
             if bl_f1 is not None:
                 bl_cat = accuracy_data.get("baseline_by_category", {}).get(cat, {}).get("f1", "-")
                 if isinstance(bl_cat, float):
                     delta = f"{cat_f1 - bl_cat:+.4f}"
                 else:
                     delta = "-"
-                print(f"{cat:<22} {str(bl_cat):>10} {cat_f1:>12.4f} {delta:>8}")
+                print(f"{label:<22} {str(bl_cat):>10} {cat_f1:>12.4f} {delta:>8}")
             else:
-                print(f"{cat:<22} {cat_f1:>12.4f} {n:>6}")
+                print(f"{label:<22} {cat_f1:>12.4f} {n:>6}")
 
         print(f"{'-' * 60}")
         overall_f1 = f1_data.get("overall", 0)
+        excl_note = f" (excl. {','.join(sorted(excluded))})" if excluded else ""
         if bl_f1 is not None:
             delta = f"{overall_f1 - bl_f1:+.4f}"
-            print(f"{'Overall':<22} {bl_f1:>10.4f} {overall_f1:>12.4f} {delta:>8}")
+            print(f"{'Overall' + excl_note:<22} {bl_f1:>10.4f} {overall_f1:>12.4f} {delta:>8}")
         else:
-            print(f"{'Overall':<22} {overall_f1:>12.4f}")
+            print(f"{'Overall' + excl_note:<22} {overall_f1:>12.4f}")
+        if excluded:
+            print(f"  * Category {','.join(sorted(excluded))} excluded from overall (adversarial)")
         print(f"{'=' * 60}")
 
     # Token reduction

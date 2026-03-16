@@ -32,10 +32,17 @@ class LLMClient:
         self._no_thinking = no_thinking
         self._client = httpx.AsyncClient(timeout=timeout)
 
-    async def complete(self, prompt: str, max_tokens: int = 512, retries: int = 3) -> str:
-        """Send completion request with retry on transient errors."""
+    async def complete(
+        self,
+        prompt: str,
+        max_tokens: int = 512,
+        retries: int = 8,
+        system: str = "",
+        temperature: float | None = None,
+    ) -> str:
+        """Send completion request with exponential backoff on transient errors."""
         url = self._build_request_url()
-        payload = self._build_payload(prompt, max_tokens)
+        payload = self._build_payload(prompt, max_tokens, system=system, temperature=temperature)
         for attempt in range(1, retries + 1):
             try:
                 resp = await self._client.post(
@@ -49,11 +56,11 @@ class LLMClient:
             except (httpx.TimeoutException, httpx.TransportError):
                 if attempt >= retries:
                     raise
-                await asyncio.sleep(2 * attempt)
+                await asyncio.sleep(min(2 ** attempt, 120))
             except httpx.HTTPStatusError as e:
                 if attempt >= retries or e.response.status_code not in (429, 500, 502, 503):
                     raise
-                await asyncio.sleep(3 * attempt)
+                await asyncio.sleep(min(2 ** attempt, 120))
         return ""
 
     async def close(self):
@@ -72,13 +79,25 @@ class LLMClient:
             return f"{self._base}/messages"
         return f"{self._base}/chat/completions"
 
-    def _build_payload(self, prompt: str, max_tokens: int) -> Dict[str, Any]:
+    def _build_payload(
+        self,
+        prompt: str,
+        max_tokens: int,
+        system: str = "",
+        temperature: float | None = None,
+    ) -> Dict[str, Any]:
+        messages: list[Dict[str, Any]] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
         payload: Dict[str, Any] = {
             "model": self._model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
             "max_tokens": max_tokens,
         }
-        if self._no_thinking:
+        if temperature is not None:
+            payload["temperature"] = temperature
+        elif self._no_thinking:
             payload["thinking"] = {"type": "disabled"}
             payload["temperature"] = 0.7
         return payload

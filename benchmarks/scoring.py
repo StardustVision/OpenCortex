@@ -4,6 +4,7 @@ Unified evaluation scoring: F1 token overlap + LLM-as-Judge.
 Migrated from benchmarks/locomo_eval.py with generalized category handling.
 """
 
+import json as _json
 import re
 import string
 from collections import Counter
@@ -102,3 +103,60 @@ async def llm_judge_score(
     )
     response = await llm_complete_fn(prompt, 8)
     return _parse_judge_score(response)
+
+
+# ---------------------------------------------------------------------------
+# J-Score (Mem0-aligned binary LLM-as-Judge)
+# ---------------------------------------------------------------------------
+
+JSCORE_SYSTEM = (
+    "You are an evaluation judge. Given a question, ground truth answer, and "
+    "a predicted answer, determine if the prediction is correct.\n"
+    'Output JSON: {"label": "CORRECT"} or {"label": "WRONG"}\n'
+    "Be generous — if the prediction captures the key fact, mark CORRECT."
+)
+
+JSCORE_USER = (
+    "Question: {question}\n"
+    "Ground truth: {ground_truth}\n"
+    "Prediction: {prediction}\n\n"
+    "Output only JSON."
+)
+
+
+def _parse_jscore_label(response: str) -> float:
+    """Parse {"label": "CORRECT"} → 1.0, anything else → 0.0."""
+    text = response.strip()
+    # Try JSON parse first
+    try:
+        obj = _json.loads(text)
+        if isinstance(obj, dict) and str(obj.get("label", "")).upper() == "CORRECT":
+            return 1.0
+        return 0.0
+    except (_json.JSONDecodeError, ValueError):
+        pass
+    # Regex fallback
+    upper = text.upper()
+    if "CORRECT" in upper and "WRONG" not in upper:
+        return 1.0
+    return 0.0
+
+
+async def jscore_judge(
+    prediction: str,
+    ground_truth: str,
+    question: str,
+    llm_complete_fn,
+) -> float:
+    """Mem0-aligned binary J-score. Returns 1.0 (CORRECT) or 0.0 (WRONG).
+
+    Args:
+        llm_complete_fn: async callable(prompt, max_tokens, *, system, temperature) -> str
+    """
+    user_prompt = JSCORE_USER.format(
+        question=question,
+        ground_truth=ground_truth,
+        prediction=prediction,
+    )
+    response = await llm_complete_fn(user_prompt, 32, system=JSCORE_SYSTEM, temperature=0)
+    return _parse_jscore_label(response)

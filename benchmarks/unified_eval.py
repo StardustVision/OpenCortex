@@ -36,7 +36,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+_project_root = str(Path(__file__).resolve().parent.parent)
+sys.path.insert(0, _project_root)
+sys.path.insert(0, str(Path(_project_root) / "src"))
 
 from opencortex.auth.token import ensure_secret, generate_token
 from opencortex.parse.base import estimate_tokens
@@ -50,14 +52,13 @@ from benchmarks.metrics import (
 )
 from benchmarks.oc_client import OCClient
 from benchmarks.report import build_report, print_report, save_report
-from benchmarks.scoring import f1_score, llm_judge_score, score_qa
+from benchmarks.scoring import f1_score, jscore_judge, llm_judge_score, score_qa
 
 
-# Answer prompt templates (from locomo_eval.py)
+# Answer prompt templates (Mem0-aligned: concise 5-6 word answers for cleaner judging)
 ANSWER_PROMPT = (
-    "Based on the above context, answer with a short phrase. "
-    "Use exact words from the context when possible.\n\n"
-    "Question: {question}\nShort answer:"
+    "Based on the above context, answer in 5-6 words.\n\n"
+    "Question: {question}\nAnswer:"
 )
 ANSWER_PROMPT_CAT5 = (
     "Based on the above context, answer the question.\n\n"
@@ -142,8 +143,8 @@ async def run_mode(
                     log(f"  ERROR: {err}")
             await asyncio.sleep(1)  # let embeddings settle
 
-        # Phase 2: Build QA items
-        qa_items = adapter.build_qa_items(max_qa=args.max_qa)
+        # Phase 2: Build QA items (max_conv limits QA to ingested conversations only)
+        qa_items = adapter.build_qa_items(max_qa=args.max_qa, max_conv=args.max_conv)
         log(f"Evaluating {len(qa_items)} QA items (top_k={args.top_k})...")
 
         # Phase 3: Evaluate
@@ -166,8 +167,13 @@ async def run_mode(
                 oc_context = ""
                 retrieved_uris: List[str] = []
                 latency_ms = 0.0
+                results: List[Dict] = []
                 if not args.baseline_only:
-                    results, latency_ms = await adapter.retrieve(oc, qa_item, args.top_k)
+                    try:
+                        results, latency_ms = await adapter.retrieve(oc, qa_item, args.top_k)
+                    except Exception as e:
+                        log(f"  Retrieve error: {e}")
+                        results = []
                     record["latency_ms"] = latency_ms
                     retrieved_uris = [
                         r.get("uri", "") for r in results
@@ -220,7 +226,7 @@ async def run_mode(
                 if bl_prediction:
                     record["bl_f1"] = score_qa(bl_prediction, qa_item.answer, cat)
 
-                # LLM-as-Judge (optional)
+                # LLM-as-Judge (optional, legacy 3-point scale)
                 if args.enable_llm_judge:
                     if oc_prediction:
                         record["oc_judge"] = await llm_judge_score(
@@ -231,14 +237,40 @@ async def run_mode(
                             bl_prediction, qa_item.answer, qa_item.question, llm.complete
                         )
 
+                # J-score (always-on for Cat 1-4, Mem0-aligned binary judge)
+                if not args.disable_jscore and cat != 5:
+                    if oc_prediction:
+                        record["oc_jscore"] = await jscore_judge(
+                            oc_prediction, qa_item.answer, qa_item.question, llm.complete
+                        )
+                    if bl_prediction:
+                        record["bl_jscore"] = await jscore_judge(
+                            bl_prediction, qa_item.answer, qa_item.question, llm.complete
+                        )
+
                 done_count += 1
                 if done_count % 25 == 0 or done_count == len(qa_items):
                     log(f"  Progress: {done_count}/{len(qa_items)}")
 
                 return record
 
-        records = await asyncio.gather(*[eval_one(item) for item in qa_items])
-        records = list(records)
+        records = await asyncio.gather(
+            *[eval_one(item) for item in qa_items], return_exceptions=True,
+        )
+        # Filter out exceptions, log them
+        clean_records = []
+        for i, r in enumerate(records):
+            if isinstance(r, Exception):
+                log(f"  QA #{i} failed: {r}")
+                clean_records.append({
+                    "question": qa_items[i].question,
+                    "answer": qa_items[i].answer,
+                    "category": qa_items[i].category,
+                    "error": str(r),
+                })
+            else:
+                clean_records.append(r)
+        records = clean_records
 
         # Phase 4: Compute metrics
         # Retrieval
@@ -247,11 +279,12 @@ async def run_mode(
             ks=[1, 3, 5],
         )
 
-        # QA Accuracy
-        oc_f1s = [r["oc_f1"] for r in records if "oc_f1" in r]
-        bl_f1s = [r["bl_f1"] for r in records if "bl_f1" in r]
+        # QA Accuracy — Category 5 (adversarial) excluded from overall per LoCoMo protocol
+        EXCLUDE_CATS = {"5"}
+        oc_f1s = [r["oc_f1"] for r in records if "oc_f1" in r and r.get("category") not in EXCLUDE_CATS]
+        bl_f1s = [r["bl_f1"] for r in records if "bl_f1" in r and r.get("category") not in EXCLUDE_CATS]
 
-        # Per-category F1
+        # Per-category F1 (all categories including Cat 5)
         oc_by_cat: Dict[str, List[float]] = {}
         bl_by_cat: Dict[str, List[float]] = {}
         for r in records:
@@ -269,6 +302,7 @@ async def run_mode(
                 for cat, s in oc_by_cat.items()
             }
             accuracy["f1"] = {"overall": round(oc_overall, 4), "by_category": oc_cat_agg}
+            accuracy["f1"]["excluded_categories"] = list(EXCLUDE_CATS)
         if bl_f1s:
             bl_overall = sum(bl_f1s) / len(bl_f1s)
             accuracy["baseline_f1"] = round(bl_overall, 4)
@@ -279,13 +313,49 @@ async def run_mode(
             if oc_f1s:
                 accuracy["delta_f1"] = f"{oc_overall - bl_overall:+.4f}"
 
-        # LLM Judge
+        # LLM Judge (legacy)
         if args.enable_llm_judge:
             oc_judges = [r["oc_judge"] for r in records if "oc_judge" in r]
             if oc_judges:
                 accuracy["llm_judge"] = {
                     "overall": round(sum(oc_judges) / len(oc_judges), 4),
                 }
+
+        # J-score aggregation (Cat 1-4 only, micro-average)
+        if not args.disable_jscore:
+            oc_jscores_by_cat: Dict[str, List[float]] = {}
+            bl_jscores_by_cat: Dict[str, List[float]] = {}
+            for r in records:
+                cat = r.get("category", "unknown")
+                if cat in EXCLUDE_CATS:
+                    continue
+                if "oc_jscore" in r:
+                    oc_jscores_by_cat.setdefault(cat, []).append(r["oc_jscore"])
+                if "bl_jscore" in r:
+                    bl_jscores_by_cat.setdefault(cat, []).append(r["bl_jscore"])
+
+            all_oc_j = [s for scores in oc_jscores_by_cat.values() for s in scores]
+            all_bl_j = [s for scores in bl_jscores_by_cat.values() for s in scores]
+
+            jscore_data: Dict[str, Any] = {}
+            if all_oc_j:
+                oc_j_overall = sum(all_oc_j) / len(all_oc_j)
+                jscore_data["overall"] = round(oc_j_overall, 4)
+                jscore_data["by_category"] = {
+                    cat: {"jscore": round(sum(s) / len(s), 4), "n": len(s)}
+                    for cat, s in oc_jscores_by_cat.items()
+                }
+            if all_bl_j:
+                bl_j_overall = sum(all_bl_j) / len(all_bl_j)
+                jscore_data["baseline_overall"] = round(bl_j_overall, 4)
+                jscore_data["baseline_by_category"] = {
+                    cat: {"jscore": round(sum(s) / len(s), 4), "n": len(s)}
+                    for cat, s in bl_jscores_by_cat.items()
+                }
+                if all_oc_j:
+                    jscore_data["delta"] = f"{oc_j_overall - bl_j_overall:+.4f}"
+            if jscore_data:
+                accuracy["jscore"] = jscore_data
 
         # Token reduction
         token_records = [
@@ -318,6 +388,7 @@ async def run_mode(
             "concurrency": args.concurrency,
             "total_qa": len(qa_items),
             "enable_llm_judge": args.enable_llm_judge,
+            "jscore_enabled": not args.disable_jscore,
             "seed": args.seed,
         }
 
@@ -407,7 +478,8 @@ def main():
     p.add_argument("--top-k", type=int, default=10, help="Retrieval limit")
     p.add_argument("--max-context-tokens", type=int, default=32000, help="Baseline prompt budget")
     p.add_argument("--concurrency", type=int, default=5, help="Concurrent QA evaluations")
-    p.add_argument("--enable-llm-judge", action="store_true", help="Enable LLM-as-Judge scoring")
+    p.add_argument("--enable-llm-judge", action="store_true", help="Enable legacy LLM-as-Judge scoring (3-point scale)")
+    p.add_argument("--disable-jscore", action="store_true", help="Disable J-score (Mem0-aligned binary LLM judge)")
 
     # Run control
     p.add_argument("--skip-ingest", action="store_true", help="Skip ingestion (reuse existing data)")
