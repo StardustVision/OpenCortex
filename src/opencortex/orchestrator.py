@@ -69,6 +69,9 @@ logger = logging.getLogger(__name__)
 # Default collection name for all context types
 _CONTEXT_COLLECTION = "context"
 
+# Maximum number of batch_add items processed concurrently
+_BATCH_ADD_CONCURRENCY = 8
+
 class MemoryOrchestrator:
     """
     Top-level orchestrator for OpenCortex memory operations.
@@ -192,32 +195,8 @@ class MemoryOrchestrator:
             force_flat_search=self._config.force_flat_search,
         )
 
-        # 7a. Ensure full-text indexes on existing collections (idempotent)
-        if hasattr(self._storage, "ensure_text_indexes"):
-            await self._storage.ensure_text_indexes()
-
-        # 7c. Run v0.3.0 path migration (idempotent)
-        try:
-            from opencortex.migration.v030_path_redesign import (
-                backfill_new_fields, cleanup_root_junk,
-            )
-            await cleanup_root_junk(self._storage, self._fs, _CONTEXT_COLLECTION)
-            await backfill_new_fields(self._storage, _CONTEXT_COLLECTION)
-        except Exception as exc:
-            logger.warning("[Orchestrator] Migration skipped: %s", exc)
-
-        # 7d. Run v0.4.0 project_id backfill (idempotent)
-        try:
-            from opencortex.migration.v040_project_backfill import backfill_project_id
-            await backfill_project_id(self._storage, _CONTEXT_COLLECTION)
-        except Exception as exc:
-            logger.warning("[Orchestrator] Project backfill skipped: %s", exc)
-
-        # 7e. Auto re-embed if embedding model changed
-        try:
-            await self._check_and_reembed()
-        except Exception as exc:
-            logger.warning("[Orchestrator] Auto re-embed skipped: %s", exc)
+        # 7. Background maintenance: text indexes, migrations, re-embed
+        asyncio.create_task(self._startup_maintenance())
 
         # 8. Cortex Alpha components
         await self._init_alpha()
@@ -360,7 +339,8 @@ class MemoryOrchestrator:
                 )
                 from opencortex.models.embedder.sparse import BM25SparseEmbedder
                 from opencortex.models.embedder.base import CompositeHybridEmbedder
-                return CompositeHybridEmbedder(embedder, BM25SparseEmbedder())
+                composite = CompositeHybridEmbedder(embedder, BM25SparseEmbedder())
+                return self._wrap_with_cache(composite)
             except ImportError as exc:
                 logger.warning(
                     "[MemoryOrchestrator] Cannot create Volcengine embedder — "
@@ -414,7 +394,8 @@ class MemoryOrchestrator:
                 )
                 from opencortex.models.embedder.sparse import BM25SparseEmbedder
                 from opencortex.models.embedder.base import CompositeHybridEmbedder
-                return CompositeHybridEmbedder(embedder, BM25SparseEmbedder())
+                composite = CompositeHybridEmbedder(embedder, BM25SparseEmbedder())
+                return self._wrap_with_cache(composite)
             except ImportError as exc:
                 logger.warning(
                     "[MemoryOrchestrator] Cannot create OpenAI embedder — "
@@ -546,6 +527,34 @@ class MemoryOrchestrator:
             updated, previous_model or "(none)", current_model,
         )
         marker.write_text(current_model)
+
+    async def _startup_maintenance(self) -> None:
+        """Background: text indexes, migrations, re-embed. Runs after init() returns."""
+        if hasattr(self._storage, "ensure_text_indexes"):
+            try:
+                await self._storage.ensure_text_indexes()
+            except Exception as exc:
+                logger.warning("[Orchestrator] Text index setup failed: %s", exc)
+
+        try:
+            from opencortex.migration.v030_path_redesign import (
+                backfill_new_fields, cleanup_root_junk,
+            )
+            await cleanup_root_junk(self._storage, self._fs, _CONTEXT_COLLECTION)
+            await backfill_new_fields(self._storage, _CONTEXT_COLLECTION)
+        except Exception as exc:
+            logger.warning("[Orchestrator] Migration v0.3 skipped: %s", exc)
+
+        try:
+            from opencortex.migration.v040_project_backfill import backfill_project_id
+            await backfill_project_id(self._storage, _CONTEXT_COLLECTION)
+        except Exception as exc:
+            logger.warning("[Orchestrator] Migration v0.4 skipped: %s", exc)
+
+        try:
+            await self._check_and_reembed()
+        except Exception as exc:
+            logger.warning("[Orchestrator] Auto re-embed skipped: %s", exc)
 
     async def reembed_all(self) -> int:
         """Re-embed all records with the current embedder.
@@ -1445,50 +1454,42 @@ class MemoryOrchestrator:
         return result
 
     async def _resolve_and_update_access_stats(self, uris: list) -> None:
-        """Resolve URIs to record IDs, then update access stats.
+        """1 filter + N parallel updates. Old: N filter + N get + N update (serial)."""
+        if not uris:
+            return
+        try:
+            recs = await self._storage.filter(
+                _CONTEXT_COLLECTION,
+                {"op": "must", "field": "uri", "conds": uris},
+                limit=len(uris),
+            )
+        except Exception:
+            return
+        if not recs:
+            return
+        await self._update_access_stats_batch(recs)
 
-        Runs entirely in a fire-and-forget task so search() returns immediately.
-        """
-        record_ids = []
-        for uri in uris:
-            try:
-                recs = await self._storage.filter(
-                    _CONTEXT_COLLECTION,
-                    {"op": "must", "field": "uri", "conds": [uri]},
-                    limit=1,
-                )
-                if recs:
-                    rid = recs[0].get("id", "")
-                    if rid:
-                        record_ids.append(rid)
-            except Exception:
-                pass
-        if record_ids:
-            await self._update_access_stats(record_ids)
-
-    async def _update_access_stats(self, record_ids: list) -> None:
-        """Async batch update access_count + accessed_at for retrieved records.
-
-        Failures are logged but do not affect search results.
-        """
+    async def _update_access_stats_batch(self, records: list) -> None:
+        """Parallel batch update access_count + accessed_at (no individual get)."""
         from datetime import datetime, timezone
-
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        for record_id in record_ids:
+
+        async def _one(r: dict) -> None:
+            rid = r.get("id", "")
+            if not rid:
+                return
             try:
-                records = await self._storage.get(_CONTEXT_COLLECTION, [record_id])
-                if records:
-                    count = records[0].get("active_count", 0)
-                    await self._storage.update(
-                        _CONTEXT_COLLECTION,
-                        record_id,
-                        {"active_count": count + 1, "accessed_at": now},
-                    )
+                await self._storage.update(
+                    _CONTEXT_COLLECTION,
+                    rid,
+                    {"active_count": r.get("active_count", 0) + 1, "accessed_at": now},
+                )
             except Exception as exc:
                 logger.debug(
-                    "[Orchestrator] Access stats update failed for %s: %s",
-                    record_id, exc,
+                    "[Orchestrator] Access stats update failed for %s: %s", rid, exc
                 )
+
+        await asyncio.gather(*[_one(r) for r in records], return_exceptions=True)
 
     async def session_search(
         self,
@@ -2143,41 +2144,51 @@ class MemoryOrchestrator:
                 except Exception as exc:
                     logger.warning("[batch_add] Dir node failed for %s: %s", d, exc)
 
-        for i, item in enumerate(items):
-            try:
+        sem = asyncio.Semaphore(_BATCH_ADD_CONCURRENCY)
+
+        async def _process_one(i: int, item: dict) -> dict:
+            async with sem:
                 content = item.get("content", "")
                 file_path = (item.get("meta") or {}).get("file_path", f"item_{i}")
-
-                # LLM generate abstract + overview
                 abstract, overview = await self._generate_abstract_overview(content, file_path)
 
-                # Tag batch imports so they're gated at source
                 item_meta = dict(item.get("meta") or {})
                 item_meta.setdefault("source", "batch:scan")
-                item_meta["ingest_mode"] = "memory"  # prevent re-entry to document mode
+                item_meta["ingest_mode"] = "memory"
 
-                # Find parent directory URI
                 parent_uri = None
                 if scan_meta and file_path:
                     from pathlib import PurePosixPath
-
                     parent_dir = str(PurePosixPath(file_path).parent)
                     parent_uri = dir_uris.get(parent_dir)
 
-                result = await self.add(
-                    abstract=abstract,
-                    content=content,
-                    overview=overview,
-                    category=item.get("category", "documents"),
-                    parent_uri=parent_uri,
-                    context_type=item.get("context_type", "resource"),
-                    meta=item_meta,
-                    dedup=False,
-                )
-                uris.append(result.uri)
+                try:
+                    result = await self.add(
+                        abstract=abstract,
+                        content=content,
+                        overview=overview,
+                        category=item.get("category", "documents"),
+                        parent_uri=parent_uri,
+                        context_type=item.get("context_type", "resource"),
+                        meta=item_meta,
+                        dedup=False,
+                    )
+                    return {"uri": result.uri, "index": i}
+                except Exception as exc:
+                    return {"error": str(exc), "index": i}
+
+        outcomes = await asyncio.gather(
+            *[_process_one(i, item) for i, item in enumerate(items)],
+            return_exceptions=True,
+        )
+        for outcome in outcomes:
+            if isinstance(outcome, BaseException):
+                errors.append({"error": str(outcome)})
+            elif isinstance(outcome, dict) and "error" in outcome:
+                errors.append({"index": outcome["index"], "error": outcome["error"]})
+            else:
+                uris.append(outcome["uri"])
                 imported += 1
-            except Exception as exc:
-                errors.append({"index": i, "error": str(exc)})
 
         has_git = (scan_meta or {}).get("has_git", False)
         project_id = (scan_meta or {}).get("project_id", "public")

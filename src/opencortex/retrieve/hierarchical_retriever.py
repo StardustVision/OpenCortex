@@ -915,47 +915,54 @@ class HierarchicalRetriever:
                             r["_final_score"] += self._hot_weight * self._compute_hotness(r)
                         children_by_parent[p_uri].append(r)
 
-                # Tiny queries for still-starved parents
+                # Tiny queries for still-starved parents — single batch replaces N round-trips
                 still_starved = [
                     uri for uri in starved
                     if len(children_by_parent.get(uri, [])) < self.MIN_CHILDREN_PER_DIR
                 ]
-                for s_uri in still_starved:
+                if still_starved:
                     if metadata_filter:
-                        tiny_dir_friendly = {"op": "or", "conds": [
+                        still_dir_friendly = {"op": "or", "conds": [
                             {"op": "must", "field": "is_leaf", "conds": [False]},
                             metadata_filter,
                         ]}
-                        tiny_filter = merge_filter(
-                            {"op": "must", "field": "parent_uri", "conds": [s_uri]},
-                            tiny_dir_friendly,
+                        still_batch_filter = merge_filter(
+                            {"op": "must", "field": "parent_uri", "conds": still_starved},
+                            still_dir_friendly,
                         )
                     else:
-                        tiny_filter = {"op": "must", "field": "parent_uri", "conds": [s_uri]}
-                    tiny_results = await self.storage.search(
+                        still_batch_filter = {
+                            "op": "must", "field": "parent_uri", "conds": still_starved,
+                        }
+                    still_results = await self.storage.search(
                         collection=collection,
                         query_vector=query_vector,
                         sparse_query_vector=sparse_query_vector,
-                        filter=tiny_filter,
-                        limit=self.MIN_CHILDREN_PER_DIR,
+                        filter=still_batch_filter,
+                        limit=len(still_starved) * self.MIN_CHILDREN_PER_DIR,
                         text_query=text_query,
                     )
-                    for r in tiny_results:
-                        if not any(c.get("uri") == r.get("uri") for c in children_by_parent.get(s_uri, [])):
-                            parent_score = frontier_scores.get(s_uri, 0.0)
-                            raw_score = r.get("_score", 0.0)
-                            r["_final_score"] = (
-                                alpha * raw_score + (1 - alpha) * parent_score
-                                if parent_score else raw_score
-                            )
-                            reward = r.get("reward_score", 0.0)
-                            if reward != 0 and self._rl_weight:
-                                r["_final_score"] += self._rl_weight * reward
-                            if self._hot_weight:
-                                r["_final_score"] += self._hot_weight * self._compute_hotness(r)
-                            if s_uri not in children_by_parent:
-                                children_by_parent[s_uri] = []
-                            children_by_parent[s_uri].append(r)
+                    for r in still_results:
+                        s_uri = r.get("parent_uri", "")
+                        if s_uri not in still_starved:
+                            continue
+                        if any(c.get("uri") == r.get("uri")
+                               for c in children_by_parent.get(s_uri, [])):
+                            continue
+                        parent_score = frontier_scores.get(s_uri, 0.0)
+                        raw_score = r.get("_score", 0.0)
+                        r["_final_score"] = (
+                            alpha * raw_score + (1 - alpha) * parent_score
+                            if parent_score else raw_score
+                        )
+                        reward = r.get("reward_score", 0.0)
+                        if reward != 0 and self._rl_weight:
+                            r["_final_score"] += self._rl_weight * reward
+                        if self._hot_weight:
+                            r["_final_score"] += self._hot_weight * self._compute_hotness(r)
+                        if s_uri not in children_by_parent:
+                            children_by_parent[s_uri] = []
+                        children_by_parent[s_uri].append(r)
 
             # 5. Fair select
             selected = self._per_parent_fair_select(
@@ -1162,42 +1169,59 @@ class HierarchicalRetriever:
                 L0: abstract only (from Qdrant payload)
                 L1: abstract + overview (from Qdrant payload, zero I/O)
                 L2: abstract + overview + content (filesystem read)
+
+        Relations are pre-fetched in two bulk phases to avoid N×read_batch:
+          Phase 1 — one asyncio.gather over all get_relations() calls
+          Phase 2 — single read_batch for the union of all related URIs
+          Phase 3 — build MatchedContext objects from pre-fetched maps (no FS I/O)
         """
         cortex_fs = _get_cortex_fs()
 
+        # Phase 1: batch-prefetch relation tables (one gather, all concurrent)
+        all_related: Dict[str, List[str]] = {}
+        if cortex_fs and candidates:
+            candidate_uris = [c.get("uri", "") for c in candidates if c.get("uri")]
+            raw_relations = await asyncio.gather(
+                *[cortex_fs.get_relations(u) for u in candidate_uris],
+                return_exceptions=True,
+            )
+            for uri, result in zip(candidate_uris, raw_relations):
+                if isinstance(result, list) and result:
+                    all_related[uri] = result
+
+        # Phase 2: single read_batch for all unique related URIs
+        unique_related: set = set()
+        for rel_list in all_related.values():
+            unique_related.update(rel_list[: self.MAX_RELATIONS])
+
+        related_abstracts: Dict[str, str] = {}
+        if cortex_fs and unique_related:
+            related_abstracts = await cortex_fs.read_batch(
+                list(unique_related), level="l0"
+            )
+
+        # Phase 3: build MatchedContext objects using pre-fetched data (no FS I/O)
         async def _build_one(c: Dict[str, Any]) -> MatchedContext:
-            # Fetch relations concurrently
+            uri = c.get("uri", "")
             relations: list = []
-            if cortex_fs:
-                related_uris = await cortex_fs.get_relations(c.get("uri", ""))
-                if related_uris:
-                    related_abstracts = await cortex_fs.read_batch(
-                        related_uris[: self.MAX_RELATIONS], level="l0"
-                    )
-                    for uri in related_uris[: self.MAX_RELATIONS]:
-                        abstract = related_abstracts.get(uri, "")
-                        if abstract:
-                            relations.append(RelatedContext(uri=uri, abstract=abstract))
+            for rel_uri in all_related.get(uri, [])[: self.MAX_RELATIONS]:
+                abstract = related_abstracts.get(rel_uri, "")
+                if abstract:
+                    relations.append(RelatedContext(uri=rel_uri, abstract=abstract))
 
-            # L0: always from Qdrant payload
             abstract = c.get("abstract", "")
-
-            # L1: overview from Qdrant payload (zero I/O)
             overview = None
             if detail_level in (DetailLevel.L1, DetailLevel.L2):
                 overview = c.get("overview", "") or None
 
-            # L2: content from filesystem (on-demand)
             content = None
             if detail_level == DetailLevel.L2 and cortex_fs:
-                node_uri = c.get("uri", "")
                 try:
-                    raw = await cortex_fs.read(node_uri + "/content.md")
+                    raw = await cortex_fs.read(uri + "/content.md")
                     content = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
                 except Exception:
                     pass
 
-            # Use record's actual context_type when query is ANY
             effective_type = context_type
             if context_type == ContextType.ANY:
                 raw_type = c.get("context_type", "memory")
@@ -1207,7 +1231,7 @@ class HierarchicalRetriever:
                     effective_type = ContextType.MEMORY
 
             return MatchedContext(
-                uri=c.get("uri", ""),
+                uri=uri,
                 context_type=effective_type,
                 is_leaf=c.get("is_leaf", False),
                 abstract=abstract,
