@@ -915,47 +915,54 @@ class HierarchicalRetriever:
                             r["_final_score"] += self._hot_weight * self._compute_hotness(r)
                         children_by_parent[p_uri].append(r)
 
-                # Tiny queries for still-starved parents
+                # Tiny queries for still-starved parents — single batch replaces N round-trips
                 still_starved = [
                     uri for uri in starved
                     if len(children_by_parent.get(uri, [])) < self.MIN_CHILDREN_PER_DIR
                 ]
-                for s_uri in still_starved:
+                if still_starved:
                     if metadata_filter:
-                        tiny_dir_friendly = {"op": "or", "conds": [
+                        still_dir_friendly = {"op": "or", "conds": [
                             {"op": "must", "field": "is_leaf", "conds": [False]},
                             metadata_filter,
                         ]}
-                        tiny_filter = merge_filter(
-                            {"op": "must", "field": "parent_uri", "conds": [s_uri]},
-                            tiny_dir_friendly,
+                        still_batch_filter = merge_filter(
+                            {"op": "must", "field": "parent_uri", "conds": still_starved},
+                            still_dir_friendly,
                         )
                     else:
-                        tiny_filter = {"op": "must", "field": "parent_uri", "conds": [s_uri]}
-                    tiny_results = await self.storage.search(
+                        still_batch_filter = {
+                            "op": "must", "field": "parent_uri", "conds": still_starved,
+                        }
+                    still_results = await self.storage.search(
                         collection=collection,
                         query_vector=query_vector,
                         sparse_query_vector=sparse_query_vector,
-                        filter=tiny_filter,
-                        limit=self.MIN_CHILDREN_PER_DIR,
+                        filter=still_batch_filter,
+                        limit=len(still_starved) * self.MIN_CHILDREN_PER_DIR,
                         text_query=text_query,
                     )
-                    for r in tiny_results:
-                        if not any(c.get("uri") == r.get("uri") for c in children_by_parent.get(s_uri, [])):
-                            parent_score = frontier_scores.get(s_uri, 0.0)
-                            raw_score = r.get("_score", 0.0)
-                            r["_final_score"] = (
-                                alpha * raw_score + (1 - alpha) * parent_score
-                                if parent_score else raw_score
-                            )
-                            reward = r.get("reward_score", 0.0)
-                            if reward != 0 and self._rl_weight:
-                                r["_final_score"] += self._rl_weight * reward
-                            if self._hot_weight:
-                                r["_final_score"] += self._hot_weight * self._compute_hotness(r)
-                            if s_uri not in children_by_parent:
-                                children_by_parent[s_uri] = []
-                            children_by_parent[s_uri].append(r)
+                    for r in still_results:
+                        s_uri = r.get("parent_uri", "")
+                        if s_uri not in still_starved:
+                            continue
+                        if any(c.get("uri") == r.get("uri")
+                               for c in children_by_parent.get(s_uri, [])):
+                            continue
+                        parent_score = frontier_scores.get(s_uri, 0.0)
+                        raw_score = r.get("_score", 0.0)
+                        r["_final_score"] = (
+                            alpha * raw_score + (1 - alpha) * parent_score
+                            if parent_score else raw_score
+                        )
+                        reward = r.get("reward_score", 0.0)
+                        if reward != 0 and self._rl_weight:
+                            r["_final_score"] += self._rl_weight * reward
+                        if self._hot_weight:
+                            r["_final_score"] += self._hot_weight * self._compute_hotness(r)
+                        if s_uri not in children_by_parent:
+                            children_by_parent[s_uri] = []
+                        children_by_parent[s_uri].append(r)
 
             # 5. Fair select
             selected = self._per_parent_fair_select(
