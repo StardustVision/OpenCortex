@@ -110,10 +110,10 @@ tests/
 
 - All storage operations go through `VikingDBInterface` — every method is `async`
 - URI format: `opencortex://{team}/{uid}/{type}/{category}/{node_id}`
-- **Client-side config via HTTP headers**: identity settings are NOT in server-side `CortexConfig`. They are sent per-request by the client (MCP plugin reads from `mcp.json`). `RequestContextMiddleware` parses headers → contextvars.
-  - Identity: `X-Tenant-ID` / `X-User-ID` → `get_effective_identity()`
+- **Client-side identity via JWT**: identity is NOT in server-side `CortexConfig`. It's embedded in the JWT token claims (`tid`/`uid`). `RequestContextMiddleware` decodes the Bearer token → contextvars.
+  - Identity: JWT claims `tid`/`uid` → `get_effective_identity()`
 - **Server config** (`CortexConfig`): only server-side settings — storage, embedding, LLM, rerank, HTTP bind. Loads from `server.json` or `~/.opencortex/server.json`.
-- **Client config** (`mcp.json`): identity settings. Loads from `mcp.json` or `~/.opencortex/mcp.json`. Node.js `buildClientHeaders()` attaches them to every HTTP request.
+- **Client config** (`mcp.json`): connection + token. Loads from `mcp.json` or `~/.opencortex/mcp.json`. Node.js `buildClientHeaders()` attaches `Authorization: Bearer <token>` to every HTTP request.
 - RL methods (`update_reward`, `get_profile`, `apply_decay`, `set_protected`) are not in the interface — detected via `hasattr` on the adapter
 - Package management uses `uv` (not pip)
 - VikingFS has been renamed to CortexFS; old name retained for backward compatibility
@@ -125,8 +125,8 @@ tests/
 ```
 MCP path:   Agent → node mcp-server.mjs (stdio) → fetch + headers → HTTP Server (FastAPI) → Orchestrator → Qdrant
 
-Headers:    mcp.json → buildClientHeaders() → X-Tenant-ID, X-User-ID
-            → RequestContextMiddleware → contextvars → get_effective_identity()
+Headers:    mcp.json → buildClientHeaders() → Authorization: Bearer <JWT>
+            → RequestContextMiddleware → decode JWT (tid/uid) → contextvars → get_effective_identity()
 ```
 
 ### Memory Context Protocol

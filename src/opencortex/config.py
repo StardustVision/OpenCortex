@@ -68,8 +68,8 @@ class CortexAlphaConfig:
 class CortexConfig:
     """Global configuration for OpenCortex.
 
-    Tenant and user identity are determined per-request via HTTP headers
-    (X-Tenant-ID / X-User-ID), not from server-side configuration.
+    Tenant and user identity are determined per-request from the JWT
+    Bearer token claims (tid/uid), not from server-side configuration.
 
     Attributes:
         data_root: Root directory for local data storage.

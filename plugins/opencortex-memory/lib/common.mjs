@@ -17,8 +17,6 @@ export const STATE_FILE = join(STATE_DIR, 'session_state.json');
 const DEFAULT_MCP_CONFIG = {
   mode: 'local',
   token: '',
-  tenant_id: 'default',
-  user_id: 'default',
   local: { http_port: 8921 },
   remote: { http_url: 'http://127.0.0.1:8921' },
 };
@@ -64,8 +62,6 @@ function findMcpConfig() {
 function _migrateLegacyConfig(legacyData) {
   const mcp = { ...DEFAULT_MCP_CONFIG };
   // Direct fields
-  if (legacyData.tenant_id) mcp.tenant_id = legacyData.tenant_id;
-  if (legacyData.user_id) mcp.user_id = legacyData.user_id;
   if (legacyData.mcp_mode) mcp.mode = legacyData.mcp_mode;
   // Port — only use http_server_port (mcp_port refers to the MCP server, not the HTTP API)
   const port = legacyData.http_server_port;
@@ -136,8 +132,6 @@ function _loadMcpConfig() {
 function _applyEnvOverrides(cfg) {
   const env = process.env;
   if (env.OPENCORTEX_TOKEN) cfg.token = env.OPENCORTEX_TOKEN;
-  if (env.OPENCORTEX_TENANT_ID) cfg.tenant_id = env.OPENCORTEX_TENANT_ID;
-  if (env.OPENCORTEX_USER_ID) cfg.user_id = env.OPENCORTEX_USER_ID;
   if (env.OPENCORTEX_MODE) cfg.mode = env.OPENCORTEX_MODE;
   if (env.OPENCORTEX_HTTP_PORT) cfg.local.http_port = parseInt(env.OPENCORTEX_HTTP_PORT, 10);
   if (env.OPENCORTEX_HTTP_URL) cfg.remote.http_url = env.OPENCORTEX_HTTP_URL;
@@ -172,7 +166,7 @@ export function getConfigPath() {
   return findMcpConfig();
 }
 
-// Legacy getProjectConfig — now returns MCP config (tenant_id/user_id used for headers)
+// Legacy getProjectConfig — now returns MCP config
 let _projectConfig = undefined;
 export function getProjectConfig() {
   if (_projectConfig !== undefined) return _projectConfig;
