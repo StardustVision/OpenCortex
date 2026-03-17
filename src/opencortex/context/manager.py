@@ -465,6 +465,15 @@ class ContextManager:
                 },
                 session_id=session_id,
             )
+            # Delete merged immediate records from Qdrant
+            if buffer.immediate_uris:
+                try:
+                    await self._orchestrator._storage.batch_delete(
+                        "context",
+                        {"op": "must", "field": "uri", "conds": buffer.immediate_uris},
+                    )
+                except Exception as exc:
+                    logger.warning("[ContextManager] Immediate cleanup after merge: %s", exc)
             # Reset buffer
             new_start = buffer.start_msg_index + len(buffer.messages)
             self._conversation_buffers[sk] = ConversationBuffer(start_msg_index=new_start)
@@ -494,6 +503,18 @@ class ContextManager:
                 await self._merge_buffer(sk, session_id, tenant_id, user_id)
             except Exception as exc:
                 logger.warning("[ContextManager] End-of-session buffer flush failed: %s", exc)
+
+        # Catch-all: delete any remaining immediate records for this session
+        try:
+            await self._orchestrator._storage.batch_delete(
+                "context",
+                {"op": "and", "conds": [
+                    {"op": "must", "field": "session_id", "conds": [session_id]},
+                    {"op": "must", "field": "meta.layer", "conds": ["immediate"]},
+                ]},
+            )
+        except Exception as exc:
+            logger.warning("[ContextManager] End cleanup immediates: %s", exc)
 
         # Delegate to orchestrator.session_end() — includes:
         # Observer.flush → TraceSplitter → TraceStore → Archivist
