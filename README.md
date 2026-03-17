@@ -80,7 +80,7 @@ Any MCP-compatible client can use the single `memory_context` tool &mdash; no ho
 
 ### MCP (Model Context Protocol)
 
-An open standard that lets AI agents call external tools. OpenCortex exposes 10 MCP tools through a Node.js stdio server that Claude Code, Cursor, and other MCP-compatible clients can use directly.
+An open standard that lets AI agents call external tools. OpenCortex exposes 9 MCP tools through a Node.js stdio server that Claude Code, Cursor, and other MCP-compatible clients can use directly.
 
 ### CortexFS
 
@@ -102,7 +102,7 @@ The process of converting text into a numerical vector that captures its semanti
 
 Every memory has a unique address in the format:
 ```
-opencortex://{tenant}/user/{user_id}/{type}/{category}/{node_id}
+opencortex://{tenant}/{user_id}/{type}/{category}/{node_id}
 ```
 This ensures complete data isolation between tenants and users.
 
@@ -116,7 +116,7 @@ This ensures complete data isolation between tenants and users.
 AI Agent (Claude Code / Cursor / Custom)
   |
   |--- MCP Protocol (stdio) ----> Node.js MCP Server ---- HTTP ----> FastAPI HTTP Server (:8921)
-  |                                (10 tools)                              |
+  |                                (9 tools)                              |
   |                                                                        v
   |                                                                  MemoryOrchestrator
   |                                                                  (unified API layer)
@@ -132,11 +132,7 @@ AI Agent (Claude Code / Cursor / Custom)
   |                                                  CortexFS + Qdrant       → KnowledgeStore
   |                                                  (L0/L1/L2)  (vectors + RL)
   |
-  |--- Hooks (Claude Code only) -> Node.js run.mjs
-         |-- session-start      -> Start HTTP server / health check
-         |-- user-prompt-submit -> Proactive memory recall via search API
-         |-- stop               -> Batch record messages to Observer
-         |-- session-end        -> End session, trigger knowledge extraction
+  |    (Identity from JWT Bearer token → RequestContextMiddleware → contextvars)
 ```
 
 ### Data Flow: Store
@@ -291,21 +287,31 @@ Create a configuration file. The system searches in this order:
 }
 ```
 
-Identity is configured per-client in `mcp.json`:
-
-```json
-{
-  "tenant_id": "my-team",
-  "user_id": "my-name"
-}
-```
-
 All server fields can be overridden via environment variables with the `OPENCORTEX_` prefix:
 ```bash
 export OPENCORTEX_EMBEDDING_API_KEY=sk-xxx
 ```
 
-### 3. Start the server
+### 3. Generate a token
+
+Identity (tenant + user) is embedded in a JWT token:
+
+```bash
+uv run opencortex-token generate
+# Enter tenant_id and user_id when prompted
+# Token is saved to {data_root}/tokens.json
+
+# For Docker:
+docker exec -it opencortex-server uv run opencortex-token generate
+```
+
+Manage tokens:
+```bash
+uv run opencortex-token list       # View issued tokens
+uv run opencortex-token revoke <prefix>  # Revoke by prefix
+```
+
+### 4. Start the server
 
 ```bash
 uv run opencortex-server --port 8921
@@ -316,7 +322,7 @@ Verify it is running:
 curl http://localhost:8921/api/v1/memory/health
 ```
 
-### 4. Install the Claude Code plugin
+### 5. Install the Claude Code plugin
 
 Inside Claude Code:
 
@@ -326,7 +332,7 @@ Inside Claude Code:
 
 Select `opencortex-memory`. Claude Code registers hooks and the MCP server automatically. In local mode, the plugin starts the HTTP server on session begin and stops it on session end.
 
-### 5. Docker deployment
+### 6. Docker deployment
 
 ```bash
 # Build and start
@@ -345,7 +351,28 @@ volumes:
   - ./server.json:/app/server.json:ro
 ```
 
-### 6. Use from other projects
+### 7. Configure the MCP client
+
+Create `mcp.json` (project-local or `~/.opencortex/mcp.json`):
+
+```json
+{
+  "token": "<jwt-token-from-step-3>",
+  "mode": "local",
+  "local": { "http_port": 8921 }
+}
+```
+
+For remote servers:
+```json
+{
+  "token": "<jwt-token>",
+  "mode": "remote",
+  "remote": { "http_url": "http://your-server:8921" }
+}
+```
+
+### 8. Use from other projects
 
 Add `.mcp.json` to any project root to connect to an OpenCortex instance:
 
@@ -443,10 +470,10 @@ Features: idempotent by `(session_id, turn_id)`, idle session auto-close, fallba
 ### Multi-Tenant Isolation
 
 ```
-opencortex://{tenant}/user/{uid}/{type}/{category}/{node_id}
+opencortex://{tenant}/{uid}/{type}/{category}/{node_id}
 ```
 
-Complete data isolation between tenants and users. Team-level resources can be shared; user-level memories remain private. Per-request identity override via `X-Tenant-ID` / `X-User-ID` HTTP headers.
+Complete data isolation between tenants and users. Team-level resources can be shared; user-level memories remain private. Per-request identity is extracted from the JWT Bearer token claims (`tid`/`uid`).
 
 ---
 
@@ -497,13 +524,14 @@ Complete data isolation between tenants and users. Team-level resources can be s
 | POST | `/api/v1/intent/should_recall` | Decide whether recall is needed for a query |
 | GET | `/api/v1/system/status` | Unified health/stats/doctor status |
 
-### MCP Tools (10 tools)
+### MCP Tools (9 tools)
 
 The MCP server exposes the same capabilities as the REST API:
 
-- `memory_store` / `memory_batch_store` / `memory_search` / `memory_feedback` / `memory_decay`
-- `session_begin` / `session_message` / `session_end`
-- `memory_context` (unified lifecycle: prepare / commit / end)
+- `store` / `batch_store` / `search` / `feedback` / `decay`
+- `recall` (prepare → search → return context)
+- `add_message` (commit turn to Observer)
+- `end` (close session → trace splitting → knowledge extraction)
 - `system_status`
 
 ### Python API
@@ -547,45 +575,24 @@ await orch.close()
 
 ## Plugin System
 
-The `plugins/opencortex-memory` plugin provides hooks (passive memory collection for Claude Code) and the MCP server (tool proxy for any client). All implemented in pure Node.js with zero external dependencies.
+The `plugins/opencortex-memory` plugin provides the MCP server (tool proxy for any MCP-compatible client). Implemented in pure Node.js with zero external dependencies.
 
 ```
 plugins/opencortex-memory/
-  hooks/
-    handlers/
-      session-start.mjs          # Start HTTP server, init state
-      user-prompt-submit.mjs     # Proactive memory recall
-      stop.mjs                   # Batch record messages to Observer
-      session-end.mjs            # End session, trigger knowledge extraction
   lib/
-    mcp-server.mjs               # MCP stdio server (10 tools -> HTTP)
+    mcp-server.mjs               # MCP stdio server (9 tools -> HTTP)
     common.mjs                   # Config discovery, state, uv/python detection
-    http-client.mjs              # Native fetch wrapper + identity headers
+    http-client.mjs              # Native fetch wrapper + Bearer token auth
     transcript.mjs               # JSONL parsing
   bin/oc-cli.mjs                 # CLI: health, status, recall, store
 ```
 
-### Hook Lifecycle (Claude Code only)
+### Session Lifecycle
+
+The MCP server manages the session lifecycle internally via `recall` / `add_message` / `end` tools:
 
 ```
-SessionStart -----> Start HTTP server (local) or health check (remote)
-                    Write session_state.json
-                         |
-UserPromptSubmit -> Search memories relevant to the prompt (3s timeout)
-                    Inject results into agent's system context
-                         |
-Stop (async) -----> Batch record messages to Observer
-                         |
-SessionEnd -------> End session → TraceSplitter → Archivist → KnowledgeStore
-                    Kill HTTP server PID (local mode)
-```
-
-### Platform-Agnostic Usage (non-Claude Code)
-
-For non-Claude Code clients, use the `memory_context` MCP tool directly:
-
-```
-prepare (before response) → commit (after response) → end (session done)
+recall (before response) → add_message (after response) → end (session done)
 ```
 
 No hooks needed. Any MCP-compatible client works.

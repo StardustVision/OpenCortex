@@ -80,7 +80,7 @@ OpenCortex 将每条记忆存储为三个精度层级，最大程度减少 Token
 
 ### MCP（模型上下文协议）
 
-一种开放标准，允许 AI Agent 调用外部工具。OpenCortex 通过 Node.js stdio 服务器暴露 10 个 MCP 工具，Claude Code、Cursor 等 MCP 兼容客户端可以直接使用。
+一种开放标准，允许 AI Agent 调用外部工具。OpenCortex 通过 Node.js stdio 服务器暴露 9 个 MCP 工具，Claude Code、Cursor 等 MCP 兼容客户端可以直接使用。
 
 ### CortexFS
 
@@ -102,7 +102,7 @@ OpenCortex 将每条记忆存储为三个精度层级，最大程度减少 Token
 
 每条记忆都有唯一地址：
 ```
-opencortex://{tenant}/user/{user_id}/{type}/{category}/{node_id}
+opencortex://{tenant}/{user_id}/{type}/{category}/{node_id}
 ```
 确保租户和用户之间的完全数据隔离。
 
@@ -116,7 +116,7 @@ opencortex://{tenant}/user/{user_id}/{type}/{category}/{node_id}
 AI Agent (Claude Code / Cursor / Custom)
   |
   |--- MCP 协议 (stdio) ----> Node.js MCP Server ---- HTTP ----> FastAPI HTTP Server (:8921)
-  |                            (10 个工具)                              |
+  |                            (9 个工具)                               |
   |                                                                     v
   |                                                               MemoryOrchestrator
   |                                                               (统一 API 层)
@@ -132,11 +132,7 @@ AI Agent (Claude Code / Cursor / Custom)
   |                                               CortexFS + Qdrant       → KnowledgeStore
   |                                               (L0/L1/L2)  (向量 + RL)
   |
-  |--- Hooks (仅 Claude Code) -> Node.js run.mjs
-         |-- session-start      -> 启动 HTTP server / 健康检查
-         |-- user-prompt-submit -> 主动记忆召回（搜索 API）
-         |-- stop               -> 批量记录消息到 Observer
-         |-- session-end        -> 结束会话，触发知识提取
+  |    (身份信息来自 JWT Bearer token → RequestContextMiddleware → contextvars)
 ```
 
 ### 数据流：存储
@@ -291,21 +287,31 @@ uv sync
 }
 ```
 
-身份信息在客户端 `mcp.json` 中配置：
-
-```json
-{
-  "tenant_id": "my-team",
-  "user_id": "my-name"
-}
-```
-
 所有服务端字段可通过 `OPENCORTEX_` 前缀的环境变量覆盖：
 ```bash
 export OPENCORTEX_EMBEDDING_API_KEY=sk-xxx
 ```
 
-### 3. 启动服务
+### 3. 生成 Token
+
+身份信息（租户 + 用户）嵌入 JWT Token：
+
+```bash
+uv run opencortex-token generate
+# 按提示输入 tenant_id 和 user_id
+# Token 保存到 {data_root}/tokens.json
+
+# Docker 环境：
+docker exec -it opencortex-server uv run opencortex-token generate
+```
+
+管理 Token：
+```bash
+uv run opencortex-token list       # 查看已发行的 Token
+uv run opencortex-token revoke <prefix>  # 按前缀撤销
+```
+
+### 4. 启动服务
 
 ```bash
 uv run opencortex-server --port 8921
@@ -316,7 +322,7 @@ uv run opencortex-server --port 8921
 curl http://localhost:8921/api/v1/memory/health
 ```
 
-### 4. 安装 Claude Code 插件
+### 5. 安装 Claude Code 插件
 
 在 Claude Code 中：
 
@@ -326,7 +332,7 @@ curl http://localhost:8921/api/v1/memory/health
 
 选择 `opencortex-memory`。Claude Code 自动注册 Hooks 和 MCP 服务器。Local 模式下，插件在会话开始时自动启动 HTTP 服务器，会话结束时停止。
 
-### 5. Docker 部署
+### 6. Docker 部署
 
 ```bash
 # 构建并启动
@@ -345,7 +351,28 @@ volumes:
   - ./server.json:/app/server.json:ro
 ```
 
-### 6. 在其他项目中使用
+### 7. 配置 MCP 客户端
+
+创建 `mcp.json`（项目目录或 `~/.opencortex/mcp.json`）：
+
+```json
+{
+  "token": "<第3步生成的jwt-token>",
+  "mode": "local",
+  "local": { "http_port": 8921 }
+}
+```
+
+远程服务器：
+```json
+{
+  "token": "<jwt-token>",
+  "mode": "remote",
+  "remote": { "http_url": "http://your-server:8921" }
+}
+```
+
+### 8. 在其他项目中使用
 
 在任意项目根目录添加 `.mcp.json`，连接 OpenCortex 实例：
 
@@ -441,10 +468,10 @@ memory_context(phase="end", session_id="s1")
 ### 多租户隔离
 
 ```
-opencortex://{tenant}/user/{uid}/{type}/{category}/{node_id}
+opencortex://{tenant}/{uid}/{type}/{category}/{node_id}
 ```
 
-租户和用户之间完全数据隔离。团队级资源可共享，用户级记忆保持私有。通过 `X-Tenant-ID` / `X-User-ID` HTTP 请求头实现按请求身份覆盖。
+租户和用户之间完全数据隔离。团队级资源可共享，用户级记忆保持私有。身份信息从 JWT Bearer Token 的 claims（`tid`/`uid`）中提取。
 
 ---
 
@@ -495,13 +522,14 @@ opencortex://{tenant}/user/{uid}/{type}/{category}/{node_id}
 | POST | `/api/v1/intent/should_recall` | 判断查询是否需要检索记忆 |
 | GET | `/api/v1/system/status` | 统一 health/stats/doctor 状态 |
 
-### MCP 工具 (10 个)
+### MCP 工具 (9 个)
 
 MCP 服务器暴露与 REST API 相同的能力：
 
-- `memory_store` / `memory_batch_store` / `memory_search` / `memory_feedback` / `memory_decay`
-- `session_begin` / `session_message` / `session_end`
-- `memory_context`（统一生命周期：prepare / commit / end）
+- `store` / `batch_store` / `search` / `feedback` / `decay`
+- `recall`（prepare → 搜索 → 返回上下文）
+- `add_message`（提交对话轮次到 Observer）
+- `end`（关闭会话 → 轨迹拆分 → 知识提取）
 - `system_status`
 
 ### Python API
@@ -545,45 +573,24 @@ await orch.close()
 
 ## 插件系统
 
-`plugins/opencortex-memory` 插件提供 Hooks（Claude Code 被动记忆采集）和 MCP 服务器（工具代理，适用于任何客户端）。全部使用纯 Node.js 实现，零外部依赖。
+`plugins/opencortex-memory` 插件提供 MCP 服务器（工具代理，适用于任何 MCP 兼容客户端）。全部使用纯 Node.js 实现，零外部依赖。
 
 ```
 plugins/opencortex-memory/
-  hooks/
-    handlers/
-      session-start.mjs          # 启动 HTTP 服务，初始化状态
-      user-prompt-submit.mjs     # 主动记忆召回
-      stop.mjs                   # 批量记录消息到 Observer
-      session-end.mjs            # 结束会话，触发知识提取
   lib/
-    mcp-server.mjs               # MCP stdio 服务器 (10 工具 -> HTTP)
+    mcp-server.mjs               # MCP stdio 服务器 (9 工具 -> HTTP)
     common.mjs                   # 配置发现、状态管理、uv/python 检测
-    http-client.mjs              # native fetch 封装 + 身份请求头
+    http-client.mjs              # native fetch 封装 + Bearer Token 认证
     transcript.mjs               # JSONL 解析
   bin/oc-cli.mjs                 # CLI: health, status, recall, store
 ```
 
-### Hook 生命周期（仅 Claude Code）
+### 会话生命周期
+
+MCP 服务器通过 `recall` / `add_message` / `end` 工具内部管理会话生命周期：
 
 ```
-SessionStart -----> 启动 HTTP 服务 (local) 或健康检查 (remote)
-                    写入 session_state.json
-                         |
-UserPromptSubmit -> 搜索与 prompt 相关的记忆（3 秒超时）
-                    将结果注入 Agent 的系统上下文
-                         |
-Stop (异步) ------> 批量记录消息到 Observer
-                         |
-SessionEnd -------> 结束会话 → TraceSplitter → Archivist → KnowledgeStore
-                    Kill HTTP 服务 PID (local 模式)
-```
-
-### 平台无关使用（非 Claude Code）
-
-对于非 Claude Code 客户端，直接使用 `memory_context` MCP 工具：
-
-```
-prepare（响应前）→ commit（响应后）→ end（会话结束）
+recall（响应前）→ add_message（响应后）→ end（会话结束）
 ```
 
 无需 hooks，任何 MCP 兼容客户端均可使用。
