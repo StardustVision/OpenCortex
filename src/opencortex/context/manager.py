@@ -165,7 +165,7 @@ class ContextManager:
     ) -> Dict[str, Any]:
         config = config or {}
         max_items = min(config.get("max_items", 5), 20)
-        detail_level = config.get("detail_level", "l1")
+        detail_level_override = config.get("detail_level")  # None = let intent decide
         recall_mode = config.get("recall_mode", "auto")
         category = config.get("category")
         context_type_filter = config.get("context_type")
@@ -212,7 +212,7 @@ class ContextManager:
                     "user_id": user_id,
                 }
                 intent = await asyncio.wait_for(
-                    router.route(query, session_context=session_ctx), timeout=2.0,
+                    router.route(query, session_context=session_ctx), timeout=10.0,
                 )
             except asyncio.TimeoutError:
                 logger.warning(
@@ -231,7 +231,14 @@ class ContextManager:
             or (recall_mode == "auto" and intent.should_recall)
         )
 
-        # 5. Retrieval
+        # 5. Resolve detail_level: config override > intent > default "l1"
+        detail_level = (
+            detail_level_override
+            or (intent.detail_level.value if intent.detail_level else None)
+            or "l1"
+        )
+
+        # 6. Retrieval
         memory_items: List[Dict[str, Any]] = []
         knowledge_items: List[Dict[str, Any]] = []
         memory_ms = 0

@@ -142,6 +142,7 @@ class OpenCortexClient:
         context_type: str = "memory",
         uri: Optional[str] = None,
         meta: Optional[Dict[str, Any]] = None,
+        embed_text: str = "",
     ) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
             "abstract": abstract, "content": content,
@@ -153,6 +154,8 @@ class OpenCortexClient:
             payload["uri"] = uri
         if meta is not None:
             payload["meta"] = meta
+        if embed_text:
+            payload["embed_text"] = embed_text
         return await self._post("/api/v1/memory/store", payload)
 
     async def memory_batch_store(

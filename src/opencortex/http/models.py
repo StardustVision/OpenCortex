@@ -40,6 +40,12 @@ class MemoryStoreRequest(BaseModel):
         description="Check for semantic duplicates before storing. "
                     "Set False for bulk import.",
     )
+    embed_text: str = Field(
+        default="",
+        description="Optional text used for embedding instead of abstract. "
+                    "Useful when the display text differs from the optimal "
+                    "search text (e.g., omitting date prefixes).",
+    )
 
 
 class MemorySearchRequest(BaseModel):

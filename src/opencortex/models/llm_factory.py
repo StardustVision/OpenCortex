@@ -167,8 +167,14 @@ def _make_openai_callable(api_key: str, model: str, base_url: str) -> Callable[[
             resp.raise_for_status()
             data = resp.json()
             return data["choices"][0]["message"]["content"] or ""
+        except httpx.HTTPStatusError as exc:
+            logger.warning(
+                "[llm_factory] OpenAI completion HTTP %s: %s | body: %s",
+                exc.response.status_code, exc, exc.response.text[:500],
+            )
+            raise
         except Exception as exc:
-            logger.warning("[llm_factory] OpenAI completion error: %s", exc)
+            logger.warning("[llm_factory] OpenAI completion error: %r", exc)
             raise
 
     return _openai_completion

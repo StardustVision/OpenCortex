@@ -79,17 +79,31 @@ class RerankClient:
                 "[RerankClient] fastembed not installed — "
                 "local rerank disabled. Install with: uv add fastembed"
             )
-            self._mode = "disabled"
             self._local_reranker = None
+            self._fallback_to_llm_or_disable("fastembed not installed")
         except Exception as exc:
             logger.warning(
                 "[RerankClient] Failed to load local reranker: %s", exc,
             )
-            self._mode = "disabled"
             self._local_reranker = None
+            self._fallback_to_llm_or_disable(str(exc))
+
+    def _fallback_to_llm_or_disable(self, reason: str) -> None:
+        """Fall back to LLM reranking when the primary mode fails to init."""
+        if self._llm_completion and self._config.use_llm_fallback:
+            self._mode = "llm"
+            logger.info(
+                "[RerankClient] Falling back to LLM reranker (%s)", reason,
+            )
+        else:
+            self._mode = "disabled"
 
     async def rerank(self, query: str, documents: List[str]) -> List[float]:
         """Score each document against query, return scores in same order.
+
+        When there are more documents than max_candidates, scores them in
+        batches so every document gets a relevance score (instead of giving
+        0 to overflow candidates).
 
         Args:
             query: Search query text.
@@ -101,24 +115,44 @@ class RerankClient:
         if not documents:
             return []
 
-        # Limit candidates for cost control
-        max_k = self._config.max_candidates
-        truncated = documents[:max_k]
+        max_k = self._config.max_candidates or len(documents)
 
-        if self._mode == "local":
-            scores = await self._rerank_via_local(query, truncated)
-        elif self._mode == "api":
-            scores = await self._rerank_via_api(query, truncated)
-        elif self._mode == "llm":
-            scores = await self._rerank_via_llm(query, truncated)
+        if len(documents) <= max_k:
+            return await self._rerank_batch(query, documents)
+
+        # Sliding window: score all documents in batches of max_k
+        import asyncio
+        scores = [0.0] * len(documents)
+        batches = []
+        for start in range(0, len(documents), max_k):
+            batch = documents[start:start + max_k]
+            batches.append((start, batch))
+
+        # Run batches concurrently for local/API modes, sequentially for LLM
+        # (to avoid overwhelming the LLM endpoint)
+        if self._mode == "llm":
+            for start, batch in batches:
+                batch_scores = await self._rerank_batch(query, batch)
+                for i, s in enumerate(batch_scores):
+                    scores[start + i] = s
         else:
-            scores = [0.0] * len(truncated)
-
-        # Pad with zeros for any documents beyond max_candidates
-        if len(documents) > max_k:
-            scores.extend([0.0] * (len(documents) - max_k))
+            coros = [self._rerank_batch(query, batch) for _, batch in batches]
+            results = await asyncio.gather(*coros)
+            for (start, batch), batch_scores in zip(batches, results):
+                for i, s in enumerate(batch_scores):
+                    scores[start + i] = s
 
         return scores
+
+    async def _rerank_batch(self, query: str, documents: List[str]) -> List[float]:
+        """Score a single batch of documents."""
+        if self._mode == "local":
+            return await self._rerank_via_local(query, documents)
+        elif self._mode == "api":
+            return await self._rerank_via_api(query, documents)
+        elif self._mode == "llm":
+            return await self._rerank_via_llm(query, documents)
+        return [0.0] * len(documents)
 
     async def _rerank_via_local(self, query: str, documents: List[str]) -> List[float]:
         """Score documents using local FastEmbed cross-encoder."""

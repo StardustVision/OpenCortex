@@ -109,18 +109,32 @@ class TraceSplitter:
             transcript=transcript_text,
         )
 
+        _fallback = [{
+            "summary": "Full session",
+            "key_steps": [f"{len(messages)} messages"],
+            "turn_indices": list(range(len(messages))),
+            "outcome": "success",
+            "task_type": "unknown",
+        }]
         try:
             response = await self._llm_fn(prompt)
-            tasks = json.loads(response)
-        except (json.JSONDecodeError, Exception) as e:
-            logger.warning(f"TraceSplitter LLM parse error: {e}, creating single trace")
-            tasks = [{
-                "summary": "Full session",
-                "key_steps": [f"{len(messages)} messages"],
-                "turn_indices": list(range(len(messages))),
-                "outcome": "success",
-                "task_type": "unknown",
-            }]
+            # Strip markdown code fences (```json ... ```)
+            text = response.strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+                if text.endswith("```"):
+                    text = text[:-3]
+                text = text.strip()
+            tasks = json.loads(text)
+        except json.JSONDecodeError as e:
+            logger.warning(
+                "TraceSplitter JSON parse error: %s | raw (500 chars): %s",
+                e, repr(response[:500]) if response else "(empty)",
+            )
+            tasks = _fallback
+        except Exception as e:
+            logger.warning("TraceSplitter LLM call failed: %r", e)
+            tasks = _fallback
 
         traces = []
         for task in tasks:

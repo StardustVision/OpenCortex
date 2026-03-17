@@ -179,6 +179,7 @@ def _register_routes(app: FastAPI) -> None:
             context_type=req.context_type,
             meta=req.meta,
             dedup=req.dedup,
+            embed_text=req.embed_text,
         )
         resp: Dict[str, Any] = {
             "uri": result.uri,

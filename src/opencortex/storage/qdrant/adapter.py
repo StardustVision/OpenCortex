@@ -119,15 +119,21 @@ class QdrantStorageAdapter(StorageInterface):
 
     async def create_collection(self, name: str, schema: Dict[str, Any]) -> bool:
         client = await self._ensure_client()
-        if await client.collection_exists(name):
-            return False
-
-        vector_dim = schema.get("Dimension", self._dim)
         # Check schema fields for sparse_vector
         has_sparse = any(
             f.get("FieldType") == "sparse_vector"
             for f in schema.get("Fields", [])
         )
+
+        if await client.collection_exists(name):
+            # Register sparse capability even for existing collections
+            # (critical: otherwise hybrid search falls back to pure dense
+            # after a server restart)
+            if has_sparse:
+                self._sparse_collections.add(name)
+            return False
+
+        vector_dim = schema.get("Dimension", self._dim)
         # Also infer dim from vector field if present
         for f in schema.get("Fields", []):
             if f.get("FieldType") == "vector" and "Dim" in f:
