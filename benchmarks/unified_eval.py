@@ -62,7 +62,10 @@ from benchmarks.scoring import (
 )
 
 
-# Answer prompt templates (Mem0-aligned: concise 5-6 word answers for cleaner judging)
+# ---------------------------------------------------------------------------
+# Dataset-adaptive answer prompt templates
+# ---------------------------------------------------------------------------
+# LoCoMo / default: concise 5-6 word answers (Mem0-aligned)
 ANSWER_PROMPT = (
     "Based on the above context, answer in 5-6 words.\n\n"
     "Question: {question}\nAnswer:"
@@ -71,6 +74,34 @@ ANSWER_PROMPT_CAT5 = (
     "Based on the above context, answer the question.\n\n"
     "Question: {question}\nShort answer:"
 )
+
+# HotPotQA: short factoid answers (EM-friendly)
+ANSWER_PROMPT_HOTPOTQA = (
+    "Based on the above context, answer the question with a short phrase "
+    "(a few words). Be precise — use exact names, numbers, or yes/no.\n\n"
+    "Question: {question}\nAnswer:"
+)
+
+# PersonaMem: preference / attribute answers (longer, natural language)
+ANSWER_PROMPT_PERSONAMEM = (
+    "Based on the above context about a user's preferences and attributes, "
+    "answer the question naturally. Include relevant details.\n\n"
+    "Question: {question}\nAnswer:"
+)
+
+# QASPER: academic paper QA (varied answer types: yes/no, extractive, free-form)
+ANSWER_PROMPT_QASPER = (
+    "Based on the above context from a research paper, answer the question. "
+    "If it is a yes/no question, answer 'yes' or 'no'. "
+    "Otherwise, answer concisely using information from the paper.\n\n"
+    "Question: {question}\nAnswer:"
+)
+
+_DATASET_PROMPTS: Dict[str, str] = {
+    "hotpotqa": ANSWER_PROMPT_HOTPOTQA,
+    "personamem": ANSWER_PROMPT_PERSONAMEM,
+    "qasper": ANSWER_PROMPT_QASPER,
+}
 
 
 # Default dataset paths for --mode all (one per mode)
@@ -114,9 +145,17 @@ def _get_adapter(mode: str, dataset: str = ""):
     raise ValueError(f"Unknown mode: {mode}")
 
 
-def _build_prompt(context: str, question: str, category: str = "") -> str:
-    """Build LLM prompt from retrieved context and question."""
-    tpl = ANSWER_PROMPT_CAT5 if category == "5" else ANSWER_PROMPT
+def _build_prompt(context: str, question: str, category: str = "", dataset: str = "") -> str:
+    """Build LLM prompt from retrieved context and question.
+
+    Uses dataset-specific prompt when available, falls back to LoCoMo defaults.
+    """
+    if dataset in _DATASET_PROMPTS:
+        tpl = _DATASET_PROMPTS[dataset]
+    elif category == "5":
+        tpl = ANSWER_PROMPT_CAT5
+    else:
+        tpl = ANSWER_PROMPT
     return f"Relevant context:\n{context}\n\n{tpl.format(question=question)}"
 
 
@@ -151,7 +190,7 @@ async def run_mode(
         # Phase 1: Ingest
         if not args.skip_ingest:
             log("Ingesting dataset...")
-            ingest_result = await adapter.ingest(oc, max_conv=args.max_conv)
+            ingest_result = await adapter.ingest(oc, max_conv=args.max_conv, max_qa=args.max_qa)
             log(f"  Ingested {ingest_result.ingested_items}/{ingest_result.total_items}"
                 f" ({len(ingest_result.errors)} errors)")
             if ingest_result.errors:
@@ -212,7 +251,7 @@ async def run_mode(
                 oc_prediction = ""
                 oc_prompt = ""
                 if not args.baseline_only and oc_context:
-                    oc_prompt = _build_prompt(oc_context, qa_item.question, qa_item.category)
+                    oc_prompt = _build_prompt(oc_context, qa_item.question, qa_item.category, args.dataset)
                     try:
                         oc_prediction = await llm.complete(oc_prompt, max_tokens=512)
                     except Exception as e:
@@ -226,7 +265,7 @@ async def run_mode(
                 if not args.oc_only:
                     raw_context = adapter.get_baseline_context(qa_item)
                     truncated_context = truncate_to_budget(raw_context, args.max_context_tokens)
-                    bl_prompt = _build_prompt(truncated_context, qa_item.question, qa_item.category)
+                    bl_prompt = _build_prompt(truncated_context, qa_item.question, qa_item.category, args.dataset)
                     try:
                         bl_prediction = await llm.complete(bl_prompt, max_tokens=512)
                     except Exception as e:

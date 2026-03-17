@@ -29,7 +29,7 @@ class OCClient:
         base: str,
         token: str,
         timeout: float = 120.0,
-        retries: int = 3,
+        retries: int = 8,
         retry_delay: float = 2.0,
     ):
         self._base = base.rstrip("/")
@@ -52,6 +52,7 @@ class OCClient:
         context_type: str = "memory",
         meta: Optional[Dict[str, Any]] = None,
         dedup: bool = False,
+        embed_text: str = "",
     ) -> Dict:
         """Store a memory/document. Supports meta for ingest_mode override."""
         payload: Dict[str, Any] = {
@@ -63,6 +64,8 @@ class OCClient:
         }
         if meta:
             payload["meta"] = meta
+        if embed_text:
+            payload["embed_text"] = embed_text
         return await self._post("/api/v1/memory/store", payload)
 
     async def search(
@@ -92,14 +95,22 @@ class OCClient:
         query: str,
         turn_id: str = "t0",
         limit: int = 10,
+        detail_level: Optional[str] = None,
     ) -> Dict:
-        """MCP recall: context phase=prepare with messages containing the query."""
+        """MCP recall: context phase=prepare with messages containing the query.
+
+        When detail_level is None, the server's IntentRouter decides the
+        appropriate level (L0/L1/L2) based on query analysis.
+        """
+        config: Dict[str, Any] = {"max_items": limit}
+        if detail_level is not None:
+            config["detail_level"] = detail_level
         return await self._post("/api/v1/context", {
             "session_id": session_id,
             "phase": "prepare",
             "turn_id": turn_id,
             "messages": [{"role": "user", "content": query}],
-            "config": {"max_items": limit, "detail_level": "l2"},
+            "config": config,
         })
 
     async def context_commit(
@@ -136,7 +147,7 @@ class OCClient:
                 last_error = exc
                 if attempt >= self._retries or not _is_retryable_http_error(exc):
                     raise
-                await asyncio.sleep(self._retry_delay * attempt)
+                await asyncio.sleep(min(2 ** attempt, 120))
         if last_error:
             raise last_error
         return {}

@@ -76,11 +76,31 @@ class HotPotQAAdapter(EvalAdapter):
         )
 
     async def ingest(self, oc: Any, **kwargs) -> IngestResult:
-        """Ingest unique paragraphs as memory-mode records (no LLM overhead)."""
+        """Ingest unique paragraphs as memory-mode records (no LLM overhead).
+
+        If max_qa is passed, only ingests paragraphs from the first N questions
+        to avoid ingesting 66k+ paragraphs for a quick test.
+        """
+        max_qa = kwargs.get("max_qa", 0)
+
+        if max_qa > 0 and max_qa < len(self._questions):
+            # Only ingest paragraphs referenced by the first max_qa questions
+            needed_titles: Dict[str, List[str]] = {}
+            for q in self._questions[:max_qa]:
+                for title, sentences in q.get("context", []):
+                    if title not in needed_titles:
+                        needed_titles[title] = self._title_to_sentences.get(title, sentences)
+            titles = list(needed_titles.items())
+            logger.info(
+                f"[HotPotQA] Quick mode: ingesting {len(titles)} paragraphs "
+                f"for {max_qa} questions (vs {len(self._title_to_sentences)} total)"
+            )
+        else:
+            titles = list(self._title_to_sentences.items())
+
         errors: List[str] = []
         title_to_uri: Dict[str, str] = {}
         sem = asyncio.Semaphore(20)
-        titles = list(self._title_to_sentences.items())
 
         async def _store_one(title: str, sentences: List[str]):
             async with sem:

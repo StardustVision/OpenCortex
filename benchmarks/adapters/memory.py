@@ -32,8 +32,21 @@ class MemoryAdapter(EvalAdapter):
             )
 
     async def ingest(self, oc: Any, **kwargs) -> IngestResult:
-        """Store each persona attribute as a memory via oc.store()."""
+        """Store each persona attribute as a memory via oc.store().
+
+        If max_qa is passed, only ingests attributes referenced by the first
+        N questions to speed up quick tests.
+        """
+        max_qa = kwargs.get("max_qa", 0)
         attributes = self._dataset["persona_attributes"]
+
+        if max_qa > 0:
+            # Only ingest attributes needed by first max_qa questions
+            questions = self._dataset.get("questions", [])[:max_qa]
+            needed_ids = set()
+            for q in questions:
+                needed_ids.update(q.get("expected_ids", []))
+            attributes = [a for a in attributes if a.get("id", "") in needed_ids]
         errors: List[str] = []
         id_to_uri: Dict[str, str] = {}
 

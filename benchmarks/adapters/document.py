@@ -152,11 +152,32 @@ class DocumentAdapter(EvalAdapter):
         return docs
 
     async def ingest(self, oc: Any, **kwargs) -> IngestResult:
-        """Ingest documents via document mode (meta.ingest_mode='document')."""
+        """Ingest documents via document mode (meta.ingest_mode='document').
+
+        If max_qa is passed, only ingests documents that contain QA items
+        to speed up quick tests.
+        """
+        max_qa = kwargs.get("max_qa", 0)
+        docs_to_ingest = self._dataset
+
+        if max_qa > 0:
+            # Only ingest documents that have QA items (up to max_qa total QAs)
+            needed_doc_ids = set()
+            qa_count = 0
+            for doc in self._dataset:
+                for _qa in doc.get("qas", []):
+                    needed_doc_ids.add(doc["doc_id"])
+                    qa_count += 1
+                    if qa_count >= max_qa:
+                        break
+                if qa_count >= max_qa:
+                    break
+            docs_to_ingest = [d for d in self._dataset if d["doc_id"] in needed_doc_ids]
+
         errors: List[str] = []
         ingested = 0
 
-        for doc in self._dataset:
+        for doc in docs_to_ingest:
             doc_id = doc["doc_id"]
             try:
                 await oc.store(
