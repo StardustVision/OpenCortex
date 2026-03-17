@@ -1,6 +1,6 @@
 {
   "name": "opencortex-memory",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "OpenCortex MCP server and CLI for AI agent memory with reinforcement learning and multi-tenant isolation.",
   "type": "module",
   "license": "MIT",
