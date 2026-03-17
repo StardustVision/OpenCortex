@@ -152,3 +152,83 @@ class TestFrontierStillStarvedBatch(unittest.IsolatedAsyncioTestCase):
 
         # 1 main wave + 1 compensation + 1 still-starved batch = 3, NOT 5
         assert call_count == 3, f"Expected 3 search calls, got {call_count}"
+
+
+class TestResultAssemblyBatchedRelations(unittest.IsolatedAsyncioTestCase):
+    async def test_relations_read_in_two_batches_not_n(self):
+        """5 candidates → 5 get_relations + 1 read_batch total, not 5 read_batch."""
+        from opencortex.retrieve.hierarchical_retriever import HierarchicalRetriever
+        from opencortex.retrieve.types import ContextType, DetailLevel
+
+        read_batch_calls = []
+
+        async def fake_get_relations(uri):
+            return [f"rel_{uri}"]
+
+        async def fake_read_batch(uris, level="l0"):
+            read_batch_calls.append(sorted(uris))
+            return {u: f"abstract_{u}" for u in uris}
+
+        mock_fs = MagicMock()
+        mock_fs.get_relations = fake_get_relations
+        mock_fs.read_batch = fake_read_batch
+
+        with patch(
+            "opencortex.retrieve.hierarchical_retriever._get_cortex_fs",
+            return_value=mock_fs,
+        ):
+            hr = HierarchicalRetriever(
+                storage=MagicMock(), embedder=None,
+                rerank_config=None, llm_completion=None,
+            )
+            candidates = [
+                {"uri": f"oc://t/u/mem/c/n{i}", "abstract": f"a{i}",
+                 "overview": "", "is_leaf": True, "context_type": "memory",
+                 "category": "events", "keywords": "", "_final_score": 0.9}
+                for i in range(5)
+            ]
+            await hr._convert_to_matched_contexts(
+                candidates, ContextType.MEMORY, DetailLevel.L1,
+            )
+
+        # read_batch called exactly once (not 5 times)
+        assert len(read_batch_calls) == 1, (
+            f"Expected 1 read_batch call, got {len(read_batch_calls)}"
+        )
+        assert len(read_batch_calls[0]) == 5  # 5 unique related URIs in one call
+
+
+class TestBatchAddConcurrency(unittest.IsolatedAsyncioTestCase):
+    async def test_items_processed_concurrently(self):
+        """batch_add with 8 items must run at least 2 concurrently."""
+        from opencortex.orchestrator import MemoryOrchestrator
+
+        concurrent_high_water = 0
+        in_flight = 0
+
+        async def fake_gen_abstract(content, file_path):
+            nonlocal concurrent_high_water, in_flight
+            in_flight += 1
+            concurrent_high_water = max(concurrent_high_water, in_flight)
+            await asyncio.sleep(0.01)
+            in_flight -= 1
+            return "abstract", "overview"
+
+        async def fake_add(**kwargs):
+            m = MagicMock()
+            m.uri = "opencortex://t/u/mem/ev/test"
+            return m
+
+        oc = MemoryOrchestrator.__new__(MemoryOrchestrator)
+        oc._initialized = True
+        oc._ensure_init = lambda: None
+        oc._generate_abstract_overview = fake_gen_abstract
+        oc.add = fake_add
+
+        items = [{"content": f"doc {i}", "meta": {"file_path": f"f{i}.txt"}}
+                 for i in range(8)]
+        await oc.batch_add(items)
+
+        assert concurrent_high_water >= 2, (
+            f"Expected ≥2 concurrent items, got max {concurrent_high_water}"
+        )
