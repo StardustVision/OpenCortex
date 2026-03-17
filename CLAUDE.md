@@ -168,9 +168,10 @@ add() → IngestModeResolver.resolve() → mode decision
 
 **Document mode**: Large content parsed via `ParserRegistry` → `MarkdownParser` (heading-based chunking with parent-child hierarchy via `parent_index`). Each chunk gets LLM-derived abstract/overview/keywords. Chunks written as individual records with `parent_uri` linking.
 
-**Conversation mode**: Two-layer approach:
-- **Immediate layer**: `_write_immediate()` — per-message embed + Qdrant write, no LLM, instant searchability
+**Conversation mode**: Two-layer approach with automatic cleanup:
+- **Immediate layer**: `_write_immediate()` — per-message embed + Qdrant write, no LLM, instant searchability. Records carry 24h TTL as safety net.
 - **Merge layer**: `ConversationBuffer` accumulates messages; at ~1000 tokens threshold, LLM derives a merged chunk with full three-layer summary
+- **Cleanup**: Immediate records are batch-deleted after successful merge. On session end, a catch-all deletes any remaining immediates by `session_id` + `meta.layer=immediate`. `cleanup_expired_staging()` handles TTL expiry for all record types (staging + immediate).
 
 **batch_add**: When `scan_meta` present, builds directory tree from `meta.file_path` values (directory nodes with `is_leaf=False`), then assigns `parent_uri` to leaf items.
 
