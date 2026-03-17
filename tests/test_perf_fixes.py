@@ -50,3 +50,31 @@ class TestEmbedderCache(unittest.TestCase):
             "OpenAIDenseEmbedder",
         )
         mock_wrap.assert_called_once()
+
+
+class TestAccessStatsNoAmplification(unittest.IsolatedAsyncioTestCase):
+    async def test_single_filter_no_get_parallel_update(self):
+        """One filter() call, zero get() calls, N parallel update() calls."""
+        from opencortex.orchestrator import MemoryOrchestrator, _CONTEXT_COLLECTION
+        oc = MemoryOrchestrator.__new__(MemoryOrchestrator)
+        oc._storage = AsyncMock()
+        oc._storage.filter.return_value = [
+            {"id": "id1", "uri": "uri1", "active_count": 3},
+            {"id": "id2", "uri": "uri2", "active_count": 7},
+        ]
+
+        await oc._resolve_and_update_access_stats(["uri1", "uri2"])
+
+        # Exactly one filter call covering all URIs at once
+        oc._storage.filter.assert_called_once()
+        call_filter = oc._storage.filter.call_args[0][1]  # second positional arg
+        assert set(call_filter["conds"]) == {"uri1", "uri2"}
+
+        # Zero get() calls — active_count comes from filter payload
+        oc._storage.get.assert_not_called()
+
+        # Two update() calls, incremented counts
+        assert oc._storage.update.call_count == 2
+        calls = {c[0][1]: c[0][2] for c in oc._storage.update.call_args_list}
+        assert calls["id1"]["active_count"] == 4
+        assert calls["id2"]["active_count"] == 8

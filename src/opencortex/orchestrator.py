@@ -1447,50 +1447,42 @@ class MemoryOrchestrator:
         return result
 
     async def _resolve_and_update_access_stats(self, uris: list) -> None:
-        """Resolve URIs to record IDs, then update access stats.
+        """1 filter + N parallel updates. Old: N filter + N get + N update (serial)."""
+        if not uris:
+            return
+        try:
+            recs = await self._storage.filter(
+                _CONTEXT_COLLECTION,
+                {"op": "must", "field": "uri", "conds": uris},
+                limit=len(uris),
+            )
+        except Exception:
+            return
+        if not recs:
+            return
+        await self._update_access_stats_batch(recs)
 
-        Runs entirely in a fire-and-forget task so search() returns immediately.
-        """
-        record_ids = []
-        for uri in uris:
-            try:
-                recs = await self._storage.filter(
-                    _CONTEXT_COLLECTION,
-                    {"op": "must", "field": "uri", "conds": [uri]},
-                    limit=1,
-                )
-                if recs:
-                    rid = recs[0].get("id", "")
-                    if rid:
-                        record_ids.append(rid)
-            except Exception:
-                pass
-        if record_ids:
-            await self._update_access_stats(record_ids)
-
-    async def _update_access_stats(self, record_ids: list) -> None:
-        """Async batch update access_count + accessed_at for retrieved records.
-
-        Failures are logged but do not affect search results.
-        """
+    async def _update_access_stats_batch(self, records: list) -> None:
+        """Parallel batch update access_count + accessed_at (no individual get)."""
         from datetime import datetime, timezone
-
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        for record_id in record_ids:
+
+        async def _one(r: dict) -> None:
+            rid = r.get("id", "")
+            if not rid:
+                return
             try:
-                records = await self._storage.get(_CONTEXT_COLLECTION, [record_id])
-                if records:
-                    count = records[0].get("active_count", 0)
-                    await self._storage.update(
-                        _CONTEXT_COLLECTION,
-                        record_id,
-                        {"active_count": count + 1, "accessed_at": now},
-                    )
+                await self._storage.update(
+                    _CONTEXT_COLLECTION,
+                    rid,
+                    {"active_count": r.get("active_count", 0) + 1, "accessed_at": now},
+                )
             except Exception as exc:
                 logger.debug(
-                    "[Orchestrator] Access stats update failed for %s: %s",
-                    record_id, exc,
+                    "[Orchestrator] Access stats update failed for %s: %s", rid, exc
                 )
+
+        await asyncio.gather(*[_one(r) for r in records], return_exceptions=True)
 
     async def session_search(
         self,
