@@ -360,7 +360,8 @@ class MemoryOrchestrator:
                 )
                 from opencortex.models.embedder.sparse import BM25SparseEmbedder
                 from opencortex.models.embedder.base import CompositeHybridEmbedder
-                return CompositeHybridEmbedder(embedder, BM25SparseEmbedder())
+                composite = CompositeHybridEmbedder(embedder, BM25SparseEmbedder())
+                return self._wrap_with_cache(composite)
             except ImportError as exc:
                 logger.warning(
                     "[MemoryOrchestrator] Cannot create Volcengine embedder — "
@@ -414,7 +415,8 @@ class MemoryOrchestrator:
                 )
                 from opencortex.models.embedder.sparse import BM25SparseEmbedder
                 from opencortex.models.embedder.base import CompositeHybridEmbedder
-                return CompositeHybridEmbedder(embedder, BM25SparseEmbedder())
+                composite = CompositeHybridEmbedder(embedder, BM25SparseEmbedder())
+                return self._wrap_with_cache(composite)
             except ImportError as exc:
                 logger.warning(
                     "[MemoryOrchestrator] Cannot create OpenAI embedder — "
