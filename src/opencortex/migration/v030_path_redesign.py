@@ -3,15 +3,17 @@
 import logging
 
 from opencortex.retrieve.types import MERGEABLE_CATEGORIES
+from opencortex.utils.uri import CortexURI
 
 logger = logging.getLogger(__name__)
 
 
 def infer_scope(uri: str) -> str:
     """Infer scope from URI path."""
-    if "/user/" in uri:
-        return "private"
-    return "shared"
+    try:
+        return "private" if CortexURI(uri).is_private else "shared"
+    except ValueError:
+        return "shared"
 
 
 def infer_category(uri: str) -> str:

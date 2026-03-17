@@ -240,7 +240,7 @@ class TestContextManager(unittest.TestCase):
                 {"role": "assistant", "content": "a"},
             ],
             cited_uris=[
-                "opencortex://testteam/user/alice/memory/entities/abc",
+                "opencortex://testteam/alice/memory/entities/abc",
                 "invalid-uri-ignored",
             ],
         ))
@@ -254,7 +254,7 @@ class TestContextManager(unittest.TestCase):
 
         # Only the valid opencortex:// URI should have gotten a reward
         self.assertEqual(len(feedback_calls), 1)
-        self.assertEqual(feedback_calls[0][0], "opencortex://testteam/user/alice/memory/entities/abc")
+        self.assertEqual(feedback_calls[0][0], "opencortex://testteam/alice/memory/entities/abc")
         self.assertAlmostEqual(feedback_calls[0][1], 0.1)
 
         orch.feedback = original_feedback

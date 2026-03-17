@@ -109,7 +109,7 @@ tests/
 ## Development Conventions
 
 - All storage operations go through `VikingDBInterface` — every method is `async`
-- URI format: `opencortex://{team}/user/{uid}/{type}/{category}/{node_id}`
+- URI format: `opencortex://{team}/{uid}/{type}/{category}/{node_id}`
 - **Client-side config via HTTP headers**: identity settings are NOT in server-side `CortexConfig`. They are sent per-request by the client (MCP plugin reads from `mcp.json`). `RequestContextMiddleware` parses headers → contextvars.
   - Identity: `X-Tenant-ID` / `X-User-ID` → `get_effective_identity()`
 - **Server config** (`CortexConfig`): only server-side settings — storage, embedding, LLM, rerank, HTTP bind. Loads from `server.json` or `~/.opencortex/server.json`.

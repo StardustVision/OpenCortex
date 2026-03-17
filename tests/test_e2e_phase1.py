@@ -641,7 +641,7 @@ class TestE2EPhase1(unittest.TestCase):
         # Verify filesystem (L0 abstract written)
         abstract_path = os.path.join(
             self.temp_dir,
-            "testteam", "user", "alice", "memories", "preferences",
+            "testteam", "alice", "memories", "preferences",
             ctx.uri.split("/")[-1],
             ".abstract.md",
         )
@@ -881,7 +881,7 @@ class TestE2EPhase1(unittest.TestCase):
         """Update returns False for non-existent URI."""
         orch = self._init_orch()
 
-        success = self._run(orch.update("opencortex://testteam/user/alice/memories/nonexistent", abstract="x"))
+        success = self._run(orch.update("opencortex://testteam/alice/memories/nonexistent", abstract="x"))
         self.assertFalse(success)
 
     # -----------------------------------------------------------------
@@ -959,13 +959,13 @@ class TestE2EPhase1(unittest.TestCase):
         user = UserIdentifier("myteam", "bob", "assistant")
 
         mem_uri = user.memory_space_uri()
-        self.assertEqual(mem_uri, "opencortex://myteam/user/bob/memories")
+        self.assertEqual(mem_uri, "opencortex://myteam/bob/memories")
 
         cases_uri = user.agent_cases_uri()
-        self.assertEqual(cases_uri, "opencortex://myteam/user/bob/agent/memories/cases")
+        self.assertEqual(cases_uri, "opencortex://myteam/bob/agent/memories/cases")
 
         ws_uri = user.workspace_uri("proj1")
-        self.assertEqual(ws_uri, "opencortex://myteam/user/bob/workspace/proj1")
+        self.assertEqual(ws_uri, "opencortex://myteam/bob/workspace/proj1")
 
     # -----------------------------------------------------------------
     # 10. Context Type Derivation
@@ -973,7 +973,7 @@ class TestE2EPhase1(unittest.TestCase):
 
     def test_17_context_type_derivation(self):
         """Context correctly derives type and category from URI."""
-        mem_ctx = Context(uri="opencortex://t1/user/u1/memories/preferences/node1")
+        mem_ctx = Context(uri="opencortex://t1/u1/memories/preferences/node1")
         self.assertEqual(mem_ctx.context_type, "memory")
         self.assertEqual(mem_ctx.category, "preferences")
 
@@ -987,7 +987,7 @@ class TestE2EPhase1(unittest.TestCase):
         self.assertEqual(pattern_ctx.context_type, "memory")
         self.assertEqual(pattern_ctx.category, "patterns")
 
-        cases_ctx = Context(uri="opencortex://t1/user/u1/agent/memories/cases/c1")
+        cases_ctx = Context(uri="opencortex://t1/u1/agent/memories/cases/c1")
         self.assertEqual(cases_ctx.context_type, "memory")
         self.assertEqual(cases_ctx.category, "cases")
 
@@ -1001,7 +1001,7 @@ class TestE2EPhase1(unittest.TestCase):
         self.assertEqual(shared, "opencortex://t1/resources/docs")
 
         private = CortexURI.build_private("t1", "u1", "memories", "events")
-        self.assertEqual(private, "opencortex://t1/user/u1/memories/events")
+        self.assertEqual(private, "opencortex://t1/u1/memories/events")
 
         parsed = CortexURI(private)
         self.assertEqual(parsed.tenant_id, "t1")
@@ -1162,7 +1162,7 @@ class TestE2EPhase1(unittest.TestCase):
         """Feedback on non-existent URI is a no-op (no crash)."""
         orch = self._init_orch()
         # Should not raise
-        self._run(orch.feedback("opencortex://testteam/user/alice/memories/ghost", 1.0))
+        self._run(orch.feedback("opencortex://testteam/alice/memories/ghost", 1.0))
 
     # -----------------------------------------------------------------
     # Helper
@@ -1197,16 +1197,16 @@ class TestAutoUri(unittest.TestCase):
 
     def test_memory_profile(self):
         uri = self._auto_uri("memory", "profile")
-        self.assertIn("/user/alice/memories/profile/", uri)
+        self.assertIn("/alice/memories/profile/", uri)
         self.assertTrue(uri.startswith("opencortex://testteam/"))
 
     def test_memory_preferences(self):
         uri = self._auto_uri("memory", "preferences")
-        self.assertIn("/user/alice/memories/preferences/", uri)
+        self.assertIn("/alice/memories/preferences/", uri)
 
     def test_memory_empty_category_defaults_to_events(self):
         uri = self._auto_uri("memory", "")
-        self.assertIn("/user/alice/memories/events/", uri)
+        self.assertIn("/alice/memories/events/", uri)
 
     def test_case(self):
         uri = self._auto_uri("case", "anything")
@@ -1232,7 +1232,7 @@ class TestAutoUri(unittest.TestCase):
 
     def test_staging(self):
         uri = self._auto_uri("staging", "")
-        self.assertIn("/user/alice/staging/", uri)
+        self.assertIn("/alice/staging/", uri)
 
 
 class TestAddScopeFields(unittest.TestCase):
@@ -1430,7 +1430,7 @@ class TestScopeAwareSearch(unittest.TestCase):
             # so it would match the memory search, but with context_type="staging"
             # This simulates a staging record that would slip through without the filter
             self.loop.run_until_complete(storage.insert("context", {
-                "uri": "opencortex://t1/user/u1/memories/preferences/fake_staging",
+                "uri": "opencortex://t1/u1/memories/preferences/fake_staging",
                 "context_type": "staging",
                 "abstract": "staging note that looks like memory",
                 "vector": [0.1] * MockEmbedder.DIMENSION,
@@ -1497,13 +1497,13 @@ class TestMigrationBackfill(unittest.TestCase):
 
     def test_backfill_infers_scope_from_uri(self):
         from opencortex.migration.v030_path_redesign import infer_scope
-        self.assertEqual(infer_scope("opencortex://t1/user/u1/memories/pref/abc"), "private")
+        self.assertEqual(infer_scope("opencortex://t1/u1/memories/pref/abc"), "private")
         self.assertEqual(infer_scope("opencortex://t1/shared/skills/err/abc"), "shared")
         self.assertEqual(infer_scope("opencortex://t1/resources/docs/abc"), "shared")
 
     def test_backfill_infers_category_from_uri(self):
         from opencortex.migration.v030_path_redesign import infer_category
-        self.assertEqual(infer_category("opencortex://t1/user/u1/memories/preferences/abc"), "preferences")
+        self.assertEqual(infer_category("opencortex://t1/u1/memories/preferences/abc"), "preferences")
         self.assertEqual(infer_category("opencortex://t1/shared/skills/error_fixes/abc"), "error_fixes")
         self.assertEqual(infer_category("opencortex://t1/resources/documents/abc"), "documents")
 

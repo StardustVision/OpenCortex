@@ -67,7 +67,7 @@ class TraceStore:
             l2_content = orjson.dumps(
                 [t.to_dict() for t in trace.turns]
             ).decode()
-            uri = f"opencortex://{trace.tenant_id}/user/{trace.user_id}/trace/{trace.trace_id}"
+            uri = f"opencortex://{trace.tenant_id}/{trace.user_id}/trace/{trace.trace_id}"
             await self._fs.write_context(
                 uri,
                 content=l2_content,

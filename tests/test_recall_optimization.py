@@ -347,8 +347,8 @@ class TestParallelLexicalRetrieval(unittest.TestCase):
             # Doc 1: high semantic similarity, no keyword match
             await storage.insert("context", {
                 "id": "semantic-doc",
-                "uri": "opencortex://test/user/u1/memory/docs/semantic-doc",
-                "parent_uri": "opencortex://test/user/u1/memory/docs",
+                "uri": "opencortex://test/u1/memory/docs/semantic-doc",
+                "parent_uri": "opencortex://test/u1/memory/docs",
                 "abstract": "network configuration and routing policies",
                 "overview": "general network documentation",
                 "context_type": "memory",
@@ -360,8 +360,8 @@ class TestParallelLexicalRetrieval(unittest.TestCase):
             # Doc 2: low semantic similarity, exact keyword match
             await storage.insert("context", {
                 "id": "keyword-doc",
-                "uri": "opencortex://test/user/u1/memory/docs/keyword-doc",
-                "parent_uri": "opencortex://test/user/u1/memory/docs",
+                "uri": "opencortex://test/u1/memory/docs/keyword-doc",
+                "parent_uri": "opencortex://test/u1/memory/docs",
                 "abstract": "TrafficRule OutboundType configuration for SASE",
                 "overview": "TrafficRule defines outbound traffic types",
                 "context_type": "memory",
@@ -385,7 +385,7 @@ class TestParallelLexicalRetrieval(unittest.TestCase):
         result = asyncio.run(_run_test())
         uris = [mc.uri for mc in result.matched_contexts]
         self.assertIn(
-            "opencortex://test/user/u1/memory/docs/keyword-doc",
+            "opencortex://test/u1/memory/docs/keyword-doc",
             uris,
             "Hard keyword doc should appear in results via lexical path",
         )
@@ -628,11 +628,11 @@ class TestTenantIsolation(unittest.TestCase):
     def test_migration_infer_tenant_from_uri(self):
         from opencortex.migration.v031_tenant_backfill import infer_tenant_from_uri
         self.assertEqual(
-            infer_tenant_from_uri("opencortex://acme/user/u1/memory/docs/a"),
+            infer_tenant_from_uri("opencortex://acme/u1/memory/docs/a"),
             "acme",
         )
         self.assertEqual(
-            infer_tenant_from_uri("opencortex://sase/user/dev/memory/docs/x"),
+            infer_tenant_from_uri("opencortex://sase/dev/memory/docs/x"),
             "sase",
         )
         self.assertEqual(infer_tenant_from_uri(""), "")

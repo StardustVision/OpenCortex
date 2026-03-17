@@ -61,7 +61,7 @@ class KnowledgeStore:
 
         # Write to CortexFS
         if self._fs:
-            uri = (f"opencortex://{knowledge.tenant_id}/user/"
+            uri = (f"opencortex://{knowledge.tenant_id}/"
                    f"{knowledge.user_id}/knowledge/{knowledge.knowledge_id}")
             if knowledge.overview:
                 await self._fs.write(uri, knowledge.overview, layer="overview")

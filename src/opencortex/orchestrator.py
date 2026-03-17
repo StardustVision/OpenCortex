@@ -1014,7 +1014,7 @@ class MemoryOrchestrator:
             record["sparse_vector"] = result.sparse_vector
 
         # Populate scope/category/source fields for path-redesign
-        inferred_scope = "private" if "/user/" in uri else "shared"
+        inferred_scope = "private" if CortexURI(uri).is_private else "shared"
         record["scope"] = inferred_scope
         record["category"] = effective_category
         record["source_user_id"] = uid
@@ -2530,7 +2530,7 @@ class MemoryOrchestrator:
             if embed_result and embed_result.sparse_vector:
                 record["sparse_vector"] = embed_result.sparse_vector
             # Populate scope fields so directory records pass scope filters
-            record["scope"] = "private" if "/user/" in dir_uri else "shared"
+            record["scope"] = "private" if CortexURI(dir_uri).is_private else "shared"
             record["source_user_id"] = uid
             record["source_tenant_id"] = tid
             record["category"] = ""

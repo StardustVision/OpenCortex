@@ -283,7 +283,7 @@ class TestFrontierSingleWave(FrontierSearchTestBase):
     def test_frontier_single_wave(self):
         async def _test():
             storage = await self._create_storage()
-            root = "opencortex://test_frontier/user/tester/memories"
+            root = "opencortex://test_frontier/tester/memories"
             await self._build_flat_tree(storage, root, leaf_count=5)
 
             retriever = HierarchicalRetriever(
@@ -327,7 +327,7 @@ class TestFrontierMultiWave(FrontierSearchTestBase):
     def test_frontier_multi_wave_depth(self):
         async def _test():
             storage = await self._create_storage()
-            root = "opencortex://test_frontier/user/tester/memories"
+            root = "opencortex://test_frontier/tester/memories"
             await self._build_3level_tree(storage, root)
 
             retriever = HierarchicalRetriever(
@@ -354,7 +354,7 @@ class TestFrontierConvergence(FrontierSearchTestBase):
     def test_frontier_convergence_early_stop(self):
         async def _test():
             storage = await self._create_storage()
-            root = "opencortex://test_frontier/user/tester/memories"
+            root = "opencortex://test_frontier/tester/memories"
             # Build wide flat tree - many leaves at level 1
             await self._upsert_node(storage, root, "", "root", is_leaf=False)
             for i in range(15):
@@ -381,7 +381,7 @@ class TestFrontierMaxWavesGuard(FrontierSearchTestBase):
     def test_frontier_max_waves_guard(self):
         async def _test():
             storage = await self._create_storage()
-            root = "opencortex://test_frontier/user/tester/memories"
+            root = "opencortex://test_frontier/tester/memories"
 
             # Build chain: root -> dir_0 -> dir_1 -> ... -> dir_11 (leaf)
             current = root
@@ -415,7 +415,7 @@ class TestFrontierNoInfiniteLoop(FrontierSearchTestBase):
     def test_frontier_no_infinite_loop(self):
         async def _test():
             storage = await self._create_storage()
-            root = "opencortex://test_frontier/user/tester/memories"
+            root = "opencortex://test_frontier/tester/memories"
             await self._upsert_node(storage, root, "", "root", is_leaf=False)
 
             uri_a = f"{root}/dir_a"
@@ -446,7 +446,7 @@ class TestFrontierEmptyNode(FrontierSearchTestBase):
     def test_frontier_empty_node(self):
         async def _test():
             storage = await self._create_storage()
-            root = "opencortex://test_frontier/user/tester/memories"
+            root = "opencortex://test_frontier/tester/memories"
             await self._upsert_node(storage, root, "", "root", is_leaf=False)
             await self._upsert_node(storage, f"{root}/empty", root, "empty directory", is_leaf=False)
 
@@ -469,7 +469,7 @@ class TestCollectedDedup(FrontierSearchTestBase):
     def test_collected_dedup_keeps_higher_score(self):
         async def _test():
             storage = await self._create_storage()
-            root = "opencortex://test_frontier/user/tester/memories"
+            root = "opencortex://test_frontier/tester/memories"
             await self._upsert_node(storage, root, "", "root", is_leaf=False)
 
             dir_a = f"{root}/dir_a"
@@ -499,7 +499,7 @@ class TestFallbackOnError(FrontierSearchTestBase):
     def test_fallback_on_frontier_error(self):
         async def _test():
             storage = await self._create_storage()
-            root = "opencortex://test_frontier/user/tester/memories"
+            root = "opencortex://test_frontier/tester/memories"
             await self._build_flat_tree(storage, root, leaf_count=3)
 
             # Monkey-patch the existing storage to inject an error on the first
@@ -553,7 +553,7 @@ class TestFrontierVsRecursiveOverlap(FrontierSearchTestBase):
     def test_frontier_vs_recursive_overlap(self):
         async def _test():
             storage = await self._create_storage()
-            root = "opencortex://test_frontier/user/tester/memories"
+            root = "opencortex://test_frontier/tester/memories"
             await self._build_comparison_tree(storage, root)
 
             query = self._make_query("programming concept explanation",

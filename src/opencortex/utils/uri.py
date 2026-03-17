@@ -14,12 +14,12 @@ The tenant-based URI structure supports multi-team, multi-user isolation:
     opencortex://{team_id}/shared/skills/{section}/...
 
   Private (user-level):
-    opencortex://{team_id}/user/{user_id}/memories/{category}/...
-    opencortex://{team_id}/user/{user_id}/staging/...
-    opencortex://{team_id}/user/{user_id}/reinforcement/...
-    opencortex://{team_id}/user/{user_id}/feedback/...
-    opencortex://{team_id}/user/{user_id}/workspace/...
-    opencortex://{team_id}/user/{user_id}/session/...
+    opencortex://{team_id}/{user_id}/memories/{category}/...
+    opencortex://{team_id}/{user_id}/staging/...
+    opencortex://{team_id}/{user_id}/reinforcement/...
+    opencortex://{team_id}/{user_id}/feedback/...
+    opencortex://{team_id}/{user_id}/workspace/...
+    opencortex://{team_id}/{user_id}/session/...
 """
 
 import re
@@ -41,13 +41,13 @@ class CortexURI:
     - queue: Internal queue (opencortex://{tid}/queue/...)
     - temp: Temporary data (opencortex://{tid}/temp/...)
 
-    Private sub-scopes (require user_id via /user/{uid}/ prefix):
-    - memories: User memories by category (opencortex://{tid}/user/{uid}/memories/{category}/...)
-    - staging: Temporary user data (opencortex://{tid}/user/{uid}/staging/...)
-    - reinforcement: HRCM data (opencortex://{tid}/user/{uid}/reinforcement/...)
-    - feedback: Feedback data (opencortex://{tid}/user/{uid}/feedback/...)
-    - workspace: Workspace (opencortex://{tid}/user/{uid}/workspace/...)
-    - session: Session data (opencortex://{tid}/user/{uid}/session/...)
+    Private sub-scopes (require user_id — {tid}/{uid}/{sub_scope}/...):
+    - memories: User memories by category (opencortex://{tid}/{uid}/memories/{category}/...)
+    - staging: Temporary user data (opencortex://{tid}/{uid}/staging/...)
+    - reinforcement: HRCM data (opencortex://{tid}/{uid}/reinforcement/...)
+    - feedback: Feedback data (opencortex://{tid}/{uid}/feedback/...)
+    - workspace: Workspace (opencortex://{tid}/{uid}/workspace/...)
+    - session: Session data (opencortex://{tid}/{uid}/session/...)
     """
 
     SCHEME = "opencortex"
@@ -55,11 +55,11 @@ class CortexURI:
     # Sub-scopes that exist directly under {team_id}/
     SHARED_SUB_SCOPES = {"resources", "shared", "agent", "queue", "temp"}
 
-    # Sub-scopes that exist under {team_id}/user/{user_id}/
+    # Sub-scopes that exist under {team_id}/{user_id}/
     PRIVATE_SUB_SCOPES = {"memories", "staging", "reinforcement", "feedback", "workspace", "session"}
 
     # All recognized sub-scopes (for validation of the path component after tenant_id or user_id)
-    ALL_SUB_SCOPES = SHARED_SUB_SCOPES | PRIVATE_SUB_SCOPES | {"user"}
+    ALL_SUB_SCOPES = SHARED_SUB_SCOPES | PRIVATE_SUB_SCOPES
 
     def __init__(self, uri: str):
         """
@@ -80,7 +80,7 @@ class CortexURI:
             - scheme: "opencortex"
             - tenant_id: team identifier
             - sub_scope: first path component after tenant_id (or after user_id)
-            - user_id: user identifier if present (for /user/{uid}/ paths)
+            - user_id: user identifier if present (for private paths)
             - full_path: everything after scheme://
         """
         prefix = f"{self.SCHEME}://"
@@ -100,13 +100,13 @@ class CortexURI:
         sub_scope = ""
         user_id = ""
         if len(parts) > 1:
-            if parts[1] == "user":
-                # Private path: {tid}/user/{uid}/...
-                user_id = parts[2] if len(parts) > 2 else ""
-                sub_scope = parts[3] if len(parts) > 3 else "user"
-            else:
+            if parts[1] in CortexURI.SHARED_SUB_SCOPES:
                 # Shared path: {tid}/{sub_scope}/...
                 sub_scope = parts[1]
+            else:
+                # Private path: {tid}/{uid}/{sub_scope}/...
+                user_id = parts[1]
+                sub_scope = parts[2] if len(parts) > 2 else ""
 
         return {
             "scheme": self.SCHEME,
@@ -145,12 +145,12 @@ class CortexURI:
 
     @property
     def is_private(self) -> bool:
-        """Check if this URI is user-private (contains /user/{uid}/)."""
+        """Check if this URI is user-private (has user_id)."""
         return bool(self._parsed["user_id"])
 
     @property
     def is_shared(self) -> bool:
-        """Check if this URI is team-shared (no /user/{uid}/)."""
+        """Check if this URI is team-shared (no user_id)."""
         return not self._parsed["user_id"]
 
     @property
@@ -251,9 +251,9 @@ class CortexURI:
 
         Example:
             CortexURI.build_private("myteam", "alice", "memories", "preferences")
-            -> "opencortex://myteam/user/alice/memories/preferences"
+            -> "opencortex://myteam/alice/memories/preferences"
         """
-        parts = [tenant_id, "user", user_id, sub_scope] + list(path_parts)
+        parts = [tenant_id, user_id, sub_scope] + list(path_parts)
         parts = [p for p in parts if p]
         return f"{CortexURI.SCHEME}://{'/'.join(parts)}"
 
@@ -351,8 +351,8 @@ class CortexURI:
         Extract the path component immediately after a given segment.
 
         Example:
-            uri = CortexURI("opencortex://t1/user/alice/memories/prefs")
-            uri.extract_after("user")  -> "alice"
+            uri = CortexURI("opencortex://t1/alice/memories/prefs")
+            uri.extract_after("alice")  -> "memories"
             uri.extract_after("memories")  -> "prefs"
         """
         parts = self.full_path.split("/")
