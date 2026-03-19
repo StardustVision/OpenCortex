@@ -387,6 +387,7 @@ class HierarchicalRetriever:
                         score_gte=score_gte,
                         metadata_filter=final_metadata_filter,
                         text_query=text_query,
+                        classification=classification,
                     )
                 else:
                     dense_coro = self._recursive_search(
@@ -436,7 +437,7 @@ class HierarchicalRetriever:
                 not has_real_starting_points
                 and self._rerank_client
                 and len(candidates) > limit
-                and self._should_rerank(candidates, score_key="_final_score")
+                and self._should_rerank(candidates, score_key="_final_score", classification=classification)
             ):
                 rerank_cap = (self.rerank_config.max_candidates or len(candidates)) if self.rerank_config else len(candidates)
                 rerank_slice = candidates[:rerank_cap]
@@ -470,6 +471,7 @@ class HierarchicalRetriever:
                     score_gte=score_gte,
                     metadata_filter=final_metadata_filter,
                     text_query=text_query,
+                    classification=classification,
                 )
             else:
                 candidates = await self._recursive_search(
@@ -533,7 +535,12 @@ class HierarchicalRetriever:
         )
         return results
 
-    def _should_rerank(self, results: List[Dict[str, Any]], score_key: str = "_score") -> bool:
+    def _should_rerank(
+        self,
+        results: List[Dict[str, Any]],
+        score_key: str = "_score",
+        classification: Optional[Any] = None,
+    ) -> bool:
         """Decide whether rerank is worth the cost.
 
         Skip rerank when the top result has a clear score lead over the
@@ -542,6 +549,7 @@ class HierarchicalRetriever:
         Args:
             results: List of result dicts.
             score_key: Which score field to use ('_score' or '_final_score').
+            classification: Optional QueryClassification for class-based gates.
         """
         if len(results) < 2:
             return False
@@ -549,12 +557,35 @@ class HierarchicalRetriever:
             [r.get(score_key, 0.0) for r in results], reverse=True
         )
         gap = scores[0] - scores[1]
-        if gap > self._score_gap_threshold:
+        threshold = getattr(
+            getattr(self, '_config', None),
+            'rerank_gate_score_gap_threshold',
+            self._score_gap_threshold,
+        )
+        if gap > threshold:
             logger.debug(
                 "[Rerank] Skipped — score gap %.3f > threshold %.3f",
-                gap, self._score_gap_threshold,
+                gap, threshold,
             )
             return False
+        # v0.6: classification-based gates
+        if classification:
+            if (classification.query_class == "fact_lookup"
+                    and classification.lexical_boost >= 0.6):
+                logger.debug("[Rerank] Skipped — fact_lookup with high lexical_boost")
+                return False
+            skip_threshold = getattr(
+                getattr(self, '_config', None),
+                'rerank_gate_doc_scope_skip_threshold',
+                5,
+            )
+            if (classification.query_class == "document_scoped"
+                    and len(results) < skip_threshold):
+                logger.debug(
+                    "[Rerank] Skipped — document_scoped pool size %d < %d",
+                    len(results), skip_threshold,
+                )
+                return False
         return True
 
     async def _merge_starting_points(
@@ -777,6 +808,7 @@ class HierarchicalRetriever:
         score_gte: bool = False,
         metadata_filter: Optional[Dict[str, Any]] = None,
         text_query: str = "",
+        classification: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
         """Frontier search with auto-fallback to recursive on error."""
         try:
@@ -787,6 +819,7 @@ class HierarchicalRetriever:
                 threshold=threshold, score_gte=score_gte,
                 metadata_filter=metadata_filter,
                 text_query=text_query,
+                classification=classification,
             )
         except Exception as e:
             logger.error("[FrontierSearch] Fallback to recursive: %s", e)
@@ -812,6 +845,7 @@ class HierarchicalRetriever:
         score_gte: bool = False,
         metadata_filter: Optional[Dict[str, Any]] = None,
         text_query: str = "",
+        classification: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
         """Wave-based frontier batching search.
 
@@ -1054,7 +1088,7 @@ class HierarchicalRetriever:
         if (
             self._rerank_client
             and mode == RetrieverMode.THINKING
-            and self._should_rerank(top_m, score_key="_final_score")
+            and self._should_rerank(top_m, score_key="_final_score", classification=classification)
         ):
             docs = [c.get("abstract", "") for c in top_m]
             rerank_scores = await self._rerank_client.rerank(query, docs)
