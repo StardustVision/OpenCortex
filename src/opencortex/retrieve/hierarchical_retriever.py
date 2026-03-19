@@ -222,6 +222,14 @@ class HierarchicalRetriever:
 
         target_dirs = [d for d in (query.target_directories or []) if d]
 
+        # v0.6: Document scope filter — narrow search to a specific source document
+        if query.target_doc_id and getattr(getattr(self, '_config', None), 'doc_scope_search_enabled', True):
+            doc_filter = {"op": "match", "field": "source_doc_id", "value": query.target_doc_id}
+            if metadata_filter:
+                metadata_filter = {"op": "and", "conditions": [metadata_filter, doc_filter]}
+            else:
+                metadata_filter = doc_filter
+
         # Merge all filters
         filters_to_merge = []
         # Only apply context_type filter for specific type queries (skip for ANY)

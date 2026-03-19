@@ -81,8 +81,8 @@ class MarkdownParser(BaseParser):
         max_size = self.config.max_section_size
         min_size = self.config.min_section_tokens
 
-        # Small document → single chunk
-        if estimated_tokens <= _SMALL_DOC_THRESHOLD:
+        # Small document with no headings → single chunk
+        if estimated_tokens <= _SMALL_DOC_THRESHOLD and not headings:
             return [
                 ParsedChunk(
                     content=content,
@@ -94,7 +94,7 @@ class MarkdownParser(BaseParser):
                 )
             ]
 
-        # No headings → split by paragraphs
+        # No headings (but large) → split by paragraphs
         if not headings:
             parts = self._smart_split_content(content, max_size)
             return [
@@ -108,13 +108,14 @@ class MarkdownParser(BaseParser):
                 for i, part in enumerate(parts, 1)
             ]
 
-        # Build sections and process with merge logic
+        # Build sections and process with merge logic (section_path tracking)
         chunks: List[ParsedChunk] = []
         sections = self._build_top_level_sections(content, headings)
         self._process_sections_to_chunks(
             content, headings, sections, chunks,
             parent_index=-1, parent_level=0,
             max_size=max_size, min_size=min_size,
+            parent_path="",
         )
         return chunks
 
@@ -232,6 +233,7 @@ class MarkdownParser(BaseParser):
         parent_level: int,
         max_size: int,
         min_size: int,
+        parent_path: str = "",
     ) -> None:
         """Process sections with merge logic, appending to chunks list."""
         # Expand section info
@@ -247,6 +249,12 @@ class MarkdownParser(BaseParser):
         for sec in expanded:
             tokens = sec["tokens"]
             has_children = sec.get("has_children", False)
+
+            # Compute section_path for this section
+            sec_name = sec.get("name", "")
+            section_path = f"{parent_path} > {sec_name}" if parent_path else sec_name
+            # Store on sec dict so downstream helpers can use it
+            sec["_section_path"] = section_path
 
             # Small section → accumulate in pending
             if tokens < min_size:
@@ -264,7 +272,8 @@ class MarkdownParser(BaseParser):
             self._flush_pending(pending, chunks, parent_index)
             pending = []
             self._save_section_chunk(
-                content, headings, sec, chunks, parent_index, max_size, min_size
+                content, headings, sec, chunks, parent_index, max_size, min_size,
+                parent_path=parent_path,
             )
 
         # Flush remaining
@@ -297,12 +306,15 @@ class MarkdownParser(BaseParser):
         names = [s["name"] for s in sections]
         title = names[0] if len(names) == 1 else f"{names[0]} (+{len(names)-1} more)"
         level = sections[0].get("level", 1)
+        # Use the section_path from the first section in the merge group
+        section_path = sections[0].get("_section_path", sections[0].get("name", ""))
         chunks.append(ParsedChunk(
             content=combined,
             title=title,
             level=level,
             parent_index=parent_index,
             source_format="markdown",
+            meta={"section_path": section_path} if section_path else {},
         ))
 
     def _save_section_chunk(
@@ -314,40 +326,49 @@ class MarkdownParser(BaseParser):
         parent_index: int,
         max_size: int,
         min_size: int,
+        parent_path: str = "",
     ) -> None:
         """Save a section as chunk(s), recursing for children or splitting if needed."""
         tokens = sec["tokens"]
         has_children = sec.get("has_children", False)
         level = sec.get("level", 1)
 
+        sec_name = sec.get("name", "")
+        section_path = sec.get("_section_path") or (
+            f"{parent_path} > {sec_name}" if parent_path else sec_name
+        )
+        chunk_meta = {"section_path": section_path} if section_path else {}
+
         # Fits in one chunk
         if tokens <= max_size:
             chunks.append(ParsedChunk(
                 content=sec["content"],
-                title=sec["name"],
+                title=sec_name,
                 level=level,
                 parent_index=parent_index,
                 source_format="markdown",
+                meta=chunk_meta,
             ))
             return
 
         if has_children:
             # Create directory chunk, then recurse
             dir_index = len(chunks)
-            dir_content = sec.get("direct_content", "") or sec["name"]
+            dir_content = sec.get("direct_content", "") or sec_name
             chunks.append(ParsedChunk(
                 content=dir_content,
-                title=sec["name"],
+                title=sec_name,
                 level=level,
                 parent_index=parent_index,
                 source_format="markdown",
+                meta=chunk_meta,
             ))
 
             # Build children
             children = []
             if sec.get("direct_content"):
                 children.append({
-                    "name": sec["name"],
+                    "name": sec_name,
                     "content": sec["direct_content"],
                     "tokens": estimate_tokens(sec["direct_content"]),
                     "has_children": False,
@@ -361,6 +382,7 @@ class MarkdownParser(BaseParser):
                 content, headings, children, chunks,
                 parent_index=dir_index, parent_level=level,
                 max_size=max_size, min_size=min_size,
+                parent_path=section_path,
             )
         else:
             # Split by paragraphs
@@ -368,10 +390,11 @@ class MarkdownParser(BaseParser):
             for i, part in enumerate(parts):
                 chunks.append(ParsedChunk(
                     content=part,
-                    title=f"{sec['name']} (part {i+1})" if len(parts) > 1 else sec["name"],
+                    title=f"{sec_name} (part {i+1})" if len(parts) > 1 else sec_name,
                     level=level,
                     parent_index=parent_index,
                     source_format="markdown",
+                    meta=chunk_meta,
                 ))
 
     # ========== Utilities ==========

@@ -33,7 +33,9 @@ Typical usage::
 """
 
 import asyncio
+import hashlib
 import logging
+import os
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 from uuid import uuid4
@@ -687,6 +689,16 @@ class MemoryOrchestrator:
         else:
             chunks = await registry.parse_content(content, source_format="markdown")
 
+        # --- v0.6: Generate source_doc_id for document scoped search ---
+        _effective_source_path = source_path or (meta or {}).get("source_path", "") or (meta or {}).get("file_path", "")
+        if _effective_source_path:
+            source_doc_id = hashlib.sha256(_effective_source_path.encode()).hexdigest()[:16]
+        else:
+            source_doc_id = uuid4().hex[:16]
+        source_doc_title = (meta or {}).get("title", "")
+        if not source_doc_title and _effective_source_path:
+            source_doc_title = os.path.basename(_effective_source_path)
+
         # Single chunk or no chunks → fall through to memory mode
         if len(chunks) <= 1:
             single_content = chunks[0].content if chunks else content
@@ -696,13 +708,19 @@ class MemoryOrchestrator:
                 category=category,
                 parent_uri=parent_uri,
                 context_type=context_type,
-                meta={**(meta or {}), "ingest_mode": "memory"},
+                meta={
+                    **(meta or {}),
+                    "ingest_mode": "memory",
+                    "source_doc_id": source_doc_id,
+                    "source_doc_title": source_doc_title,
+                    "source_section_path": chunks[0].meta.get("section_path", "") if chunks else "",
+                    "chunk_role": "document",
+                },
                 session_id=session_id,
             )
 
         # Multi-chunk: create parent + children
         # Title priority: source filename > caller-provided abstract > fallback "Document"
-        from pathlib import Path
         doc_title = (
             Path(source_path).stem if source_path
             else abstract if abstract
@@ -716,7 +734,14 @@ class MemoryOrchestrator:
             parent_uri=parent_uri,
             is_leaf=False,
             context_type=context_type,
-            meta={**(meta or {}), "ingest_mode": "memory"},
+            meta={
+                **(meta or {}),
+                "ingest_mode": "memory",
+                "source_doc_id": source_doc_id,
+                "source_doc_title": source_doc_title,
+                "source_section_path": "",
+                "chunk_role": "document",
+            },
             session_id=session_id,
         )
         doc_parent_uri = parent_ctx.uri
@@ -730,13 +755,29 @@ class MemoryOrchestrator:
                 if parent_result and not parent_result.is_leaf:
                     chunk_parent = parent_result.uri
 
+            # Determine chunk_role: directory chunks (is_leaf=False) become "section",
+            # leaf chunks become "leaf". We detect via next chunk's parent_index.
+            # A chunk is a directory if any later chunk references it as parent.
+            is_dir_chunk = any(
+                c.parent_index == idx for c in chunks[idx + 1:]
+            )
+            chunk_role = "section" if is_dir_chunk else "leaf"
+
             ctx = await self.add(
                 abstract="",
                 content=chunk.content,
                 category=category,
                 parent_uri=chunk_parent,
                 context_type=context_type,
-                meta={**(meta or {}), "ingest_mode": "memory", "chunk_index": idx},
+                meta={
+                    **(meta or {}),
+                    "ingest_mode": "memory",
+                    "chunk_index": idx,
+                    "source_doc_id": source_doc_id,
+                    "source_doc_title": source_doc_title,
+                    "source_section_path": chunk.meta.get("section_path", ""),
+                    "chunk_role": chunk_role,
+                },
                 session_id=session_id,
             )
             chunk_results.append(ctx)
