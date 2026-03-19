@@ -1222,6 +1222,17 @@ class HierarchicalRetriever:
             if detail_level in (DetailLevel.L1, DetailLevel.L2):
                 overview = c.get("overview", "") or None
 
+            # v0.6: Small-to-Big — enrich leaf chunks with parent section overview
+            if (getattr(getattr(self, '_config', None), 'small_to_big_enabled', True)
+                    and c.get("is_leaf", False)
+                    and c.get("parent_uri")):
+                parent_uri_stb = c["parent_uri"]
+                parent_abstract_stb = related_abstracts.get(parent_uri_stb, "")
+                if parent_abstract_stb and overview:
+                    overview = f"[Parent Section] {parent_abstract_stb}\n\n{overview}"
+                elif parent_abstract_stb:
+                    overview = f"[Parent Section] {parent_abstract_stb}"
+
             content = None
             if detail_level == DetailLevel.L2 and cortex_fs:
                 try:

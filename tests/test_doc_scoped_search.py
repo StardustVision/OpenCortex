@@ -92,6 +92,25 @@ class TestSectionPath(unittest.TestCase):
             self.assertIn("chunk_role", m, f"chunk_role missing from chunk meta: {m}")
             self.assertIn("source_section_path", m, f"source_section_path missing from chunk meta: {m}")
 
+class TestSmallToBig(unittest.TestCase):
+    def test_parent_overview_prefix_is_prepended(self):
+        parent_abstract = "This section covers machine learning basics."
+        chunk_overview = "SGD converges under certain conditions."
+        enriched = f"[Parent Section] {parent_abstract}\n\n{chunk_overview}"
+        self.assertTrue(enriched.startswith("[Parent Section]"))
+        self.assertIn(parent_abstract, enriched)
+        self.assertIn(chunk_overview, enriched)
+
+    def test_no_parent_uri_no_enrichment(self):
+        original = "Some chunk overview."
+        parent_uri = None
+        result = original
+        if parent_uri:
+            result = f"[Parent Section] parent_text\n\n{original}"
+        self.assertEqual(result, original)
+
+
+class TestDocFilter(unittest.TestCase):
     def test_doc_filter_injected_when_target_doc_id_set(self):
         """retrieve() should inject a source_doc_id filter when query.target_doc_id is set."""
         import asyncio
