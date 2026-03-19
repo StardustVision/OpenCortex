@@ -251,6 +251,37 @@ class ThinkingTrace:
 
 
 @dataclass
+class SearchExplain:
+    """Per-query retrieval explain with 5-segment latency breakdown."""
+    query_class: str = ""
+    path: str = ""
+    intent_ms: float = 0.0
+    embed_ms: float = 0.0
+    search_ms: float = 0.0
+    rerank_ms: float = 0.0
+    assemble_ms: float = 0.0
+    doc_scope_hit: bool = False
+    time_filter_hit: bool = False
+    candidates_before_rerank: int = 0
+    candidates_after_rerank: int = 0
+    frontier_waves: int = 0
+    frontier_budget_exceeded: bool = False
+    total_ms: float = 0.0
+
+
+@dataclass
+class SearchExplainSummary:
+    """Aggregate explain across multiple concurrent TypedQueries."""
+    total_ms: float = 0.0
+    query_count: int = 0
+    primary_query_class: str = ""
+    primary_path: str = ""
+    doc_scope_hit: bool = False
+    time_filter_hit: bool = False
+    rerank_triggered: bool = False
+
+
+@dataclass
 class TypedQuery:
     """
     Query targeting a specific context type.
@@ -270,6 +301,7 @@ class TypedQuery:
     target_directories: List[str] = field(default_factory=list)
     detail_level: DetailLevel = DetailLevel.L1
     hyde_text: Optional[str] = None  # HyDE hypothetical answer for dense embedding
+    target_doc_id: Optional[str] = None
 
 
 @dataclass
@@ -345,6 +377,7 @@ class QueryResult:
     matched_contexts: List[MatchedContext]
     searched_directories: List[str]
     thinking_trace: ThinkingTrace = field(default_factory=ThinkingTrace)
+    explain: Optional[SearchExplain] = None
 
     def get_trace_messages(self) -> List[str]:
         """Get trace as simple message list."""
@@ -372,6 +405,7 @@ class FindResult:
     query_results: Optional[List[QueryResult]] = None
     search_intent: Optional[SearchIntent] = None
     total: int = 0
+    explain_summary: Optional[SearchExplainSummary] = None
 
     def __iter__(self):
         """Make FindResult iterable by yielding all matched contexts."""
