@@ -48,16 +48,18 @@ def _auth_headers(jwt_token: str, collection: str = "") -> Dict[str, str]:
     return headers
 
 
-def _http_post(base_url: str, path: str, payload: Dict, jwt_token: str, timeout: int = 30) -> Dict:
+def _http_post(base_url: str, path: str, payload: Dict, jwt_token: str,
+               timeout: int = 30, collection: str = "") -> Dict:
     """POST JSON to server, return parsed response."""
     url = base_url.rstrip("/") + path
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers=_auth_headers(jwt_token), method="POST")
+    req = urllib.request.Request(url, data=data, headers=_auth_headers(jwt_token, collection), method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
-def seed_memories(base_url: str, memories: List[Dict], jwt_token: str, timeout: int = 30) -> Dict[str, str]:
+def seed_memories(base_url: str, memories: List[Dict], jwt_token: str,
+                  timeout: int = 30, collection: str = "") -> Dict[str, str]:
     """Write benchmark memories to server. Returns {memory_id: uri}."""
     id_to_uri: Dict[str, str] = {}
     for mem in memories:
@@ -70,7 +72,8 @@ def seed_memories(base_url: str, memories: List[Dict], jwt_token: str, timeout: 
             "dedup": False,
         }
         try:
-            result = _http_post(base_url, "/api/v1/memory/store", payload, jwt_token, timeout)
+            result = _http_post(base_url, "/api/v1/memory/store", payload, jwt_token, timeout,
+                                collection=collection)
             uri = result.get("uri", "")
             if uri:
                 id_to_uri[mem["id"]] = uri
@@ -80,11 +83,13 @@ def seed_memories(base_url: str, memories: List[Dict], jwt_token: str, timeout: 
 
 
 def search_via_http(
-    base_url: str, query: str, limit: int, jwt_token: str, timeout: int = 30
+    base_url: str, query: str, limit: int, jwt_token: str,
+    timeout: int = 30, collection: str = ""
 ) -> List[str]:
     """Search and return ranked URIs."""
     payload = {"query": query, "limit": limit, "detail_level": "l1"}
-    result = _http_post(base_url, "/api/v1/memory/search", payload, jwt_token, timeout)
+    result = _http_post(base_url, "/api/v1/memory/search", payload, jwt_token, timeout,
+                        collection=collection)
     items = result.get("results", [])
     return [item.get("uri", "") for item in items if isinstance(item, dict) and item.get("uri")]
 
@@ -106,53 +111,79 @@ def run_benchmark(
     memories = dataset.get("memories", [])
     queries = dataset.get("queries", [])
 
-    # Isolation: unique tenant per run prevents cross-run pollution
+    # Isolation: unique tenant + isolated collection per run
     run_id = f"bench_{uuid4().hex[:8]}"
     user_id = "runner"
     jwt_token = generate_token(run_id, user_id, ensure_secret(data_root))
-    print(f"Run ID: {run_id} (isolated tenant)", file=sys.stderr)
+    collection_name = run_id  # e.g. bench_a1b2c3d4
 
-    # Phase 1: Seed memories (always — no skip-seed)
-    print(f"Seeding {len(memories)} memories...", file=sys.stderr)
-    id_to_uri = seed_memories(base_url, memories, jwt_token, timeout)
-    print(f"  Seeded {len(id_to_uri)}/{len(memories)} memories", file=sys.stderr)
-    # Brief pause for indexing
-    time.sleep(1)
+    # Create isolated collection (physically separate from main "context" collection)
+    try:
+        _http_post(base_url, "/api/v1/admin/collection",
+                   {"name": collection_name}, jwt_token, timeout)
+        print(f"Run ID: {run_id} (isolated collection)", file=sys.stderr)
+    except Exception as exc:
+        print(f"WARN: Failed to create collection {collection_name}: {exc}. "
+              f"Falling back to shared collection.", file=sys.stderr)
+        collection_name = ""  # fallback to default collection
+        print(f"Run ID: {run_id} (tenant isolation only)", file=sys.stderr)
 
-    # Phase 2: Build eval rows with URI-based ground truth
-    eval_rows: List[Dict[str, Any]] = []
-    for q in queries:
-        expected_ids = q.get("expected_ids", [])
-        expected_uris = [id_to_uri[mid] for mid in expected_ids if mid in id_to_uri]
+    try:
+        # Phase 1: Seed memories (always — no skip-seed)
+        print(f"Seeding {len(memories)} memories...", file=sys.stderr)
+        id_to_uri = seed_memories(base_url, memories, jwt_token, timeout,
+                                  collection=collection_name)
+        print(f"  Seeded {len(id_to_uri)}/{len(memories)} memories", file=sys.stderr)
+        # Brief pause for indexing
+        time.sleep(1)
 
-        eval_rows.append({
-            "query": q["query"],
-            "expected_uris": expected_uris,
-            "category": q.get("category", "unknown"),
-            "difficulty": q.get("difficulty", "unknown"),
-            "query_id": q["id"],
-        })
+        # Phase 2: Build eval rows with URI-based ground truth
+        eval_rows: List[Dict[str, Any]] = []
+        for q in queries:
+            expected_ids = q.get("expected_ids", [])
+            expected_uris = [id_to_uri[mid] for mid in expected_ids if mid in id_to_uri]
 
-    # Phase 3: Run search + compute metrics
-    print(f"Running {len(eval_rows)} queries (k={ks})...", file=sys.stderr)
+            eval_rows.append({
+                "query": q["query"],
+                "expected_uris": expected_uris,
+                "category": q.get("category", "unknown"),
+                "difficulty": q.get("difficulty", "unknown"),
+                "query_id": q["id"],
+            })
 
-    def _search(item: Dict[str, Any], k: int) -> List[str]:
-        return search_via_http(base_url, item["query"], k, jwt_token, timeout)
+        # Phase 3: Run search + compute metrics
+        print(f"Running {len(eval_rows)} queries (k={ks})...", file=sys.stderr)
 
-    report = evaluate_dataset(dataset=eval_rows, ks=ks, search_fn=_search)
+        def _search(item: Dict[str, Any], k: int) -> List[str]:
+            return search_via_http(base_url, item["query"], k, jwt_token, timeout,
+                                   collection=collection_name)
 
-    # Add metadata
-    report["metadata"] = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "run_id": run_id,
-        "base_url": base_url,
-        "dataset": ds_path,
-        "memories_seeded": len(id_to_uri),
-        "queries_total": len(queries),
-        "ks": ks,
-    }
+        report = evaluate_dataset(dataset=eval_rows, ks=ks, search_fn=_search)
 
-    return report
+        # Add metadata
+        report["metadata"] = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "run_id": run_id,
+            "base_url": base_url,
+            "dataset": ds_path,
+            "memories_seeded": len(id_to_uri),
+            "queries_total": len(queries),
+            "ks": ks,
+            "collection_isolated": bool(collection_name),
+        }
+
+        return report
+
+    finally:
+        # Drop isolated collection to prevent data accumulation
+        if collection_name:
+            try:
+                url = f"{base_url.rstrip('/')}/api/v1/admin/collection/{collection_name}"
+                req = urllib.request.Request(url, headers=_auth_headers(jwt_token), method="DELETE")
+                urllib.request.urlopen(req, timeout=10)
+                print(f"Cleaned up collection {collection_name}", file=sys.stderr)
+            except Exception:
+                pass
 
 
 def main(argv: Optional[List[str]] = None) -> int:
