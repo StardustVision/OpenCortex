@@ -215,7 +215,7 @@ def _register_routes(app: FastAPI) -> None:
         )
 
     @app.post("/api/v1/memory/search")
-    async def memory_search(req: MemorySearchRequest) -> Dict[str, Any]:
+    async def memory_search(req: MemorySearchRequest, request: Request) -> Dict[str, Any]:
         ct = ContextType(req.context_type) if req.context_type else None
         metadata_filter = None
         if req.category:
@@ -253,6 +253,16 @@ def _register_routes(app: FastAPI) -> None:
                 "should_recall": result.search_intent.should_recall,
                 "lexical_boost": result.search_intent.lexical_boost,
             }
+        # v0.6: explain query param support
+        explain_mode = request.query_params.get("explain")
+        if explain_mode and hasattr(result, 'explain_summary') and result.explain_summary:
+            from dataclasses import asdict
+            resp["explain_summary"] = asdict(result.explain_summary)
+        if explain_mode == "detail" and hasattr(result, 'query_results') and result.query_results:
+            from dataclasses import asdict
+            resp["explain_detail"] = [
+                asdict(qr.explain) for qr in result.query_results if qr.explain
+            ]
         return resp
 
     @app.post("/api/v1/memory/feedback")

@@ -1575,6 +1575,20 @@ class MemoryOrchestrator:
             max(retrieval_ms, 0),
         )
 
+        # v0.6: Build SearchExplainSummary
+        if getattr(self._config, 'explain_enabled', True) and query_results:
+            from opencortex.retrieve.types import SearchExplainSummary
+            primary = query_results[0]
+            result.explain_summary = SearchExplainSummary(
+                total_ms=float(total_ms),
+                query_count=len(query_results),
+                primary_query_class=primary.explain.query_class if primary.explain else "",
+                primary_path=primary.explain.path if primary.explain else "",
+                doc_scope_hit=any(qr.explain and qr.explain.doc_scope_hit for qr in query_results),
+                time_filter_hit=any(qr.explain and qr.explain.time_filter_hit for qr in query_results),
+                rerank_triggered=any(qr.explain and qr.explain.rerank_ms > 0 for qr in query_results),
+            )
+
         return result
 
     async def _resolve_and_update_access_stats(self, uris: list) -> None:

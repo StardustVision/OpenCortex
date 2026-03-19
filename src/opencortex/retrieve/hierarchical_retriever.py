@@ -8,6 +8,7 @@ and rerank-based relevance scoring.
 
 import asyncio
 import math
+import time
 
 import heapq
 import logging
@@ -219,6 +220,14 @@ class HierarchicalRetriever:
         # Use custom threshold or default threshold
         effective_threshold = score_threshold if score_threshold is not None else self.threshold
 
+        # v0.6: SearchExplain timing markers (always set to avoid scoping issues)
+        t_start = time.perf_counter()
+        t_embed = t_start
+        t_search = t_start
+        t_rerank = t_start
+        t_assemble = t_start
+        _rerank_ms_flat = 0.0
+
         collection = self._type_to_collection(query.context_type)
 
         target_dirs = [d for d in (query.target_directories or []) if d]
@@ -299,6 +308,7 @@ class HierarchicalRetriever:
                 sparse_query_vector = result.sparse_vector
             # If result is None (timeout/error), query_vector stays None
             # and text_query will trigger lexical fallback in adapter
+        t_embed = time.perf_counter()
 
         # Step 1: Determine starting directories based on target_directories or context_type
         if target_dirs:
@@ -323,14 +333,36 @@ class HierarchicalRetriever:
                 if self._hot_weight:
                     r["_score"] = r.get("_score", 0.0) + self._hot_weight * self._compute_hotness(r)
             results.sort(key=lambda r: r.get("_score", 0.0), reverse=True)
+            t_search = time.perf_counter()
+            t_rerank = t_search
             matched = await self._convert_to_matched_contexts(
                 results[:limit], query.context_type, query.detail_level,
             )
-            return QueryResult(
+            t_assemble = time.perf_counter()
+            qr = QueryResult(
                 query=query,
                 matched_contexts=matched,
                 searched_directories=root_uris,
             )
+            if getattr(getattr(self, '_config', None), 'explain_enabled', True):
+                from opencortex.retrieve.types import SearchExplain
+                qr.explain = SearchExplain(
+                    query_class=getattr(query, 'intent', '') or '',
+                    path="no_embedder",
+                    intent_ms=0.0,
+                    embed_ms=(t_embed - t_start) * 1000,
+                    search_ms=(t_search - t_embed) * 1000,
+                    rerank_ms=0.0,
+                    assemble_ms=(t_assemble - t_rerank) * 1000,
+                    doc_scope_hit=bool(getattr(query, 'target_doc_id', None)),
+                    time_filter_hit=time_filter_active,
+                    candidates_before_rerank=len(results),
+                    candidates_after_rerank=len(matched),
+                    frontier_waves=0,
+                    frontier_budget_exceeded=False,
+                    total_ms=(t_assemble - t_start) * 1000,
+                )
+            return qr
 
         _t1 = asyncio.get_event_loop().time()
         logger.info("[Retrieve:timing] embed=%.1fms q=%s", (_t1 - _t0) * 1000, query.query[:40])
@@ -433,6 +465,8 @@ class HierarchicalRetriever:
             )
             # Rerank top candidates when in flat-search mode.
             # Truncate to rerank_config.max_candidates to control local-reranker latency.
+            _candidates_before_rerank = len(candidates)
+            t_search = time.perf_counter()
             if (
                 not has_real_starting_points
                 and self._rerank_client
@@ -450,14 +484,17 @@ class HierarchicalRetriever:
                 _t_rr1 = asyncio.get_event_loop().time()
                 logger.info("[Retrieve:timing] rerank=%.1fms n_docs=%d",
                             (_t_rr1 - _t_rr0) * 1000, len(docs))
+                _rerank_ms_flat = (_t_rr1 - _t_rr0) * 1000
                 beta = self._fusion_beta
                 for c, rs in zip(rerank_slice, rerank_scores):
                     c["_final_score"] = beta * rs + (1 - beta) * c.get("_final_score", c.get("_score", 0.0))
                 candidates = rerank_slice + remainder
                 candidates.sort(key=lambda x: x.get("_final_score", 0), reverse=True)
+            t_rerank = time.perf_counter()
             candidates = candidates[:limit]
         else:
             # Embedding failed — adapter.search() already uses lexical fallback
+            _candidates_before_rerank = 0
             if self._use_frontier_batching:
                 candidates = await self._frontier_search(
                     query=query.query,
@@ -487,17 +524,43 @@ class HierarchicalRetriever:
                     metadata_filter=final_metadata_filter,
                     text_query=text_query,
                 )
+            _candidates_before_rerank = len(candidates)
+            t_search = time.perf_counter()
+            t_rerank = t_search
 
         # Step 6: Convert results
         matched = await self._convert_to_matched_contexts(
             candidates, query.context_type, query.detail_level,
         )
+        t_assemble = time.perf_counter()
 
-        return QueryResult(
+        qr = QueryResult(
             query=query,
             matched_contexts=matched[:limit],
             searched_directories=root_uris,
         )
+        if getattr(getattr(self, '_config', None), 'explain_enabled', True):
+            from opencortex.retrieve.types import SearchExplain
+            _path = "fast_path"
+            if classification:
+                _path = "llm_intent" if getattr(classification, 'from_llm', False) else "fast_path"
+            qr.explain = SearchExplain(
+                query_class=getattr(query, 'intent', '') or '',
+                path=_path,
+                intent_ms=0.0,
+                embed_ms=(t_embed - t_start) * 1000,
+                search_ms=(t_search - t_embed) * 1000,
+                rerank_ms=(t_rerank - t_search) * 1000,
+                assemble_ms=(t_assemble - t_rerank) * 1000,
+                doc_scope_hit=bool(getattr(query, 'target_doc_id', None)),
+                time_filter_hit=time_filter_active,
+                candidates_before_rerank=_candidates_before_rerank,
+                candidates_after_rerank=len(matched),
+                frontier_waves=0,
+                frontier_budget_exceeded=False,
+                total_ms=(t_assemble - t_start) * 1000,
+            )
+        return qr
 
     async def _global_vector_search(
         self,
