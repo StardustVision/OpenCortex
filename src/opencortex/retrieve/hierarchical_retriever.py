@@ -409,7 +409,7 @@ class HierarchicalRetriever:
                 not has_real_starting_points
                 and self._rerank_client
                 and len(candidates) > limit
-                and self._should_rerank(candidates)
+                and self._should_rerank(candidates, score_key="_final_score")
             ):
                 rerank_cap = (self.rerank_config.max_candidates or len(candidates)) if self.rerank_config else len(candidates)
                 rerank_slice = candidates[:rerank_cap]
@@ -424,9 +424,9 @@ class HierarchicalRetriever:
                             (_t_rr1 - _t_rr0) * 1000, len(docs))
                 beta = self._fusion_beta
                 for c, rs in zip(rerank_slice, rerank_scores):
-                    c["_score"] = beta * rs + (1 - beta) * c.get("_score", 0.0)
+                    c["_final_score"] = beta * rs + (1 - beta) * c.get("_final_score", c.get("_score", 0.0))
                 candidates = rerank_slice + remainder
-                candidates.sort(key=lambda x: x.get("_score", 0.0), reverse=True)
+                candidates.sort(key=lambda x: x.get("_final_score", 0), reverse=True)
             candidates = candidates[:limit]
         else:
             # Embedding failed — adapter.search() already uses lexical fallback

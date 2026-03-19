@@ -1527,6 +1527,9 @@ class MemoryOrchestrator:
         else:
             metadata_filter = {"op": "and", "conds": combined_conds}
 
+        # Dynamic hybrid weight: classifier takes precedence over intent router
+        lexical_boost = classification.lexical_boost if classification else intent.lexical_boost
+
         # Build retrieval coroutines
         retrieval_coros = [
             self._retriever.retrieve(
@@ -1534,7 +1537,7 @@ class MemoryOrchestrator:
                 limit=effective_limit,
                 score_threshold=score_threshold,
                 metadata_filter=metadata_filter,
-                lexical_boost=intent.lexical_boost,
+                lexical_boost=lexical_boost,
             )
             for tq in typed_queries
         ]
