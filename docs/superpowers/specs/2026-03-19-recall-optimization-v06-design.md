@@ -98,7 +98,24 @@ class SearchExplain:
 
 **打点位置**: `hierarchical_retriever.search()` 用 `time.perf_counter()` 在每个阶段前后打点。
 
-**暴露方式**: `FindResult` 新增 `explain: Optional[SearchExplain]` 字段。`orchestrator.search()` 将 explain 序列化为 dict 附到 HTTP 响应。默认不返回，`?explain=true` 参数启用。
+**挂载层级**: 当前 `search()` 可能并发执行多条 `TypedQuery` 再聚合去重，单个 explain 无法表达多 query 的分支。因此：
+
+- **Per-query**: `SearchExplain` 挂在 `QueryResult` 上（`FindResult.query_results[i].explain`），每条 TypedQuery 各自记录分类、路径、timing
+- **Aggregate**: `FindResult` 新增 `explain_summary: Optional[SearchExplainSummary]`，聚合所有 query 的总耗时和关键决策
+
+```python
+@dataclass
+class SearchExplainSummary:
+    total_ms: float               # 总端到端耗时
+    query_count: int              # 并发 TypedQuery 数量
+    primary_query_class: str      # 主 query 的分类
+    primary_path: str             # 主 query 的路径
+    doc_scope_hit: bool           # 任一 query 是否命中文档范围
+    time_filter_hit: bool         # 任一 query 是否启用时间过滤
+    rerank_triggered: bool        # 是否触发了 rerank
+```
+
+**暴露方式**: `orchestrator.search()` 将 explain_summary 序列化为 dict 附到 HTTP 响应。默认不返回，`?explain=true` 参数启用。per-query 明细通过 `?explain=detail` 返回。
 
 ---
 
@@ -111,7 +128,7 @@ class SearchExplain:
 | 字段 | 类型 | 用途 |
 |------|------|------|
 | `source_doc_id` | keyword | 文档范围过滤 |
-| `source_doc_title` | keyword | explain / 调试 |
+| `source_doc_title` | keyword | 文档定位（exact MatchValue 查询） + explain |
 | `source_section_path` | keyword | 层级定位 |
 | `chunk_role` | keyword | leaf / section / document |
 | `speaker` | keyword | 对话事实过滤 |
@@ -131,14 +148,29 @@ class SearchExplain:
 - Run 完成后删除 Collection
 
 **实现方式**:
-当前 runner 通过 HTTP API 操作（`_http_post`），不直接访问 adapter。两种实现路径：
 
-- **方案 A（推荐）: HTTP API 增加 collection 路由** — 在 `server.py` 的 store/search API 中支持 `X-Collection` header 或 query param，orchestrator 将请求路由到指定 collection。Runner 只需在请求中附加 collection 名称。新增 `/api/v1/admin/collection` 端点用于 create/delete。
-- **方案 B: Runner 直接访问 adapter** — Runner 实例化本地 `QdrantStorageAdapter` 创建/删除 collection，但 ingest/search 仍走 HTTP。需要 runner 知道 Qdrant data path。
+当前 runner 通过 HTTP API 操作（`_http_post`），不直接访问 adapter。当前 orchestrator 把 collection 名写死为 `_CONTEXT_COLLECTION = "context"`（`orchestrator.py:70`）。
 
-方案 A 更干净，保持 runner 的 HTTP-only 架构。
+**方案: `X-Collection` header 全链路透传**
 
-**清理保障**: `finally` 块中调用 delete collection 确保清理。
+```
+Runner                          Server                    Orchestrator               Adapter
+  │                               │                          │                        │
+  ├─ X-Collection: bench_qasper_x ─→ RequestContextMiddleware ─→ get_collection_name() ─→ collection_name
+  │                               │   (extract → contextvar)  │  (reads contextvar)   │  (param override)
+```
+
+具体传播路径：
+1. **Runner**: 所有 `_http_post()` 请求附加 `X-Collection: bench_{dataset}_{run_id}` header
+2. **RequestContextMiddleware** (`http/request_context.py`): 从 header 提取，写入 `contextvar`（与 `tid`/`uid` 同一模式）
+3. **Orchestrator**: 新增 `_get_collection()` 方法，优先读 contextvar 中的 collection 名，fallback 到 `_CONTEXT_COLLECTION`。所有 `self._storage.add()` / `self._storage.search()` 调用传入该 collection name
+4. **QdrantStorageAdapter**: `add()` / `search()` / `delete()` 已接受 `collection_name` 参数（检查是否如此，否则需补齐）
+
+**管理端点**: 新增 `POST /api/v1/admin/collection` (create) 和 `DELETE /api/v1/admin/collection/{name}` (delete)。仅供 benchmark runner 使用，需校验 collection 名前缀为 `bench_`。
+
+**注意**: 这构成一个 **public API 签名变更**（新增 admin 端点 + 新增 header），需要更新 5.3 节。
+
+**清理保障**: runner 的 `finally` 块中调用 delete collection 确保清理。
 
 **过渡期指标**:
 - 污染率：Top-K 中非目标文档/数据集的比例
@@ -239,7 +271,26 @@ orchestrator.search()
 - 生成 `source_doc_id`：基于 `source_path` 的确定性 hash（`hashlib.sha256(source_path).hexdigest()[:16]`），无 source_path 时用 UUID
 - 从 MarkdownParser chunk 层级构建 `source_section_path`：遍历 `parent_index` 链拼接 title（如 "Chapter 1 > Section 2.3"）
 - 设置 `chunk_role`：根节点=`document`，有子节点=`section`，叶子=`leaf`
-- 将这些字段写入每个 chunk 的 Qdrant payload（通过 `meta` 字段传递）
+
+**写入方式 — 顶层 payload 扁平化（非 meta 嵌套）**:
+
+当前 `Context.to_dict()` 把 `meta` 作为嵌套 sub-dict 写入 Qdrant payload。但 Qdrant 的 ScalarIndex / filter 只能作用于**顶层字段**，嵌套字段无法被 `MatchValue` 或 `Range` 过滤。
+
+因此这些新字段**必须写为顶层 payload 字段**，与现有的 `scope`、`source_user_id`、`project_id`、`keywords` 采用相同模式：在 `orchestrator.add()` 的 `ctx.to_dict()` 之后、`storage.add()` 之前，从 meta 中提取并注入为顶层字段：
+
+```python
+# orchestrator.add() — 在 record = ctx.to_dict() 之后
+record["source_doc_id"] = meta.get("source_doc_id", "")
+record["source_doc_title"] = meta.get("source_doc_title", "")
+record["source_section_path"] = meta.get("source_section_path", "")
+record["chunk_role"] = meta.get("chunk_role", "")
+record["speaker"] = meta.get("speaker", "")
+record["event_date"] = meta.get("event_date")  # date_time, None ok
+```
+
+`_add_document()` 在调用 `add()` 前，把这些字段写入 chunk 的 meta dict，再由 `add()` 提升到顶层。
+
+**历史数据兼容**: 旧数据的这些顶层字段不存在（值为 None/空），Qdrant filter 遇到缺失字段会自动跳过该 point，不会报错。不需要 backfill — 只有新写入的数据才具备文档范围过滤能力。
 
 #### 4.5.2 两阶段检索
 
@@ -247,9 +298,9 @@ orchestrator.search()
 
 ```
 阶段 1：确定 source_doc_id
-  路径 A: target_uri 存在 → 从 URI 提取 source_doc_id（确定性）
-  路径 B: target_uri 不存在但分类器语义匹配到 document_scoped
-          → 先对 source_doc_title 字段做 keyword/lexical 搜索
+  路径 A: search() 的 target_doc_id 参数已指定 → 直接用（确定性）
+  路径 B: target_doc_id 未指定但分类器语义匹配到 document_scoped
+          → 对 source_doc_title 做精确 MatchValue 查询（keyword 类型）
           → 命中 1 篇 → 用该 doc_id 限定
           → 命中多篇或 0 篇 → 不限定（安全降级到全局搜索）
   路径 C: 无法确定 → 不限定（安全降级到全局搜索）
@@ -259,7 +310,15 @@ orchestrator.search()
   - 在限定范围内跑 dense + sparse + lexical
 ```
 
-**关键点**: QASPER 场景中，benchmark runner 在 ingest 时已知 source_doc_id，可通过 query meta 传入 `target_doc_id` 直接走路径 A。生产环境中，路径 B 的 title 匹配作为推断机制。
+**新增 `target_doc_id` 内部参数**:
+
+当前 URI 格式 (`opencortex://{team}/{uid}/{type}/{category}/{node_id}`) 不包含 source_doc_id，且 `search()` / `TypedQuery` 没有 target_doc_id 入口。需要新增：
+
+1. `TypedQuery` 新增字段: `target_doc_id: Optional[str] = None`
+2. `orchestrator.search()` 新增内部参数: `target_doc_id`（不改 HTTP API 签名，从 request body 的 `meta.target_doc_id` 中提取）
+3. `QueryFastClassifier.classify()` 接收 `target_doc_id` 参数，有值时直接设置 `doc_scope_hint`
+
+**Benchmark 接入**: runner 在 ingest 时记录每篇文档的 `source_doc_id`，查询时通过 search request body 的 `meta.target_doc_id` 传入。这是 QASPER 从 0.15 → 0.65+ 的关键路径。
 
 **不做**: RAPTOR 摘要树、文档级聚类召回。
 
@@ -411,38 +470,72 @@ onnx_intra_op_threads: int = 0  # 0 = auto (min(4, cpu_count // 2))
 
 | 文件 | 变更类型 | 内容 |
 |------|----------|------|
-| `src/opencortex/retrieve/types.py` | 修改 | 新增 SearchExplain dataclass |
+| `src/opencortex/retrieve/types.py` | 修改 | 新增 SearchExplain / SearchExplainSummary, QueryResult.explain, FindResult.explain_summary |
 | `src/opencortex/retrieve/query_classifier.py` | **新增** | QueryFastClassifier + QueryClassification |
-| `src/opencortex/storage/collection_schemas.py` | 修改 | 6 个新 payload 字段 |
-| `src/opencortex/config.py` | 修改 | 新增 classifier/frontier/onnx 配置项 |
-| `src/opencortex/orchestrator.py` | 修改 | 集成 classifier, embed_text 增强, doc scoped search |
-| `src/opencortex/retrieve/hierarchical_retriever.py` | 修改 | 动态权重, 时间过滤, rerank gate, frontier 预算, explain |
+| `src/opencortex/storage/collection_schemas.py` | 修改 | 6 个新顶层 payload 字段 + ScalarIndex |
+| `src/opencortex/config.py` | 修改 | 完整 feature flag 表（16 项配置） |
+| `src/opencortex/orchestrator.py` | 修改 | 集成 classifier, embed_text 增强, doc scoped search, 新字段顶层扁平化写入, target_doc_id, _get_collection() |
+| `src/opencortex/retrieve/hierarchical_retriever.py` | 修改 | 动态权重, 时间过滤, rerank gate, frontier 预算, per-query explain |
 | `src/opencortex/retrieve/intent_router.py` | 修改 | 接收 classifier 结果减少不必要的 LLM 调用 |
 | `src/opencortex/storage/qdrant/filter_translator.py` | 修改 | 支持时间范围 filter |
 | `src/opencortex/parse/parsers/markdown.py` | 修改 | 输出 section_path |
-| `tests/benchmark/runner.py` | 修改 | 独立 Collection 隔离 |
+| `src/opencortex/http/server.py` | 修改 | admin collection 端点, X-Collection header 支持 |
+| `src/opencortex/http/request_context.py` | 修改 | 新增 collection_name contextvar |
+| `tests/benchmark/runner.py` | 修改 | 独立 Collection 隔离 + X-Collection header |
 | `tests/benchmark/ablation.py` | **新增** | 消融实验框架 |
 
 ### 5.2 配置变更 (server.json)
 
+#### Feature Flag 完整表
+
+| Flag | 类型 | 默认值 | 控制的功能 | 对应任务 |
+|------|------|--------|-----------|----------|
+| `query_classifier.enabled` | bool | `true` | QueryFastClassifier 总开关；关闭时所有查询走原有 IntentRouter | #4 |
+| `query_classifier.classes` | dict | 见下方 | 类别描述向量 | #4 |
+| `query_classifier.threshold` | float | `0.3` | centroid 置信度阈值 | #4 |
+| `query_classifier.hybrid_weights` | dict | 见下方 | 各类别的 dense/lexical 权重 | #8 |
+| `doc_scope_search.enabled` | bool | `true` | 文档范围限定检索；关闭时不注入 source_doc_id filter | #5 |
+| `small_to_big.enabled` | bool | `true` | Small-to-Big 返回策略；关闭时只返回命中 chunk | #7 |
+| `small_to_big.sibling_count` | int | `2` | 扩展的相邻 sibling 数量 | #7 |
+| `context_flattening.enabled` | bool | `true` | embed_text 上下文拼接；关闭时用原始 abstract 做 embedding | #6 |
+| `time_filter.enabled` | bool | `true` | 时间范围硬过滤；关闭时不注入时间 filter | #8 |
+| `time_filter.fallback_threshold` | int | `3` | 时间过滤结果少于此值时自动放宽 | #8 |
+| `rerank_gate.score_gap_threshold` | float | `0.15` | top1-top2 分差超过此值跳过 rerank | #10 |
+| `rerank_gate.doc_scope_skip_threshold` | int | `5` | doc-scoped 候选池小于此值跳过 rerank | #10 |
+| `max_compensation_queries` | int | `3` | 单次请求最大补偿查询数 | #11 |
+| `max_total_search_calls` | int | `12` | 单次请求最大搜索调用总数 | #11 |
+| `explain.enabled` | bool | `true` | SearchExplain 数据收集；关闭时不打点不返回 explain | #1 |
+| `onnx_intra_op_threads` | int | `0` | ONNX Runtime 线程数（0=auto） | #13 |
+
+#### 配置结构
+
 ```json
 {
   "query_classifier": {
+    "enabled": true,
     "classes": { ... },
     "threshold": 0.3,
     "hybrid_weights": { ... }
   },
+  "doc_scope_search": { "enabled": true },
+  "small_to_big": { "enabled": true, "sibling_count": 2 },
+  "context_flattening": { "enabled": true },
+  "time_filter": { "enabled": true, "fallback_threshold": 3 },
+  "rerank_gate": { "score_gap_threshold": 0.15, "doc_scope_skip_threshold": 5 },
   "max_compensation_queries": 3,
   "max_total_search_calls": 12,
+  "explain": { "enabled": true },
   "onnx_intra_op_threads": 0
 }
 ```
 
 ### 5.3 API 行为变化
 
-- `search()` 响应新增可选 `explain` 字段（`?explain=true` 启用）
+- `search()` 响应新增可选 `explain_summary` 字段（`?explain=true` 启用），`?explain=detail` 返回 per-query 明细
+- `search()` request body 的 `meta` 中可传入 `target_doc_id`（内部参数，不改 API 签名）
 - 内部检索路径根据 query_class 分流
-- 无 public API 签名变更
+- **新增 API**: `POST /api/v1/admin/collection` (create)、`DELETE /api/v1/admin/collection/{name}` (delete) — 仅限 `bench_` 前缀
+- **新增 Header**: `X-Collection` — 将请求路由到指定 collection（仅 benchmark 使用）
 
 ### 5.4 历史数据兼容
 

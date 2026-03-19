@@ -43,26 +43,150 @@
 
 ---
 
-## 4. 总体架构
+## 4. 改造前后架构对比
+
+### 4.1 改造前（v0.5.1）
 
 ```
 query
-  ┌─── Query Fast Classifier（零 LLM，正则 + 规则）
-  │      ├─ document_scoped   → 文档范围限定 + 两阶段检索
-  │      ├─ fact_lookup        → 提高 lexical 权重，可跳过 rerank
-  │      ├─ temporal_lookup    → 时间硬过滤 + 时间排序加权
-  │      └─ complex/summary    → LLM IntentRouter（仅此路径走 LLM）
   │
-  ├─── Candidate Generation
-  │      dense + sparse(BM25) + lexical，权重由 query_class 驱动
+  ├─── IntentRouter.route()
+  │      ├─ session_context == None → 关键词检测（硬编码规则）→ 单条 TypedQuery
+  │      └─ session_context != None → LLM IntentAnalyzer（2-5s）→ 多条 TypedQuery
   │
-  ├─── Rerank Gate
-  │      top1-top2 分差 > 阈值 → 跳过 rerank
-  │      exact lexical 命中 → 跳过 rerank
-  │      doc-scoped 小候选池 → 缩小 rerank 数
+  ├─── HierarchicalRetriever.search()（统一路径，不区分查询类型）
+  │      ├─ 全局 dense + sparse(BM25) + lexical（固定权重：lexical 0.3 / 硬关键词 0.55）
+  │      ├─ Frontier Batching（wave loop, max 8 waves）
+  │      │    └─ 补偿查询 / still-starved 查询（无总数上限）
+  │      └─ Flat Search Fallback（非层级数据自动降级）
+  │
+  ├─── Rerank（条件触发）
+  │      └─ _should_rerank(): top1-top2 分差 > 0.15 → 跳过
+  │         否则 → local CrossEncoder / API / LLM fallback
   │
   └─── Context Assembly
-         命中小 chunk → 返回 parent section overview + 相邻 sibling
+         ├─ 返回命中 chunk 的 abstract + overview（从 Qdrant payload 读取）
+         └─ batch prefetch relations（v0.5.1 已优化）
+```
+
+**v0.5.1 问题总结**：
+
+| 环节 | 问题 | 后果 |
+|------|------|------|
+| 路由 | 无查询分类，简单查询也可能走 LLM intent | p50 全线 5-12s |
+| 检索范围 | 无文档范围限定，全局 chunk 搜索 | QASPER J-Score=0.15 |
+| Embedding | chunk 脱离上下文，abstract 直接做 embedding | LoCoMo cosine std=0.014 |
+| 过滤 | time_scope 已识别但未转化为硬过滤 | 时序查询准确率低 |
+| 权重 | dense/lexical 权重固定，不随查询类型变化 | 事实查询 lexical 不够强 |
+| 返回 | 只返回命中 chunk，无父级上下文 | 文档问答上下文撕裂 |
+| Benchmark | 同一 Collection 跨 run 数据残留 | 指标不可信 |
+
+---
+
+### 4.2 改造后（v0.6 目标架构）
+
+```
+query
+  │
+  ├─── Layer 0: 结构信号（确定性判断，0ms）
+  │      target_doc_id 存在 → document_scoped（直接跳过分类）
+  │
+  ├─── Layer 1: QueryFastClassifier（Embedding Nearest Centroid，~5ms）
+  │      类别描述向量预计算 → cosine similarity → 最近类别
+  │      输出: query_class + need_llm_intent + lexical_boost + time_filter_hint + doc_scope_hint
+  │      ├─ document_scoped   → 两阶段文档范围检索
+  │      ├─ fact_lookup        → lexical 权重 0.7，可跳过 rerank
+  │      ├─ temporal_lookup    → 时间硬过滤 + 时间排序加权
+  │      ├─ simple_recall      → 直接检索（跳过 LLM intent）
+  │      └─ complex            → 仅此类走 LLM IntentRouter
+  │
+  ├─── IntentRouter（仅 complex 类触发，~50-70% 查询被 fast path 跳过）
+  │      └─ LLM IntentAnalyzer → 多条 TypedQuery
+  │
+  ├─── HierarchicalRetriever.search()（策略由 query_class 驱动）
+  │      ├─ 文档范围限定: source_doc_id filter（document_scoped 类）
+  │      ├─ 时间范围限定: created_at / event_date range filter（temporal 类）
+  │      ├─ 动态权重: dense/lexical 比例由 hybrid_weights[query_class] 查表
+  │      ├─ Frontier Batching（max_total_search_calls=12 硬预算）
+  │      └─ Flat Search Fallback（超预算自动降级）
+  │
+  ├─── Rerank Gate（增强版）
+  │      ├─ top1-top2 分差 > 0.15 → 跳过（现有）
+  │      ├─ fact_lookup + lexical 精确命中 → 跳过
+  │      └─ doc-scoped + 候选池 < 5 → 跳过
+  │
+  ├─── Context Assembly（Small-to-Big）
+  │      ├─ 命中叶子 chunk abstract
+  │      ├─ + 父 section overview（通过 parent_uri 读取，零 FS I/O）
+  │      └─ + ±2 个 sibling chunk 摘要
+  │
+  └─── SearchExplain（5 段延迟追踪，per-query + aggregate）
+         intent_ms | embed_ms | search_ms | rerank_ms | assemble_ms | total_ms
+```
+
+---
+
+### 4.3 关键差异汇总
+
+| 维度 | v0.5.1 | v0.6 | 预期改善 |
+|------|--------|------|----------|
+| **查询分类** | 无分类，关键词检测 + LLM 二选一 | Embedding Centroid 5 类分流，配置驱动 | 50-70% 查询跳过 LLM |
+| **文档范围** | 全局 chunk 搜索 | source_doc_id 硬过滤 + 两阶段检索 | QASPER 0.15 → 0.65+ |
+| **Embedding 输入** | 原始 abstract | `[title] [section] abstract` 上下文拼接 | embedding 区分度提升 |
+| **时间过滤** | 仅语义层识别 | created_at / event_date range filter | 时序查询命中率提升 |
+| **检索权重** | 固定 lexical 0.3/0.55 | query_class 驱动，0.3-0.7 动态 | 事实查询准确率提升 |
+| **返回粒度** | 仅命中 chunk | chunk + parent overview + siblings | 文档上下文完整性 |
+| **Rerank** | 仅分差判断 | 分差 + 查询类型 + 候选池大小 | 减少无效 rerank |
+| **Frontier** | max 8 waves，无总调用上限 | max_total_search_calls=12 硬预算 | tail latency 稳定 |
+| **Benchmark** | 同 Collection 数据残留 | 独立 Collection，跑完即删 | 指标可信 |
+| **Payload 写入** | meta 嵌套 sub-dict | 新字段顶层扁平化写入 | 支持 Qdrant 原生过滤 |
+| **可观测性** | 无延迟拆分 | 5 段 SearchExplain，per-query + aggregate | 定位瓶颈，驱动优化 |
+| **配置** | 少量硬编码参数 | 16 项 feature flag，全部可通过 server.json 控制 | 逐项回滚 |
+
+---
+
+### 4.4 数据流对比
+
+#### 写入路径
+
+```
+v0.5.1:
+  _add_document() → MarkdownParser.parse() → chunks
+    → add(abstract, meta={chunk_index}) → Context.to_dict() → Qdrant payload
+    meta 嵌套写入，无 source_doc_id / section_path / chunk_role
+
+v0.6:
+  _add_document() → MarkdownParser.parse() → chunks
+    → 生成 source_doc_id (hash)，构建 section_path，设置 chunk_role
+    → add(abstract, embed_text="[title] [section] abstract", meta={...})
+    → Context.to_dict()
+    → 顶层扁平化: record["source_doc_id"] = meta["source_doc_id"]
+    → Qdrant payload（新字段为顶层 + ScalarIndex）
+```
+
+#### 检索路径
+
+```
+v0.5.1:
+  search(query) → IntentRouter.route()
+    → [有 session] LLM intent (2-5s) → TypedQuery[]
+    → [无 session] 关键词检测 → TypedQuery
+    → HierarchicalRetriever.search(queries)
+    → 全局 dense+sparse+lexical（固定权重）
+    → rerank（分差判断）→ assembly → FindResult
+
+v0.6:
+  search(query, meta={target_doc_id?})
+    → QueryFastClassifier.classify() (~5ms, embedding centroid)
+    → [complex 类] IntentRouter.route() (LLM)
+    → [其他类] 直接构造 TypedQuery (fast path, 0ms)
+    → HierarchicalRetriever.search(queries, classification)
+    → [doc_scoped] source_doc_id filter → 文档内检索
+    → [temporal] time range filter → 限时检索
+    → 动态权重 dense+sparse+lexical
+    → rerank gate（分差 + 类型 + 候选数）
+    → assembly (Small-to-Big: chunk + parent + siblings)
+    → FindResult + SearchExplain
 ```
 
 ---
