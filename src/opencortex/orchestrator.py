@@ -116,6 +116,9 @@ class MemoryOrchestrator:
         self._context_manager = None
         self._parser_registry = None
 
+        # v0.6: Query classifier (lazy — initialized after embedder is ready)
+        self._query_classifier = None
+
     # =========================================================================
     # Collection Routing
     # =========================================================================
@@ -124,6 +127,15 @@ class MemoryOrchestrator:
         """Return active collection name (contextvar override or default)."""
         from opencortex.http.request_context import get_collection_name
         return get_collection_name() or _CONTEXT_COLLECTION
+
+    def _ensure_query_classifier(self):
+        """Lazily initialize QueryFastClassifier after embedder is ready."""
+        if self._query_classifier is None and self._config.query_classifier_enabled:
+            try:
+                from opencortex.retrieve.query_classifier import QueryFastClassifier
+                self._query_classifier = QueryFastClassifier(self._embedder, self._config)
+            except Exception as e:
+                logger.warning("[Orchestrator] Failed to init QueryFastClassifier: %s", e)
 
     # =========================================================================
     # Initialization
@@ -1294,6 +1306,8 @@ class MemoryOrchestrator:
         metadata_filter: Optional[Dict[str, Any]] = None,
         detail_level: str = "l1",
         search_intent: Optional[SearchIntent] = None,
+        meta: Optional[Dict[str, Any]] = None,
+        session_context: Optional[Dict[str, Any]] = None,
     ) -> FindResult:
         """
         Search for relevant contexts.
@@ -1309,6 +1323,8 @@ class MemoryOrchestrator:
             score_threshold: Minimum relevance score.
             metadata_filter: Additional filter conditions.
             detail_level: Fallback detail level if router doesn't override.
+            meta: Optional metadata dict (may contain target_doc_id for classifier).
+            session_context: Optional session context for classifier hints.
 
         Returns:
             FindResult with memories, resources, and skills.
@@ -1316,6 +1332,19 @@ class MemoryOrchestrator:
         self._ensure_init()
         search_started = asyncio.get_running_loop().time()
         tid, uid = get_effective_identity()
+
+        # v0.6: Query classification (fast path)
+        classification = None
+        target_doc_id = None
+        if isinstance(meta, dict):
+            target_doc_id = meta.get("target_doc_id")
+
+        if self._config.query_classifier_enabled:
+            self._ensure_query_classifier()
+            if self._query_classifier:
+                classification = self._query_classifier.classify(
+                    query, target_doc_id=target_doc_id, session_context=session_context
+                )
 
         # Allow callers that already performed routing to reuse the intent
         # and avoid paying the LLM/classification cost twice.
