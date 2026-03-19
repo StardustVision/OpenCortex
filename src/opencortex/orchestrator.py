@@ -628,12 +628,22 @@ class MemoryOrchestrator:
         uri = CortexURI.build_private(tid, uid, "memories", "events", nid)
 
         # Embed without LLM
+        embed_input = text
+        if self._config.context_flattening_enabled:
+            speaker = ""
+            for prefix in ("user:", "assistant:", "system:"):
+                if text.lower().startswith(prefix):
+                    speaker = prefix.rstrip(":")
+                    break
+            if speaker:
+                embed_input = f"[{speaker}] {text}"
+
         vector = None
         sparse_vector = None
         if self._embedder:
             loop = asyncio.get_running_loop()
             result = await asyncio.wait_for(
-                loop.run_in_executor(None, self._embedder.embed, text), timeout=2.0
+                loop.run_in_executor(None, self._embedder.embed, embed_input), timeout=2.0
             )
             vector = result.dense_vector
             sparse_vector = result.sparse_vector
@@ -702,6 +712,16 @@ class MemoryOrchestrator:
         # Single chunk or no chunks → fall through to memory mode
         if len(chunks) <= 1:
             single_content = chunks[0].content if chunks else content
+            embed_text = ""
+            if self._config.context_flattening_enabled:
+                parts = []
+                if source_doc_title:
+                    parts.append(f"[{source_doc_title}]")
+                sp = chunks[0].meta.get("section_path", "") if chunks else ""
+                if sp:
+                    parts.append(f"[{sp}]")
+                parts.append(abstract)
+                embed_text = " ".join(parts)
             return await self.add(
                 abstract=abstract,
                 content=single_content,
@@ -717,6 +737,7 @@ class MemoryOrchestrator:
                     "chunk_role": "document",
                 },
                 session_id=session_id,
+                embed_text=embed_text,
             )
 
         # Multi-chunk: create parent + children
@@ -763,8 +784,19 @@ class MemoryOrchestrator:
             )
             chunk_role = "section" if is_dir_chunk else "leaf"
 
+            chunk_abstract = ""
+            embed_text = ""
+            if self._config.context_flattening_enabled:
+                parts = []
+                if source_doc_title:
+                    parts.append(f"[{source_doc_title}]")
+                sp = chunk.meta.get("source_section_path", "") or chunk.meta.get("section_path", "")
+                if sp:
+                    parts.append(f"[{sp}]")
+                parts.append(chunk_abstract)
+                embed_text = " ".join(parts)
             ctx = await self.add(
-                abstract="",
+                abstract=chunk_abstract,
                 content=chunk.content,
                 category=category,
                 parent_uri=chunk_parent,
@@ -779,6 +811,7 @@ class MemoryOrchestrator:
                     "chunk_role": chunk_role,
                 },
                 session_id=session_id,
+                embed_text=embed_text,
             )
             chunk_results.append(ctx)
 
@@ -2249,6 +2282,12 @@ class MemoryOrchestrator:
                     parent_dir = str(PurePosixPath(file_path).parent)
                     parent_uri = dir_uris.get(parent_dir)
 
+                embed_text = ""
+                if self._config.context_flattening_enabled:
+                    fp = item_meta.get("file_path", "")
+                    if fp:
+                        embed_text = f"[{fp}] {abstract}"
+
                 try:
                     result = await self.add(
                         abstract=abstract,
@@ -2259,6 +2298,7 @@ class MemoryOrchestrator:
                         context_type=item.get("context_type", "resource"),
                         meta=item_meta,
                         dedup=False,
+                        embed_text=embed_text,
                     )
                     return {"uri": result.uri, "index": i}
                 except Exception as exc:
