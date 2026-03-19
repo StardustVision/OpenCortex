@@ -24,6 +24,7 @@ from opencortex.config import get_config
 from opencortex.http.request_context import (
     reset_request_identity,
     reset_request_project_id,
+    set_collection_name,
     set_request_identity,
     set_request_project_id,
 )
@@ -114,6 +115,10 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
 
         project_id = request.headers.get("x-project-id", "public")
         project_token = set_request_project_id(project_id)
+
+        collection = request.headers.get("x-collection")
+        if collection:
+            set_collection_name(collection)
 
         try:
             return await call_next(request)
@@ -495,6 +500,27 @@ def _register_routes(app: FastAPI) -> None:
             "rerank_mode": retriever._rerank_client.mode if retriever._rerank_client else "disabled",
             "results": rows,
         }
+
+    @app.post("/api/v1/admin/collection")
+    async def create_bench_collection(request: Request):
+        """Create a benchmark-isolated collection (name must start with bench_)."""
+        body = await request.json()
+        name = body.get("name", "")
+        if not name.startswith("bench_"):
+            return JSONResponse({"error": "Collection name must start with bench_"}, status_code=400)
+        dim = _orchestrator._config.embedding_dimension
+        from opencortex.storage.collection_schemas import CollectionSchemas
+        schema = CollectionSchemas.context_collection(name, dim)
+        await _orchestrator._storage.create_collection(name, schema)
+        return {"status": "created", "collection": name}
+
+    @app.delete("/api/v1/admin/collection/{name}")
+    async def delete_bench_collection(name: str, request: Request):
+        """Delete a benchmark-isolated collection (name must start with bench_)."""
+        if not name.startswith("bench_"):
+            return JSONResponse({"error": "Can only delete bench_ collections"}, status_code=400)
+        await _orchestrator._storage.drop_collection(name)
+        return {"status": "deleted", "collection": name}
 
     # =====================================================================
     # Migration
