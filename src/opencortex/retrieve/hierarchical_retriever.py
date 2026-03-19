@@ -873,6 +873,11 @@ class HierarchicalRetriever:
         convergence_rounds = 0
         prev_topk_uris: set = set()
 
+        # v0.6: Frontier hard budget — cap total storage.search() calls
+        total_search_calls = 0
+        max_calls = getattr(getattr(self, '_config', None), 'max_total_search_calls', 12)
+        frontier_budget_exceeded = False
+
         frontier: List[Tuple[str, float]] = list(starting_points)
 
         for wave_idx in range(self._max_waves):
@@ -916,6 +921,14 @@ class HierarchicalRetriever:
                 limit=per_wave_limit,
                 text_query=text_query,
             )
+            total_search_calls += 1
+            if total_search_calls >= max_calls:
+                logger.warning(
+                    "[Retriever] Frontier budget exceeded (%d calls)", total_search_calls
+                )
+                frontier_budget_exceeded = True
+                # Process current wave results then stop
+                # (break at end of wave logic below)
 
             # 3. Group by parent + score propagation
             children_by_parent: Dict[str, List[Dict[str, Any]]] = {}
@@ -946,7 +959,7 @@ class HierarchicalRetriever:
                 if len(children_by_parent.get(uri, [])) < self.MIN_CHILDREN_PER_DIR
                 and uri not in visited_dirs
             ]
-            if starved:
+            if starved and not frontier_budget_exceeded:
                 if metadata_filter:
                     comp_dir_friendly = {"op": "or", "conds": [
                         {"op": "must", "field": "is_leaf", "conds": [False]},
@@ -966,6 +979,12 @@ class HierarchicalRetriever:
                     limit=len(starved) * self.MIN_CHILDREN_PER_DIR,
                     text_query=text_query,
                 )
+                total_search_calls += 1
+                if total_search_calls >= max_calls:
+                    logger.warning(
+                        "[Retriever] Frontier budget exceeded (%d calls)", total_search_calls
+                    )
+                    frontier_budget_exceeded = True
                 for r in comp_results:
                     p_uri = r.get("parent_uri", "")
                     if p_uri not in children_by_parent:
@@ -989,7 +1008,7 @@ class HierarchicalRetriever:
                     uri for uri in starved
                     if len(children_by_parent.get(uri, [])) < self.MIN_CHILDREN_PER_DIR
                 ]
-                if still_starved:
+                if still_starved and not frontier_budget_exceeded:
                     if metadata_filter:
                         still_dir_friendly = {"op": "or", "conds": [
                             {"op": "must", "field": "is_leaf", "conds": [False]},
@@ -1011,6 +1030,12 @@ class HierarchicalRetriever:
                         limit=len(still_starved) * self.MIN_CHILDREN_PER_DIR,
                         text_query=text_query,
                     )
+                    total_search_calls += 1
+                    if total_search_calls >= max_calls:
+                        logger.warning(
+                            "[Retriever] Frontier budget exceeded (%d calls)", total_search_calls
+                        )
+                        frontier_budget_exceeded = True
                     for r in still_results:
                         s_uri = r.get("parent_uri", "")
                         if s_uri not in still_starved:
@@ -1058,6 +1083,10 @@ class HierarchicalRetriever:
                         next_frontier[uri] = final_score
 
             visited_dirs.update(uri for uri, _ in frontier)
+
+            # Budget guard: stop after budget-exceeded wave completes
+            if frontier_budget_exceeded:
+                break
 
             # 7. Convergence check
             top_k_items = heapq.nlargest(
