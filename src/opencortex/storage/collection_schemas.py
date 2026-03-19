@@ -66,6 +66,13 @@ class CollectionSchemas:
                 {"FieldName": "ttl_expires_at", "FieldType": "string"},
                 {"FieldName": "project_id", "FieldType": "string"},
                 {"FieldName": "source_tenant_id", "FieldType": "string"},
+                # v0.6: Document/Conversation enrichment
+                {"FieldName": "source_doc_id", "FieldType": "string"},
+                {"FieldName": "source_doc_title", "FieldType": "string"},
+                {"FieldName": "source_section_path", "FieldType": "string"},
+                {"FieldName": "chunk_role", "FieldType": "string"},
+                {"FieldName": "speaker", "FieldType": "string"},
+                {"FieldName": "event_date", "FieldType": "date_time"},
             ],
             "ScalarIndex": [
                 "uri",
@@ -89,6 +96,13 @@ class CollectionSchemas:
                 "ttl_expires_at",
                 "project_id",
                 "source_tenant_id",
+                # v0.6
+                "source_doc_id",
+                "source_doc_title",
+                "source_section_path",
+                "chunk_role",
+                "speaker",
+                "event_date",
             ],
         }
 

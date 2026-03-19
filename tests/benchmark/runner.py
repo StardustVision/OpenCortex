@@ -37,12 +37,15 @@ DATASET_PATH = Path(__file__).resolve().parent / "dataset.json"
 DEFAULT_KS = [1, 3, 5]
 
 
-def _auth_headers(jwt_token: str) -> Dict[str, str]:
+def _auth_headers(jwt_token: str, collection: str = "") -> Dict[str, str]:
     """Build request headers with JWT Bearer auth."""
-    return {
+    headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {jwt_token}",
     }
+    if collection:
+        headers["X-Collection"] = collection
+    return headers
 
 
 def _http_post(base_url: str, path: str, payload: Dict, jwt_token: str, timeout: int = 30) -> Dict:

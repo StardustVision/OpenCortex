@@ -8,6 +8,7 @@ and rerank-based relevance scoring.
 
 import asyncio
 import math
+import time
 
 import heapq
 import logging
@@ -202,6 +203,7 @@ class HierarchicalRetriever:
         score_gte: bool = False,
         metadata_filter: Optional[Dict[str, Any]] = None,
         lexical_boost: float = 0.3,
+        classification: Optional[Any] = None,
     ) -> QueryResult:
         """
         Execute hierarchical retrieval.
@@ -218,9 +220,51 @@ class HierarchicalRetriever:
         # Use custom threshold or default threshold
         effective_threshold = score_threshold if score_threshold is not None else self.threshold
 
+        # v0.6: SearchExplain timing markers (always set to avoid scoping issues)
+        t_start = time.perf_counter()
+        t_embed = t_start
+        t_search = t_start
+        t_rerank = t_start
+        t_assemble = t_start
+        _rerank_ms_flat = 0.0
+
         collection = self._type_to_collection(query.context_type)
 
         target_dirs = [d for d in (query.target_directories or []) if d]
+
+        # v0.6: Document scope filter — narrow search to a specific source document
+        if query.target_doc_id and getattr(getattr(self, '_config', None), 'doc_scope_search_enabled', True):
+            doc_filter = {"op": "match", "field": "source_doc_id", "value": query.target_doc_id}
+            if metadata_filter:
+                metadata_filter = {"op": "and", "conds": [metadata_filter, doc_filter]}
+            else:
+                metadata_filter = doc_filter
+
+        # v0.6: Time filter — narrow search to recent/today/session time window
+        time_filter_active = False
+        if (classification and getattr(classification, 'time_filter_hint', None)
+                and getattr(getattr(self, '_config', None), 'time_filter_enabled', True)):
+            from datetime import datetime, timedelta
+            hint = classification.time_filter_hint
+            time_filter = None
+
+            if hint == "recent":
+                cutoff = (datetime.utcnow() - timedelta(days=7)).isoformat() + "Z"
+                time_filter = {"op": "range", "field": "created_at", "gte": cutoff}
+            elif hint == "today":
+                cutoff = datetime.utcnow().replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                ).isoformat() + "Z"
+                time_filter = {"op": "range", "field": "created_at", "gte": cutoff}
+            elif hint == "session" and getattr(query, 'session_id', None):
+                time_filter = {"op": "match", "field": "session_id", "value": query.session_id}
+
+            if time_filter:
+                time_filter_active = True
+                if metadata_filter:
+                    metadata_filter = {"op": "and", "conds": [metadata_filter, time_filter]}
+                else:
+                    metadata_filter = time_filter
 
         # Merge all filters
         filters_to_merge = []
@@ -264,6 +308,7 @@ class HierarchicalRetriever:
                 sparse_query_vector = result.sparse_vector
             # If result is None (timeout/error), query_vector stays None
             # and text_query will trigger lexical fallback in adapter
+        t_embed = time.perf_counter()
 
         # Step 1: Determine starting directories based on target_directories or context_type
         if target_dirs:
@@ -288,14 +333,36 @@ class HierarchicalRetriever:
                 if self._hot_weight:
                     r["_score"] = r.get("_score", 0.0) + self._hot_weight * self._compute_hotness(r)
             results.sort(key=lambda r: r.get("_score", 0.0), reverse=True)
+            t_search = time.perf_counter()
+            t_rerank = t_search
             matched = await self._convert_to_matched_contexts(
                 results[:limit], query.context_type, query.detail_level,
             )
-            return QueryResult(
+            t_assemble = time.perf_counter()
+            qr = QueryResult(
                 query=query,
                 matched_contexts=matched,
                 searched_directories=root_uris,
             )
+            if getattr(getattr(self, '_config', None), 'explain_enabled', True):
+                from opencortex.retrieve.types import SearchExplain
+                qr.explain = SearchExplain(
+                    query_class=getattr(query, 'intent', '') or '',
+                    path="no_embedder",
+                    intent_ms=0.0,
+                    embed_ms=(t_embed - t_start) * 1000,
+                    search_ms=(t_search - t_embed) * 1000,
+                    rerank_ms=0.0,
+                    assemble_ms=(t_assemble - t_rerank) * 1000,
+                    doc_scope_hit=bool(getattr(query, 'target_doc_id', None)),
+                    time_filter_hit=time_filter_active,
+                    candidates_before_rerank=len(results),
+                    candidates_after_rerank=len(matched),
+                    frontier_waves=0,
+                    frontier_budget_exceeded=False,
+                    total_ms=(t_assemble - t_start) * 1000,
+                )
+            return qr
 
         _t1 = asyncio.get_event_loop().time()
         logger.info("[Retrieve:timing] embed=%.1fms q=%s", (_t1 - _t0) * 1000, query.query[:40])
@@ -352,6 +419,7 @@ class HierarchicalRetriever:
                         score_gte=score_gte,
                         metadata_filter=final_metadata_filter,
                         text_query=text_query,
+                        classification=classification,
                     )
                 else:
                     dense_coro = self._recursive_search(
@@ -397,11 +465,13 @@ class HierarchicalRetriever:
             )
             # Rerank top candidates when in flat-search mode.
             # Truncate to rerank_config.max_candidates to control local-reranker latency.
+            _candidates_before_rerank = len(candidates)
+            t_search = time.perf_counter()
             if (
                 not has_real_starting_points
                 and self._rerank_client
                 and len(candidates) > limit
-                and self._should_rerank(candidates)
+                and self._should_rerank(candidates, score_key="_final_score", classification=classification)
             ):
                 rerank_cap = (self.rerank_config.max_candidates or len(candidates)) if self.rerank_config else len(candidates)
                 rerank_slice = candidates[:rerank_cap]
@@ -414,14 +484,17 @@ class HierarchicalRetriever:
                 _t_rr1 = asyncio.get_event_loop().time()
                 logger.info("[Retrieve:timing] rerank=%.1fms n_docs=%d",
                             (_t_rr1 - _t_rr0) * 1000, len(docs))
+                _rerank_ms_flat = (_t_rr1 - _t_rr0) * 1000
                 beta = self._fusion_beta
                 for c, rs in zip(rerank_slice, rerank_scores):
-                    c["_score"] = beta * rs + (1 - beta) * c.get("_score", 0.0)
+                    c["_final_score"] = beta * rs + (1 - beta) * c.get("_final_score", c.get("_score", 0.0))
                 candidates = rerank_slice + remainder
-                candidates.sort(key=lambda x: x.get("_score", 0.0), reverse=True)
+                candidates.sort(key=lambda x: x.get("_final_score", 0), reverse=True)
+            t_rerank = time.perf_counter()
             candidates = candidates[:limit]
         else:
             # Embedding failed — adapter.search() already uses lexical fallback
+            _candidates_before_rerank = 0
             if self._use_frontier_batching:
                 candidates = await self._frontier_search(
                     query=query.query,
@@ -435,6 +508,7 @@ class HierarchicalRetriever:
                     score_gte=score_gte,
                     metadata_filter=final_metadata_filter,
                     text_query=text_query,
+                    classification=classification,
                 )
             else:
                 candidates = await self._recursive_search(
@@ -450,17 +524,43 @@ class HierarchicalRetriever:
                     metadata_filter=final_metadata_filter,
                     text_query=text_query,
                 )
+            _candidates_before_rerank = len(candidates)
+            t_search = time.perf_counter()
+            t_rerank = t_search
 
         # Step 6: Convert results
         matched = await self._convert_to_matched_contexts(
             candidates, query.context_type, query.detail_level,
         )
+        t_assemble = time.perf_counter()
 
-        return QueryResult(
+        qr = QueryResult(
             query=query,
             matched_contexts=matched[:limit],
             searched_directories=root_uris,
         )
+        if getattr(getattr(self, '_config', None), 'explain_enabled', True):
+            from opencortex.retrieve.types import SearchExplain
+            _path = "fast_path"
+            if classification:
+                _path = "llm_intent" if getattr(classification, 'from_llm', False) else "fast_path"
+            qr.explain = SearchExplain(
+                query_class=getattr(query, 'intent', '') or '',
+                path=_path,
+                intent_ms=0.0,
+                embed_ms=(t_embed - t_start) * 1000,
+                search_ms=(t_search - t_embed) * 1000,
+                rerank_ms=(t_rerank - t_search) * 1000,
+                assemble_ms=(t_assemble - t_rerank) * 1000,
+                doc_scope_hit=bool(getattr(query, 'target_doc_id', None)),
+                time_filter_hit=time_filter_active,
+                candidates_before_rerank=_candidates_before_rerank,
+                candidates_after_rerank=len(matched),
+                frontier_waves=0,
+                frontier_budget_exceeded=False,
+                total_ms=(t_assemble - t_start) * 1000,
+            )
+        return qr
 
     async def _global_vector_search(
         self,
@@ -498,7 +598,12 @@ class HierarchicalRetriever:
         )
         return results
 
-    def _should_rerank(self, results: List[Dict[str, Any]], score_key: str = "_score") -> bool:
+    def _should_rerank(
+        self,
+        results: List[Dict[str, Any]],
+        score_key: str = "_score",
+        classification: Optional[Any] = None,
+    ) -> bool:
         """Decide whether rerank is worth the cost.
 
         Skip rerank when the top result has a clear score lead over the
@@ -507,6 +612,7 @@ class HierarchicalRetriever:
         Args:
             results: List of result dicts.
             score_key: Which score field to use ('_score' or '_final_score').
+            classification: Optional QueryClassification for class-based gates.
         """
         if len(results) < 2:
             return False
@@ -514,12 +620,35 @@ class HierarchicalRetriever:
             [r.get(score_key, 0.0) for r in results], reverse=True
         )
         gap = scores[0] - scores[1]
-        if gap > self._score_gap_threshold:
+        threshold = getattr(
+            getattr(self, '_config', None),
+            'rerank_gate_score_gap_threshold',
+            self._score_gap_threshold,
+        )
+        if gap > threshold:
             logger.debug(
                 "[Rerank] Skipped — score gap %.3f > threshold %.3f",
-                gap, self._score_gap_threshold,
+                gap, threshold,
             )
             return False
+        # v0.6: classification-based gates
+        if classification:
+            if (classification.query_class == "fact_lookup"
+                    and classification.lexical_boost >= 0.6):
+                logger.debug("[Rerank] Skipped — fact_lookup with high lexical_boost")
+                return False
+            skip_threshold = getattr(
+                getattr(self, '_config', None),
+                'rerank_gate_doc_scope_skip_threshold',
+                5,
+            )
+            if (classification.query_class == "document_scoped"
+                    and len(results) < skip_threshold):
+                logger.debug(
+                    "[Rerank] Skipped — document_scoped pool size %d < %d",
+                    len(results), skip_threshold,
+                )
+                return False
         return True
 
     async def _merge_starting_points(
@@ -742,6 +871,7 @@ class HierarchicalRetriever:
         score_gte: bool = False,
         metadata_filter: Optional[Dict[str, Any]] = None,
         text_query: str = "",
+        classification: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
         """Frontier search with auto-fallback to recursive on error."""
         try:
@@ -752,6 +882,7 @@ class HierarchicalRetriever:
                 threshold=threshold, score_gte=score_gte,
                 metadata_filter=metadata_filter,
                 text_query=text_query,
+                classification=classification,
             )
         except Exception as e:
             logger.error("[FrontierSearch] Fallback to recursive: %s", e)
@@ -777,6 +908,7 @@ class HierarchicalRetriever:
         score_gte: bool = False,
         metadata_filter: Optional[Dict[str, Any]] = None,
         text_query: str = "",
+        classification: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
         """Wave-based frontier batching search.
 
@@ -803,6 +935,11 @@ class HierarchicalRetriever:
         visited_dirs: set = set()
         convergence_rounds = 0
         prev_topk_uris: set = set()
+
+        # v0.6: Frontier hard budget — cap total storage.search() calls
+        total_search_calls = 0
+        max_calls = getattr(getattr(self, '_config', None), 'max_total_search_calls', 12)
+        frontier_budget_exceeded = False
 
         frontier: List[Tuple[str, float]] = list(starting_points)
 
@@ -847,6 +984,14 @@ class HierarchicalRetriever:
                 limit=per_wave_limit,
                 text_query=text_query,
             )
+            total_search_calls += 1
+            if total_search_calls >= max_calls:
+                logger.warning(
+                    "[Retriever] Frontier budget exceeded (%d calls)", total_search_calls
+                )
+                frontier_budget_exceeded = True
+                # Process current wave results then stop
+                # (break at end of wave logic below)
 
             # 3. Group by parent + score propagation
             children_by_parent: Dict[str, List[Dict[str, Any]]] = {}
@@ -877,7 +1022,7 @@ class HierarchicalRetriever:
                 if len(children_by_parent.get(uri, [])) < self.MIN_CHILDREN_PER_DIR
                 and uri not in visited_dirs
             ]
-            if starved:
+            if starved and not frontier_budget_exceeded:
                 if metadata_filter:
                     comp_dir_friendly = {"op": "or", "conds": [
                         {"op": "must", "field": "is_leaf", "conds": [False]},
@@ -897,6 +1042,12 @@ class HierarchicalRetriever:
                     limit=len(starved) * self.MIN_CHILDREN_PER_DIR,
                     text_query=text_query,
                 )
+                total_search_calls += 1
+                if total_search_calls >= max_calls:
+                    logger.warning(
+                        "[Retriever] Frontier budget exceeded (%d calls)", total_search_calls
+                    )
+                    frontier_budget_exceeded = True
                 for r in comp_results:
                     p_uri = r.get("parent_uri", "")
                     if p_uri not in children_by_parent:
@@ -920,7 +1071,7 @@ class HierarchicalRetriever:
                     uri for uri in starved
                     if len(children_by_parent.get(uri, [])) < self.MIN_CHILDREN_PER_DIR
                 ]
-                if still_starved:
+                if still_starved and not frontier_budget_exceeded:
                     if metadata_filter:
                         still_dir_friendly = {"op": "or", "conds": [
                             {"op": "must", "field": "is_leaf", "conds": [False]},
@@ -942,6 +1093,12 @@ class HierarchicalRetriever:
                         limit=len(still_starved) * self.MIN_CHILDREN_PER_DIR,
                         text_query=text_query,
                     )
+                    total_search_calls += 1
+                    if total_search_calls >= max_calls:
+                        logger.warning(
+                            "[Retriever] Frontier budget exceeded (%d calls)", total_search_calls
+                        )
+                        frontier_budget_exceeded = True
                     for r in still_results:
                         s_uri = r.get("parent_uri", "")
                         if s_uri not in still_starved:
@@ -990,6 +1147,10 @@ class HierarchicalRetriever:
 
             visited_dirs.update(uri for uri, _ in frontier)
 
+            # Budget guard: stop after budget-exceeded wave completes
+            if frontier_budget_exceeded:
+                break
+
             # 7. Convergence check
             top_k_items = heapq.nlargest(
                 limit, collected.values(),
@@ -1019,7 +1180,7 @@ class HierarchicalRetriever:
         if (
             self._rerank_client
             and mode == RetrieverMode.THINKING
-            and self._should_rerank(top_m, score_key="_final_score")
+            and self._should_rerank(top_m, score_key="_final_score", classification=classification)
         ):
             docs = [c.get("abstract", "") for c in top_m]
             rerank_scores = await self._rerank_client.rerank(query, docs)
@@ -1213,6 +1374,17 @@ class HierarchicalRetriever:
             overview = None
             if detail_level in (DetailLevel.L1, DetailLevel.L2):
                 overview = c.get("overview", "") or None
+
+            # v0.6: Small-to-Big — enrich leaf chunks with parent section overview
+            if (getattr(getattr(self, '_config', None), 'small_to_big_enabled', True)
+                    and c.get("is_leaf", False)
+                    and c.get("parent_uri")):
+                parent_uri_stb = c["parent_uri"]
+                parent_abstract_stb = related_abstracts.get(parent_uri_stb, "")
+                if parent_abstract_stb and overview:
+                    overview = f"[Parent Section] {parent_abstract_stb}\n\n{overview}"
+                elif parent_abstract_stb:
+                    overview = f"[Parent Section] {parent_abstract_stb}"
 
             content = None
             if detail_level == DetailLevel.L2 and cortex_fs:

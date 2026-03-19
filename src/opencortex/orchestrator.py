@@ -33,7 +33,9 @@ Typical usage::
 """
 
 import asyncio
+import hashlib
 import logging
+import os
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 from uuid import uuid4
@@ -116,6 +118,27 @@ class MemoryOrchestrator:
         self._context_manager = None
         self._parser_registry = None
 
+        # v0.6: Query classifier (lazy — initialized after embedder is ready)
+        self._query_classifier = None
+
+    # =========================================================================
+    # Collection Routing
+    # =========================================================================
+
+    def _get_collection(self) -> str:
+        """Return active collection name (contextvar override or default)."""
+        from opencortex.http.request_context import get_collection_name
+        return get_collection_name() or _CONTEXT_COLLECTION
+
+    def _ensure_query_classifier(self):
+        """Lazily initialize QueryFastClassifier after embedder is ready."""
+        if self._query_classifier is None and self._config.query_classifier_enabled:
+            try:
+                from opencortex.retrieve.query_classifier import QueryFastClassifier
+                self._query_classifier = QueryFastClassifier(self._embedder, self._config)
+            except Exception as e:
+                logger.warning("[Orchestrator] Failed to init QueryFastClassifier: %s", e)
+
     # =========================================================================
     # Initialization
     # =========================================================================
@@ -165,7 +188,7 @@ class MemoryOrchestrator:
         # 4. Create context collection if needed
         await init_context_collection(
             self._storage,
-            _CONTEXT_COLLECTION,
+            self._get_collection(),
             self._config.embedding_dimension,
         )
 
@@ -432,7 +455,8 @@ class MemoryOrchestrator:
             from opencortex.models.embedder.local_embedder import LocalEmbedder
 
             model_name = self._config.embedding_model or "intfloat/multilingual-e5-large"
-            embedder = LocalEmbedder(model_name=model_name)
+            local_config = {"onnx_intra_op_threads": self._config.onnx_intra_op_threads}
+            embedder = LocalEmbedder(model_name=model_name, config=local_config)
             if not embedder.is_available:
                 logger.warning(
                     "[MemoryOrchestrator] LocalEmbedder failed to load '%s'. "
@@ -504,7 +528,7 @@ class MemoryOrchestrator:
 
         # Only re-embed if there are existing records
         try:
-            count = await self._storage.count(_CONTEXT_COLLECTION)
+            count = await self._storage.count(self._get_collection())
         except Exception:
             count = 0
 
@@ -520,7 +544,7 @@ class MemoryOrchestrator:
         )
         from opencortex.migration.v040_reembed import reembed_all as _reembed_all
         updated = await _reembed_all(
-            self._storage, _CONTEXT_COLLECTION, self._embedder,
+            self._storage, self._get_collection(), self._embedder,
         )
         logger.info(
             "[Orchestrator] Re-embedded %d records (model: %s → %s)",
@@ -540,14 +564,14 @@ class MemoryOrchestrator:
             from opencortex.migration.v030_path_redesign import (
                 backfill_new_fields, cleanup_root_junk,
             )
-            await cleanup_root_junk(self._storage, self._fs, _CONTEXT_COLLECTION)
-            await backfill_new_fields(self._storage, _CONTEXT_COLLECTION)
+            await cleanup_root_junk(self._storage, self._fs, self._get_collection())
+            await backfill_new_fields(self._storage, self._get_collection())
         except Exception as exc:
             logger.warning("[Orchestrator] Migration v0.3 skipped: %s", exc)
 
         try:
             from opencortex.migration.v040_project_backfill import backfill_project_id
-            await backfill_project_id(self._storage, _CONTEXT_COLLECTION)
+            await backfill_project_id(self._storage, self._get_collection())
         except Exception as exc:
             logger.warning("[Orchestrator] Migration v0.4 skipped: %s", exc)
 
@@ -566,7 +590,7 @@ class MemoryOrchestrator:
         """
         from opencortex.migration.v040_reembed import reembed_all as _reembed_all
         count = await _reembed_all(
-            self._storage, _CONTEXT_COLLECTION, self._embedder,
+            self._storage, self._get_collection(), self._embedder,
         )
         # Update model marker
         marker = Path(self._config.data_root) / ".embedding_model"
@@ -605,12 +629,22 @@ class MemoryOrchestrator:
         uri = CortexURI.build_private(tid, uid, "memories", "events", nid)
 
         # Embed without LLM
+        embed_input = text
+        if self._config.context_flattening_enabled:
+            speaker = ""
+            for prefix in ("user:", "assistant:", "system:"):
+                if text.lower().startswith(prefix):
+                    speaker = prefix.rstrip(":")
+                    break
+            if speaker:
+                embed_input = f"[{speaker}] {text}"
+
         vector = None
         sparse_vector = None
         if self._embedder:
             loop = asyncio.get_running_loop()
             result = await asyncio.wait_for(
-                loop.run_in_executor(None, self._embedder.embed, text), timeout=2.0
+                loop.run_in_executor(None, self._embedder.embed, embed_input), timeout=2.0
             )
             vector = result.dense_vector
             sparse_vector = result.sparse_vector
@@ -644,7 +678,7 @@ class MemoryOrchestrator:
         if sparse_vector:
             record["sparse_vector"] = sparse_vector
 
-        await self._storage.upsert(_CONTEXT_COLLECTION, record)
+        await self._storage.upsert(self._get_collection(), record)
         return uri
 
     async def _add_document(
@@ -666,22 +700,49 @@ class MemoryOrchestrator:
         else:
             chunks = await registry.parse_content(content, source_format="markdown")
 
+        # --- v0.6: Generate source_doc_id for document scoped search ---
+        _effective_source_path = source_path or (meta or {}).get("source_path", "") or (meta or {}).get("file_path", "")
+        if _effective_source_path:
+            source_doc_id = hashlib.sha256(_effective_source_path.encode()).hexdigest()[:16]
+        else:
+            source_doc_id = uuid4().hex[:16]
+        source_doc_title = (meta or {}).get("title", "")
+        if not source_doc_title and _effective_source_path:
+            source_doc_title = os.path.basename(_effective_source_path)
+
         # Single chunk or no chunks → fall through to memory mode
         if len(chunks) <= 1:
             single_content = chunks[0].content if chunks else content
+            embed_text = ""
+            if self._config.context_flattening_enabled:
+                parts = []
+                if source_doc_title:
+                    parts.append(f"[{source_doc_title}]")
+                sp = chunks[0].meta.get("section_path", "") if chunks else ""
+                if sp:
+                    parts.append(f"[{sp}]")
+                parts.append(abstract)
+                embed_text = " ".join(parts)
             return await self.add(
                 abstract=abstract,
                 content=single_content,
                 category=category,
                 parent_uri=parent_uri,
                 context_type=context_type,
-                meta={**(meta or {}), "ingest_mode": "memory"},
+                meta={
+                    **(meta or {}),
+                    "ingest_mode": "memory",
+                    "source_doc_id": source_doc_id,
+                    "source_doc_title": source_doc_title,
+                    "source_section_path": chunks[0].meta.get("section_path", "") if chunks else "",
+                    "chunk_role": "document",
+                },
                 session_id=session_id,
+                embed_text=embed_text,
             )
 
         # Multi-chunk: create parent + children
         # Title priority: source filename > caller-provided abstract > fallback "Document"
-        from pathlib import Path
         doc_title = (
             Path(source_path).stem if source_path
             else abstract if abstract
@@ -695,7 +756,14 @@ class MemoryOrchestrator:
             parent_uri=parent_uri,
             is_leaf=False,
             context_type=context_type,
-            meta={**(meta or {}), "ingest_mode": "memory"},
+            meta={
+                **(meta or {}),
+                "ingest_mode": "memory",
+                "source_doc_id": source_doc_id,
+                "source_doc_title": source_doc_title,
+                "source_section_path": "",
+                "chunk_role": "document",
+            },
             session_id=session_id,
         )
         doc_parent_uri = parent_ctx.uri
@@ -709,14 +777,42 @@ class MemoryOrchestrator:
                 if parent_result and not parent_result.is_leaf:
                     chunk_parent = parent_result.uri
 
+            # Determine chunk_role: directory chunks (is_leaf=False) become "section",
+            # leaf chunks become "leaf". We detect via next chunk's parent_index.
+            # A chunk is a directory if any later chunk references it as parent.
+            is_dir_chunk = any(
+                c.parent_index == idx for c in chunks[idx + 1:]
+            )
+            chunk_role = "section" if is_dir_chunk else "leaf"
+
+            chunk_abstract = ""
+            embed_text = ""
+            if self._config.context_flattening_enabled:
+                parts = []
+                if source_doc_title:
+                    parts.append(f"[{source_doc_title}]")
+                sp = chunk.meta.get("source_section_path", "") or chunk.meta.get("section_path", "")
+                if sp:
+                    parts.append(f"[{sp}]")
+                parts.append(chunk_abstract)
+                embed_text = " ".join(parts)
             ctx = await self.add(
-                abstract="",
+                abstract=chunk_abstract,
                 content=chunk.content,
                 category=category,
                 parent_uri=chunk_parent,
                 context_type=context_type,
-                meta={**(meta or {}), "ingest_mode": "memory", "chunk_index": idx},
+                meta={
+                    **(meta or {}),
+                    "ingest_mode": "memory",
+                    "chunk_index": idx,
+                    "source_doc_id": source_doc_id,
+                    "source_doc_title": source_doc_title,
+                    "source_section_path": chunk.meta.get("section_path", ""),
+                    "chunk_role": chunk_role,
+                },
                 session_id=session_id,
+                embed_text=embed_text,
             )
             chunk_results.append(ctx)
 
@@ -1034,6 +1130,14 @@ class MemoryOrchestrator:
         record["source_tenant_id"] = tid
         record["keywords"] = keywords
 
+        # v0.6: Flatten doc/conversation enrichment fields to top-level payload
+        record["source_doc_id"] = (meta or {}).get("source_doc_id", "")
+        record["source_doc_title"] = (meta or {}).get("source_doc_title", "")
+        record["source_section_path"] = (meta or {}).get("source_section_path", "")
+        record["chunk_role"] = (meta or {}).get("chunk_role", "")
+        record["speaker"] = (meta or {}).get("speaker", "")
+        record["event_date"] = (meta or {}).get("event_date")
+
         # Set TTL for staging records (24 hours from now)
         if context_type == "staging":
             from datetime import datetime, timezone, timedelta
@@ -1041,7 +1145,7 @@ class MemoryOrchestrator:
             record["ttl_expires_at"] = expires.strftime("%Y-%m-%dT%H:%M:%SZ")
 
         upsert_started = asyncio.get_running_loop().time()
-        await self._storage.upsert(_CONTEXT_COLLECTION, record)
+        await self._storage.upsert(self._get_collection(), record)
         upsert_ms = int((asyncio.get_running_loop().time() - upsert_started) * 1000)
 
         # Write to filesystem (L0 abstract + L1 overview + L2 content)
@@ -1120,7 +1224,7 @@ class MemoryOrchestrator:
             dedup_filter = {"op": "and", "conds": conds}
 
             results = await self._storage.search(
-                _CONTEXT_COLLECTION,
+                self._get_collection(),
                 query_vector=vector,
                 filter=dedup_filter,
                 limit=1,
@@ -1139,7 +1243,7 @@ class MemoryOrchestrator:
     ) -> None:
         """Merge new content into an existing record and reinforce it."""
         records = await self._storage.filter(
-            _CONTEXT_COLLECTION,
+            self._get_collection(),
             {"op": "must", "field": "uri", "conds": [existing_uri]},
             limit=1,
             output_fields=["abstract", "overview"],
@@ -1186,7 +1290,7 @@ class MemoryOrchestrator:
 
         # Find existing record
         records = await self._storage.filter(
-            _CONTEXT_COLLECTION,
+            self._get_collection(),
             {"op": "must", "field": "uri", "conds": [uri]},
             limit=1,
         )
@@ -1223,7 +1327,7 @@ class MemoryOrchestrator:
             update_data["meta"] = existing_meta
 
         if update_data:
-            await self._storage.update(_CONTEXT_COLLECTION, record_id, update_data)
+            await self._storage.update(self._get_collection(), record_id, update_data)
 
         # Update filesystem
         if abstract is not None or content is not None:
@@ -1250,7 +1354,7 @@ class MemoryOrchestrator:
         self._ensure_init()
 
         # Remove from vector DB
-        count = await self._storage.remove_by_uri(_CONTEXT_COLLECTION, uri)
+        count = await self._storage.remove_by_uri(self._get_collection(), uri)
 
         # Remove from filesystem
         try:
@@ -1277,6 +1381,8 @@ class MemoryOrchestrator:
         metadata_filter: Optional[Dict[str, Any]] = None,
         detail_level: str = "l1",
         search_intent: Optional[SearchIntent] = None,
+        meta: Optional[Dict[str, Any]] = None,
+        session_context: Optional[Dict[str, Any]] = None,
     ) -> FindResult:
         """
         Search for relevant contexts.
@@ -1292,6 +1398,8 @@ class MemoryOrchestrator:
             score_threshold: Minimum relevance score.
             metadata_filter: Additional filter conditions.
             detail_level: Fallback detail level if router doesn't override.
+            meta: Optional metadata dict (may contain target_doc_id for classifier).
+            session_context: Optional session context for classifier hints.
 
         Returns:
             FindResult with memories, resources, and skills.
@@ -1299,6 +1407,19 @@ class MemoryOrchestrator:
         self._ensure_init()
         search_started = asyncio.get_running_loop().time()
         tid, uid = get_effective_identity()
+
+        # v0.6: Query classification (fast path)
+        classification = None
+        target_doc_id = None
+        if isinstance(meta, dict):
+            target_doc_id = meta.get("target_doc_id")
+
+        if self._config.query_classifier_enabled:
+            self._ensure_query_classifier()
+            if self._query_classifier:
+                classification = self._query_classifier.classify(
+                    query, target_doc_id=target_doc_id, session_context=session_context
+                )
 
         # Allow callers that already performed routing to reuse the intent
         # and avoid paying the LLM/classification cost twice.
@@ -1407,6 +1528,9 @@ class MemoryOrchestrator:
         else:
             metadata_filter = {"op": "and", "conds": combined_conds}
 
+        # Dynamic hybrid weight: classifier takes precedence over intent router
+        lexical_boost = classification.lexical_boost if classification else intent.lexical_boost
+
         # Build retrieval coroutines
         retrieval_coros = [
             self._retriever.retrieve(
@@ -1414,7 +1538,8 @@ class MemoryOrchestrator:
                 limit=effective_limit,
                 score_threshold=score_threshold,
                 metadata_filter=metadata_filter,
-                lexical_boost=intent.lexical_boost,
+                lexical_boost=lexical_boost,
+                classification=classification,
             )
             for tq in typed_queries
         ]
@@ -1451,6 +1576,20 @@ class MemoryOrchestrator:
             max(retrieval_ms, 0),
         )
 
+        # v0.6: Build SearchExplainSummary
+        if getattr(self._config, 'explain_enabled', True) and query_results:
+            from opencortex.retrieve.types import SearchExplainSummary
+            primary = query_results[0]
+            result.explain_summary = SearchExplainSummary(
+                total_ms=float(total_ms),
+                query_count=len(query_results),
+                primary_query_class=primary.explain.query_class if primary.explain else "",
+                primary_path=primary.explain.path if primary.explain else "",
+                doc_scope_hit=any(qr.explain and qr.explain.doc_scope_hit for qr in query_results),
+                time_filter_hit=any(qr.explain and qr.explain.time_filter_hit for qr in query_results),
+                rerank_triggered=any(qr.explain and qr.explain.rerank_ms > 0 for qr in query_results),
+            )
+
         return result
 
     async def _resolve_and_update_access_stats(self, uris: list) -> None:
@@ -1459,7 +1598,7 @@ class MemoryOrchestrator:
             return
         try:
             recs = await self._storage.filter(
-                _CONTEXT_COLLECTION,
+                self._get_collection(),
                 {"op": "must", "field": "uri", "conds": uris},
                 limit=len(uris),
             )
@@ -1480,7 +1619,7 @@ class MemoryOrchestrator:
                 return
             try:
                 await self._storage.update(
-                    _CONTEXT_COLLECTION,
+                    self._get_collection(),
                     rid,
                     {"active_count": r.get("active_count", 0) + 1, "accessed_at": now},
                 )
@@ -1631,7 +1770,7 @@ class MemoryOrchestrator:
         combined: Dict[str, Any] = {"op": "and", "conds": conds}
 
         records = await self._storage.filter(
-            _CONTEXT_COLLECTION,
+            self._get_collection(),
             combined,
             limit=limit,
             offset=offset,
@@ -1673,7 +1812,7 @@ class MemoryOrchestrator:
 
         # Find the record ID for this URI in context collection
         records = await self._storage.filter(
-            _CONTEXT_COLLECTION,
+            self._get_collection(),
             {"op": "must", "field": "uri", "conds": [uri]},
             limit=1,
         )
@@ -1687,7 +1826,7 @@ class MemoryOrchestrator:
 
         # Send reward via storage adapter
         if hasattr(self._storage, "update_reward"):
-            await self._storage.update_reward(_CONTEXT_COLLECTION, record_id, reward)
+            await self._storage.update_reward(self._get_collection(), record_id, reward)
             logger.info(
                 "[MemoryOrchestrator] Feedback sent: uri=%s, reward=%s",
                 uri,
@@ -1702,7 +1841,7 @@ class MemoryOrchestrator:
         ctx_data = records[0]
         active_count = ctx_data.get("active_count", 0)
         await self._storage.update(
-            _CONTEXT_COLLECTION,
+            self._get_collection(),
             record_id,
             {"active_count": active_count + 1},
         )
@@ -1763,7 +1902,7 @@ class MemoryOrchestrator:
 
         # Scan all records with non-empty ttl_expires_at
         expired = await self._storage.filter(
-            _CONTEXT_COLLECTION,
+            self._get_collection(),
             {"op": "must_not", "field": "ttl_expires_at", "conds": [""]},
             limit=1000,
         )
@@ -1783,7 +1922,7 @@ class MemoryOrchestrator:
                         pass
                 cleaned += 1
         if to_delete:
-            await self._storage.delete(_CONTEXT_COLLECTION, to_delete)
+            await self._storage.delete(self._get_collection(), to_delete)
         if cleaned:
             logger.info("[Orchestrator] Cleaned %d expired records", cleaned)
         return cleaned
@@ -1802,7 +1941,7 @@ class MemoryOrchestrator:
         self._ensure_init()
 
         records = await self._storage.filter(
-            _CONTEXT_COLLECTION,
+            self._get_collection(),
             {"op": "must", "field": "uri", "conds": [uri]},
             limit=1,
         )
@@ -1813,7 +1952,7 @@ class MemoryOrchestrator:
         record_id = records[0].get("id", "")
         if hasattr(self._storage, "set_protected"):
             await self._storage.set_protected(
-                _CONTEXT_COLLECTION, record_id, protected
+                self._get_collection(), record_id, protected
             )
             logger.info(
                 "[MemoryOrchestrator] Set protected=%s for: %s", protected, uri
@@ -1830,7 +1969,7 @@ class MemoryOrchestrator:
         self._ensure_init()
 
         records = await self._storage.filter(
-            _CONTEXT_COLLECTION,
+            self._get_collection(),
             {"op": "must", "field": "uri", "conds": [uri]},
             limit=1,
         )
@@ -1840,7 +1979,7 @@ class MemoryOrchestrator:
         record_id = records[0].get("id", "")
         if hasattr(self._storage, "get_profile"):
             profile = await self._storage.get_profile(
-                _CONTEXT_COLLECTION, record_id
+                self._get_collection(), record_id
             )
             if profile:
                 return {
@@ -2162,6 +2301,12 @@ class MemoryOrchestrator:
                     parent_dir = str(PurePosixPath(file_path).parent)
                     parent_uri = dir_uris.get(parent_dir)
 
+                embed_text = ""
+                if self._config.context_flattening_enabled:
+                    fp = item_meta.get("file_path", "")
+                    if fp:
+                        embed_text = f"[{fp}] {abstract}"
+
                 try:
                     result = await self.add(
                         abstract=abstract,
@@ -2172,6 +2317,7 @@ class MemoryOrchestrator:
                         context_type=item.get("context_type", "resource"),
                         meta=item_meta,
                         dedup=False,
+                        embed_text=embed_text,
                     )
                     return {"uri": result.uri, "index": i}
                 except Exception as exc:
@@ -2222,7 +2368,7 @@ class MemoryOrchestrator:
             try:
                 # 1. Get existing record
                 results = await self._storage.filter(
-                    _CONTEXT_COLLECTION,
+                    self._get_collection(),
                     filter={"op": "must", "field": "uri", "conds": [uri]},
                     limit=1,
                 )
@@ -2245,14 +2391,14 @@ class MemoryOrchestrator:
                 record["parent_uri"] = CortexURI.build_shared(tid, "resources", project_id, "documents")
 
                 # 4. Upsert with new URI
-                await self._storage.upsert(_CONTEXT_COLLECTION, record)
+                await self._storage.upsert(self._get_collection(), record)
 
                 # 5. Delete old record if URI changed
                 if new_uri != uri:
                     old_id = record.get("id", "")
                     if old_id:
                         try:
-                            await self._storage.delete(_CONTEXT_COLLECTION, [old_id])
+                            await self._storage.delete(self._get_collection(), [old_id])
                         except Exception:
                             pass  # best-effort cleanup
 
@@ -2403,7 +2549,7 @@ class MemoryOrchestrator:
         """Check if a URI already exists in the context collection."""
         try:
             results = await self._storage.filter(
-                _CONTEXT_COLLECTION,
+                self._get_collection(),
                 {"op": "must", "field": "uri", "conds": [uri]},
                 limit=1,
             )
@@ -2496,7 +2642,7 @@ class MemoryOrchestrator:
 
             # Check if this directory record already exists
             existing = await self._storage.filter(
-                _CONTEXT_COLLECTION,
+                self._get_collection(),
                 {"op": "must", "field": "uri", "conds": [uri]},
                 limit=1,
             )
@@ -2548,7 +2694,7 @@ class MemoryOrchestrator:
             record["mergeable"] = False
             record["session_id"] = ""
             record["ttl_expires_at"] = ""
-            await self._storage.upsert(_CONTEXT_COLLECTION, record)
+            await self._storage.upsert(self._get_collection(), record)
             logger.debug("[MemoryOrchestrator] Created directory record: %s", dir_uri)
 
     def _aggregate_results(

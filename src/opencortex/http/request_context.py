@@ -88,3 +88,25 @@ def get_effective_project_id() -> str:
     Falls back to "public" when no header is set.
     """
     return _request_project_id.get() or _DEFAULT_PROJECT
+
+
+# ---------------------------------------------------------------------------
+# Collection Name API
+# ---------------------------------------------------------------------------
+
+_collection_name: ContextVar[Optional[str]] = ContextVar(
+    "_collection_name", default=None
+)
+
+
+def get_collection_name() -> Optional[str]:
+    """Return the active collection name override for the current request.
+
+    Returns None when no X-Collection header was set (use default collection).
+    """
+    return _collection_name.get()
+
+
+def set_collection_name(name: str) -> Token[Optional[str]]:
+    """Set per-request collection name override.  Returns token for later reset."""
+    return _collection_name.set(name)

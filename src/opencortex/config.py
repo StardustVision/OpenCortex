@@ -17,7 +17,7 @@ import logging
 import os
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +111,35 @@ class CortexConfig:
     http_server_port: int = 8921
     # Cortex Alpha
     cortex_alpha: CortexAlphaConfig = field(default_factory=CortexAlphaConfig)
+
+    # --- v0.6 Feature Flags ---
+    query_classifier_enabled: bool = True
+    query_classifier_classes: Dict[str, str] = field(default_factory=lambda: {
+        "document_scoped": "查找特定文档、论文、文件中的内容",
+        "temporal_lookup": "查找最近、上次、昨天等时间相关的记忆",
+        "fact_lookup": "查找特定人名、数字、术语、文件名等精确事实",
+        "simple_recall": "简单的记忆召回，回忆之前存储的信息",
+    })
+    query_classifier_threshold: float = 0.3
+    query_classifier_hybrid_weights: Dict[str, Dict[str, float]] = field(default_factory=lambda: {
+        "document_scoped": {"dense": 0.5, "lexical": 0.5},
+        "fact_lookup": {"dense": 0.3, "lexical": 0.7},
+        "temporal_lookup": {"dense": 0.6, "lexical": 0.4},
+        "simple_recall": {"dense": 0.7, "lexical": 0.3},
+        "complex": {"dense": 0.7, "lexical": 0.3},
+    })
+    doc_scope_search_enabled: bool = True
+    small_to_big_enabled: bool = True
+    small_to_big_sibling_count: int = 2
+    context_flattening_enabled: bool = True
+    time_filter_enabled: bool = True
+    time_filter_fallback_threshold: int = 3
+    rerank_gate_score_gap_threshold: float = 0.15
+    rerank_gate_doc_scope_skip_threshold: int = 5
+    max_compensation_queries: int = 3
+    max_total_search_calls: int = 12
+    explain_enabled: bool = True
+    onnx_intra_op_threads: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
