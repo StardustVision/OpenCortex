@@ -37,7 +37,11 @@ class LocalEmbedder(EmbedderBase):
     def _init_model(self) -> None:
         try:
             from fastembed import TextEmbedding
-            self._model = TextEmbedding(model_name=self.model_name)
+            kwargs = {}
+            threads = (self.config or {}).get("onnx_intra_op_threads", 0)
+            if threads > 0:
+                kwargs["threads"] = threads
+            self._model = TextEmbedding(model_name=self.model_name, **kwargs)
             # Detect dimension from a test embedding
             test_result = list(self._model.embed(["test"]))[0]
             self._dimension = len(test_result)

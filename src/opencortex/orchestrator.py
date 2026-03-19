@@ -455,7 +455,8 @@ class MemoryOrchestrator:
             from opencortex.models.embedder.local_embedder import LocalEmbedder
 
             model_name = self._config.embedding_model or "intfloat/multilingual-e5-large"
-            embedder = LocalEmbedder(model_name=model_name)
+            local_config = {"onnx_intra_op_threads": self._config.onnx_intra_op_threads}
+            embedder = LocalEmbedder(model_name=model_name, config=local_config)
             if not embedder.is_available:
                 logger.warning(
                     "[MemoryOrchestrator] LocalEmbedder failed to load '%s'. "
