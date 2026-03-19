@@ -1034,6 +1034,14 @@ class MemoryOrchestrator:
         record["source_tenant_id"] = tid
         record["keywords"] = keywords
 
+        # v0.6: Flatten doc/conversation enrichment fields to top-level payload
+        record["source_doc_id"] = (meta or {}).get("source_doc_id", "")
+        record["source_doc_title"] = (meta or {}).get("source_doc_title", "")
+        record["source_section_path"] = (meta or {}).get("source_section_path", "")
+        record["chunk_role"] = (meta or {}).get("chunk_role", "")
+        record["speaker"] = (meta or {}).get("speaker", "")
+        record["event_date"] = (meta or {}).get("event_date")
+
         # Set TTL for staging records (24 hours from now)
         if context_type == "staging":
             from datetime import datetime, timezone, timedelta
