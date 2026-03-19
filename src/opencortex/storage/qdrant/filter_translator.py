@@ -6,9 +6,10 @@ Translates the filter DSL used throughout OpenCortex into
 Qdrant's native Filter/FieldCondition models.
 
 Supported operators:
-    must, must_not, range, prefix, contains, and, or, is_null
+    must, must_not, match, range, prefix, contains, and, or, is_null
 """
 
+from datetime import datetime
 from typing import Any, Dict, List
 
 from qdrant_client import models
@@ -72,6 +73,15 @@ def translate_filter(dsl: Dict[str, Any]) -> models.Filter:
         condition = _must_condition(field, conds)
         return models.Filter(must_not=[condition])
 
+    elif op == "match":
+        field = dsl.get("field", "")
+        value = dsl.get("value", "")
+        condition = models.FieldCondition(
+            key=field,
+            match=models.MatchValue(value=value),
+        )
+        return models.Filter(must=[condition])
+
     elif op == "range":
         condition = _range_condition(dsl)
         return models.Filter(must=[condition])
@@ -119,17 +129,47 @@ def _must_condition(field: str, conds: List[Any]) -> models.FieldCondition:
 
 
 def _range_condition(dsl: Dict[str, Any]) -> models.FieldCondition:
-    """Create a FieldCondition for range op."""
+    """Create a FieldCondition for range op.
+
+    Detects datetime values (ISO-format strings or datetime objects) and uses
+    DatetimeRange; falls back to numeric Range for all other values.
+    """
     field = dsl.get("field", "")
     range_kwargs = {}
-    if "gte" in dsl:
-        range_kwargs["gte"] = dsl["gte"]
-    if "gt" in dsl:
-        range_kwargs["gt"] = dsl["gt"]
-    if "lte" in dsl:
-        range_kwargs["lte"] = dsl["lte"]
-    if "lt" in dsl:
-        range_kwargs["lt"] = dsl["lt"]
+    for key in ("gte", "gt", "lte", "lt"):
+        if key in dsl:
+            range_kwargs[key] = dsl[key]
+
+    # Detect whether the range values are datetime-like
+    def _is_datetime_value(v: Any) -> bool:
+        if isinstance(v, datetime):
+            return True
+        if isinstance(v, str):
+            try:
+                datetime.fromisoformat(v.rstrip("Z").replace("Z", "+00:00"))
+                return True
+            except ValueError:
+                pass
+        return False
+
+    sample_value = next(iter(range_kwargs.values()), None)
+    if sample_value is not None and _is_datetime_value(sample_value):
+        # Parse ISO strings to datetime objects for DatetimeRange
+        parsed_kwargs = {}
+        for key, val in range_kwargs.items():
+            if isinstance(val, str):
+                try:
+                    parsed_kwargs[key] = datetime.fromisoformat(
+                        val.rstrip("Z").replace("Z", "+00:00")
+                    )
+                except ValueError:
+                    parsed_kwargs[key] = val
+            else:
+                parsed_kwargs[key] = val
+        return models.FieldCondition(
+            key=field,
+            range=models.DatetimeRange(**parsed_kwargs),
+        )
 
     return models.FieldCondition(
         key=field,

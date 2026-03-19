@@ -1538,6 +1538,7 @@ class MemoryOrchestrator:
                 score_threshold=score_threshold,
                 metadata_filter=metadata_filter,
                 lexical_boost=lexical_boost,
+                classification=classification,
             )
             for tq in typed_queries
         ]

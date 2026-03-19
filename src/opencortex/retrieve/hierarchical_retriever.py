@@ -202,6 +202,7 @@ class HierarchicalRetriever:
         score_gte: bool = False,
         metadata_filter: Optional[Dict[str, Any]] = None,
         lexical_boost: float = 0.3,
+        classification: Optional[Any] = None,
     ) -> QueryResult:
         """
         Execute hierarchical retrieval.
@@ -226,9 +227,35 @@ class HierarchicalRetriever:
         if query.target_doc_id and getattr(getattr(self, '_config', None), 'doc_scope_search_enabled', True):
             doc_filter = {"op": "match", "field": "source_doc_id", "value": query.target_doc_id}
             if metadata_filter:
-                metadata_filter = {"op": "and", "conditions": [metadata_filter, doc_filter]}
+                metadata_filter = {"op": "and", "conds": [metadata_filter, doc_filter]}
             else:
                 metadata_filter = doc_filter
+
+        # v0.6: Time filter — narrow search to recent/today/session time window
+        time_filter_active = False
+        if (classification and getattr(classification, 'time_filter_hint', None)
+                and getattr(getattr(self, '_config', None), 'time_filter_enabled', True)):
+            from datetime import datetime, timedelta
+            hint = classification.time_filter_hint
+            time_filter = None
+
+            if hint == "recent":
+                cutoff = (datetime.utcnow() - timedelta(days=7)).isoformat() + "Z"
+                time_filter = {"op": "range", "field": "created_at", "gte": cutoff}
+            elif hint == "today":
+                cutoff = datetime.utcnow().replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                ).isoformat() + "Z"
+                time_filter = {"op": "range", "field": "created_at", "gte": cutoff}
+            elif hint == "session" and getattr(query, 'session_id', None):
+                time_filter = {"op": "match", "field": "session_id", "value": query.session_id}
+
+            if time_filter:
+                time_filter_active = True
+                if metadata_filter:
+                    metadata_filter = {"op": "and", "conds": [metadata_filter, time_filter]}
+                else:
+                    metadata_filter = time_filter
 
         # Merge all filters
         filters_to_merge = []
