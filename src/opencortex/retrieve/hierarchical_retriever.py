@@ -1528,5 +1528,7 @@ class HierarchicalRetriever:
     def _type_to_collection(self, context_type: ContextType) -> str:
         """
         Convert context type to collection name.
+        Respects X-Collection contextvar override for benchmark isolation.
         """
-        return "context"
+        from opencortex.http.request_context import get_collection_name
+        return get_collection_name() or "context"
