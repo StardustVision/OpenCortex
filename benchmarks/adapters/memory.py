@@ -36,6 +36,9 @@ class MemoryAdapter(EvalAdapter):
 
         If max_qa is passed, only ingests attributes referenced by the first
         N questions to speed up quick tests.
+
+        ask_to_forget attributes are stored then immediately deleted to
+        simulate a user requesting the system forget that information.
         """
         max_qa = kwargs.get("max_qa", 0)
         attributes = self._dataset["persona_attributes"]
@@ -49,6 +52,7 @@ class MemoryAdapter(EvalAdapter):
             attributes = [a for a in attributes if a.get("id", "") in needed_ids]
         errors: List[str] = []
         id_to_uri: Dict[str, str] = {}
+        forgotten_count = 0
 
         for i, attr in enumerate(attributes):
             attr_text = attr.get("attribute", "")
@@ -64,21 +68,37 @@ class MemoryAdapter(EvalAdapter):
                 uri = result.get("uri", "")
                 if uri:
                     id_to_uri[attr_id] = uri
+                    # Forget: store then delete to simulate user asking to forget
+                    if category == "ask_to_forget":
+                        await oc.forget(uri=uri)
+                        forgotten_count += 1
             except Exception as e:
                 errors.append(f"attribute {attr_id}: {e}")
 
         # Store id→uri mapping for QA item URI resolution
         self._id_to_uri = id_to_uri
+        # Track which IDs were forgotten so build_qa_items can clear expected_uris
+        self._forgotten_ids = {
+            aid for aid, _ in id_to_uri.items()
+            if any(
+                a.get("id") == aid and a.get("category") == "ask_to_forget"
+                for a in attributes
+            )
+        }
 
         return IngestResult(
             total_items=len(attributes),
             ingested_items=len(id_to_uri),
             errors=errors,
-            meta={"id_to_uri": id_to_uri},
+            meta={"id_to_uri": id_to_uri, "forgotten": forgotten_count},
         )
 
     def build_qa_items(self, **kwargs) -> List[QAItem]:
-        """Build QA items from dataset questions array."""
+        """Build QA items from dataset questions array.
+
+        For ask_to_forget questions, expected_uris is cleared because the
+        referenced memories have been deleted — retrieval should NOT find them.
+        """
         questions = self._dataset.get("questions", [])
         max_qa = kwargs.get("max_qa", 0)
         if max_qa > 0:
@@ -86,15 +106,22 @@ class MemoryAdapter(EvalAdapter):
 
         items: List[QAItem] = []
         id_to_uri = getattr(self, "_id_to_uri", {})
+        forgotten_ids = getattr(self, "_forgotten_ids", set())
 
         for q in questions:
             expected_ids = q.get("expected_ids", [])
-            expected_uris = [id_to_uri[eid] for eid in expected_ids if eid in id_to_uri]
+            category = q.get("category", "")
+
+            # Forgotten memories were deleted — don't expect them in retrieval
+            if category == "ask_to_forget":
+                expected_uris = []
+            else:
+                expected_uris = [id_to_uri[eid] for eid in expected_ids if eid in id_to_uri]
 
             items.append(QAItem(
                 question=q["question"],
                 answer=str(q.get("answer", "")),
-                category=q.get("category", ""),
+                category=category,
                 difficulty=q.get("difficulty", ""),
                 expected_ids=expected_ids,
                 expected_uris=expected_uris,

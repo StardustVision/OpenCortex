@@ -63,6 +63,15 @@ class MemorySearchRequest(BaseModel):
     detail_level: str = "l1"
 
 
+class MemoryForgetRequest(BaseModel):
+    """Delete a memory by URI or semantic query."""
+    uri: str = Field(default="", description="URI to delete (exact)")
+    query: str = Field(
+        default="",
+        description="Semantic search query — finds and deletes top match",
+    )
+
+
 class MemoryFeedbackRequest(BaseModel):
     uri: str
     reward: float

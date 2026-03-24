@@ -31,15 +31,34 @@ class OCClient:
         timeout: float = 120.0,
         retries: int = 8,
         retry_delay: float = 2.0,
+        collection: str = "",
     ):
         self._base = base.rstrip("/")
         self._hdrs = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         }
+        if collection:
+            self._hdrs["X-Collection"] = collection
+        self._collection = collection
         self._client = httpx.AsyncClient(timeout=timeout)
         self._retries = retries
         self._retry_delay = retry_delay
+
+    async def create_collection(self, name: str) -> bool:
+        try:
+            await self._post("/api/v1/admin/collection", {"name": name})
+            return True
+        except Exception:
+            return False
+
+    async def delete_collection(self, name: str) -> None:
+        try:
+            url = f"{self._base}/api/v1/admin/collection/{name}"
+            r = await self._client.delete(url, headers=self._hdrs)
+            r.raise_for_status()
+        except Exception:
+            pass
 
     async def close(self):
         await self._client.aclose()
@@ -89,6 +108,10 @@ class OCClient:
         result = await self._post("/api/v1/memory/search", payload)
         return result.get("results", [])
 
+    async def forget(self, uri: str) -> Dict:
+        """Delete a memory by URI."""
+        return await self._post("/api/v1/memory/forget", {"uri": uri})
+
     async def context_recall(
         self,
         session_id: str,
@@ -105,13 +128,16 @@ class OCClient:
         config: Dict[str, Any] = {"max_items": limit}
         if detail_level is not None:
             config["detail_level"] = detail_level
-        return await self._post("/api/v1/context", {
-            "session_id": session_id,
-            "phase": "prepare",
-            "turn_id": turn_id,
-            "messages": [{"role": "user", "content": query}],
-            "config": config,
-        })
+        return await self._post(
+            "/api/v1/context",
+            {
+                "session_id": session_id,
+                "phase": "prepare",
+                "turn_id": turn_id,
+                "messages": [{"role": "user", "content": query}],
+                "config": config,
+            },
+        )
 
     async def context_commit(
         self,
@@ -120,19 +146,27 @@ class OCClient:
         messages: List[Dict[str, str]],
     ) -> Dict:
         """MCP commit: write messages via conversation mode (immediate + merge)."""
-        return await self._post("/api/v1/context", {
-            "session_id": session_id,
-            "phase": "commit",
-            "turn_id": turn_id,
-            "messages": [{"role": m["role"], "content": m["content"]} for m in messages],
-        })
+        return await self._post(
+            "/api/v1/context",
+            {
+                "session_id": session_id,
+                "phase": "commit",
+                "turn_id": turn_id,
+                "messages": [
+                    {"role": m["role"], "content": m["content"]} for m in messages
+                ],
+            },
+        )
 
     async def context_end(self, session_id: str) -> Dict:
         """MCP end: flush session → Alpha pipeline."""
-        return await self._post("/api/v1/context", {
-            "session_id": session_id,
-            "phase": "end",
-        })
+        return await self._post(
+            "/api/v1/context",
+            {
+                "session_id": session_id,
+                "phase": "end",
+            },
+        )
 
     async def _post(self, path: str, payload: Dict) -> Dict:
         """POST with retry logic (retryable on 429/5xx and transport errors)."""
@@ -143,11 +177,15 @@ class OCClient:
                 r = await self._client.post(url, json=payload, headers=self._hdrs)
                 r.raise_for_status()
                 return r.json()
-            except (httpx.TimeoutException, httpx.HTTPStatusError, httpx.TransportError) as exc:
+            except (
+                httpx.TimeoutException,
+                httpx.HTTPStatusError,
+                httpx.TransportError,
+            ) as exc:
                 last_error = exc
                 if attempt >= self._retries or not _is_retryable_http_error(exc):
                     raise
-                await asyncio.sleep(min(2 ** attempt, 120))
+                await asyncio.sleep(min(2**attempt, 120))
         if last_error:
             raise last_error
         return {}

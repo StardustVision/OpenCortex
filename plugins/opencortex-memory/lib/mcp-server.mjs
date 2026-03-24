@@ -62,6 +62,14 @@ const TOOLS = {
       uri:    { type: 'string', description: 'The opencortex:// URI of the memory to reward (from search results)', required: true },
       reward: { type: 'number', description: 'Reward signal: positive reinforces retrieval, negative penalizes. Typical range: -1.0 to +1.0', required: true },
     }],
+  forget: ['POST', '/api/v1/memory/forget',
+    'Delete a memory permanently. Use when the user asks to forget, '
+    + 'remove, or delete a specific memory. Supports two modes: '
+    + 'by URI (exact match) or by query (semantic search, deletes top match). '
+    + 'Returns {status, forgotten, uri}.', {
+      uri:   { type: 'string', description: 'The opencortex:// URI to delete (from search results)' },
+      query: { type: 'string', description: 'Natural language description of what to forget — finds and deletes the closest match' },
+    }],
   decay: ['POST', '/api/v1/memory/decay',
     'Maintenance: apply time-decay to all memories, reducing scores of inactive ones. '
     + 'Call periodically (e.g. daily) to let unused memories naturally fade. '
@@ -203,15 +211,51 @@ async function handleEnd() {
 async function httpContextCall(body) {
   const hdrs = buildClientHeaders();
   hdrs['Content-Type'] = 'application/json';
-  const res = await fetch(`${_httpUrl}/api/v1/context`, {
-    method: 'POST',
-    headers: hdrs,
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(30000),
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`POST /api/v1/context -> ${res.status}: ${text}`);
+
+  let res, text;
+  try {
+    res = await fetch(`${_httpUrl}/api/v1/context`, {
+      method: 'POST',
+      headers: hdrs,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30000),
+    });
+    text = await res.text();
+  } catch (err) {
+    // Network error / timeout → degrade gracefully
+    // Memory is auxiliary — should never block the user's prompt
+    const reason = `Memory unavailable: ${err.message}`;
+    process.stderr.write(`[opencortex-mcp] ${reason}\n`);
+    return _degradedResult(body.phase, reason);
+  }
+
+  if (!res.ok) {
+    const detail = text?.slice(0, 200) || 'unknown error';
+    const reason = res.status === 401 || res.status === 403
+      ? `Memory unavailable (HTTP ${res.status}): authentication required`
+      : `Memory unavailable (HTTP ${res.status}): ${detail}`;
+    process.stderr.write(`[opencortex-mcp] ${reason}\n`);
+    return _degradedResult(body.phase, reason);
+  }
+
   try { return JSON.parse(text); } catch { return text; }
+}
+
+/**
+ * Build a degraded (best-effort) result for lifecycle tools.
+ * Memory is auxiliary — auth/network/server failures should not block the user's prompt.
+ */
+function _degradedResult(phase, reason) {
+  switch (phase) {
+    case 'prepare':
+      return { memory: [], knowledge: [], instructions: reason, _degraded: true };
+    case 'commit':
+      return { accepted: false, _degraded: true, reason };
+    case 'end':
+      return { status: 'skipped', _degraded: true, reason };
+    default:
+      return { _degraded: true, reason };
+  }
 }
 
 // ── Unified callTool dispatcher ──────────────────────────────────────────
@@ -263,15 +307,11 @@ async function shutdown() {
   const _log = (msg) => process.stderr.write(`[opencortex-mcp] ${msg}\n`);
 
   if (_initialized && _sessionId) {
-    try {
-      await httpContextCall({
-        session_id: _sessionId,
-        phase: 'end',
-      });
-      _log('session ended');
-    } catch (err) {
-      _log(`session end failed: ${err.message}`);
-    }
+    const result = await httpContextCall({
+      session_id: _sessionId,
+      phase: 'end',
+    });
+    _log(result?._degraded ? `session end skipped: ${result.reason}` : 'session ended');
   }
 
   if (_httpPid > 0 && getPluginMode() === 'local') {

@@ -179,6 +179,9 @@ class OpenCortexClient:
             payload["category"] = category
         return await self._post("/api/v1/memory/search", payload)
 
+    async def memory_forget(self, uri: str = "", query: str = "") -> Dict[str, Any]:
+        return await self._post("/api/v1/memory/forget", {"uri": uri, "query": query})
+
     async def memory_feedback(self, uri: str, reward: float) -> Dict[str, Any]:
         return await self._post("/api/v1/memory/feedback", {"uri": uri, "reward": reward})
 

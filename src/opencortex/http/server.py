@@ -15,7 +15,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -32,6 +32,7 @@ from opencortex.http.models import (
     IntentShouldRecallRequest,
     MemoryBatchStoreRequest,
     MemoryFeedbackRequest,
+    MemoryForgetRequest,
     MemorySearchRequest,
     MemoryStoreRequest,
     PromoteToSharedRequest,
@@ -289,6 +290,22 @@ def _register_routes(app: FastAPI) -> None:
     @app.get("/api/v1/memory/stats")
     async def memory_stats() -> Dict[str, Any]:
         return await _orchestrator.stats()
+
+    @app.post("/api/v1/memory/forget")
+    async def memory_forget(req: MemoryForgetRequest) -> Dict[str, Any]:
+        """Delete a memory by exact URI or semantic search query."""
+        if req.uri:
+            count = await _orchestrator.remove(req.uri)
+            return {"status": "ok", "forgotten": count, "uri": req.uri}
+        elif req.query:
+            results = await _orchestrator.search(query=req.query, limit=1)
+            if not results:
+                return {"status": "not_found", "forgotten": 0}
+            uri = results[0].uri
+            count = await _orchestrator.remove(uri)
+            return {"status": "ok", "forgotten": count, "uri": uri}
+        else:
+            raise HTTPException(400, "Either uri or query is required")
 
     @app.post("/api/v1/memory/decay")
     async def memory_decay() -> Dict[str, Any]:
