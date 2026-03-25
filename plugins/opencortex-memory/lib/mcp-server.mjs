@@ -258,6 +258,77 @@ function _degradedResult(phase, reason) {
   }
 }
 
+// ── MCP Prompts ─────────────────────────────────────────────────────────
+const PROMPTS = {
+  'usage-guide': {
+    name: 'usage-guide',
+    description: 'OpenCortex memory system — mandatory usage guide for every conversation turn',
+    arguments: [],
+  },
+};
+
+function getPromptContent(name) {
+  if (name !== 'usage-guide') return null;
+  return {
+    description: PROMPTS['usage-guide'].description,
+    messages: [{
+      role: 'user',
+      content: {
+        type: 'text',
+        text: `# OpenCortex Automatic Memory System — Mandatory Usage
+
+## Always-On (No User Opt-In Required)
+This system runs **automatically for every turn**. Do NOT wait for the user to say "use memory" or "call a tool". You MUST follow the workflow below for EVERY interaction.
+
+## Mandatory 3-Step Workflow (Every Turn)
+
+\`\`\`
+User sends message
+  → Step 1: recall(query)           — BEFORE you answer
+  → Step 2: Generate your response  — reference relevant memories
+  → Step 3: add_message(user, assistant) — AFTER you answer
+\`\`\`
+
+### Step 1: recall (BEFORE answering)
+- Call \`recall\` with the user's message as query
+- This retrieves relevant memories and knowledge from long-term storage
+- You MUST do this even for greetings like "hello" or simple questions
+- Use the returned \`memory[]\` and \`knowledge[]\` to inform your response
+
+### Step 2: Generate response
+- Reference relevant memories naturally in your answer
+- Do NOT blindly trust all recalled memories — apply judgment:
+  1. Is the memory from the user's own words or an AI summary?
+  2. Is it relevant to the current query?
+  3. Does it conflict with newer information the user just provided?
+- If no relevant memories are found, respond normally
+
+### Step 3: add_message (AFTER answering)
+- Call \`add_message\` with the user's message and your response
+- Pass \`cited_uris\` for any opencortex:// URIs you referenced
+- This persists the conversation for future recall and knowledge extraction
+- This is NOT optional — skipping means the conversation is lost forever
+
+## Session Lifecycle (Automatic)
+- \`session_begin\` — triggered automatically when this MCP server starts
+- \`end\` — triggered automatically when this MCP server exits
+- You do NOT need to call these manually
+
+## Tool Quick Reference
+| Tool | When | Purpose |
+|------|------|---------|
+| recall | BEFORE every response | Retrieve relevant memories |
+| add_message | AFTER every response | Record the conversation turn |
+| store | User wants to save something | Persist explicit knowledge |
+| search | User asks to find memories | Search stored memories |
+| feedback | Memory was useful/wrong | Reinforce or penalize via RL |
+| end | Only if user says goodbye | Mid-session knowledge extraction |
+`,
+      },
+    }],
+  };
+}
+
 // ── Unified callTool dispatcher ──────────────────────────────────────────
 async function callTool(name, args) {
   switch (name) {
@@ -344,8 +415,8 @@ async function handleMessage(msg) {
     case 'initialize':
       return jsonrpcResult(id, {
         protocolVersion: '2024-11-05',
-        capabilities: { tools: {} },
-        serverInfo: { name: 'opencortex', version: '0.5.0' },
+        capabilities: { tools: {}, prompts: {} },
+        serverInfo: { name: 'opencortex', version: '0.6.2' },
       });
 
     case 'notifications/initialized':
@@ -354,6 +425,20 @@ async function handleMessage(msg) {
         process.stderr.write(`[opencortex-mcp] init error: ${err.message}\n`);
       });
       return;
+
+    case 'prompts/list':
+      return jsonrpcResult(id, {
+        prompts: Object.values(PROMPTS),
+      });
+
+    case 'prompts/get': {
+      const promptName = params?.name;
+      const content = getPromptContent(promptName);
+      if (!content) {
+        return jsonrpcError(id, -32602, `Unknown prompt: ${promptName}`);
+      }
+      return jsonrpcResult(id, content);
+    }
 
     case 'tools/list':
       return jsonrpcResult(id, {
