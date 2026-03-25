@@ -123,9 +123,16 @@ export async function runSetup() {
     console.log(`  Config: ${configPath}`);
     if (ok) {
       console.log('\nReady to use. Start a new Claude Code session to activate.\n');
+    } else if (mode === 'local') {
+      console.log('\nServer not reachable. Start the local server first:');
+      console.log(`  uv run opencortex-server --host 127.0.0.1 --port ${config.local?.http_port || DEFAULT_MCP_CONFIG.local.http_port}`);
+      console.log('\nOr via Docker:');
+      console.log('  docker compose up -d');
+      console.log('\nThen verify with:');
+      console.log('  npx opencortex-cli health\n');
     } else {
-      console.log('\nServer not reachable yet. Start the server, then verify with:');
-      console.log('  opencortex-cli health\n');
+      console.log('\nServer not reachable yet. Check your remote server, then verify with:');
+      console.log('  npx opencortex-cli health\n');
     }
   } finally {
     rl.close();
