@@ -6,6 +6,7 @@ import { httpPost, httpGet, healthCheck } from '../lib/http-client.mjs';
 const USAGE = `Usage: oc-cli.mjs <command> [options]
 
 Commands:
+  setup               Interactive setup wizard (configure local/remote mode)
   health              Check server health
   status              Show server status (via HTTP API)
   recall <query>      Search memories
@@ -44,6 +45,14 @@ async function main() {
   }
 
   const cmd = positionals[0];
+
+  // setup runs before config is loaded (config may not exist yet)
+  if (cmd === 'setup') {
+    const { runSetup } = await import('../lib/setup.mjs');
+    await runSetup();
+    process.exit(0);
+  }
+
   const httpUrl = getHttpUrl();
   const sessionId = values['session-id'] || `cli_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 

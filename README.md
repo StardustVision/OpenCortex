@@ -330,7 +330,13 @@ Inside Claude Code:
 /plugin install
 ```
 
-Select `opencortex-memory`. Claude Code registers hooks and the MCP server automatically. In local mode, the plugin starts the HTTP server on session begin and stops it on session end.
+Select `opencortex-memory`. Then run the setup wizard:
+
+```bash
+npx opencortex-cli setup
+```
+
+The wizard will ask you to choose local or remote mode, enter the server URL and JWT token, write the config to `~/.opencortex/mcp.json`, and optionally register the MCP server at Claude Code user level (so it works across all projects).
 
 ### 6. Docker deployment
 
@@ -353,39 +359,26 @@ volumes:
 
 ### 7. Configure the MCP client
 
-Create `mcp.json` (project-local or `~/.opencortex/mcp.json`):
+The setup wizard (step 5) handles this automatically. To configure manually, edit `~/.opencortex/mcp.json`:
 
 ```json
 {
-  "token": "<jwt-token-from-step-3>",
-  "mode": "local",
-  "local": { "http_port": 8921 }
-}
-```
-
-For remote servers:
-```json
-{
-  "token": "<jwt-token>",
   "mode": "remote",
+  "token": "<jwt-token>",
   "remote": { "http_url": "http://your-server:8921" }
 }
 ```
 
-### 8. Use from other projects
-
-Add `.mcp.json` to any project root to connect to an OpenCortex instance:
-
+For local mode:
 ```json
 {
-  "mcpServers": {
-    "opencortex": {
-      "command": "node",
-      "args": ["/path/to/plugins/opencortex-memory/lib/mcp-server.mjs"]
-    }
-  }
+  "mode": "local",
+  "token": "<jwt-token>",
+  "local": { "http_port": 8921 }
 }
 ```
+
+Config search order: `./mcp.json` (project-local) > `~/.opencortex/mcp.json` (global). Environment variable overrides (`OPENCORTEX_MODE`, `OPENCORTEX_HTTP_URL`, `OPENCORTEX_TOKEN`) take highest priority.
 
 ---
 

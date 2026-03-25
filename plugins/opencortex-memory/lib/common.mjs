@@ -14,7 +14,7 @@ const STATE_DIR = join(PROJECT_DIR, '.opencortex', 'memory');
 export const STATE_FILE = join(STATE_DIR, 'session_state.json');
 
 // ── Default MCP config ──────────────────────────────────────────────────
-const DEFAULT_MCP_CONFIG = {
+export const DEFAULT_MCP_CONFIG = {
   mode: 'local',
   token: '',
   local: { http_port: 8921 },
@@ -102,6 +102,22 @@ export function ensureDefaultConfig() {
 
   writeFileSync(mcpPath, JSON.stringify(mcpData, null, 2) + '\n');
   _mcpConfig = undefined; // Invalidate cache so next getMcpConfig() reads the new file
+  return mcpPath;
+}
+
+/**
+ * Write MCP config to ~/.opencortex/mcp.json.
+ * Merges with DEFAULT_MCP_CONFIG and invalidates the in-memory cache.
+ */
+export function writeMcpConfig(data) {
+  const configDir = join(homedir(), '.opencortex');
+  const mcpPath = join(configDir, 'mcp.json');
+  mkdirSync(configDir, { recursive: true });
+  const merged = { ...DEFAULT_MCP_CONFIG, ...data };
+  if (data.local) merged.local = { ...DEFAULT_MCP_CONFIG.local, ...data.local };
+  if (data.remote) merged.remote = { ...DEFAULT_MCP_CONFIG.remote, ...data.remote };
+  writeFileSync(mcpPath, JSON.stringify(merged, null, 2) + '\n');
+  _mcpConfig = undefined;
   return mcpPath;
 }
 

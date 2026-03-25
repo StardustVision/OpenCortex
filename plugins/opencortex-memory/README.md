@@ -1,25 +1,59 @@
 # opencortex-memory
 
-OpenCortex MCP server package for Codex, Claude, and other MCP clients.
+OpenCortex MCP server package for Claude Code, Codex, and other MCP clients.
 
-## Quick start
+## Install
 
-Use with Codex CLI:
+**Claude Code:**
+
+```
+/plugin install
+```
+
+Select `opencortex-memory`, then run:
+
+```bash
+npx opencortex-cli setup
+```
+
+The setup wizard will guide you through local/remote mode, server URL, and JWT token configuration.
+
+**Codex CLI:**
 
 ```bash
 codex mcp add opencortex -- npx -y opencortex-memory
+npx opencortex-cli setup
 ```
 
-Or run directly:
+**Run directly:**
 
 ```bash
 npx -y opencortex-memory
 ```
 
-The server reads MCP client config from `mcp.json` in your project, then falls back to `~/.opencortex/mcp.json`.
+## Verify
+
+```bash
+npx opencortex-cli health
+```
+
+## Configuration
+
+The setup wizard writes config to `~/.opencortex/mcp.json`. You can also edit it manually:
+
+```json
+{
+  "mode": "remote",
+  "token": "<jwt-token>",
+  "remote": { "http_url": "http://your-server:8921" }
+}
+```
+
+Config search order: `./mcp.json` (project) > `~/.opencortex/mcp.json` (global).
+
+Environment variable overrides: `OPENCORTEX_MODE`, `OPENCORTEX_HTTP_URL`, `OPENCORTEX_TOKEN`, `OPENCORTEX_HTTP_PORT`.
 
 ## Included binaries
 
-- `opencortex-mcp` (default MCP stdio server entrypoint)
-- `opencortex-cli` (utility CLI for health/store/recall/status)
-
+- `opencortex-mcp` — MCP stdio server
+- `opencortex-cli` — CLI (setup, health, store, recall, status, feedback, decay)
