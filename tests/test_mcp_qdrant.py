@@ -2,7 +2,7 @@
 MCP Server integration tests with real Qdrant adapter.
 
 Tests the full MCP tool pipeline using:
-- Real Volcengine embedding API (~/.openviking/ov.conf)
+- Real embedding API (~/.openviking/ov.conf, legacy config)
 - Embedded Qdrant (local path, no external process)
 - FastMCP in-process Client (no network)
 
@@ -34,7 +34,7 @@ _HAS_CONF = _OV_CONF.exists()
 
 
 def _create_qdrant_mcp_server(tmpdir: str):
-    """Create a FastMCP server wired to real Qdrant + Volcengine embedder."""
+    """Create a FastMCP server wired to real Qdrant + legacy embedder."""
     from contextlib import asynccontextmanager
     from fastmcp import FastMCP
 
@@ -45,9 +45,12 @@ def _create_qdrant_mcp_server(tmpdir: str):
     )
     init_config(config)
 
-    from opencortex.models.embedder.volcengine_embedders import (
-        create_embedder_from_ov_conf,
-    )
+    try:
+        from opencortex.models.embedder.volcengine_embedders import (
+            create_embedder_from_ov_conf,
+        )
+    except ImportError:
+        raise unittest.SkipTest("volcengine_embedders module not available")
     embedder = create_embedder_from_ov_conf()
 
     from opencortex.storage.qdrant.adapter import QdrantStorageAdapter
@@ -95,7 +98,7 @@ def _create_qdrant_mcp_server(tmpdir: str):
 
 @unittest.skipUnless(_HAS_CONF, "~/.openviking/ov.conf not found")
 class TestMCPQdrant(unittest.TestCase):
-    """MCP tool tests with real Qdrant + Volcengine embeddings."""
+    """MCP tool tests with real Qdrant + embeddings."""
 
     _tmpdir: str
 

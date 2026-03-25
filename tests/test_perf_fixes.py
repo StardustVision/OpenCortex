@@ -33,15 +33,6 @@ class TestEmbedderCache(unittest.TestCase):
             oc._create_default_embedder()
         return mock_wrap
 
-    def test_volcengine_embedder_wrapped_with_cache(self):
-        oc = _make_oc("volcengine", "ep-test-model")
-        mock_wrap = self._run_with_mocked_provider(
-            oc,
-            "opencortex.models.embedder.volcengine_embedders",
-            "VolcengineDenseEmbedder",
-        )
-        mock_wrap.assert_called_once()
-
     def test_openai_embedder_wrapped_with_cache(self):
         oc = _make_oc("openai")
         mock_wrap = self._run_with_mocked_provider(

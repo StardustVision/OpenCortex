@@ -286,8 +286,8 @@ class TestMCPLive(unittest.TestCase):
         """memory_search via MCP remote mode returns Qdrant results.
 
         Note: search involves Embedding + Rerank LLM calls through the
-        MCP→HTTP→Volcengine chain, which may exceed the 30s default
-        timeout in OpenCortexClient. Timeout is acceptable.
+        MCP→HTTP chain, which may exceed the 30s default timeout in
+        OpenCortexClient. Timeout is acceptable.
         """
         async def check():
             async with Client(MCP_URL) as client:

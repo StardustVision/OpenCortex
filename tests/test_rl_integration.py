@@ -4,8 +4,8 @@ RL integration tests for OpenCortex.
 Tests the full reinforcement learning pipeline through the Orchestrator:
   feedback → update_reward → get_profile → decay → protect → search boost
 
-Uses real Volcengine embedding API + embedded Qdrant (no external vector DB).
-Requires ~/.openviking/ov.conf with embedding.dense credentials.
+Uses real embedding API + embedded Qdrant (no external vector DB).
+Requires ~/.openviking/ov.conf (legacy config) with embedding credentials.
 
 Run:
     PYTHONPATH=src uv run python -m unittest tests.test_rl_integration -v
@@ -49,10 +49,13 @@ class TestRLIntegration(unittest.TestCase):
 
         init_config(CortexConfig())
 
-        from opencortex.models.embedder.volcengine_embedders import (
-            create_embedder_from_ov_conf,
-        )
-        embedder = create_embedder_from_ov_conf()
+        try:
+            from opencortex.models.embedder.volcengine_embedders import (
+                create_embedder_from_ov_conf,
+            )
+            embedder = create_embedder_from_ov_conf()
+        except ImportError:
+            raise unittest.SkipTest("volcengine_embedders module not available")
 
         from opencortex.storage.qdrant.adapter import QdrantStorageAdapter
         storage = QdrantStorageAdapter(path=qdrant_path, embedding_dim=embedder.get_dimension())
