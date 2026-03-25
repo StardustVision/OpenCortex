@@ -1,0 +1,400 @@
+{
+  "mode": "conversation",
+  "dataset": "hotpotqa",
+  "retrieval": {
+    "recall@1": 0.0,
+    "precision@1": 0.0,
+    "hit_rate@1": 0.0,
+    "recall@3": 0.0,
+    "precision@3": 0.0,
+    "hit_rate@3": 0.0,
+    "recall@5": 0.0,
+    "precision@5": 0.0,
+    "hit_rate@5": 0.0,
+    "mrr": 0.0,
+    "evaluated_count": 0,
+    "skipped_no_ground_truth": 10,
+    "by_category": {}
+  },
+  "accuracy": {
+    "f1": {
+      "overall": 0.1074,
+      "by_category": {
+        "comparison": {
+          "f1": 0.3333,
+          "n": 3
+        },
+        "bridge": {
+          "f1": 0.0106,
+          "n": 7
+        }
+      },
+      "excluded_categories": [
+        "5"
+      ]
+    },
+    "baseline_f1": 0.7571,
+    "baseline_by_category": {
+      "comparison": {
+        "f1": 1.0,
+        "n": 3
+      },
+      "bridge": {
+        "f1": 0.6531,
+        "n": 7
+      }
+    },
+    "delta_f1": "-0.6497",
+    "oc_em": 0.1,
+    "bl_em": 0.7,
+    "sp_f1": 0.0,
+    "joint_f1": 0.0,
+    "jscore": {
+      "overall": 0.1,
+      "by_category": {
+        "comparison": {
+          "jscore": 0.3333,
+          "n": 3
+        },
+        "bridge": {
+          "jscore": 0.0,
+          "n": 7
+        }
+      },
+      "baseline_overall": 0.8,
+      "baseline_by_category": {
+        "comparison": {
+          "jscore": 1.0,
+          "n": 3
+        },
+        "bridge": {
+          "jscore": 0.7143,
+          "n": 7
+        }
+      },
+      "delta": "-0.7000"
+    }
+  },
+  "token_reduction": {
+    "baseline_avg_tokens": 2010,
+    "oc_avg_tokens": 1671,
+    "baseline_total_tokens": 20097,
+    "oc_total_tokens": 16707,
+    "reduction_pct": 16.9,
+    "raw_baseline_avg_tokens": 1933,
+    "truncation_applied": false,
+    "max_context_tokens": 32000
+  },
+  "latency": {
+    "p50_ms": 7103.6,
+    "p95_ms": 10344.8,
+    "p99_ms": 10573.9,
+    "mean_ms": 7074.2,
+    "min_ms": 3142.5,
+    "max_ms": 10631.1,
+    "count": 10
+  },
+  "metadata": {
+    "timestamp": "2026-03-16T15:04:23.580290+00:00",
+    "run_id": "eval_hotpotqa_10",
+    "llm_model": "Qwen3-235B-A22B-Instruct-2507",
+    "server": "http://127.0.0.1:8921",
+    "dataset_path": "benchmarks/datasets/hotpotqa/hotpot_dev_distractor_v1.json",
+    "top_k": 10,
+    "max_context_tokens": 32000,
+    "concurrency": 5,
+    "total_qa": 10,
+    "enable_llm_judge": false,
+    "jscore_enabled": true,
+    "seed": 42
+  },
+  "per_query": [
+    {
+      "question": "Were Scott Derrickson and Ed Wood of the same nationality?",
+      "answer": "yes",
+      "category": "comparison",
+      "expected_uris": [],
+      "latency_ms": 8777.16879104264,
+      "retrieved_uris": [
+        "opencortex://eval_qasper_clean/resources/public/76e8aa4e7c51",
+        "opencortex://eval_pmem_clean/user/eval_runner/memories/events/Do_not_remember_Enjoys_diner-style_breakf_30306742",
+        "opencortex://eval_qasper_clean/resources/public/f87ad39812fb",
+        "opencortex://eval_pmem_clean/user/eval_runner/memories/events/Do_not_remember_Struggled_to_find_LGBTQ_f_436d3098",
+        "opencortex://eval_qasper_clean/resources/public/21ea69fb0b13",
+        "opencortex://eval_qasper_clean/resources/public/01fc4d9f6f8a",
+        "opencortex://eval_qasper_clean/resources/public/7b26d1dcdc03"
+      ],
+      "oc_prediction": "Not mentioned",
+      "oc_prompt_tokens": 1671,
+      "bl_prediction": "Yes",
+      "baseline_prompt_tokens": 1474,
+      "raw_baseline_tokens": 1405,
+      "oc_f1": 0.0,
+      "bl_f1": 1.0,
+      "oc_em": 0.0,
+      "bl_em": 1.0,
+      "sp_f1": 0.0,
+      "joint_f1": 0.0,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What government position was held by the woman who portrayed Corliss Archer in the film Kiss and Tell?",
+      "answer": "Chief of Protocol",
+      "category": "bridge",
+      "expected_uris": [],
+      "latency_ms": 9994.851291063242,
+      "retrieved_uris": [
+        "opencortex://eval_qasper_clean/resources/public/76e8aa4e7c51",
+        "opencortex://eval_qasper_clean/resources/public/7b26d1dcdc03",
+        "opencortex://eval_qasper_clean/resources/public/f87ad39812fb",
+        "opencortex://eval_qasper_clean/resources/public/01fc4d9f6f8a",
+        "opencortex://eval_qasper_clean/resources/public/5c98ada947dc",
+        "opencortex://eval_qasper_clean/resources/public/259dac6dbb2d"
+      ],
+      "oc_prediction": "None of the provided texts contain information about the woman who portrayed Corliss Archer in the film *Kiss and Tell* or any government position she may have held.",
+      "oc_prompt_tokens": 1499,
+      "bl_prediction": "United States ambassador to Ghana and to Czechoslovakia",
+      "baseline_prompt_tokens": 1594,
+      "raw_baseline_tokens": 1512,
+      "oc_f1": 0.07407407407407407,
+      "bl_f1": 0.0,
+      "oc_em": 0.0,
+      "bl_em": 0.0,
+      "sp_f1": 0.0,
+      "joint_f1": 0.0,
+      "oc_jscore": 0.0,
+      "bl_jscore": 0.0
+    },
+    {
+      "question": "What science fantasy young adult series, told in first person, has a set of companion books narrating the stories of enslaved worlds and alien species?",
+      "answer": "Animorphs",
+      "category": "bridge",
+      "expected_uris": [],
+      "latency_ms": 8243.093249970116,
+      "retrieved_uris": [
+        "opencortex://eval_qasper_clean/resources/public/8173101f1af6",
+        "opencortex://eval_pmem_clean/user/eval_runner/memories/events/Do_not_remember_Reads_crime_mystery_novel_c9633de2",
+        "opencortex://eval_qasper_clean/resources/public/b42187fdd160",
+        "opencortex://eval_qasper_clean/resources/public/1b84924869d5",
+        "opencortex://eval_pmem_clean/user/eval_runner/memories/events/Do_not_remember_Enjoys_diner-style_breakf_30306742",
+        "opencortex://eval_qasper_clean/resources/public/2b4155f4cf3b",
+        "opencortex://eval_qasper_clean/resources/public/dd8e7fb12ed8",
+        "opencortex://eval_qasper_clean/resources/public/90f021f0a60e"
+      ],
+      "oc_prediction": "No relevant information provided",
+      "oc_prompt_tokens": 1985,
+      "bl_prediction": "Animorphs",
+      "baseline_prompt_tokens": 2099,
+      "raw_baseline_tokens": 2002,
+      "oc_f1": 0.0,
+      "bl_f1": 1.0,
+      "oc_em": 0.0,
+      "bl_em": 1.0,
+      "sp_f1": 0.0,
+      "joint_f1": 0.0,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "Are the Laleli Mosque and Esma Sultan Mansion located in the same neighborhood?",
+      "answer": "no",
+      "category": "comparison",
+      "expected_uris": [],
+      "latency_ms": 10631.117124925368,
+      "retrieved_uris": [
+        "opencortex://eval_qasper_clean/resources/public/b6183cc623ef",
+        "opencortex://eval_qasper_clean/resources/public/76e8aa4e7c51",
+        "opencortex://eval_qasper_clean/resources/public/2b34e4e7b2eb",
+        "opencortex://eval_qasper_clean/resources/public/2b39a494493a",
+        "opencortex://eval_pmem_clean/user/eval_runner/memories/events/Do_not_remember_Struggled_to_find_LGBTQ_f_436d3098",
+        "opencortex://eval_qasper_clean/resources/public/7b26d1dcdc03",
+        "opencortex://eval_qasper_clean/resources/public/01fc4d9f6f8a"
+      ],
+      "oc_prediction": "No",
+      "oc_prompt_tokens": 1798,
+      "bl_prediction": "No",
+      "baseline_prompt_tokens": 1149,
+      "raw_baseline_tokens": 1074,
+      "oc_f1": 1.0,
+      "bl_f1": 1.0,
+      "oc_em": 1.0,
+      "bl_em": 1.0,
+      "sp_f1": 0.0,
+      "joint_f1": 0.0,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "The director of the romantic comedy \"Big Stone Gap\" is based in what New York city?",
+      "answer": "Greenwich Village, New York City",
+      "category": "bridge",
+      "expected_uris": [],
+      "latency_ms": 4422.095625079237,
+      "retrieved_uris": [
+        "opencortex://eval_qasper_clean/resources/public/519818db4628",
+        "opencortex://eval_qasper_clean/resources/public/7680e3f7c7ae",
+        "opencortex://eval_qasper_clean/resources/public/01fc4d9f6f8a",
+        "opencortex://eval_qasper_clean/resources/public/c8d8f5367214",
+        "opencortex://eval_qasper_clean/resources/public/d27c09347bce",
+        "opencortex://eval_qasper_clean/resources/public/a59e3ec8595a"
+      ],
+      "oc_prediction": "Not specified",
+      "oc_prompt_tokens": 1446,
+      "bl_prediction": "Greenwich Village",
+      "baseline_prompt_tokens": 1803,
+      "raw_baseline_tokens": 1726,
+      "oc_f1": 0.0,
+      "bl_f1": 0.5714285714285715,
+      "oc_em": 0.0,
+      "bl_em": 0.0,
+      "sp_f1": 0.0,
+      "joint_f1": 0.0,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "2014 S/S is the debut album of a South Korean boy group that was formed by who?",
+      "answer": "YG Entertainment",
+      "category": "bridge",
+      "expected_uris": [],
+      "latency_ms": 3142.506708041765,
+      "retrieved_uris": [
+        "opencortex://eval_qasper_clean/resources/public/8173101f1af6",
+        "opencortex://eval_qasper_clean/resources/public/34a1717099e9",
+        "opencortex://eval_qasper_clean/resources/public/16570cd44b05",
+        "opencortex://eval_qasper_clean/resources/public/5236e36374c0",
+        "opencortex://eval_qasper_clean/resources/public/2b4155f4cf3b",
+        "opencortex://eval_qasper_clean/resources/public/00261bf86c27"
+      ],
+      "oc_prediction": "Not in context",
+      "oc_prompt_tokens": 1567,
+      "bl_prediction": "YG Entertainment",
+      "baseline_prompt_tokens": 1592,
+      "raw_baseline_tokens": 1517,
+      "oc_f1": 0.0,
+      "bl_f1": 1.0,
+      "oc_em": 0.0,
+      "bl_em": 1.0,
+      "sp_f1": 0.0,
+      "joint_f1": 0.0,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "Who was known by his stage name Aladin and helped organizations improve their performance as a consultant?",
+      "answer": "Eenasul Fateh",
+      "category": "bridge",
+      "expected_uris": [],
+      "latency_ms": 9625.832707970403,
+      "retrieved_uris": [
+        "opencortex://eval_qasper_clean/resources/public/a3ec569f0136",
+        "opencortex://eval_qasper_clean/resources/public/5a6f4b655a1d",
+        "opencortex://eval_qasper_clean/resources/public/1d4906adf38b",
+        "opencortex://eval_qasper_clean/resources/public/db7a4ade5664",
+        "opencortex://eval_qasper_clean/resources/public/79511f33b35a",
+        "opencortex://eval_qasper_clean/resources/public/1a1567276065",
+        "opencortex://eval_qasper_clean/resources/public/72a190376496",
+        "opencortex://eval_qasper_clean/resources/public/0d294e036a3b"
+      ],
+      "oc_prediction": "No information provided",
+      "oc_prompt_tokens": 2011,
+      "bl_prediction": "Eenasul Fateh",
+      "baseline_prompt_tokens": 2451,
+      "raw_baseline_tokens": 2367,
+      "oc_f1": 0.0,
+      "bl_f1": 1.0,
+      "oc_em": 0.0,
+      "bl_em": 1.0,
+      "sp_f1": 0.0,
+      "joint_f1": 0.0,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "The arena where the Lewiston Maineiacs played their home games can seat how many people?",
+      "answer": "3,677 seated",
+      "category": "bridge",
+      "expected_uris": [],
+      "latency_ms": 5680.247167008929,
+      "retrieved_uris": [
+        "opencortex://eval_qasper_clean/resources/public/2b39a494493a",
+        "opencortex://eval_qasper_clean/resources/public/16570cd44b05",
+        "opencortex://eval_qasper_clean/resources/public/b6183cc623ef",
+        "opencortex://eval_qasper_clean/resources/public/34a1717099e9",
+        "opencortex://eval_qasper_clean/resources/public/2b4155f4cf3b",
+        "opencortex://eval_qasper_clean/resources/public/5236e36374c0",
+        "opencortex://eval_qasper_clean/resources/public/07fdb413dc9f"
+      ],
+      "oc_prediction": "The provided context does not contain information about the Lewiston Maineiacs or the seating capacity of their home arena.",
+      "oc_prompt_tokens": 1906,
+      "bl_prediction": "3,677 seated",
+      "baseline_prompt_tokens": 4309,
+      "raw_baseline_tokens": 4231,
+      "oc_f1": 0.0,
+      "bl_f1": 1.0,
+      "oc_em": 0.0,
+      "bl_em": 1.0,
+      "sp_f1": 0.0,
+      "joint_f1": 0.0,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "Who is older, Annie Morton or Terry Richardson?",
+      "answer": "Terry Richardson",
+      "category": "bridge",
+      "expected_uris": [],
+      "latency_ms": 5964.046709006652,
+      "retrieved_uris": [
+        "opencortex://eval_qasper_clean/resources/public/779e104fc4e0",
+        "opencortex://eval_qasper_clean/resources/public/2b34e4e7b2eb",
+        "opencortex://eval_pmem_clean/user/eval_runner/memories/events/Do_not_remember_Reads_crime_mystery_novel_c9633de2",
+        "opencortex://eval_pmem_clean/user/eval_runner/memories/events/Do_not_remember_Has_lactose_intolerance_d_d18ccf3e",
+        "opencortex://eval_qasper_clean/resources/public/0afe68b89b27",
+        "opencortex://eval_qasper_clean/resources/public/21ea69fb0b13"
+      ],
+      "oc_prediction": "Not specified",
+      "oc_prompt_tokens": 1299,
+      "bl_prediction": "Annie Morton",
+      "baseline_prompt_tokens": 1765,
+      "raw_baseline_tokens": 1700,
+      "oc_f1": 0.0,
+      "bl_f1": 0.0,
+      "oc_em": 0.0,
+      "bl_em": 0.0,
+      "sp_f1": 0.0,
+      "joint_f1": 0.0,
+      "oc_jscore": 0.0,
+      "bl_jscore": 0.0
+    },
+    {
+      "question": "Are Local H and For Against both from the United States?",
+      "answer": "yes",
+      "category": "comparison",
+      "expected_uris": [],
+      "latency_ms": 4260.9225830528885,
+      "retrieved_uris": [
+        "opencortex://eval_qasper_clean/resources/public/edfebdfdf8ed",
+        "opencortex://eval_qasper_clean/resources/public/1a1567276065",
+        "opencortex://eval_qasper_clean/resources/public/5a6f4b655a1d",
+        "opencortex://eval_qasper_clean/resources/public/2b39a494493a",
+        "opencortex://eval_qasper_clean/resources/public/f9e8f4160a16",
+        "opencortex://eval_qasper_clean/resources/public/f87ad39812fb"
+      ],
+      "oc_prediction": "No",
+      "oc_prompt_tokens": 1525,
+      "bl_prediction": "Yes",
+      "baseline_prompt_tokens": 1861,
+      "raw_baseline_tokens": 1792,
+      "oc_f1": 0.0,
+      "bl_f1": 1.0,
+      "oc_em": 0.0,
+      "bl_em": 1.0,
+      "sp_f1": 0.0,
+      "joint_f1": 0.0,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    }
+  ]
+}

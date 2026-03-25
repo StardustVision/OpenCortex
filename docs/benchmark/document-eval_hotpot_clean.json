@@ -1,0 +1,481 @@
+{
+  "mode": "document",
+  "dataset": "hotpotqa",
+  "retrieval": {
+    "recall@1": 0.4,
+    "precision@1": 0.8,
+    "hit_rate@1": 0.8,
+    "recall@3": 0.9,
+    "precision@3": 0.6,
+    "hit_rate@3": 1.0,
+    "recall@5": 0.95,
+    "precision@5": 0.38,
+    "hit_rate@5": 1.0,
+    "mrr": 0.9,
+    "evaluated_count": 10,
+    "skipped_no_ground_truth": 0,
+    "by_category": {
+      "comparison": {
+        "recall@1": 0.5,
+        "precision@1": 1.0,
+        "hit_rate@1": 1.0,
+        "recall@3": 0.8333,
+        "precision@3": 0.5556,
+        "hit_rate@3": 1.0,
+        "recall@5": 1.0,
+        "precision@5": 0.4,
+        "hit_rate@5": 1.0,
+        "mrr": 1.0,
+        "count": 3.0
+      },
+      "bridge": {
+        "recall@1": 0.3571,
+        "precision@1": 0.7143,
+        "hit_rate@1": 0.7143,
+        "recall@3": 0.9286,
+        "precision@3": 0.619,
+        "hit_rate@3": 1.0,
+        "recall@5": 0.9286,
+        "precision@5": 0.3714,
+        "hit_rate@5": 1.0,
+        "mrr": 0.8571,
+        "count": 7.0
+      }
+    }
+  },
+  "accuracy": {
+    "f1": {
+      "overall": 0.6121,
+      "by_category": {
+        "comparison": {
+          "f1": 0.4111,
+          "n": 3
+        },
+        "bridge": {
+          "f1": 0.6983,
+          "n": 7
+        }
+      },
+      "excluded_categories": [
+        "5"
+      ]
+    },
+    "baseline_f1": 0.5105,
+    "baseline_by_category": {
+      "comparison": {
+        "f1": 0.4444,
+        "n": 3
+      },
+      "bridge": {
+        "f1": 0.5388,
+        "n": 7
+      }
+    },
+    "delta_f1": "+0.1017",
+    "oc_em": 0.2,
+    "bl_em": 0.2,
+    "sp_f1": 0.3678,
+    "joint_f1": 0.2213,
+    "jscore": {
+      "overall": 1.0,
+      "by_category": {
+        "comparison": {
+          "jscore": 1.0,
+          "n": 3
+        },
+        "bridge": {
+          "jscore": 1.0,
+          "n": 7
+        }
+      },
+      "baseline_overall": 0.8,
+      "baseline_by_category": {
+        "comparison": {
+          "jscore": 1.0,
+          "n": 3
+        },
+        "bridge": {
+          "jscore": 0.7143,
+          "n": 7
+        }
+      },
+      "delta": "+0.2000"
+    }
+  },
+  "token_reduction": {
+    "baseline_avg_tokens": 1985,
+    "oc_avg_tokens": 1985,
+    "baseline_total_tokens": 19846,
+    "oc_total_tokens": 19853,
+    "reduction_pct": -0.0,
+    "raw_baseline_avg_tokens": 1933,
+    "truncation_applied": false,
+    "max_context_tokens": 32000
+  },
+  "latency": {
+    "p50_ms": 3450.7,
+    "p95_ms": 6832.7,
+    "p99_ms": 8176.8,
+    "mean_ms": 3811.0,
+    "min_ms": 2006.3,
+    "max_ms": 8512.8,
+    "count": 10
+  },
+  "metadata": {
+    "timestamp": "2026-03-16T10:46:10.751244+00:00",
+    "run_id": "eval_hotpot_clean",
+    "llm_model": "Qwen3-235B-A22B-Instruct-2507",
+    "server": "http://127.0.0.1:8921",
+    "dataset_path": "benchmarks/datasets/hotpotqa/hotpot_dev_distractor_v1.json",
+    "top_k": 10,
+    "max_context_tokens": 32000,
+    "concurrency": 2,
+    "total_qa": 10,
+    "enable_llm_judge": false,
+    "jscore_enabled": true,
+    "seed": 42
+  },
+  "per_query": [
+    {
+      "question": "Were Scott Derrickson and Ed Wood of the same nationality?",
+      "answer": "yes",
+      "category": "comparison",
+      "expected_uris": [
+        "opencortex://eval_hotpot_clean/resources/public/Ed_Wood",
+        "opencortex://eval_hotpot_clean/resources/public/Scott_Derrickson"
+      ],
+      "latency_ms": 2006.2738750129938,
+      "retrieved_uris": [
+        "opencortex://eval_hotpot_clean/resources/public/Scott_Derrickson",
+        "opencortex://eval_hotpot_clean/resources/public/Adam_Collis",
+        "opencortex://eval_hotpot_clean/resources/public/Sinister_film",
+        "opencortex://eval_hotpot_clean/resources/public/Ed_Wood",
+        "opencortex://eval_hotpot_clean/resources/public/Deliver_Us_from_Evil_2014_film",
+        "opencortex://eval_hotpot_clean/resources/public/Doctor_Strange_2016_film",
+        "opencortex://eval_hotpot_clean/resources/public/Ed_Wood_film",
+        "opencortex://eval_hotpot_clean/resources/public/Conrad_Brooks",
+        "opencortex://eval_hotpot_clean/resources/public/Local_H",
+        "opencortex://eval_hotpot_clean/resources/public/United_States_Senate_election_in_Illinois_1978"
+      ],
+      "oc_prediction": "Yes, both American filmmakers.",
+      "oc_prompt_tokens": 2211,
+      "bl_prediction": "Yes, both American.",
+      "baseline_prompt_tokens": 1449,
+      "raw_baseline_tokens": 1405,
+      "oc_f1": 0.4,
+      "bl_f1": 0.5,
+      "oc_em": 0.0,
+      "bl_em": 0.0,
+      "sp_f1": 0.33333333333333337,
+      "joint_f1": 0.13333333333333336,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What government position was held by the woman who portrayed Corliss Archer in the film Kiss and Tell?",
+      "answer": "Chief of Protocol",
+      "category": "bridge",
+      "expected_uris": [
+        "opencortex://eval_hotpot_clean/resources/public/Shirley_Temple",
+        "opencortex://eval_hotpot_clean/resources/public/Kiss_and_Tell_1945_film"
+      ],
+      "latency_ms": 2913.432625005953,
+      "retrieved_uris": [
+        "opencortex://eval_hotpot_clean/resources/public/A_Kiss_for_Corliss",
+        "opencortex://eval_hotpot_clean/resources/public/Kiss_and_Tell_1945_film",
+        "opencortex://eval_hotpot_clean/resources/public/Shirley_Temple",
+        "opencortex://eval_hotpot_clean/resources/public/Meet_Corliss_Archer",
+        "opencortex://eval_hotpot_clean/resources/public/Janet_Waldo",
+        "opencortex://eval_hotpot_clean/resources/public/Meet_Corliss_Archer_TV_series",
+        "opencortex://eval_hotpot_clean/resources/public/Charles_Craft",
+        "opencortex://eval_hotpot_clean/resources/public/United_States_Senate_election_in_Illinois_1978",
+        "opencortex://eval_hotpot_clean/resources/public/Adam_Collis",
+        "opencortex://eval_hotpot_clean/resources/public/Victoria_Hanley"
+      ],
+      "oc_prediction": "U.S. Ambassador and Chief of Protocol",
+      "oc_prompt_tokens": 2235,
+      "bl_prediction": "U.S. Ambassador",
+      "baseline_prompt_tokens": 1569,
+      "raw_baseline_tokens": 1512,
+      "oc_f1": 0.7499999999999999,
+      "bl_f1": 0.0,
+      "oc_em": 0.0,
+      "bl_em": 0.0,
+      "sp_f1": 0.33333333333333337,
+      "joint_f1": 0.25,
+      "oc_jscore": 1.0,
+      "bl_jscore": 0.0
+    },
+    {
+      "question": "What science fantasy young adult series, told in first person, has a set of companion books narrating the stories of enslaved worlds and alien species?",
+      "answer": "Animorphs",
+      "category": "bridge",
+      "expected_uris": [
+        "opencortex://eval_hotpot_clean/resources/public/Animorphs",
+        "opencortex://eval_hotpot_clean/resources/public/The_Hork-Bajir_Chronicles"
+      ],
+      "latency_ms": 4779.2254579253495,
+      "retrieved_uris": [
+        "opencortex://eval_hotpot_clean/resources/public/Animorphs",
+        "opencortex://eval_hotpot_clean/resources/public/Victoria_Hanley",
+        "opencortex://eval_hotpot_clean/resources/public/Index_Magazine",
+        "opencortex://eval_hotpot_clean/resources/public/List_of_Square_Enix_companion_books",
+        "opencortex://eval_hotpot_clean/resources/public/Shadowshaper",
+        "opencortex://eval_hotpot_clean/resources/public/Left_Behind_The_Kids",
+        "opencortex://eval_hotpot_clean/resources/public/Etiquette_amp_Espionage",
+        "opencortex://eval_hotpot_clean/resources/public/The_Divide_trilogy",
+        "opencortex://eval_hotpot_clean/resources/public/Hamish_and_Andy_s_Gap_Year",
+        "opencortex://eval_hotpot_clean/resources/public/The_Hork-Bajir_Chronicles"
+      ],
+      "oc_prediction": "Animorphs series companion books",
+      "oc_prompt_tokens": 2377,
+      "bl_prediction": "Animorphs companion books series",
+      "baseline_prompt_tokens": 2073,
+      "raw_baseline_tokens": 2002,
+      "oc_f1": 0.4,
+      "bl_f1": 0.4,
+      "oc_em": 0.0,
+      "bl_em": 0.0,
+      "sp_f1": 0.33333333333333337,
+      "joint_f1": 0.13333333333333336,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "Are the Laleli Mosque and Esma Sultan Mansion located in the same neighborhood?",
+      "answer": "no",
+      "category": "comparison",
+      "expected_uris": [
+        "opencortex://eval_hotpot_clean/resources/public/Laleli_Mosque",
+        "opencortex://eval_hotpot_clean/resources/public/Esma_Sultan_Mansion"
+      ],
+      "latency_ms": 4244.455583044328,
+      "retrieved_uris": [
+        "opencortex://eval_hotpot_clean/resources/public/Laleli_Mosque",
+        "opencortex://eval_hotpot_clean/resources/public/Esma_Sultan_Mansion",
+        "opencortex://eval_hotpot_clean/resources/public/Sultan_Ahmed_Mosque",
+        "opencortex://eval_hotpot_clean/resources/public/Gevheri_Kadın",
+        "opencortex://eval_hotpot_clean/resources/public/Djamaâ_el_Kebir",
+        "opencortex://eval_hotpot_clean/resources/public/Esma_Sultan_daughter_of_Abdülaziz",
+        "opencortex://eval_hotpot_clean/resources/public/Esma_Sultan_daughter_of_Ahmed_III"
+      ],
+      "oc_prediction": "No, different neighborhoods.",
+      "oc_prompt_tokens": 1605,
+      "bl_prediction": "No, different neighborhoods.",
+      "baseline_prompt_tokens": 1124,
+      "raw_baseline_tokens": 1074,
+      "oc_f1": 0.5,
+      "bl_f1": 0.5,
+      "oc_em": 0.0,
+      "bl_em": 0.0,
+      "sp_f1": 0.4444444444444445,
+      "joint_f1": 0.22222222222222224,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "The director of the romantic comedy \"Big Stone Gap\" is based in what New York city?",
+      "answer": "Greenwich Village, New York City",
+      "category": "bridge",
+      "expected_uris": [
+        "opencortex://eval_hotpot_clean/resources/public/Big_Stone_Gap_film",
+        "opencortex://eval_hotpot_clean/resources/public/Adriana_Trigiani"
+      ],
+      "latency_ms": 2068.268832983449,
+      "retrieved_uris": [
+        "opencortex://eval_hotpot_clean/resources/public/Big_Stone_Gap_film",
+        "opencortex://eval_hotpot_clean/resources/public/Adriana_Trigiani",
+        "opencortex://eval_hotpot_clean/resources/public/Hamish_and_Andy_s_Gap_Year",
+        "opencortex://eval_hotpot_clean/resources/public/Kingston_Morning",
+        "opencortex://eval_hotpot_clean/resources/public/New_York_Society_of_Model_Engineers",
+        "opencortex://eval_hotpot_clean/resources/public/Adam_Collis",
+        "opencortex://eval_hotpot_clean/resources/public/Conrad_Brooks",
+        "opencortex://eval_hotpot_clean/resources/public/Great_Eastern_Conventions",
+        "opencortex://eval_hotpot_clean/resources/public/Clinton_Minnesota",
+        "opencortex://eval_hotpot_clean/resources/public/I_Love_NY_2015_film"
+      ],
+      "oc_prediction": "Greenwich Village, New York City",
+      "oc_prompt_tokens": 2398,
+      "bl_prediction": "Greenwich Village, New York City",
+      "baseline_prompt_tokens": 1778,
+      "raw_baseline_tokens": 1726,
+      "oc_f1": 1.0,
+      "bl_f1": 1.0,
+      "oc_em": 1.0,
+      "bl_em": 1.0,
+      "sp_f1": 0.33333333333333337,
+      "joint_f1": 0.33333333333333337,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "2014 S/S is the debut album of a South Korean boy group that was formed by who?",
+      "answer": "YG Entertainment",
+      "category": "bridge",
+      "expected_uris": [
+        "opencortex://eval_hotpot_clean/resources/public/Winner_band",
+        "opencortex://eval_hotpot_clean/resources/public/2014_S_S"
+      ],
+      "latency_ms": 2831.5483330516145,
+      "retrieved_uris": [
+        "opencortex://eval_hotpot_clean/resources/public/History_band",
+        "opencortex://eval_hotpot_clean/resources/public/2014_S_S",
+        "opencortex://eval_hotpot_clean/resources/public/Winner_band",
+        "opencortex://eval_hotpot_clean/resources/public/SF9_band",
+        "opencortex://eval_hotpot_clean/resources/public/Seventeen_discography",
+        "opencortex://eval_hotpot_clean/resources/public/Madtown",
+        "opencortex://eval_hotpot_clean/resources/public/Cho_Kyuhyun",
+        "opencortex://eval_hotpot_clean/resources/public/BTS_discography",
+        "opencortex://eval_hotpot_clean/resources/public/Suffrajett",
+        "opencortex://eval_hotpot_clean/resources/public/List_of_awards_and_nominations_received_by_Shinee"
+      ],
+      "oc_prediction": "YG Entertainment",
+      "oc_prompt_tokens": 2232,
+      "bl_prediction": "YG Entertainment",
+      "baseline_prompt_tokens": 1567,
+      "raw_baseline_tokens": 1517,
+      "oc_f1": 1.0,
+      "bl_f1": 1.0,
+      "oc_em": 1.0,
+      "bl_em": 1.0,
+      "sp_f1": 0.33333333333333337,
+      "joint_f1": 0.33333333333333337,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "Who was known by his stage name Aladin and helped organizations improve their performance as a consultant?",
+      "answer": "Eenasul Fateh",
+      "category": "bridge",
+      "expected_uris": [
+        "opencortex://eval_hotpot_clean/resources/public/Eenasul_Fateh",
+        "opencortex://eval_hotpot_clean/resources/public/Management_consulting"
+      ],
+      "latency_ms": 3852.6977080618963,
+      "retrieved_uris": [
+        "opencortex://eval_hotpot_clean/resources/public/Eenasul_Fateh",
+        "opencortex://eval_hotpot_clean/resources/public/Management_consulting",
+        "opencortex://eval_hotpot_clean/resources/public/ELDee",
+        "opencortex://eval_hotpot_clean/resources/public/Seventeen_discography",
+        "opencortex://eval_hotpot_clean/resources/public/Indriati_Iskak",
+        "opencortex://eval_hotpot_clean/resources/public/Amaruk_Kayshapanta"
+      ],
+      "oc_prediction": "Eenasul Fateh, Bangladeshi-British cultural practitioner.",
+      "oc_prompt_tokens": 1471,
+      "bl_prediction": "Eenasul Fateh, a former management consultant.",
+      "baseline_prompt_tokens": 2426,
+      "raw_baseline_tokens": 2367,
+      "oc_f1": 0.5714285714285715,
+      "bl_f1": 0.5714285714285715,
+      "oc_em": 0.0,
+      "bl_em": 0.0,
+      "sp_f1": 0.5,
+      "joint_f1": 0.28571428571428575,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "The arena where the Lewiston Maineiacs played their home games can seat how many people?",
+      "answer": "3,677 seated",
+      "category": "bridge",
+      "expected_uris": [
+        "opencortex://eval_hotpot_clean/resources/public/Lewiston_Maineiacs",
+        "opencortex://eval_hotpot_clean/resources/public/Androscoggin_Bank_Colisée"
+      ],
+      "latency_ms": 3603.6449159728363,
+      "retrieved_uris": [
+        "opencortex://eval_hotpot_clean/resources/public/Lewiston_Maineiacs",
+        "opencortex://eval_hotpot_clean/resources/public/Androscoggin_Bank_Colisée",
+        "opencortex://eval_hotpot_clean/resources/public/2006_07_QMJHL_season",
+        "opencortex://eval_hotpot_clean/resources/public/2011_12_QMJHL_season",
+        "opencortex://eval_hotpot_clean/resources/public/2007_Memorial_Cup",
+        "opencortex://eval_hotpot_clean/resources/public/Dwyer_Arena",
+        "opencortex://eval_hotpot_clean/resources/public/Billings_Bulls",
+        "opencortex://eval_hotpot_clean/resources/public/Case_Gym",
+        "opencortex://eval_hotpot_clean/resources/public/Snoecks",
+        "opencortex://eval_hotpot_clean/resources/public/Robins_Center"
+      ],
+      "oc_prediction": "3,677 people",
+      "oc_prompt_tokens": 2241,
+      "bl_prediction": "3,677 seated people.",
+      "baseline_prompt_tokens": 4284,
+      "raw_baseline_tokens": 4231,
+      "oc_f1": 0.5,
+      "bl_f1": 0.8,
+      "oc_em": 0.0,
+      "bl_em": 0.0,
+      "sp_f1": 0.33333333333333337,
+      "joint_f1": 0.16666666666666669,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "Who is older, Annie Morton or Terry Richardson?",
+      "answer": "Terry Richardson",
+      "category": "bridge",
+      "expected_uris": [
+        "opencortex://eval_hotpot_clean/resources/public/Annie_Morton",
+        "opencortex://eval_hotpot_clean/resources/public/Terry_Richardson"
+      ],
+      "latency_ms": 3297.6811249973252,
+      "retrieved_uris": [
+        "opencortex://eval_hotpot_clean/resources/public/Terry_Richardson",
+        "opencortex://eval_hotpot_clean/resources/public/Annie_Morton",
+        "opencortex://eval_hotpot_clean/resources/public/Lady_Gaga_x_Terry_Richardson",
+        "opencortex://eval_hotpot_clean/resources/public/Kenton_Richardson",
+        "opencortex://eval_hotpot_clean/resources/public/Gumbo_PJ_Morton_album",
+        "opencortex://eval_hotpot_clean/resources/public/Adam_Collis",
+        "opencortex://eval_hotpot_clean/resources/public/Shadowshaper",
+        "opencortex://eval_hotpot_clean/resources/public/Amanda_Lepore",
+        "opencortex://eval_hotpot_clean/resources/public/Victoria_Hanley",
+        "opencortex://eval_hotpot_clean/resources/public/Ed_Wood_film"
+      ],
+      "oc_prediction": "Terry Richardson is older.",
+      "oc_prompt_tokens": 1170,
+      "bl_prediction": "Annie Morton is older.",
+      "baseline_prompt_tokens": 1740,
+      "raw_baseline_tokens": 1700,
+      "oc_f1": 0.6666666666666666,
+      "bl_f1": 0.0,
+      "oc_em": 0.0,
+      "bl_em": 0.0,
+      "sp_f1": 0.33333333333333337,
+      "joint_f1": 0.22222222222222224,
+      "oc_jscore": 1.0,
+      "bl_jscore": 0.0
+    },
+    {
+      "question": "Are Local H and For Against both from the United States?",
+      "answer": "yes",
+      "category": "comparison",
+      "expected_uris": [
+        "opencortex://eval_hotpot_clean/resources/public/For_Against",
+        "opencortex://eval_hotpot_clean/resources/public/Local_H"
+      ],
+      "latency_ms": 8512.830208055675,
+      "retrieved_uris": [
+        "opencortex://eval_hotpot_clean/resources/public/Local_H",
+        "opencortex://eval_hotpot_clean/resources/public/For_Against",
+        "opencortex://eval_hotpot_clean/resources/public/Suffrajett",
+        "opencortex://eval_hotpot_clean/resources/public/Hallelujah_I_m_a_Bum_album",
+        "opencortex://eval_hotpot_clean/resources/public/Meet_Corliss_Archer_TV_series",
+        "opencortex://eval_hotpot_clean/resources/public/Adriana_Trigiani",
+        "opencortex://eval_hotpot_clean/resources/public/Victoria_Hanley",
+        "opencortex://eval_hotpot_clean/resources/public/Conrad_Brooks"
+      ],
+      "oc_prediction": "Yes, both are American bands.",
+      "oc_prompt_tokens": 1913,
+      "bl_prediction": "Yes, both are American bands.",
+      "baseline_prompt_tokens": 1836,
+      "raw_baseline_tokens": 1792,
+      "oc_f1": 0.33333333333333337,
+      "bl_f1": 0.33333333333333337,
+      "oc_em": 0.0,
+      "bl_em": 0.0,
+      "sp_f1": 0.4,
+      "joint_f1": 0.13333333333333336,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    }
+  ]
+}

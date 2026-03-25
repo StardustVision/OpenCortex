@@ -1,0 +1,388 @@
+{
+  "mode": "memory",
+  "dataset": "personamem",
+  "retrieval": {
+    "recall@1": 0.0,
+    "precision@1": 0.0,
+    "hit_rate@1": 0.0,
+    "recall@3": 0.0,
+    "precision@3": 0.0,
+    "hit_rate@3": 0.0,
+    "recall@5": 0.0,
+    "precision@5": 0.0,
+    "hit_rate@5": 0.0,
+    "mrr": 0.0,
+    "evaluated_count": 0,
+    "skipped_no_ground_truth": 10,
+    "by_category": {}
+  },
+  "accuracy": {
+    "f1": {
+      "overall": 0.1671,
+      "by_category": {
+        "anti_stereotypical_pref": {
+          "f1": 0.0875,
+          "n": 1
+        },
+        "stereotypical_pref": {
+          "f1": 0.2559,
+          "n": 1
+        },
+        "ask_to_forget": {
+          "f1": 0.1482,
+          "n": 4
+        },
+        "health_and_medical_conditions": {
+          "f1": 0.2333,
+          "n": 1
+        }
+      },
+      "excluded_categories": [
+        "5"
+      ]
+    },
+    "baseline_f1": 0.1479,
+    "baseline_by_category": {
+      "anti_stereotypical_pref": {
+        "f1": 0.1026,
+        "n": 1
+      },
+      "stereotypical_pref": {
+        "f1": 0.187,
+        "n": 2
+      },
+      "ask_to_forget": {
+        "f1": 0.1237,
+        "n": 5
+      },
+      "health_and_medical_conditions": {
+        "f1": 0.1921,
+        "n": 2
+      }
+    },
+    "delta_f1": "+0.0192",
+    "jscore": {
+      "overall": 0.7143,
+      "by_category": {
+        "anti_stereotypical_pref": {
+          "jscore": 1.0,
+          "n": 1
+        },
+        "stereotypical_pref": {
+          "jscore": 1.0,
+          "n": 1
+        },
+        "ask_to_forget": {
+          "jscore": 0.5,
+          "n": 4
+        },
+        "health_and_medical_conditions": {
+          "jscore": 1.0,
+          "n": 1
+        }
+      },
+      "baseline_overall": 0.9,
+      "baseline_by_category": {
+        "anti_stereotypical_pref": {
+          "jscore": 1.0,
+          "n": 1
+        },
+        "stereotypical_pref": {
+          "jscore": 1.0,
+          "n": 2
+        },
+        "ask_to_forget": {
+          "jscore": 0.8,
+          "n": 5
+        },
+        "health_and_medical_conditions": {
+          "jscore": 1.0,
+          "n": 2
+        }
+      },
+      "delta": "-0.1857"
+    }
+  },
+  "token_reduction": {
+    "baseline_avg_tokens": 32086,
+    "oc_avg_tokens": 1844,
+    "baseline_total_tokens": 320856,
+    "oc_total_tokens": 18441,
+    "reduction_pct": 94.3,
+    "raw_baseline_avg_tokens": 37553,
+    "truncation_applied": true,
+    "max_context_tokens": 32000
+  },
+  "latency": {
+    "p50_ms": 5266.4,
+    "p95_ms": 10416.2,
+    "p99_ms": 11040.7,
+    "mean_ms": 6161.8,
+    "min_ms": 3511.7,
+    "max_ms": 11196.8,
+    "count": 10
+  },
+  "metadata": {
+    "timestamp": "2026-03-17T01:50:24.607140+00:00",
+    "run_id": "eval_pmem_clean",
+    "llm_model": "Qwen3-235B-A22B-Instruct-2507",
+    "server": "http://127.0.0.1:8921",
+    "dataset_path": "benchmarks/datasets/personamem/data.json",
+    "top_k": 10,
+    "max_context_tokens": 32000,
+    "concurrency": 5,
+    "total_qa": 10,
+    "enable_llm_judge": false,
+    "jscore_enabled": true,
+    "seed": 42
+  },
+  "per_query": [
+    {
+      "question": "Can you suggest some thought-provoking audio shows I could listen to during my commute that would really make me think and learn something new?",
+      "answer": "You could try ‘The Daily’ for current events, ‘Stuff You Should Know’ for a bit of general knowledge, or ‘99% Invisible’ for fascinating design stories. They’re all great options to make your commute thought‑provoking without being too heavy.",
+      "category": "anti_stereotypical_pref",
+      "expected_uris": [],
+      "latency_ms": 6063.935041078366,
+      "retrieved_uris": [
+        "opencortex://eval_pmem_clean/user/eval_runner/memories/events/Do_not_remember_Reads_crime_mystery_novel_c9633de2",
+        "opencortex://eval_pmem_clean/user/eval_runner/memories/events/Subscribes_to_a_podcast_on_astrophysics",
+        "opencortex://eval_qasper_clean/resources/public/21ea69fb0b13",
+        "opencortex://eval_qasper_clean/resources/public/e71885d386fb",
+        "opencortex://eval_qasper_clean/resources/public/dd8e7fb12ed8",
+        "opencortex://eval_qasper_clean/resources/public/a7647870f715",
+        "opencortex://eval_qasper_clean/resources/public/8173101f1af6",
+        "opencortex://eval_qasper_clean/resources/public/a3ec569f0136",
+        "opencortex://eval_qasper_clean/resources/public/db7a4ade5664"
+      ],
+      "oc_prediction": "Absolutely! Given your interest in astrophysics—evident from your podcast subscription—you might enjoy audio shows that dive deep into scientific inquiry, human behavior, and the complexities of belief systems. Here are a few thought-provoking suggestions that align with your intellectual curiosity:\n\n1. **\"The Daily Planet\" (CBC Radio)** – While not as widely known internationally, this science program offers insightful daily episodes on emerging research, including space exploration and cognitive science. It’s a great blend of accessibility and depth.\n\n2. **\"In Our Time\" by BBC Radio 4** – A standout for lifelong learners, this show explores historical, scientific, and philosophical topics with expert academics. Episodes like \"The Philosophy of Science\" or \"Dark Matter\" could resonate with your interests.\n\n3. **\"Hidden Brain\"** – This podcast uses psychology and neuroscience to unpack human behavior. Given the research you’ve engaged with around dogmatism, cognitive flexibility, and online discourse, you might find episodes on belief formation, confirmation bias, or moral conviction especially compelling.\n\n4. **\"You Are Not So Smart\"** – Focused on self-delusion and irrational thinking, it touches on many themes related to dogmatic thinking and argumentation. It’s conversational yet deeply informative, making complex ideas digestible during a commute.\n\n5. **\"Sean Carroll’s Mindscape\"** – A natural fit for your astrophysics interest, this podcast blends cosmology, quantum mechanics, and philosophy of mind. Sean often hosts researchers working at the intersection of science and cognition, which ties into broader questions about how we form and defend beliefs.\n\nThese shows not only inform but also encourage critical reflection—perfect for sparking new ideas as you start or end your day. And since you value ongoing learning, they can complement your current interests while expanding into adjacent domains like cognitive science and social behavior.",
+      "oc_prompt_tokens": 2079,
+      "bl_prediction": "Absolutely! Given your interests in astrophysics, science fiction, and deep intellectual exploration, here are some thought-provoking audio shows that would be perfect for your commute:\n\nYou might really enjoy **\"StarTalk Radio\"** hosted by Neil deGrasse Tyson. It blends science, pop culture, and philosophy in a way that’s both accessible and deeply insightful—especially fitting since you already subscribe to astrophysics content. The show often dives into cosmic perspectives on human existence, which pairs well with your love of stargazing and low-light skywatching.\n\nAnother excellent choice is **\"The TED Radio Hour\"**. It curates powerful TED Talks around thematic ideas—like identity, innovation, or the future of humanity—and weaves them into a narrative that encourages reflection. Given your appreciation for TED Talks and podcasts in general, this would feel familiar yet continually surprising.\n\nSince you follow environmental conservation news and care about climate justice, **\"How to Save a Planet\"** by Gimlet is a compelling listen. It doesn’t just present problems—it explores real solutions and ethical dilemmas, which might resonate with your feelings of responsibility and occasional anxiety about the world your child (or future generations) will inherit.\n\nFor something more speculative and aligned with your taste in science fiction TV, try **\"Radiolab\"**. Their episodes often explore scientific mysteries, philosophical questions, and the edges of human understanding with rich sound design and storytelling. Episodes like *\"Space\"*, *\"Dark Matters\"*, or *\"The Edge of Knowledge\"* could spark deep thinking during your drive.\n\nAnd if you're in the mood for structured intellectual exploration, **\"Philosophy Bites\"** offers short, digestible interviews with philosophers on specific ideas—from ethics to consciousness—perfect for moments when you want to engage with big ideas without overwhelm.\n\nPair any of these with your noise-cancelling headphones (if you use them) and a quiet morning coffee, and your commute could become one of the most enriching parts of your day.",
+      "baseline_prompt_tokens": 32093,
+      "raw_baseline_tokens": 37553,
+      "oc_f1": 0.08754208754208755,
+      "bl_f1": 0.10256410256410256,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What are some elegant ways to add a touch of sophistication to an otherwise simple outfit for a special evening out?",
+      "answer": "You could elevate a simple evening look by draping a fine silk scarf over your shoulders or loosely knotting it at the neck for a touch of understated elegance. Choose a luxurious fabric in rich jewel tones or a subtle print, and let it complement — rather than overpower — your outfit.",
+      "category": "stereotypical_pref",
+      "expected_uris": [],
+      "latency_ms": 9462.062582955696,
+      "retrieved_uris": [
+        "opencortex://eval_pmem_clean/user/eval_runner/memories/events/Appreciates_fine_silk_scarves_as_accessories",
+        "opencortex://eval_qasper_clean/resources/public/01fc4d9f6f8a",
+        "opencortex://eval_qasper_clean/resources/public/7b26d1dcdc03",
+        "opencortex://eval_qasper_clean/resources/public/76e8aa4e7c51",
+        "opencortex://eval_qasper_clean/resources/public/7f834d289491",
+        "opencortex://eval_qasper_clean/resources/public/a2854320ef59",
+        "opencortex://eval_qasper_clean/resources/public/7e2df112d783",
+        "opencortex://eval_qasper_clean/resources/public/f9b3e3f5dc6f"
+      ],
+      "oc_prediction": "A beautifully draped silk scarf can be the perfect way to elevate a simple outfit for a special evening out. Given your appreciation for fine silk scarves as symbols of elegance and sophistication, consider choosing one with an artisanal pattern or timeless design in rich, refined hues—perhaps deep burgundy, midnight blue, or classic black with subtle metallic accents. Drape it loosely around your neck in a Parisian knot for a chic, effortless look, or wear it as a graceful shawl over bare shoulders to add warmth and refinement.\n\nFor added luxury, opt for a scarf crafted from premium mulberry silk, known for its soft sheen and smooth texture, enhancing both comfort and style. You might also tie it to your handbag strap as a subtle yet polished detail, or wear it as a headband for a vintage-inspired touch that exudes grace. Pairing your silk accessory with minimalist jewelry allows the scarf’s craftsmanship and design to take center stage, ensuring your ensemble radiates understated elegance. This thoughtful attention to detail—much like your preference for quality and artistry—transforms even the most understated attire into a statement of personal sophistication.",
+      "oc_prompt_tokens": 2039,
+      "bl_prediction": "A silk scarf is a timeless and elegant accessory that can instantly elevate a simple outfit for a special evening out. Given your appreciation for fine silk scarves, consider choosing one with a subtle sheen or a refined pattern—perhaps something with artistic or cultural motifs, like East Asian calligraphy or intricate batik designs, which resonate with your interests. Draping it loosely around your neck, tying it in a soft ascot, or even using it as a headband can add a touch of grace and individuality.\n\nPair this with minimalist silver jewelry—since you prefer silver over gold—for a modern, sophisticated contrast. Opt for a sleek, monochrome outfit in neutral tones, which complements your taste for muted color palettes and allows the scarf to stand out. A tailored blazer or a wrap dress in a luxe fabric like satin or crepe would further enhance the elegance.\n\nComplete the look with a bold yet refined handbag—perhaps a sleek modern design—and classic heels. If the evening includes cultural events like an opera or theater performance, which you enjoy, this ensemble will harmonize beautifully with the ambiance. Finally, a spritz of a refined fragrance and a well-organized, confident demeanor—perhaps grounded in your love for handwritten notes and personal rituals—will bring a quiet, authentic sophistication to your presence.",
+      "baseline_prompt_tokens": 32085,
+      "raw_baseline_tokens": 37553,
+      "oc_f1": 0.2559241706161137,
+      "bl_f1": 0.23893805309734512,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What are some effective ways to find and connect with mentors who understand both the unique challenges of my industry and my personal values?",
+      "answer": "You might look for mentors through professional associations within your industry, such as trade shows or specialized networking groups. These spaces often attract people with similar business goals and challenges, making it easier to build trust and share industry-specific insights.",
+      "category": "ask_to_forget",
+      "expected_uris": [],
+      "latency_ms": 3663.343625026755,
+      "retrieved_uris": [
+        "opencortex://eval_pmem_clean/user/eval_runner/memories/events/Do_not_remember_Struggled_to_find_LGBTQ_f_436d3098",
+        "opencortex://eval_qasper_clean/resources/public/3e7fb59cc4a4",
+        "opencortex://eval_qasper_clean/resources/public/c3454e59e9c8",
+        "opencortex://eval_qasper_clean/resources/public/dd4bc4b0e716",
+        "opencortex://eval_qasper_clean/resources/public/9414a8793e26",
+        "opencortex://eval_qasper_clean/resources/public/3f873ad43700",
+        "opencortex://eval_qasper_clean/resources/public/c3f9404e6b04",
+        "opencortex://eval_qasper_clean/resources/public/253db90b9997"
+      ],
+      "oc_prediction": "While I can't draw on personal experiences related to finding financial advisors who are both LGBTQ+ friendly and knowledgeable about the cannabis industry—since that specific memory has been intentionally excluded—there are still several effective strategies you can use to connect with mentors who understand both your industry’s unique challenges and your personal values.\n\nOne powerful approach is to engage with niche professional networks and communities that align with both your industry and identity. For example, LGBTQ+ business associations, cannabis industry trade groups, or intersectional organizations like the National LGBTQ+ Chamber of Commerce often host events, panels, and mentorship programs where you can meet professionals who share your background and insights. These spaces tend to foster deeper connections because they acknowledge both professional and personal dimensions.\n\nOnline platforms like LinkedIn or specialized forums can also be valuable when used intentionally. Search for individuals who are vocal about both cannabis entrepreneurship and LGBTQ+ advocacy, and reach out with personalized messages that reflect shared values. Many professionals are open to brief informational interviews, especially when they see alignment in mission and experience.\n\nAdditionally, attending conferences or webinars focused on social equity in cannabis, inclusive finance, or minority-led startups can put you in rooms—virtual or physical—where potential mentors are already sensitized to the intersections of identity and industry.\n\nFinally, consider joining or forming peer mentorship circles. Sometimes the most understanding guidance comes not only from those further ahead, but also from peers navigating similar paths. These relationships can evolve into long-term mentorships grounded in mutual respect and shared experience.\n\nBy focusing on communities and platforms that honor both your professional goals and personal identity, you increase the likelihood of building meaningful, values-aligned mentor relationships.",
+      "oc_prompt_tokens": 2033,
+      "bl_prediction": "Finding a mentor who truly understands both the nuances of your industry and your personal values—especially when you're navigating a space like the cannabis industry, which comes with its own regulatory, financial, and social challenges—can be deeply transformative. Given your interest in environmental conservation, LGBTQ+ advocacy, and artisanal, values-driven work, it’s important to seek mentors who align not just professionally, but ethically.\n\nOne effective approach is to engage with **industry-specific networks that prioritize social responsibility**. Organizations like the National Cannabis Industry Association (NCIA) or Women Grow offer forums, mixers, and leadership programs where you can meet seasoned professionals who’ve navigated similar paths. These spaces often attract individuals who are not only knowledgeable about compliance and market dynamics but also passionate about equity, sustainability, and inclusion—values you clearly hold close.\n\nSince you attend tech industry networking mixers and value innovation, consider **blending your interests by exploring cannabis tech or agritech communities**. Platforms like Green Rush or Headset host events and webinars where entrepreneurs discuss everything from supply chain transparency to sustainable cultivation—topics that resonate with your environmental focus. These events often attract forward-thinking mentors open to interdisciplinary collaboration.\n\n**LGBTQ+-inclusive business networks** such as Out & Equal or local chapters of the National LGBT Chamber of Commerce (NGLCC) can also be invaluable. They often feature mentorship programs and panels with queer professionals in non-traditional industries, including cannabis. Connecting through these spaces increases the likelihood of finding someone who not only understands the financial and operational hurdles but also the emotional labor of being a visible, values-driven leader in a stigmatized field.\n\nAdditionally, **leverage your existing passions**—like artisanal desserts, fine silk scarves, or science fiction—to find common ground. For instance, attending niche pop culture or design events might introduce you to creative entrepreneurs who’ve built ethical brands in regulated spaces. These informal connections can evolve into mentorship when you share stories about balancing authenticity with industry demands.\n\nFinally, **consider reverse mentoring or peer circles**. Sometimes, the most insightful guidance comes from those walking a parallel path. Join or create a small accountability group with other LGBTQ+ entrepreneurs in cannabis or adjacent wellness fields. These relationships can offer mutual support, reduce isolation, and lead to introductions to more experienced mentors down the line.\n\nAnd when you do find a potential mentor, be open about your values—from your commitment to sustainability to your desire for inclusive financial practices. That clarity will help foster a relationship built on trust, not just",
+      "baseline_prompt_tokens": 32093,
+      "raw_baseline_tokens": 37553,
+      "oc_f1": 0.14715719063545152,
+      "bl_f1": 0.10653753026634383,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What are some good ways to avoid feeling drained after spending hours working on my laptop?",
+      "answer": "Since your occasional migraines stem from screen fatigue, it may help to follow the 20-20-20 rule—every 20 minutes, look at something 20 feet away for 20 seconds—and schedule short breaks for light stretching or yoga. Lowering screen brightness, using blue-light filtering, and spacing your research sessions throughout the day can also reduce strain. An ergonomic setup with proper monitor height can make a noticeable difference over time.",
+      "category": "health_and_medical_conditions",
+      "expected_uris": [],
+      "latency_ms": 3525.606874958612,
+      "retrieved_uris": [
+        "opencortex://eval_pmem_clean/user/eval_runner/memories/events/Occasional_migraine_headaches_linked_to_s_972869e3",
+        "opencortex://eval_qasper_clean/resources/public/8173101f1af6",
+        "opencortex://eval_qasper_clean/resources/public/2b39a494493a",
+        "opencortex://eval_qasper_clean/resources/public/76e8aa4e7c51",
+        "opencortex://eval_qasper_clean/resources/public/7b26d1dcdc03",
+        "opencortex://eval_qasper_clean/resources/public/2b4155f4cf3b"
+      ],
+      "oc_prediction": "To avoid feeling drained after spending hours working on your laptop, especially since you experience intermittent migraines linked to prolonged screen exposure, it’s important to address both physical strain and cognitive fatigue. Here are some effective, non-pharmacological strategies:\n\nFirst, follow the **20-20-20 rule**: every 20 minutes, take a 20-second break to look at something 20 feet away. This helps reduce digital eye strain, a likely contributor to your migraines and mental fatigue. Scheduling regular screen breaks throughout the day can significantly improve comfort and focus.\n\nAdjust your **work environment** for better ergonomics: position your screen at eye level, about an arm’s length away, and ensure your chair supports good posture. Poor ergonomics can lead to physical tension, which compounds mental exhaustion.\n\nManage **lighting and screen settings**—use soft, ambient lighting to minimize glare, and enable blue light filters or night mode on your laptop, especially during longer work sessions. Blue light exposure can disrupt circadian rhythms and contribute to eye strain and fatigue.\n\nStay **hydrated** and maintain steady energy levels with balanced meals and snacks. Dehydration and blood sugar fluctuations can worsen fatigue and even trigger migraines.\n\nAdditionally, consider using **blue light-blocking glasses** or screen protectors, and make sure your workspace has adequate ventilation and minimal screen flicker or glare.\n\nMonitoring when and how your symptoms arise—like tracking screen time, posture, or lighting conditions—can help identify specific triggers. If headaches become more frequent or severe, consulting a neurologist may be a valuable next step.\n\nIncorporating these habits can help protect your energy, reduce migraine risk, and make long work sessions more sustainable.",
+      "oc_prompt_tokens": 1618,
+      "bl_prediction": "To avoid feeling drained after long hours working on your laptop, it's important to address both physical and mental fatigue—especially since you experience occasional migraines linked to screen strain and stress. Here are some personalized, effective strategies:\n\n1. **Follow the 20-20-20 Rule**: Every 20 minutes, look at something 20 feet away for at least 20 seconds. This helps reduce eye strain, which is crucial given your mild myopia and history of screen-related migraines.\n\n2. **Optimize Your Workspace Lighting**: Work in natural daylight when possible, as you prefer, and avoid harsh overhead lighting or glare on your screen. Consider using a warm-toned desk lamp to create a calming environment that supports focus without triggering discomfort.\n\n3. **Use Blue Light Filters**: Enable night mode on your devices or wear blue light-blocking glasses, especially during evening work sessions. This can help prevent sleep disturbances and reduce the risk of migraines triggered by prolonged screen exposure.\n\n4. **Take Structured Breaks**: Step away from your desk every hour. Use this time to stretch, walk around, or practice mindfulness meditation—something you already engage in, which can help reset your mental energy and reduce cognitive load.\n\n5. **Incorporate Movement**: Since you enjoy yoga and swimming, try short yoga sequences or shoulder rolls between work sessions to release tension. Even a brief walk to a nearby coffee shop (which you like doing) can refresh your mind.\n\n6. **Stay Hydrated and Snack Mindfully**: Keep a reusable water bottle at your desk and sip throughout the day. Pair this with light, healthy snacks—perhaps something from a farmers’ market you’ve visited—to maintain energy without crashes.\n\n7. **Use Ergonomic Supports**: Given your mild scoliosis and occasional lower back discomfort from sitting, ensure your chair supports your spine. Consider a standing desk or cushion for added comfort during long stretches.\n\n8. **Set Digital Boundaries**: Use a planner or digital calendar (you’re organized with color-coded events) to define clear start and end times for work. This is especially helpful if you’ve struggled with work-life balance in the past.\n\n9. **Engage Your Senses for Recovery**: After screen time, soothe your nervous system by listening to jazz, rain sounds, or classical music—genres you find relaxing. Lighting a scented candle (though you may want to avoid strong fragrances if migraines are triggered) or tending to your indoor plants can also help transition out",
+      "baseline_prompt_tokens": 32077,
+      "raw_baseline_tokens": 37553,
+      "oc_f1": 0.2333333333333333,
+      "bl_f1": 0.19339622641509435,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "Where’s the best spot to sit in a lecture hall so I can read the slides and see the board without straining my eyes?",
+      "answer": "To clearly see slides and the board, aim for a seat about one-third back from the front and near the center—close enough to follow visuals without leaning forward but far enough for a comfortable overall view.",
+      "category": "ask_to_forget",
+      "expected_uris": [],
+      "latency_ms": 4468.892083037645,
+      "retrieved_uris": [
+        "opencortex://eval_pmem_clean/user/eval_runner/memories/events/Occasional_migraine_headaches_linked_to_s_972869e3",
+        "opencortex://eval_qasper_clean/resources/public/b6183cc623ef",
+        "opencortex://eval_qasper_clean/resources/public/ab2515247c4d",
+        "opencortex://eval_qasper_clean/resources/public/2b4155f4cf3b",
+        "opencortex://eval_qasper_clean/resources/public/2b39a494493a"
+      ],
+      "oc_prediction": "To minimize eye strain and avoid triggering migraines during lectures, the best spot to sit in a lecture hall is about **two-thirds of the way back from the front**, centered under your eye level with the screen or board. This position allows you to comfortably view both the slides and the whiteboard without excessive head movement or squinting.\n\nMake sure you're far enough to see the entire screen at once—this reduces the need to constantly shift your gaze and helps prevent visual fatigue. Sitting too close, especially in the first few rows, can force your eyes to work harder to focus, increasing the risk of digital eye strain, which you’ve noticed can trigger your migraines.\n\nAlso, choose a seat where lighting is optimal—avoid spots with glare on the screen or where bright lights shine directly into your eyes. Natural side lighting is ideal, but if overhead lights are harsh, consider positioning yourself where shadows or indirect lighting reduce screen glare.\n\nPair this with regular screen breaks (like following the 20-20-20 rule: every 20 minutes, look at something 20 feet away for 20 seconds) and ensure your prescription, if you wear glasses, is up to date—especially for intermediate distances like screens. These adjustments can help you stay comfortable and reduce the likelihood of migraine episodes linked to prolonged visual focus.",
+      "oc_prompt_tokens": 1423,
+      "bl_prediction": "Given that you have mild myopia (nearsightedness) and require corrective glasses, the best spot to sit in a lecture hall would be somewhere in the **front to middle section**, ideally **centered** under the screen or slightly to the side if there's glare. This positioning will help you clearly read the slides without eye strain, especially if you wear your prescription glasses.\n\nSince you’ve mentioned occasional screen fatigue and migraines linked to visual strain, avoiding the very front row might also be wise to prevent neck strain from looking up too much. A seat **2–3 rows back from the front** gives you a balanced view of both the projector screen and the whiteboard, while minimizing glare and the need to constantly shift your gaze between distant and close-up areas.\n\nAlso, make sure the lighting in the hall isn’t too dim—reading slides in a dark room can increase eye fatigue, especially if you're prone to screen-related migraines. If possible, choose a seat where ambient light reduces screen glare, and consider using blue light filters on your glasses if you'll be taking notes on a device.",
+      "baseline_prompt_tokens": 32085,
+      "raw_baseline_tokens": 37553,
+      "oc_f1": 0.15789473684210525,
+      "bl_f1": 0.10638297872340427,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "Where along the scenic highway can I stop for a classic morning meal before continuing my road trip?",
+      "answer": "If you’re taking the Columbia River Gorge Scenic Highway, you could stop at Sugarpine Drive-In near Troutdale – they serve fresh pastries, seasonal fruit bowls, and locally roasted coffee, perfect for a light and energizing start to the day.",
+      "category": "ask_to_forget",
+      "expected_uris": [],
+      "latency_ms": 3653.9021669887006,
+      "retrieved_uris": [
+        "opencortex://eval_pmem_clean/user/eval_runner/memories/events/Do_not_remember_Enjoys_diner-style_breakf_30306742",
+        "opencortex://eval_qasper_clean/resources/public/6bd2b5f8c926",
+        "opencortex://eval_qasper_clean/resources/public/d27c09347bce",
+        "opencortex://eval_qasper_clean/resources/public/a59e3ec8595a",
+        "opencortex://eval_qasper_clean/resources/public/519818db4628",
+        "opencortex://eval_qasper_clean/resources/public/2b39a494493a",
+        "opencortex://eval_qasper_clean/resources/public/7680e3f7c7ae"
+      ],
+      "oc_prediction": "You can stop at a cozy diner along the scenic highway for a classic morning meal—many travelers enjoy spots that serve hearty breakfasts with fluffy pancakes and perfectly cooked eggs. These diners often have a nostalgic charm and offer a great place to relax before continuing your road trip. Just remember, while such breakfasts are a popular favorite, personal memories tied to specific meals aren't retained, so each stop can feel fresh and new. Look for local favorites with signs advertising homemade meals or daily specials—they’re usually worth the visit.",
+      "oc_prompt_tokens": 1709,
+      "bl_prediction": "You can stop at a charming roadside diner just past mile marker 42 along the scenic highway—locals recommend it for its classic morning meal of fluffy pancakes, farm-fresh eggs, and crispy bacon. They serve strong black coffee in vintage mugs, and if you're into artisanal touches, they even offer handmade jams and locally sourced maple syrup. It’s the perfect spot to pause, refuel, and enjoy a slow, satisfying breakfast before continuing your road trip through the rolling countryside.",
+      "baseline_prompt_tokens": 32080,
+      "raw_baseline_tokens": 37553,
+      "oc_f1": 0.15789473684210528,
+      "bl_f1": 0.2330097087378641,
+      "oc_jscore": 0.0,
+      "bl_jscore": 0.0
+    },
+    {
+      "question": "Could you recommend some immersive crime mystery TV shows filled with clever twists that will keep me guessing until the very end?",
+      "answer": "If you’re after something packed with twists and turns, try *Broadchurch* or *The Sinner*. Both shows offer suspenseful storylines, layered characters, and clever reveals that will keep you guessing until the very end.",
+      "category": "ask_to_forget",
+      "expected_uris": [],
+      "latency_ms": 3511.7045410443097,
+      "retrieved_uris": [
+        "opencortex://eval_pmem_clean/user/eval_runner/memories/events/Do_not_remember_Reads_crime_mystery_novel_c9633de2",
+        "opencortex://eval_qasper_clean/resources/public/01fc4d9f6f8a",
+        "opencortex://eval_qasper_clean/resources/public/a2854320ef59",
+        "opencortex://eval_qasper_clean/resources/public/fb5ae328eb84",
+        "opencortex://eval_qasper_clean/resources/public/519818db4628",
+        "opencortex://eval_qasper_clean/resources/public/7680e3f7c7ae",
+        "opencortex://eval_qasper_clean/resources/public/2b39a494493a",
+        "opencortex://eval_qasper_clean/resources/public/c8d8f5367214"
+      ],
+      "oc_prediction": "I understand you're looking for immersive crime mystery TV shows with clever twists, but I want to respect your earlier request not to retain any information about your interest in crime mystery novels. While I can still recommend popular and critically acclaimed mystery series known for their suspense and unpredictability, I’ll keep the suggestions general and focused on widely recognized shows that many viewers enjoy for their intricate storytelling.\n\nYou might appreciate series like *True Detective* (particularly Season 1), which masterfully weaves psychological depth with a haunting investigation. *Mindhunter* offers a slow-burn, character-driven look into criminal minds, blending real-life cases with intense performances. For something with more unexpected turns, *Sharp Objects* delivers a gripping narrative with layered secrets and a powerful atmosphere. If you're open to international series, *The Killing* (Danish: *Forbrydelsen*) is a benchmark in the genre, known for its moody tone and meticulous plotting.\n\nThese shows are celebrated for keeping audiences engaged with complex characters and twists that unfold over time—perfect for viewers who enjoy a deep, thought-provoking mystery.",
+      "oc_prompt_tokens": 1966,
+      "bl_prediction": "Absolutely! Given your appreciation for intricate storytelling and clever twists—especially as someone who enjoys crime mystery novels and immersive science fiction television—here are some highly engaging crime mystery TV shows that will keep you guessing until the final moments:\n\n**1. *True Detective* (Season 1)**  \nWidely acclaimed for its atmospheric depth and complex characters, this season follows two detectives investigating a series of ritualistic murders in Louisiana. With a nonlinear timeline, philosophical undertones, and a haunting performance by Matthew McConaughey, it’s a masterclass in suspense. The slow unraveling of both the case and the detectives’ psyches makes it perfect for fans of layered narratives.\n\n**2. *The Night Of***  \nA gripping limited series that blends a murder mystery with a deep dive into the criminal justice system. It begins with a young man waking up next to a murdered woman—with no memory of what happened. As the investigation unfolds, so do questions of guilt, identity, and systemic bias. The tension builds masterfully, and the final episodes deliver emotional and intellectual payoff.\n\n**3. *Mindhunter***  \nIf you’re drawn to psychological depth and real-world criminal behavior, this David Fincher-produced series is a must-watch. It follows FBI agents in the 1970s pioneering criminal profiling by interviewing incarcerated serial killers. While not a traditional \"whodunit,\" the show’s chilling realism and slow-burn dread will appeal to your interest in human complexity and subtle suspense.\n\n**4. *Broadchurch***  \nSet in a quiet coastal town, this British series begins with the murder of a young boy, sending shockwaves through the community. The investigation, led by detectives played by David Tennant and Olivia Colman, is emotionally charged and full of unexpected turns. The first season, in particular, is airtight in its plotting and deeply moving.\n\n**5. *Luther***  \nStarring Idris Elba as the brilliant but tormented Detective John Luther, this series combines noir intensity with psychological drama. Each season features a new high-stakes case, often pitting Luther against cunning, almost theatrical criminals. The cat-and-mouse games are thrilling, and Elba’s magnetic performance anchors the show’s dark, moody tone.\n\n**6. *Unbelievable***  \nBased on a true story, this limited series follows a young woman accused of lying about a sexual assault, while two female detectives uncover a pattern of similar crimes. The narrative alternates between timelines, building tension and empathy.",
+      "baseline_prompt_tokens": 32089,
+      "raw_baseline_tokens": 37553,
+      "oc_f1": 0.12972972972972974,
+      "bl_f1": 0.09116809116809117,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What are some good stretches to help with back stiffness after sitting all day?",
+      "answer": "Since you have mild scoliosis, you might find that gentle, symmetrical stretches work best to ease stiffness without straining your back. Consider seated spinal rotations, cat-cow movements, and supported hamstring stretches, focusing on slow, mindful breathing as you work through them. Taking a few breaks during the day to stand and stretch can also help you feel more comfortable after long periods of sitting.",
+      "category": "health_and_medical_conditions",
+      "expected_uris": [],
+      "latency_ms": 9182.593584060669,
+      "retrieved_uris": [
+        "opencortex://eval_pmem_clean/user/eval_runner/memories/events/Do_not_remember_Enjoys_diner-style_breakf_30306742",
+        "opencortex://eval_qasper_clean/resources/public/8173101f1af6",
+        "opencortex://eval_qasper_clean/resources/public/76e8aa4e7c51",
+        "opencortex://eval_qasper_clean/resources/public/01fc4d9f6f8a",
+        "opencortex://eval_qasper_clean/resources/public/7b26d1dcdc03",
+        "opencortex://eval_qasper_clean/resources/public/2b39a494493a"
+      ],
+      "oc_prediction": "",
+      "oc_prompt_tokens": 1550,
+      "bl_prediction": "To help relieve back stiffness from prolonged sitting, especially if you have mild scoliosis or experience chronic lower back discomfort, incorporating gentle, targeted stretches into your daily routine can make a big difference. Here are some effective stretches:\n\n1. **Cat-Cow Stretch (on hands and knees):** This dynamic stretch helps improve spinal flexibility and eases tension in the lower back. Move slowly between arching your back toward the ceiling (cat) and dipping it toward the floor (cow), coordinating with your breath. It’s particularly helpful if you spend long hours at a desk or using a computer.\n\n2. **Child’s Pose:** A restorative yoga stretch that gently elongates the lower back and hips. Sit back on your heels with arms extended forward and forehead resting on the mat. This can also support relaxation, especially if you practice mindfulness or meditation as part of your wellness routine.\n\n3. **Seated Forward Bend (Paschimottanasana):** While seated with legs extended, reach forward from the hips (not the waist) to stretch the lower back and hamstrings. If you enjoy yoga for relaxation, this pose integrates well into a calming evening routine.\n\n4. **Piriformis Stretch (Figure-Four):** Lie on your back, cross one ankle over the opposite knee, and gently pull the uncrossed leg toward your chest. This helps release deep gluteal muscles that can contribute to lower back stiffness, especially after long periods of sitting.\n\n5. **Knee-to-Chest Stretch:** Lie on your back and bring one or both knees to your chest, holding gently. This helps decompress the lower spine and is soothing after extended screen time or desk work.\n\n6. **Thoracic Spine Rotation (Seated or Lying):** Gentle rotational movements can counteract the stiffness that builds up from forward-leaning postures. Try lying on your back with knees bent, then slowly let them fall to one side while keeping shoulders grounded.\n\nSince you may also experience occasional tension headaches linked to screen fatigue or stress, pairing these stretches with regular breaks, proper ergonomics, and perhaps a consistent morning workout or walk can enhance overall comfort. If stiffness persists, consider consulting a physical therapist familiar with scoliosis management—especially important if you're balancing caregiving, long commutes, or high-stress work periods.",
+      "baseline_prompt_tokens": 32074,
+      "raw_baseline_tokens": 37553,
+      "bl_f1": 0.19072164948453607,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What are some tasty brunch dishes I could prepare for a weekend cabin trip that would work well for all of my friends’ dietary needs?",
+      "answer": "You could prepare a hearty vegetable frittata using free-range eggs, seasonal greens, and sweet peppers—perfect for a wholesome brunch that suits vegetarians while still being filling for everyone. Serve it alongside crusty bread and a fresh herb salad for balance.",
+      "category": "ask_to_forget",
+      "expected_uris": [],
+      "latency_ms": 6889.293499989435,
+      "retrieved_uris": [
+        "opencortex://eval_pmem_clean/user/eval_runner/memories/events/Do_not_remember_Enjoys_diner-style_breakf_30306742",
+        "opencortex://eval_qasper_clean/resources/public/01fc4d9f6f8a",
+        "opencortex://eval_qasper_clean/resources/public/1b84924869d5",
+        "opencortex://eval_qasper_clean/resources/public/8173101f1af6",
+        "opencortex://eval_qasper_clean/resources/public/9414a8793e26",
+        "opencortex://eval_qasper_clean/resources/public/b42187fdd160",
+        "opencortex://eval_qasper_clean/resources/public/c3454e59e9c8",
+        "opencortex://eval_qasper_clean/resources/public/d1234e7d4aae"
+      ],
+      "oc_prediction": "",
+      "oc_prompt_tokens": 2065,
+      "bl_prediction": "For a weekend cabin trip where you want to serve delicious brunch dishes that accommodate your friends’ dietary needs, it’s great to focus on fresh, flexible ingredients and flavorful options that cater to common sensitivities—like lactose intolerance, vegetarian preferences, and balanced nutrition given potential family histories of type 2 diabetes.\n\nHere are some tasty and inclusive brunch ideas:\n\n**1. Savory Mushroom & Spinach Frittata (Dairy-Free Option):**  \nUse eggs and plenty of fresh vegetables like mushrooms, spinach, and cherry tomatoes. Skip the cheese or offer a small side of dairy-free cheese for those avoiding lactose. This dish is protein-rich, satisfying, and can be made ahead and reheated over a portable stove. It pairs beautifully with a side of fruit.\n\n**2. Whole-Grain Toast Bar with Toppings:**  \nOffer whole-grain or sourdough bread (great for those who appreciate artisanal bread) and set up a topping bar:  \n- Mashed avocado with chili flakes  \n- Almond or oat butter with banana slices  \n- Hummus with cucumber and radish  \n- Smashed white beans with olive oil and herbs  \n\nThis lets everyone customize their plate and supports plant-based and low-dairy preferences.\n\n**3. Fresh Fruit & Yogurt Parfaits (Lactose-Friendly):**  \nUse lactose-free yogurt or coconut-based alternatives and layer with fresh berries, granola (check for low sugar), and a drizzle of local honey. Add chia or flax seeds for extra nutrition. This is light, refreshing, and perfect for a cabin morning surrounded by nature.\n\n**4. Vegan Chickpea Flour Omelets (Scramble Style):**  \nA flavorful, protein-packed alternative made with chickpea flour, turmeric, black salt (for an eggy flavor), and mixed veggies. It's naturally gluten-free and dairy-free, and your friends who enjoy plant-based or fusion flavors will love it.\n\n**5. Maple-Glazed Sweet Potato Hash:**  \nRoast cubed sweet potatoes with onions, bell peppers, and smoked paprika. Finish with a touch of maple syrup and fresh thyme. This dish is naturally vegan, blood-sugar-friendly in moderation, and deeply satisfying—especially on a crisp morning.\n\n**6. Herbal Tea & Cold Brew Coffee Station:**  \nSince some enjoy coffee and others prefer tea, set up a simple drink station with cold brew (a favorite for those who like late-night coffee), oat milk lattes, and",
+      "baseline_prompt_tokens": 32090,
+      "raw_baseline_tokens": 37553,
+      "bl_f1": 0.08139534883720931,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What’s the best way to store and look after different types of sports footwear so they stay in top condition for as long as possible?",
+      "answer": "Mate, since you’ve got a few pairs of boots, the key is to rotate them so they get proper time to dry out between sessions. Give them a quick clean after each game, stuff them with newspaper to pull out the moisture, and store them in a cool, dry spot — boot bags work great for keeping the studs from scuffing other gear.",
+      "category": "stereotypical_pref",
+      "expected_uris": [],
+      "latency_ms": 11196.79479196202,
+      "retrieved_uris": [
+        "opencortex://eval_pmem_clean/user/eval_runner/memories/events/Owns_multiple_pairs_of_football_boots",
+        "opencortex://eval_pmem_clean/user/eval_runner/memories/events/Do_not_remember_Enjoys_diner-style_breakf_30306742",
+        "opencortex://eval_qasper_clean/resources/public/b6183cc623ef",
+        "opencortex://eval_qasper_clean/resources/public/2b39a494493a",
+        "opencortex://eval_qasper_clean/resources/public/1d4906adf38b",
+        "opencortex://eval_qasper_clean/resources/public/de7bffb4eb8d",
+        "opencortex://eval_qasper_clean/resources/public/3f873ad43700",
+        "opencortex://eval_qasper_clean/resources/public/8173101f1af6"
+      ],
+      "oc_prediction": "",
+      "oc_prompt_tokens": 1959,
+      "bl_prediction": "Taking proper care of sports footwear—especially when you own multiple pairs like football boots and cycling shoes—can significantly extend their lifespan and performance. Here’s how to store and maintain different types of athletic footwear for optimal condition:\n\n**1. Clean After Every Use**  \nAfter playing football or cycling, wipe down your boots or shoes to remove dirt, mud, and sweat. For football boots, use a damp cloth and mild soap; avoid soaking them, as this can damage the materials and stitching. For cycling shoes, especially those with stiff soles and ventilation, clean both the exterior and interior to prevent odor and material breakdown.\n\n**2. Air Dry Naturally**  \nNever use direct heat (like radiators or hairdryers) to dry wet footwear. Instead, remove the insoles and laces and let them air dry at room temperature, away from direct sunlight. This prevents warping, glue degradation, and leather cracking—especially important for high-quality or vintage-style football boots.\n\n**3. Use Shoe Trees or Stuff with Paper**  \nTo maintain shape and absorb moisture, insert cedar shoe trees or crumpled newspaper into your boots when drying. This is especially helpful for leather football boots, which can retain moisture and develop odors if not properly aired.\n\n**4. Rotate Your Footwear**  \nIf you're active in multiple sports—like football and long-distance cycling—rotate your footwear. This gives each pair time to fully dry and recover its shape, reducing wear and extending usability. It also helps prevent foot issues like blisters or fungal infections.\n\n**5. Store in a Cool, Dry Place**  \nKeep all sports footwear in a well-ventilated area, away from dampness and extreme temperatures. Avoid leaving them in car trunks or damp basements. A breathable shoe rack or mesh bag works well for organization and airflow.\n\n**6. Use Appropriate Storage for Specific Types**  \n- **Football boots:** Store in a shoe bag or box with silica gel packets to control humidity, especially if they’re made of natural leather.  \n- **Cycling shoes:** Keep cleats covered with protective caps to avoid scratches and preserve the mechanism.  \n- **Hiking or trail boots:** If used in muddy or wet conditions, condition the leather periodically with a suitable protector.\n\n**7. Re-lace and Maintain Fastenings**  \nEnsure laces are dry before storage, and replace worn laces or Velcro straps as needed. Loose or damaged fastenings reduce support and performance.\n\n**8. Avoid Prolonged",
+      "baseline_prompt_tokens": 32090,
+      "raw_baseline_tokens": 37553,
+      "bl_f1": 0.135,
+      "bl_jscore": 1.0
+    }
+  ]
+}

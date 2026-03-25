@@ -1,0 +1,451 @@
+{
+  "mode": "memory",
+  "dataset": "personamem",
+  "retrieval": {
+    "recall@1": 0.0,
+    "precision@1": 0.0,
+    "hit_rate@1": 0.0,
+    "recall@3": 0.0,
+    "precision@3": 0.0,
+    "hit_rate@3": 0.0,
+    "recall@5": 0.0,
+    "precision@5": 0.0,
+    "hit_rate@5": 0.0,
+    "mrr": 0.0,
+    "evaluated_count": 10,
+    "skipped_no_ground_truth": 0,
+    "by_category": {
+      "anti_stereotypical_pref": {
+        "recall@1": 0.0,
+        "precision@1": 0.0,
+        "hit_rate@1": 0.0,
+        "recall@3": 0.0,
+        "precision@3": 0.0,
+        "hit_rate@3": 0.0,
+        "recall@5": 0.0,
+        "precision@5": 0.0,
+        "hit_rate@5": 0.0,
+        "mrr": 0.0,
+        "count": 1.0
+      },
+      "stereotypical_pref": {
+        "recall@1": 0.0,
+        "precision@1": 0.0,
+        "hit_rate@1": 0.0,
+        "recall@3": 0.0,
+        "precision@3": 0.0,
+        "hit_rate@3": 0.0,
+        "recall@5": 0.0,
+        "precision@5": 0.0,
+        "hit_rate@5": 0.0,
+        "mrr": 0.0,
+        "count": 2.0
+      },
+      "ask_to_forget": {
+        "recall@1": 0.0,
+        "precision@1": 0.0,
+        "hit_rate@1": 0.0,
+        "recall@3": 0.0,
+        "precision@3": 0.0,
+        "hit_rate@3": 0.0,
+        "recall@5": 0.0,
+        "precision@5": 0.0,
+        "hit_rate@5": 0.0,
+        "mrr": 0.0,
+        "count": 5.0
+      },
+      "health_and_medical_conditions": {
+        "recall@1": 0.0,
+        "precision@1": 0.0,
+        "hit_rate@1": 0.0,
+        "recall@3": 0.0,
+        "precision@3": 0.0,
+        "hit_rate@3": 0.0,
+        "recall@5": 0.0,
+        "precision@5": 0.0,
+        "hit_rate@5": 0.0,
+        "mrr": 0.0,
+        "count": 2.0
+      }
+    }
+  },
+  "accuracy": {
+    "f1": {
+      "overall": 0.1886,
+      "by_category": {
+        "anti_stereotypical_pref": {
+          "f1": 0.1455,
+          "n": 1
+        },
+        "ask_to_forget": {
+          "f1": 0.1749,
+          "n": 1
+        },
+        "health_and_medical_conditions": {
+          "f1": 0.2073,
+          "n": 2
+        },
+        "stereotypical_pref": {
+          "f1": 0.208,
+          "n": 1
+        }
+      },
+      "excluded_categories": [
+        "5"
+      ]
+    },
+    "baseline_f1": 0.1731,
+    "baseline_by_category": {
+      "anti_stereotypical_pref": {
+        "f1": 0.0882,
+        "n": 1
+      },
+      "ask_to_forget": {
+        "f1": 0.2388,
+        "n": 2
+      },
+      "health_and_medical_conditions": {
+        "f1": 0.1265,
+        "n": 1
+      }
+    },
+    "delta_f1": "+0.0155",
+    "jscore": {
+      "overall": 1.0,
+      "by_category": {
+        "anti_stereotypical_pref": {
+          "jscore": 1.0,
+          "n": 1
+        },
+        "ask_to_forget": {
+          "jscore": 1.0,
+          "n": 1
+        },
+        "health_and_medical_conditions": {
+          "jscore": 1.0,
+          "n": 2
+        },
+        "stereotypical_pref": {
+          "jscore": 1.0,
+          "n": 1
+        }
+      },
+      "baseline_overall": 1.0,
+      "baseline_by_category": {
+        "anti_stereotypical_pref": {
+          "jscore": 1.0,
+          "n": 1
+        },
+        "ask_to_forget": {
+          "jscore": 1.0,
+          "n": 2
+        },
+        "health_and_medical_conditions": {
+          "jscore": 1.0,
+          "n": 1
+        }
+      },
+      "delta": "+0.0000"
+    }
+  },
+  "token_reduction": {
+    "baseline_avg_tokens": 32086,
+    "oc_avg_tokens": 1155,
+    "baseline_total_tokens": 320856,
+    "oc_total_tokens": 11550,
+    "reduction_pct": 96.4,
+    "raw_baseline_avg_tokens": 37553,
+    "truncation_applied": true,
+    "max_context_tokens": 32000
+  },
+  "latency": {
+    "p50_ms": 16415.4,
+    "p95_ms": 16928.6,
+    "p99_ms": 17028.1,
+    "mean_ms": 11999.7,
+    "min_ms": 3165.5,
+    "max_ms": 17053.0,
+    "count": 10
+  },
+  "metadata": {
+    "timestamp": "2026-03-20T10:01:48.070552+00:00",
+    "run_id": "eval_memory_bd25824f",
+    "llm_model": "MiniMax-M2.7",
+    "server": "http://127.0.0.1:8921",
+    "dataset_path": "benchmarks/datasets/personamem/data.json",
+    "top_k": 10,
+    "max_context_tokens": 32000,
+    "concurrency": 5,
+    "total_qa": 10,
+    "enable_llm_judge": false,
+    "jscore_enabled": true,
+    "seed": 42
+  },
+  "per_query": [
+    {
+      "question": "Can you suggest some thought-provoking audio shows I could listen to during my commute that would really make me think and learn something new?",
+      "answer": "You could try ‘The Daily’ for current events, ‘Stuff You Should Know’ for a bit of general knowledge, or ‘99% Invisible’ for fascinating design stories. They’re all great options to make your commute thought‑provoking without being too heavy.",
+      "category": "anti_stereotypical_pref",
+      "expected_uris": [
+        "opencortex://eval_memory_bd25824f/eval_runner/memories/events/Subscribes_to_a_podcast_on_astrophysics"
+      ],
+      "latency_ms": 16776.48683299776,
+      "retrieved_uris": [
+        "opencortex://convtest/user/sonnet/memories/events/724820f415cd",
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/cc039ab70bdd",
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/2b476372d250",
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/580f77c1ead9",
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/854ebd99cda7",
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/6_August_2022_John_John_is_passionate_abo_4592713a",
+        "opencortex://eval_hotpotqa_quick/resources/public/The_Nerdist_Podcast",
+        "opencortex://eval_document_1be96e40/resources/public/Freakonomics_Radio",
+        "opencortex://eval_hotpotqa_quick/resources/public/Freakonomics_Radio"
+      ],
+      "oc_prediction": "Based on what you've shared, it sounds like you're someone who values personal growth, learning, and meaningful conversations. Here are some thought-provoking audio shows that would be perfect for your commute:\n\n**Freakonomics Radio** - This would be right up your alley. It explores the hidden side of everything through data-driven storytelling, making complex socioeconomic concepts accessible and fascinating. The episodes blend interviews, narrative reporting, and economic analysis that will definitely make you think about everyday things in entirely new ways.\n\n**The Nerdist Podcast** - If you enjoy candid conversations with interesting people from comedy and entertainment, this one's for you. It has that thoughtful yet casual tone that works great for commuting, and you'll likely discover new perspectives on pop culture and creativity.\n\n**Stuff You Should Know** - A podcast that dives deep into everyday topics you might have wondered about",
+      "oc_prompt_tokens": 1200,
+      "bl_prediction": "Based on your interests, here are some thought-provoking audio shows that would be perfect for your commute:\n\n**Science & Discovery**\n- **\"Radiolab\"** - Explores complex scientific and philosophical questions with engaging storytelling\n- **\"The Evidence Kit\"** - If you're into astrophysics, this digs deeper into space exploration and cosmology\n- **\"Ologies\"** - Interviews with experts across countless scientific fields, presented in an accessible, quirky format\n\n**Ideas & Personal Growth**\n- **\"TED Talks Daily\"** - Fresh ideas from world experts on technology, science, and human behavior\n- **\"The Knowledge Project\"** - Deep dives into mental models and decision-making frameworks\n- **\"Philosophize This!\"** - Makes philosophy accessible and relevant to modern life\n\n**Culture & Society**\n- **\"The Moth\"** - True personal stories that reveal the human experience\n- **\"Throughline\"** - History episodes that connect past events to today's headlines\n- **\"Rough Translation\"** - How universal themes play out differently across cultures\n\n**True Crime & Psychology**\n- **\"Criminal\"** - Thoughtful exploration of what it means to commit or experience crime\n- **\"In the Dark\"** - Investigative journalism that challenges assumptions\n- **\"The Dream\"** - Examines the wellness industry with critical analysis\n\n**Economics & Global Affairs**\n- **\"Planet Money\"** - Makes economics fun and understandable through stories\n- **\"The Intelligence\"** - Economist's daily briefing on global news\n\nGiven your",
+      "baseline_prompt_tokens": 32093,
+      "raw_baseline_tokens": 37553,
+      "oc_f1": 0.14545454545454545,
+      "bl_f1": 0.08823529411764706,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What are some elegant ways to add a touch of sophistication to an otherwise simple outfit for a special evening out?",
+      "answer": "You could elevate a simple evening look by draping a fine silk scarf over your shoulders or loosely knotting it at the neck for a touch of understated elegance. Choose a luxurious fabric in rich jewel tones or a subtle print, and let it complement — rather than overpower — your outfit.",
+      "category": "stereotypical_pref",
+      "expected_uris": [
+        "opencortex://eval_memory_bd25824f/eval_runner/memories/events/Appreciates_fine_silk_scarves_as_accessories"
+      ],
+      "latency_ms": 16775.94304201193,
+      "retrieved_uris": [
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/f595c35d31b0",
+        "opencortex://eval_conversation_b66e84f7/eval_runner/memories/events/13_October_2022_James_James_values_John_s_4b134fea",
+        "opencortex://eval_conversation_a9262654/eval_runner/memories/events/23_August_2023_Melanie_Melanie_expresses__1ebd27b1",
+        "opencortex://eval_memory_9f313f8e/eval_runner/memories/events/Wears_batik-patterned_blouses_to_formal_occasions",
+        "opencortex://eval_conversation_85d25025/user/eval_runner/memories/events/23_August_2023_Melanie_Melanie_expresses__1ebd27b1",
+        "opencortex://eval_hotpotqa_quick/resources/public/Etiquette_amp_Espionage",
+        "opencortex://eval_document_cd94e734/resources/public/Etiquette_amp_Espionage"
+      ],
+      "oc_prediction": "",
+      "oc_prompt_tokens": 634,
+      "bl_prediction": "",
+      "baseline_prompt_tokens": 32085,
+      "raw_baseline_tokens": 37553
+    },
+    {
+      "question": "What are some effective ways to find and connect with mentors who understand both the unique challenges of my industry and my personal values?",
+      "answer": "You might look for mentors through professional associations within your industry, such as trade shows or specialized networking groups. These spaces often attract people with similar business goals and challenges, making it easier to build trust and share industry-specific insights.",
+      "category": "ask_to_forget",
+      "expected_uris": [
+        "opencortex://eval_memory_bd25824f/eval_runner/memories/events/Do_not_remember_Struggled_to_find_LGBTQ_f_436d3098"
+      ],
+      "latency_ms": 16774.36220808886,
+      "retrieved_uris": [
+        "opencortex://eval_memory_50d36792/eval_runner/memories/events/Do_not_remember_Struggled_to_find_LGBTQ_f_436d3098",
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/38c33796863d",
+        "opencortex://eval_conversation_b66e84f7/eval_runner/memories/events/9_July_2023_Jolene_Jolene_games_with_her__6d495f1f",
+        "opencortex://eval_memory_d88eaef7/eval_runner/memories/events/Do_not_remember_Struggled_to_find_LGBTQ_f_436d3098",
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/cd767b790fed",
+        "opencortex://eval_document_682627c8/resources/public/b116ad5018a6",
+        "opencortex://eval_hotpotqa_quick/resources/public/Management_consulting",
+        "opencortex://eval_document_1be96e40/resources/public/Management_consulting"
+      ],
+      "oc_prediction": "Finding mentors who genuinely understand both your industry challenges and personal values requires a thoughtful, multi-pronged approach. Here are some effective strategies:\n\n**Leverage Industry-Specific Networks**\nLook for professional associations, online communities, and conferences focused on your specific industry. Many industries now have specialized subgroups or affinity spaces designed to support underrepresented professionals. Cannabis industry organizations, LGBTQ+ professional networks, and intersectional professional groups often host networking events where you can connect with potential mentors.\n\n**Seek Out Employee Resource Groups (ERGs)**\nIf you're employed at a company, ERGs can be valuable connectors. These groups often have senior leaders willing to mentor and can introduce you to professionals who've navigated similar challenges.\n\n**Use Alumni and Professional Platforms**\nPlatforms like LinkedIn allow you to filter connections by industry, company, and sometimes by shared identities or interests. Reach out to alumni from your school who've worked in your field and share similar values.\n\n**Be Intentional in Your Outreach**\nWhen approaching potential mentors, be specific about what you're seeking. Mention that you're looking for someone who understands both the industry landscape and the nuances of navigating it authentically. This signals that you value genuine connection over transactional advice.\n\n**Consider Reverse Mentorship**\nSometimes the most valuable relationships flow in unexpected directions. Professionals who are earlier in their journey but share your background can offer fresh perspectives while you share your own insights.\n\nRemember that meaningful mentorship is built on mutual respect, authentic connection, and aligned values.",
+      "oc_prompt_tokens": 1398,
+      "bl_prediction": "Finding mentors who truly understand both your industry challenges and personal values can feel challenging, but there are several effective approaches you might consider:\n\n**Leverage Your Existing Networks**\nGiven your involvement in tech industry networking mixers, start there. Reach out to people who've demonstrated both professional excellence and alignment with values like environmental conservation or community engagement. Your participation in conservation groups and humanitarian volunteering also positions you well to connect with like-minded professionals.\n\n**Seek Industry-Specific Mentorship Programs**\nMany professional associations offer structured mentorship programs. Given your diverse background in technology, environmental work, and community involvement, look for organizations that bridge these areas—tech companies with sustainability missions, or conservation groups with tech initiatives.\n\n**Be Strategic About Approach**\nWhen reaching out to potential mentors, be specific about what resonates with you in their journey. Reference particular challenges you've observed them navigate that align with your values. People are more receptive when they see you've done your homework.\n\n**Build Reciprocal Relationships**\nThe most valuable mentorships benefit both parties. Consider what unique perspectives or assistance you might offer—your multilingual abilities, cross-cultural experiences, or fresh viewpoints on industry challenges.\n\n**Look Beyond Traditional Hierarchies**\nSometimes the most understanding mentors aren't senior executives but peers who've recently",
+      "baseline_prompt_tokens": 32093,
+      "raw_baseline_tokens": 37553,
+      "oc_f1": 0.1749049429657795,
+      "bl_f1": 0.1630901287553648,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What are some good ways to avoid feeling drained after spending hours working on my laptop?",
+      "answer": "Since your occasional migraines stem from screen fatigue, it may help to follow the 20-20-20 rule—every 20 minutes, look at something 20 feet away for 20 seconds—and schedule short breaks for light stretching or yoga. Lowering screen brightness, using blue-light filtering, and spacing your research sessions throughout the day can also reduce strain. An ergonomic setup with proper monitor height can make a noticeable difference over time.",
+      "category": "health_and_medical_conditions",
+      "expected_uris": [
+        "opencortex://eval_memory_bd25824f/eval_runner/memories/events/Occasional_migraine_headaches_linked_to_s_972869e3"
+      ],
+      "latency_ms": 16767.046499997377,
+      "retrieved_uris": [
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/2c8cc4c4c59a",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/8_October_2023_Calvin_Calvin_recognizes_t_6934f2ee",
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/74c0c20aa1c8",
+        "opencortex://eval_conversation_b66e84f7/eval_runner/memories/events/29_January_2023_Gina_Gina_appreciates_Jon_b8a21d34",
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/8_October_2023_Calvin_Calvin_recognizes_t_6934f2ee",
+        "opencortex://eval_memory_9f313f8e/eval_runner/memories/events/Occasional_tension_headaches_during_high-_6dfe9ec9",
+        "opencortex://eval_conversation_v6full/user/eval_runner/memories/events/8_October_2023_Calvin_Calvin_recognizes_t_6934f2ee",
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/3b270f45bff3",
+        "opencortex://eval_conversation_5cac650c/user/eval_runner/memories/events/8_October_2023_Calvin_Calvin_recognizes_t_6934f2ee",
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/2e930a5363d4"
+      ],
+      "oc_prediction": "After a long stint on the laptop it’s easy to feel mentally and physically drained, especially if you’re also dealing with occasional tension headaches. The good news is that a few simple, habit‑forming tweaks can keep your energy up and your head feeling clear. Here’s a practical “break‑and‑recharge” routine you can slip into your day:\n\n### 1. Micro‑breaks (every 20‑30 minutes)\n| What to do | Why it helps |\n|------------|--------------|\n| **Stand up, roll your shoulders, and do a quick neck stretch** (e.g., ear‑to‑shoulder, chin‑to‑chest) | Relieves the muscle tension that often triggers headaches and eye strain",
+      "oc_prompt_tokens": 584,
+      "bl_prediction": "",
+      "baseline_prompt_tokens": 32077,
+      "raw_baseline_tokens": 37553,
+      "oc_f1": 0.1678321678321678,
+      "oc_jscore": 1.0
+    },
+    {
+      "question": "Where’s the best spot to sit in a lecture hall so I can read the slides and see the board without straining my eyes?",
+      "answer": "To clearly see slides and the board, aim for a seat about one-third back from the front and near the center—close enough to follow visuals without leaning forward but far enough for a comfortable overall view.",
+      "category": "ask_to_forget",
+      "expected_uris": [
+        "opencortex://eval_memory_bd25824f/eval_runner/memories/events/Do_not_remember_Mild_nearsightedness_requ_ce5523be"
+      ],
+      "latency_ms": 17052.99266707152,
+      "retrieved_uris": [
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/291e9713c6e1",
+        "opencortex://eval_conversation_v6full/user/eval_runner/memories/events/6_December_2023_Tim_Tim_is_working_on_his_studies",
+        "opencortex://eval_memory_9f313f8e/eval_runner/memories/events/Chronic_lower_back_discomfort_from_prolon_fee6e8ff",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/19_December_2023_Tim_Tim_appreciates_the__74f94630",
+        "opencortex://eval_memory_9f313f8e/eval_runner/memories/events/Regularly_attends_academic_lectures",
+        "opencortex://eval_memory_d0632066/eval_runner/memories/events/Struggled_with_recurring_stress_dreams_ab_1d34f048",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Embedding_dimensions_e5-large_1024_BGE-M3_1024",
+        "opencortex://eval_memory_d0632066/eval_runner/memories/events/Occasional_migraine_headaches_during_peri_8b315dfe",
+        "opencortex://eval_hotpotqa_quick/resources/public/Reading_Post"
+      ],
+      "oc_prediction": "",
+      "oc_prompt_tokens": 521,
+      "bl_prediction": "For someone who needs a little extra help seeing the board and the slides clearly, the sweet spot is usually a few rows back from the front—far enough that you don’t have to crane your neck, but close enough that the text and graphics stay crisp without squinting.\n\n**Why a “mid‑front” seat works best**\n\n| Factor | What it means for you | How it helps |\n|--------|-----------------------|--------------|\n| **Distance** | Aim for roughly 6–9 ft (≈",
+      "baseline_prompt_tokens": 32085,
+      "raw_baseline_tokens": 37553,
+      "bl_f1": 0.31460674157303375,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "Where along the scenic highway can I stop for a classic morning meal before continuing my road trip?",
+      "answer": "If you’re taking the Columbia River Gorge Scenic Highway, you could stop at Sugarpine Drive-In near Troutdale – they serve fresh pastries, seasonal fruit bowls, and locally roasted coffee, perfect for a light and energizing start to the day.",
+      "category": "ask_to_forget",
+      "expected_uris": [
+        "opencortex://eval_memory_bd25824f/eval_runner/memories/events/Do_not_remember_Enjoys_diner-style_breakf_30306742"
+      ],
+      "latency_ms": 4227.781541994773,
+      "retrieved_uris": [
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/23_January_2023_Deborah_Deborah_s_mother__d4a30ece",
+        "opencortex://eval_memory_9f313f8e/eval_runner/memories/events/Takes_day_trips_to_nearby_scenic_areas",
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/6d5913101da7",
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/13_October_2023_Tim_Tim_appears_to_be_sup_42529515",
+        "opencortex://eval_conversation_80863d38/user/eval_runner/memories/events/9090d97f6b42",
+        "opencortex://eval_conversation_b66e84f7/eval_runner/memories/events/13_October_2023_Melanie_Melanie_finds_blu_cb2391ad",
+        "opencortex://eval_document_253455f6/resources/public/e35bdeb67e5e",
+        "opencortex://eval_hotpotqa_10/resources/public/Kingston_Morning",
+        "opencortex://eval_hotpotqa_q50/resources/public/Kingston_Morning"
+      ],
+      "oc_prediction": "",
+      "oc_prompt_tokens": 921,
+      "bl_prediction": "",
+      "baseline_prompt_tokens": 32080,
+      "raw_baseline_tokens": 37553
+    },
+    {
+      "question": "Could you recommend some immersive crime mystery TV shows filled with clever twists that will keep me guessing until the very end?",
+      "answer": "If you’re after something packed with twists and turns, try *Broadchurch* or *The Sinner*. Both shows offer suspenseful storylines, layered characters, and clever reveals that will keep you guessing until the very end.",
+      "category": "ask_to_forget",
+      "expected_uris": [
+        "opencortex://eval_memory_bd25824f/eval_runner/memories/events/Do_not_remember_Reads_crime_mystery_novel_c9633de2"
+      ],
+      "latency_ms": 3165.48145795241,
+      "retrieved_uris": [
+        "opencortex://eval_conversation_v6full/user/eval_runner/memories/events/3_September_2023_Jolene_Jolene_s_favorite_d98b3cc4",
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/21_August_2023_Jolene_Jolene_practices_yo_919e9532",
+        "opencortex://eval_conversation_b66e84f7/eval_runner/memories/events/25_May_2023_Melanie_Melanie_carves_out_me_43eaeb2b",
+        "opencortex://eval_conversation_v6full/user/eval_runner/memories/events/12_April_2022_John_John_found_the_game_to_52ec01b9",
+        "opencortex://eval_conversation_5cac650c/user/eval_runner/memories/events/17_March_2022_James_James_tried_programmi_a5a631e0",
+        "opencortex://eval_hotpotqa_quick/resources/public/Lake_District_Mysteries",
+        "opencortex://eval_hotpotqa_quick/resources/public/Orange_Is_the_New_Black",
+        "opencortex://eval_hotpotqa_q50/resources/public/Meet_Corliss_Archer_TV_series"
+      ],
+      "oc_prediction": "",
+      "oc_prompt_tokens": 1011,
+      "bl_prediction": "",
+      "baseline_prompt_tokens": 32089,
+      "raw_baseline_tokens": 37553
+    },
+    {
+      "question": "What are some good stretches to help with back stiffness after sitting all day?",
+      "answer": "Since you have mild scoliosis, you might find that gentle, symmetrical stretches work best to ease stiffness without straining your back. Consider seated spinal rotations, cat-cow movements, and supported hamstring stretches, focusing on slow, mindful breathing as you work through them. Taking a few breaks during the day to stand and stretch can also help you feel more comfortable after long periods of sitting.",
+      "category": "health_and_medical_conditions",
+      "expected_uris": [
+        "opencortex://eval_memory_bd25824f/eval_runner/memories/events/Mild_scoliosis_diagnosed_in_adolescence"
+      ],
+      "latency_ms": 4131.254667066969,
+      "retrieved_uris": [
+        "opencortex://bench6/user/sonnet-full/memories/events/2_31_pm_on_17_July_2023_Melanie_Caroline__16af640b",
+        "opencortex://eval_memory_9f313f8e/eval_runner/memories/events/Chronic_lower_back_discomfort_from_prolon_fee6e8ff",
+        "opencortex://bench3/user/glm-full/memories/events/2_31_pm_on_17_July_2023_Melanie_Caroline__16af640b",
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/2fd8afe06e13",
+        "opencortex://test-team/user/minimax-user/memories/events/2_31_pm_on_17_July_2023_Melanie_Caroline__16af640b_1",
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/2c8cc4c4c59a",
+        "opencortex://bench-team/user/minimax-user/memories/events/2_31_pm_on_17_July_2023_Melanie_Caroline__16af640b",
+        "opencortex://bench3/user/mm-full/memories/events/2_31_pm_on_17_July_2023_Melanie_Caroline__16af640b",
+        "opencortex://bench-team/user/glm-user/memories/events/2_31_pm_on_17_July_2023_Melanie_Caroline__16af640b",
+        "opencortex://eval_hotpotqa_quick/resources/public/Twisties"
+      ],
+      "oc_prediction": "Below are a few gentle, beginner‑friendly stretches that can ease that “I’ve‑been‑sitting‑all‑day” tension in your back. You can do most of them right at your desk or after you stand up for a quick break.\n\n### 1. Seated spinal twist  \n- Sit on the edge of your chair, feet flat on the floor.  \n- Place your right hand on the outside of your left knee and your left hand on the chair back (or on the seat beside you).  \n- Inhale, lengthen your spine, then exhale and gently twist to the left, looking over your left shoulder.  \n- Hold for 5‑8 breaths, then repeat on the other side.  \n\n### 2. Cat‑cow (",
+      "oc_prompt_tokens": 1623,
+      "bl_prediction": "Great question! Back stiffness from prolonged sitting is super common, so here are some effective stretches you might find helpful:\n\n**Seated Cat-Cow Stretch**\nWhile sitting upright in your chair, place hands on your knees. Arch your back, pushing your chest forward and looking up (cow), then round your spine, tucking your chin and pulling your belly button toward your spine (cat). Repeat 5-10 times.\n\n**Seated Spinal Twist**\nSit tall in your chair, place your right hand on your left knee and gently twist your torso to the left, using the chair's backrest for support. Hold for 20-30 seconds and switch sides. This helps release tension in the mid-back.\n\n**Standing Forward Fold**\nFrom a standing position, hinge at your hips and let your upper body hang down toward your feet. Let your arms dangle or hold opposite elbows. This decompresses the entire spine.\n\n**Child's Pose**\nKneel on the floor with big toes touching and knees spread apart. Sit back on your heels and extend your arms forward on the floor. Great for releasing lower back tension.\n\n**Hip Flexor Stretch**\nKneel on one knee (use a cushion for comfort), with the other foot flat in front. Push your hips forward gently until you feel a stretch in the front of your hip and thigh. The hip flexors often tighten from sitting.\n\n**Shoulder Blade Squeeze**\nSit or stand with arms at your sides. Squeeze your shoulder blades together, hold for 5 seconds, release. This counteracts the rounded posture from hunching over a desk.\n\n**Neck Rolls**\nSlowly roll your head in a circle, first clockwise, then counterclockwise. This releases tension that often travels from the neck into the upper back.\n\nAim to do these every couple of hours if possible, and consider setting reminders to stand up and move around regularly—every 45-60 minutes",
+      "baseline_prompt_tokens": 32074,
+      "raw_baseline_tokens": 37553,
+      "oc_f1": 0.24675324675324672,
+      "bl_f1": 0.12650602409638556,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What are some tasty brunch dishes I could prepare for a weekend cabin trip that would work well for all of my friends’ dietary needs?",
+      "answer": "You could prepare a hearty vegetable frittata using free-range eggs, seasonal greens, and sweet peppers—perfect for a wholesome brunch that suits vegetarians while still being filling for everyone. Serve it alongside crusty bread and a fresh herb salad for balance.",
+      "category": "ask_to_forget",
+      "expected_uris": [
+        "opencortex://eval_memory_bd25824f/eval_runner/memories/events/Do_not_remember_Has_lactose_intolerance_d_d18ccf3e"
+      ],
+      "latency_ms": 16063.831832958385,
+      "retrieved_uris": [
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/233038c2a07d",
+        "opencortex://bench2/user/mm-b/memories/events/2_03_pm_on_11_May_2023_Andrew_Audrey_Hi_A_5e5e9e0a",
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/65b84f02bb97",
+        "opencortex://bench2/user/glm-b/memories/events/2_03_pm_on_11_May_2023_Andrew_Audrey_Hi_A_5e5e9e0a",
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/fae6106ac34a",
+        "opencortex://eval_document_1be96e40/resources/public/Chrome_Smoke_amp_BBQ",
+        "opencortex://eval_document_5d709e1e/resources/public/31b301531cd3",
+        "opencortex://eval_document_5d709e1e/resources/public/d07cd79f7a9f",
+        "opencortex://eval_document_5d709e1e/resources/public/3bc47d741c84"
+      ],
+      "oc_prediction": "",
+      "oc_prompt_tokens": 2638,
+      "bl_prediction": "",
+      "baseline_prompt_tokens": 32090,
+      "raw_baseline_tokens": 37553
+    },
+    {
+      "question": "What’s the best way to store and look after different types of sports footwear so they stay in top condition for as long as possible?",
+      "answer": "Mate, since you’ve got a few pairs of boots, the key is to rotate them so they get proper time to dry out between sessions. Give them a quick clean after each game, stuff them with newspaper to pull out the moisture, and store them in a cool, dry spot — boot bags work great for keeping the studs from scuffing other gear.",
+      "category": "stereotypical_pref",
+      "expected_uris": [
+        "opencortex://eval_memory_bd25824f/eval_runner/memories/events/Owns_multiple_pairs_of_football_boots"
+      ],
+      "latency_ms": 8261.586458072998,
+      "retrieved_uris": [
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/24_October_2023_Audrey_Audrey_loves_sushi_0d082736",
+        "opencortex://eval_memory_50d36792/eval_runner/memories/events/Owns_multiple_pairs_of_football_boots",
+        "opencortex://eval_memory_21204ede/eval_runner/memories/events/Owns_multiple_pairs_of_football_boots",
+        "opencortex://eval_memory_2d1e2c71/eval_runner/memories/events/Owns_multiple_pairs_of_football_boots",
+        "opencortex://eval_conversation_7d93a415/user/eval_runner/memories/events/24_October_2023_Audrey_Audrey_loves_sushi_0d082736",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/24_October_2023_Audrey_Audrey_loves_sushi_0d082736",
+        "opencortex://eval_conversation_v6full/user/eval_runner/memories/events/24_October_2023_Audrey_Audrey_loves_sushi_0d082736",
+        "opencortex://eval_memory_9a550714/eval_runner/memories/events/Owns_multiple_pairs_of_football_boots"
+      ],
+      "oc_prediction": "# Best Practices for Storing and Maintaining Sports Footwear\n\nBased on the context about someone with multiple pairs of football boots, here's how to keep them in top condition:\n\n## Cleaning\n\n- **Remove dirt and debris** after each use using a soft brush or damp cloth\n- **Avoid harsh chemicals** that can damage materials—use mild soap if needed\n- **Clean studs** separately to prevent rust and maintain grip\n\n## Drying\n\n- **Never use direct heat** (radiators, hair dryers, sunlight) as this can warp materials and crack soles\n- **Stuff boots with newspaper** or shoe trees to absorb moisture and maintain shape\n- **Allow 24 hours** between uses for complete drying\n\n## Storage\n\n- **Keep in a cool, dry place** with good ventilation\n- **Use boot bags** or individual compartments to prevent scratching and dust accumulation\n- **Avoid plastic bags**—they trap moisture and cause mildew\n- **Store with trees or forms** inside to preserve shape\n\n## Rotation & Care\n\n- **Rotate between pairs** regularly to allow each to fully dry\n- **Check for wear** on studs, soles, and uppers regularly\n- **Apply leather conditioner** periodically for leather boots\n- **Replace insoles** when they lose cushioning\n\n## Long-term Storage\n\nIf storing for extended periods, clean thoroughly, apply appropriate conditioners, stuff with tissue paper, and keep in breathable bags.\n\nThis approach will extend the life of your footwear and maintain performance characteristics!",
+      "oc_prompt_tokens": 1020,
+      "bl_prediction": "",
+      "baseline_prompt_tokens": 32090,
+      "raw_baseline_tokens": 37553,
+      "oc_f1": 0.20800000000000002,
+      "oc_jscore": 1.0
+    }
+  ]
+}

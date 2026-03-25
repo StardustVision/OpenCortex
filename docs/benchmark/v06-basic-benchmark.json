@@ -1,0 +1,1597 @@
+{
+  "summary": {
+    "count": 50.0,
+    "recall@1": 0.0,
+    "recall@3": 0.0,
+    "recall@5": 0.0,
+    "precision@1": 0.0,
+    "precision@3": 0.0,
+    "precision@5": 0.0,
+    "hit_rate@1": 0.0,
+    "hit_rate@3": 0.0,
+    "hit_rate@5": 0.0,
+    "accuracy@1": 0.0,
+    "accuracy@3": 0.0,
+    "accuracy@5": 0.0,
+    "mrr": 0.0
+  },
+  "token_comparison": {
+    "count": 0.0,
+    "avg_tokens_with_memory": 0.0,
+    "avg_tokens_without_memory": 0.0,
+    "total_tokens_with_memory": 0.0,
+    "total_tokens_without_memory": 0.0,
+    "token_reduction": 0.0,
+    "token_reduction_ratio": 0.0
+  },
+  "by_category": {
+    "preference": {
+      "count": 10.0,
+      "recall@1": 0.0,
+      "recall@3": 0.0,
+      "recall@5": 0.0,
+      "precision@1": 0.0,
+      "precision@3": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@1": 0.0,
+      "hit_rate@3": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@1": 0.0,
+      "accuracy@3": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    "profile": {
+      "count": 10.0,
+      "recall@1": 0.0,
+      "recall@3": 0.0,
+      "recall@5": 0.0,
+      "precision@1": 0.0,
+      "precision@3": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@1": 0.0,
+      "hit_rate@3": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@1": 0.0,
+      "accuracy@3": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    "entity": {
+      "count": 10.0,
+      "recall@1": 0.0,
+      "recall@3": 0.0,
+      "recall@5": 0.0,
+      "precision@1": 0.0,
+      "precision@3": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@1": 0.0,
+      "hit_rate@3": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@1": 0.0,
+      "accuracy@3": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    "event": {
+      "count": 10.0,
+      "recall@1": 0.0,
+      "recall@3": 0.0,
+      "recall@5": 0.0,
+      "precision@1": 0.0,
+      "precision@3": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@1": 0.0,
+      "hit_rate@3": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@1": 0.0,
+      "accuracy@3": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    "hard_keyword": {
+      "count": 10.0,
+      "recall@1": 0.0,
+      "recall@3": 0.0,
+      "recall@5": 0.0,
+      "precision@1": 0.0,
+      "precision@3": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@1": 0.0,
+      "hit_rate@3": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@1": 0.0,
+      "accuracy@3": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    }
+  },
+  "by_difficulty": {
+    "easy": {
+      "count": 26.0,
+      "recall@1": 0.0,
+      "recall@3": 0.0,
+      "recall@5": 0.0,
+      "precision@1": 0.0,
+      "precision@3": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@1": 0.0,
+      "hit_rate@3": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@1": 0.0,
+      "accuracy@3": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    "medium": {
+      "count": 19.0,
+      "recall@1": 0.0,
+      "recall@3": 0.0,
+      "recall@5": 0.0,
+      "precision@1": 0.0,
+      "precision@3": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@1": 0.0,
+      "hit_rate@3": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@1": 0.0,
+      "accuracy@3": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    "hard": {
+      "count": 5.0,
+      "recall@1": 0.0,
+      "recall@3": 0.0,
+      "recall@5": 0.0,
+      "precision@1": 0.0,
+      "precision@3": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@1": 0.0,
+      "hit_rate@3": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@1": 0.0,
+      "accuracy@3": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    }
+  },
+  "scored_count": 50,
+  "skipped_count": 0,
+  "skipped": [],
+  "query_results": [
+    {
+      "query": "What editor theme does the user prefer?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/preferences/User_prefers_dark_mode"
+      ],
+      "category": "preference",
+      "difficulty": "easy",
+      "query_id": "q_pref_01",
+      "predicted_uris": [
+        "opencortex://default/user/default/memories/preferences/f614e9d43cb8",
+        "opencortex://default/user/default/memories/preferences/a9d9d869856c",
+        "opencortex://default/user/default/memories/preferences/a8786ae3a115",
+        "opencortex://default/user/default/memories/preferences/d8edc41d64f9",
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/18_March_2022_Nate_Nate_believes_in_Joann_6a5a67a9"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "How should I format indentation?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/preferences/User_uses_4-space_indentation"
+      ],
+      "category": "preference",
+      "difficulty": "easy",
+      "query_id": "q_pref_02",
+      "predicted_uris": [],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "Which language should I use for the backend?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/preferences/User_prefers_Python_for_backend"
+      ],
+      "category": "preference",
+      "difficulty": "medium",
+      "query_id": "q_pref_03",
+      "predicted_uris": [],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "Should I add type annotations?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/preferences/User_requires_Python_type_hints"
+      ],
+      "category": "preference",
+      "difficulty": "medium",
+      "query_id": "q_pref_04",
+      "predicted_uris": [
+        "opencortex://eval_memory_9f313f8e/eval_runner/memories/events/code_file_path_name_and_affiliations_home_33170029",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/13_June_2023_Audrey_Audrey_mentioned_that_40c66951",
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/3_May_2023_Andrew_Andrew_acknowledges_tha_85076d1c",
+        "opencortex://eval_document_3a4828ca/resources/public/e06baf9b2d3d",
+        "opencortex://eval_document_682627c8/resources/public/8e9aa51a0635"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What test framework does the user like?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/preferences/User_prefers_pytest"
+      ],
+      "category": "preference",
+      "difficulty": "easy",
+      "query_id": "q_pref_05",
+      "predicted_uris": [
+        "opencortex://eval_conversation_5cac650c/user/eval_runner/memories/events/13_June_2023_Audrey_Audrey_mentioned_that_40c66951",
+        "opencortex://eval_conversation_v6full/user/eval_runner/memories/events/13_June_2023_Audrey_Audrey_mentioned_that_40c66951",
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/13_June_2023_Audrey_Audrey_mentioned_that_40c66951"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "Should this API call be async or sync?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/preferences/User_prefers_async_code"
+      ],
+      "category": "preference",
+      "difficulty": "hard",
+      "query_id": "q_pref_06",
+      "predicted_uris": [
+        "opencortex://default/user/default/memories/ebe3c5bd3700",
+        "opencortex://default/user/default/memories/70b90d45697e",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_async_code",
+        "opencortex://default/user/default/memories/730bfeb623eb",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/9_April_2023_Gina_Gina_has_a_trophy_from__3a28b832"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What keybindings does the user use?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/preferences/User_prefers_vim_keybindings"
+      ],
+      "category": "preference",
+      "difficulty": "easy",
+      "query_id": "q_pref_07",
+      "predicted_uris": [],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "How should I format the commit message?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/preferences/User_uses_conventional_commits"
+      ],
+      "category": "preference",
+      "difficulty": "medium",
+      "query_id": "q_pref_08",
+      "predicted_uris": [
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/19_June_2022_James_James_volunteered_last_667d158e",
+        "opencortex://eval_conversation_v6full/user/eval_runner/memories/events/10_August_2022_John_John_hooked_on_playin_c2ce7b1b",
+        "opencortex://eval_document_682627c8/resources/public/053d56f49c28",
+        "opencortex://test-team/resources/public/documents/c46ac7162d45",
+        "opencortex://eval_document_682627c8/resources/public/e65fe2d38867"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "Should I use JSON or YAML for the config file?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/preferences/User_prefers_YAML_for_config"
+      ],
+      "category": "preference",
+      "difficulty": "medium",
+      "query_id": "q_pref_09",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_YAML_for_config",
+        "opencortex://eval_document_682627c8/resources/public/053d56f49c28",
+        "opencortex://eval_document_5d709e1e/resources/public/cd458dcc6eeb",
+        "opencortex://eval_document_5d709e1e/resources/public/5145adb8cb1b",
+        "opencortex://eval_document_5d709e1e/resources/public/690927132f31"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "How to install Python packages in this project?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/preferences/User_uses_uv_package_manager"
+      ],
+      "category": "preference",
+      "difficulty": "medium",
+      "query_id": "q_pref_10",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_requires_Python_type_hints",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/14_August_2023_Caroline_Caroline_finds_ar_c69e938f",
+        "opencortex://eval_hotpotqa_q50/resources/public/Alberta_Hail_Project"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What is the user's job title?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/profile/Senior_backend_engineer_at_TechCorp"
+      ],
+      "category": "profile",
+      "difficulty": "easy",
+      "query_id": "q_prof_01",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Senior_backend_engineer_at_TechCorp",
+        "opencortex://eval_conversation_v6full/user/eval_runner/memories/events/7_July_2023_John_John_believes_that_toget_72bbbdac",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/28_August_2023_Melanie_Melanie_took_her_k_9f961374",
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/3_August_2023_Maria_Maria_mentioned_Cindy_a48eeff9",
+        "opencortex://eval_document_682627c8/resources/public/12227ebc0003"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What programming languages does the user know?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/profile/Codes_in_Python_and_Go"
+      ],
+      "category": "profile",
+      "difficulty": "easy",
+      "query_id": "q_prof_02",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_requires_Python_type_hints",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_Python_for_backend",
+        "opencortex://eval_document_682627c8/resources/public/bfa887fd346c",
+        "opencortex://eval_document_682627c8/resources/public/13ac7ade3efd"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What project is the user working on?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/profile/Works_on_OpenCortex_project",
+        "opencortex://bench_413e0666/runner/memories/profile/Lead_maintainer_of_OpenCortex"
+      ],
+      "category": "profile",
+      "difficulty": "easy",
+      "query_id": "q_prof_03",
+      "predicted_uris": [
+        "opencortex://default/user/default/memories/tech/14502c021f94",
+        "opencortex://default/user/default/memories/tech/28166c396e75",
+        "opencortex://default/user/default/memories/tech/8386de5c18d6",
+        "opencortex://default/user/default/memories/tech/15df1470b02e",
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/23_October_2023_Dave_Dave_restored_a_car__3f1d93fb"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What timezone is the user in?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/profile/User_timezone_is_UTC_8_Shanghai"
+      ],
+      "category": "profile",
+      "difficulty": "easy",
+      "query_id": "q_prof_04",
+      "predicted_uris": [
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/d6947ac46d85",
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/10_April_2023_John_John_explored_the_Paci_acf03284",
+        "opencortex://eval_conversation_v6full/user/eval_runner/memories/events/6_March_2023_Maria_Maria_s_grandma_passed_7ca50658",
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/21ea040a2ef7",
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/6a5e49e23690"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What is the user's name?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/profile/Hugo_bilingual_Chinese_English"
+      ],
+      "category": "profile",
+      "difficulty": "easy",
+      "query_id": "q_prof_05",
+      "predicted_uris": [
+        "opencortex://eval_conversation_v6full/user/eval_runner/memories/events/18_March_2022_Nate_Nate_believes_in_Joann_6a5a67a9",
+        "opencortex://eval_conversation_v6full/user/eval_runner/memories/events/31_December_2023_Sam_Sam_humorously_menti_80e10b8f",
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/18_March_2022_Nate_Nate_believes_in_Joann_6a5a67a9",
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/31_December_2023_Sam_Sam_humorously_menti_80e10b8f",
+        "opencortex://eval_conversation_7d93a415/user/eval_runner/memories/events/18_March_2022_Nate_Nate_believes_in_Joann_6a5a67a9"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What operating system does the user use for development?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/profile/Uses_macOS_with_Apple_M2"
+      ],
+      "category": "profile",
+      "difficulty": "easy",
+      "query_id": "q_prof_06",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_uses_uv_package_manager",
+        "opencortex://eval_conversation_v6full/user/eval_runner/memories/events/22_July_2022_James_James_has_dogs_that_he_2393eccb",
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/22_July_2022_James_James_has_dogs_that_he_2393eccb",
+        "opencortex://eval_document_682627c8/resources/public/6e8e89203ef6"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What is the user's technical background?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/profile/Background_in_distributed_systems",
+        "opencortex://bench_413e0666/runner/memories/profile/Experience_with_multiple_vector_DBs"
+      ],
+      "category": "profile",
+      "difficulty": "medium",
+      "query_id": "q_prof_07",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_requires_Python_type_hints",
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/0c809c885371",
+        "opencortex://eval_hotpotqa_quick/resources/public/Lead_programmer",
+        "opencortex://eval_hotpotqa_q50/resources/public/Lead_programmer"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "Who maintains the OpenCortex project?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/profile/Lead_maintainer_of_OpenCortex"
+      ],
+      "category": "profile",
+      "difficulty": "easy",
+      "query_id": "q_prof_08",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Lead_maintainer_of_OpenCortex",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Works_on_OpenCortex_project",
+        "opencortex://test-team/resources/public/documents/35b714549d76"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What IDE does the user use?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/profile/Uses_Cursor_IDE_and_iTerm2"
+      ],
+      "category": "profile",
+      "difficulty": "easy",
+      "query_id": "q_prof_09",
+      "predicted_uris": [
+        "opencortex://eval_memory_9f313f8e/eval_runner/memories/events/code_file_path_with_name_and_affiliations_4c5bf441",
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/3_May_2023_Andrew_Andrew_acknowledges_tha_85076d1c",
+        "opencortex://eval_conversation_v6full/user/eval_runner/memories/events/3_May_2023_Andrew_Andrew_acknowledges_tha_85076d1c",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/9_November_2022_Joanna_Joanna_is_allergic_8a4fe125",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/13_June_2023_Audrey_Audrey_mentioned_that_40c66951"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What vector databases has the user worked with?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/profile/Experience_with_multiple_vector_DBs"
+      ],
+      "category": "profile",
+      "difficulty": "medium",
+      "query_id": "q_prof_10",
+      "predicted_uris": [],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What vector database does OpenCortex use?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/entities/OpenCortex_uses_embedded_Qdrant"
+      ],
+      "category": "entity",
+      "difficulty": "easy",
+      "query_id": "q_ent_01",
+      "predicted_uris": [
+        "opencortex://test-team/resources/public/documents/35b714549d76",
+        "opencortex://test-team/resources/public/documents/8a505fe77eec",
+        "opencortex://eval_document_5d709e1e/resources/public/e330c3997a35",
+        "opencortex://eval_document_682627c8/resources/public/2e7b6a2e4190"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "How does the search retriever work?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/entities/HierarchicalRetriever_wave-based_search"
+      ],
+      "category": "entity",
+      "difficulty": "medium",
+      "query_id": "q_ent_02",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Local_embedding_reranker_integrated",
+        "opencortex://eval_document_5d709e1e/resources/public/9c555f82caee",
+        "opencortex://eval_document_682627c8/resources/public/36732b2a4f23",
+        "opencortex://eval_document_682627c8/resources/public/e409876a710a",
+        "opencortex://eval_document_5d709e1e/resources/public/34f95458662d"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What are the three content layers L0 L1 L2?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/entities/CortexFS_three-layer_filesystem"
+      ],
+      "category": "entity",
+      "difficulty": "easy",
+      "query_id": "q_ent_03",
+      "predicted_uris": [
+        "opencortex://eval_document_682627c8/resources/public/80231973c76b",
+        "opencortex://eval_document_682627c8/resources/public/127375d9ed04",
+        "opencortex://eval_document_682627c8/resources/public/4aeedca437e2",
+        "opencortex://eval_document_5d709e1e/resources/public/b85b58198821",
+        "opencortex://eval_document_682627c8/resources/public/c421fc54d729"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "How does query intent analysis work?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/entities/IntentRouter_3-layer_query_analysis"
+      ],
+      "category": "entity",
+      "difficulty": "medium",
+      "query_id": "q_ent_04",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/IntentRouter_3-layer_query_analysis",
+        "opencortex://eval_document_682627c8/resources/public/ec0046d3bdc8",
+        "opencortex://eval_document_682627c8/resources/public/d0175af5a8ba"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "How is the MCP server implemented?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/entities/MCP_server_Node_js_stdio_proxy_9_tools"
+      ],
+      "category": "entity",
+      "difficulty": "easy",
+      "query_id": "q_ent_05",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_Python_for_backend",
+        "opencortex://test-team/resources/public/documents/8a505fe77eec",
+        "opencortex://test-team/resources/public/documents/5fb694c20763",
+        "opencortex://eval_document_682627c8/resources/public/6f111c89129b",
+        "opencortex://test-team/resources/public/documents/5212f4cc0e3b"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "How are conversations split into traces?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/entities/TraceSplitter_LLM_conversation_decomposition"
+      ],
+      "category": "entity",
+      "difficulty": "medium",
+      "query_id": "q_ent_06",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/TraceSplitter_LLM_conversation_decomposition",
+        "opencortex://eval_document_682627c8/resources/public/bb968e9d3f09",
+        "opencortex://eval_document_682627c8/resources/public/f549ff396f3e",
+        "opencortex://eval_document_682627c8/resources/public/c421fc54d729"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What is the scoring formula for search results?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/entities/Scoring_4-factor_fusion_formula"
+      ],
+      "category": "entity",
+      "difficulty": "medium",
+      "query_id": "q_ent_07",
+      "predicted_uris": [
+        "opencortex://default/user/default/memories/2c0ae15bed51",
+        "opencortex://eval_document_3a4828ca/resources/public/cbe84fe95705",
+        "opencortex://eval_document_682627c8/resources/public/d7ad6216c4b5",
+        "opencortex://eval_document_682627c8/resources/public/a65f0b3105eb"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "How is sparse embedding integrated?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/entities/BM25_sparse_via_CompositeHybridEmbedder"
+      ],
+      "category": "entity",
+      "difficulty": "hard",
+      "query_id": "q_ent_08",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Local_embedding_reranker_integrated",
+        "opencortex://eval_document_682627c8/resources/public/483b7ab88928",
+        "opencortex://eval_document_682627c8/resources/public/47b611025551",
+        "opencortex://eval_document_682627c8/resources/public/bf59a3787bd3",
+        "opencortex://eval_document_682627c8/resources/public/33ac303fed9f"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What is the source code directory structure?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/entities/Project_directory_structure_overview"
+      ],
+      "category": "entity",
+      "difficulty": "easy",
+      "query_id": "q_ent_09",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Project_directory_structure_overview",
+        "opencortex://eval_memory_d88eaef7/eval_runner/memories/events/code_file_path_with_affiliations_home_lia_ffc3b5a6",
+        "opencortex://eval_memory_9f313f8e/eval_runner/memories/events/code_file_path_name_and_affiliations_home_33170029",
+        "opencortex://eval_memory_9f313f8e/eval_runner/memories/events/code_file_path_with_name_and_affiliations_8cad9657",
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/22_July_2023_John_John_has_also_done_weig_3f532c6d"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What is the memory context protocol lifecycle?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/entities/ContextManager_prepare_commit_end_lifecycle"
+      ],
+      "category": "entity",
+      "difficulty": "medium",
+      "query_id": "q_ent_10",
+      "predicted_uris": [
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/e8564b78803f",
+        "opencortex://eval_document_682627c8/resources/public/0aab21fe1ece",
+        "opencortex://eval_document_682627c8/resources/public/ccc8ba5c14bb",
+        "opencortex://eval_document_682627c8/resources/public/d2855a5bae4a"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What bugs were fixed this week?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/events/Fixed_IntentRouter_cache_key_bug",
+        "opencortex://bench_413e0666/runner/memories/events/Fixed_knowledge_candidates_extraction_bug"
+      ],
+      "category": "event",
+      "difficulty": "medium",
+      "query_id": "q_evt_01",
+      "predicted_uris": [
+        "opencortex://default/user/default/memories/a475677b4bce",
+        "opencortex://default/user/default/memories/5acf00750952",
+        "opencortex://tenant/default/user/default/memories/2093398d3a08",
+        "opencortex://tenant/default/user/default/memories/c64df8190e4a",
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/6_October_2023_Audrey_Audrey_donates_to_a_2029383d"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "When was the legacy code cleanup done?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/events/Legacy_cleanup_completed"
+      ],
+      "category": "event",
+      "difficulty": "easy",
+      "query_id": "q_evt_02",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Legacy_cleanup_completed",
+        "opencortex://eval_conversation_5cac650c/user/eval_runner/memories/events/2_March_2023_Jolene_Jolene_feels_overwhel_aee33c9f",
+        "opencortex://eval_conversation_7d93a415/user/eval_runner/memories/events/2_March_2023_Jolene_Jolene_feels_overwhel_aee33c9f",
+        "opencortex://eval_document_682627c8/resources/public/4def4ad4a520"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "When was local embedding integrated?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/events/Local_embedding_reranker_integrated"
+      ],
+      "category": "event",
+      "difficulty": "easy",
+      "query_id": "q_evt_03",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Local_embedding_reranker_integrated",
+        "opencortex://eval_document_3a4828ca/resources/public/cbe84fe95705",
+        "opencortex://eval_document_682627c8/resources/public/bd0631c056df",
+        "opencortex://test-team/resources/public/documents/3eaa35aaea89"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What was the orjson migration about?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/events/orjson_migration_completed"
+      ],
+      "category": "event",
+      "difficulty": "medium",
+      "query_id": "q_evt_04",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/orjson_migration_completed",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_YAML_for_config",
+        "opencortex://eval_document_682627c8/resources/public/d832c76b07ed",
+        "opencortex://eval_document_3a4828ca/resources/public/372b55300761"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What happened with Phase 1 planning?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/events/Phase_1_optimization_planning_started",
+        "opencortex://bench_413e0666/runner/memories/events/GPT-5_4_review_findings_applied_to_plan"
+      ],
+      "category": "event",
+      "difficulty": "medium",
+      "query_id": "q_evt_05",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Phase_1_optimization_planning_started",
+        "opencortex://eval_conversation_v6full/user/eval_runner/memories/events/20_September_2023_Jolene_Jolene_plans_to__d55f4e9a",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/19_August_2023_Audrey_Audrey_took_a_dog_g_6e57e978",
+        "opencortex://default/user/default/memories/70b90d45697e",
+        "opencortex://eval_document_3a4828ca/resources/public/fb71583ca6bf"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "When was document scan batch import deployed?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/events/Document_scan_batch_import_deployed"
+      ],
+      "category": "event",
+      "difficulty": "easy",
+      "query_id": "q_evt_06",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Document_scan_batch_import_deployed",
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/232ddc892502",
+        "opencortex://eval_document_682627c8/resources/public/88fb0606de20",
+        "opencortex://eval_document_682627c8/resources/public/905593b0fd41"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What was the knowledge_candidates bug?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/events/Fixed_knowledge_candidates_extraction_bug"
+      ],
+      "category": "event",
+      "difficulty": "medium",
+      "query_id": "q_evt_07",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Fixed_knowledge_candidates_extraction_bug",
+        "opencortex://eval_document_5d709e1e/resources/public/90a3e5fa2138",
+        "opencortex://eval_document_682627c8/resources/public/1922cf721430"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What was the LoCoMo benchmark F1 score?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/events/LoCoMo_benchmark_OC_0_22_vs_BL_0_34"
+      ],
+      "category": "event",
+      "difficulty": "hard",
+      "query_id": "q_evt_08",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/LoCoMo_benchmark_OC_0_22_vs_BL_0_34",
+        "opencortex://eval_document_5d709e1e/resources/public/9eada6e96c0b",
+        "opencortex://eval_document_682627c8/resources/public/597972de2487",
+        "opencortex://eval_document_3a4828ca/resources/public/7da902d5bc29",
+        "opencortex://eval_document_682627c8/resources/public/b12c4f9e19e3"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "When were prompts centralized?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/events/Prompt_centralization_completed"
+      ],
+      "category": "event",
+      "difficulty": "easy",
+      "query_id": "q_evt_09",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Prompt_centralization_completed",
+        "opencortex://eval_document_682627c8/resources/public/574276987ea4",
+        "opencortex://eval_document_b0dfb2a9/resources/public/9187b746c71b",
+        "opencortex://eval_document_682627c8/resources/public/0a8f4c670304"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What did the GPT-5.4 review find?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/events/GPT-5_4_review_findings_applied_to_plan"
+      ],
+      "category": "event",
+      "difficulty": "hard",
+      "query_id": "q_evt_10",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/GPT-5_4_review_findings_applied_to_plan",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_async_code",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/11_August_2023_Tim_Tim_recommends_the_boo_23247ba4",
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/7_April_2023_Maria_Maria_was_inspired_by__316b28bb",
+        "opencortex://eval_conversation_v6full/user/eval_runner/memories/events/7_April_2023_Maria_Maria_was_inspired_by__316b28bb",
+        "opencortex://eval_conversation_7d93a415/user/eval_runner/memories/events/7_April_2023_Maria_Maria_was_inspired_by__316b28bb",
+        "opencortex://eval_conversation_5cac650c/user/eval_runner/memories/events/7_April_2023_Maria_Maria_was_inspired_by__316b28bb",
+        "opencortex://eval_document_1be96e40/resources/public/President_pro_tempore_of_the_United_States_Senate",
+        "opencortex://eval_document_682627c8/resources/public/d552cf2ba48f",
+        "opencortex://eval_document_3a4828ca/resources/public/6adc41e4a187",
+        "opencortex://eval_document_682627c8/resources/public/9f24f077e6de",
+        "opencortex://eval_document_682627c8/resources/public/e45c107d8f29",
+        "opencortex://eval_document_682627c8/resources/public/44458b02fb76",
+        "opencortex://eval_document_682627c8/resources/public/9f43d83fe03d",
+        "opencortex://eval_document_682627c8/resources/public/7b0cde8e6aa6",
+        "opencortex://eval_document_682627c8/resources/public/3bd919ce91d6",
+        "opencortex://eval_document_682627c8/resources/public/889ac6502c8a",
+        "opencortex://eval_document_682627c8/resources/public/dd3933a0d7a2",
+        "opencortex://eval_document_3a4828ca/resources/public/f7e9598268b5",
+        "opencortex://eval_document_682627c8/resources/public/9e537efa8667",
+        "opencortex://eval_document_5d709e1e/resources/public/690927132f31",
+        "opencortex://eval_document_5d709e1e/resources/public/b85b58198821",
+        "opencortex://eval_document_5d709e1e/resources/public/be7819d1bccf",
+        "opencortex://eval_document_682627c8/resources/public/296e798b2e70",
+        "opencortex://eval_document_5d709e1e/resources/public/f1d110166133",
+        "opencortex://eval_document_5d709e1e/resources/public/8cd920fe1120",
+        "opencortex://eval_document_5d709e1e/resources/public/d147aacf6e14",
+        "opencortex://eval_document_5d709e1e/resources/public/ffd1c45daedc"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What does QDRANT_COLLECTION_NOT_FOUND error mean?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/entities/QDRANT_COLLECTION_NOT_FOUND_fix_call_init"
+      ],
+      "category": "hard_keyword",
+      "difficulty": "easy",
+      "query_id": "q_kw_01",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/QDRANT_COLLECTION_NOT_FOUND_fix_call_init",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Works_on_OpenCortex_project",
+        "opencortex://eval_hotpotqa_quick/resources/public/Teleperformance"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "Where is server.json located?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/entities/Config_paths_server_json_mcp_json"
+      ],
+      "category": "hard_keyword",
+      "difficulty": "easy",
+      "query_id": "q_kw_02",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Config_paths_server_json_mcp_json",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Project_directory_structure_overview",
+        "opencortex://eval_document_3a4828ca/resources/public/30675a0d956f",
+        "opencortex://eval_document_682627c8/resources/public/df9f7064bde2"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What is the embedding dimension for BGE-M3?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/entities/Embedding_dimensions_e5-large_1024_BGE-M3_1024"
+      ],
+      "category": "hard_keyword",
+      "difficulty": "easy",
+      "query_id": "q_kw_03",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Embedding_dimensions_e5-large_1024_BGE-M3_1024",
+        "opencortex://eval_document_682627c8/resources/public/e650db3629a2",
+        "opencortex://eval_document_682627c8/resources/public/0e7406d8d3ef",
+        "opencortex://eval_document_682627c8/resources/public/453a8ca1cb9f"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What is the opencortex URI format?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/entities/URI_format_opencortex_team_user_uid_type_cat_id"
+      ],
+      "category": "hard_keyword",
+      "difficulty": "easy",
+      "query_id": "q_kw_04",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/URI_format_opencortex_team_user_uid_type_cat_id",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Works_on_OpenCortex_project",
+        "opencortex://test-team/resources/public/documents/35b714549d76"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "How to start opencortex-server?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/entities/Server_entry_opencortex-server_on_port_8921"
+      ],
+      "category": "hard_keyword",
+      "difficulty": "easy",
+      "query_id": "q_kw_05",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Server_entry_opencortex-server_on_port_8921",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Works_on_OpenCortex_project",
+        "opencortex://eval_conversation_7d93a415/user/eval_runner/memories/events/27_January_2023_Jolene_Jolene_enjoys_play_2c70aa53",
+        "opencortex://eval_document_682627c8/resources/public/f438ec7f8308"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What is _HOTNESS_LAMBDA and its half-life?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/entities/HOTNESS_LAMBDA_ln_2_7_7-day_half-life"
+      ],
+      "category": "hard_keyword",
+      "difficulty": "medium",
+      "query_id": "q_kw_06",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/HOTNESS_LAMBDA_ln_2_7_7-day_half-life",
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/17_August_2023_Tim_Tim_appreciates_having_0e40b15f",
+        "opencortex://eval_document_5d709e1e/resources/public/b85b58198821",
+        "opencortex://eval_document_1be96e40/resources/public/Chiara_Nappi"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "How does RequestContextMiddleware work?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/entities/RequestContextMiddleware_headers_contextvars"
+      ],
+      "category": "hard_keyword",
+      "difficulty": "medium",
+      "query_id": "q_kw_07",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/RequestContextMiddleware_headers_contextvars",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_uses_uv_package_manager",
+        "opencortex://eval_document_5d709e1e/resources/public/0455468ccdec",
+        "opencortex://eval_document_682627c8/resources/public/dc4f5bbb5f05"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What does filter_translator.py do?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/entities/filter_translator_py_VikingDB_DSL_Qdrant_Filter"
+      ],
+      "category": "hard_keyword",
+      "difficulty": "medium",
+      "query_id": "q_kw_08",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/filter_translator_py_VikingDB_DSL_Qdrant_Filter",
+        "opencortex://eval_document_5d709e1e/resources/public/ed0be50b36c1",
+        "opencortex://eval_document_3a4828ca/resources/public/ee5b53d12157",
+        "opencortex://eval_document_682627c8/resources/public/519a89c48d6b",
+        "opencortex://eval_document_682627c8/resources/public/07859706402f"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What is SCORE_PROPAGATION_ALPHA?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/entities/SCORE_PROPAGATION_ALPHA_0_5_for_hierarchy"
+      ],
+      "category": "hard_keyword",
+      "difficulty": "hard",
+      "query_id": "q_kw_09",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/SCORE_PROPAGATION_ALPHA_0_5_for_hierarchy",
+        "opencortex://eval_document_682627c8/resources/public/fbcab9e3eb93",
+        "opencortex://eval_document_682627c8/resources/public/4840a71203f8",
+        "opencortex://eval_document_682627c8/resources/public/5e68284c1cea"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "How to deploy with Docker?",
+      "expected_uris": [
+        "opencortex://bench_413e0666/runner/memories/entities/Docker_deployment_docker_compose_up_-d"
+      ],
+      "category": "hard_keyword",
+      "difficulty": "easy",
+      "query_id": "q_kw_10",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Docker_deployment_docker_compose_up_-d",
+        "opencortex://eval_conversation_v6full/user/eval_runner/memories/events/18_March_2022_Nate_Nate_believes_in_Joann_6a5a67a9",
+        "opencortex://test-team/resources/public/documents/8a505fe77eec",
+        "opencortex://eval_document_682627c8/resources/public/81f53111731c"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    }
+  ],
+  "metadata": {
+    "timestamp": "2026-03-19T08:18:20.379017+00:00",
+    "run_id": "bench_413e0666",
+    "base_url": "http://127.0.0.1:8921",
+    "dataset": "/Users/hugo/CodeSpace/Work/OpenCortex/tests/benchmark/dataset.json",
+    "memories_seeded": 50,
+    "queries_total": 50,
+    "ks": [
+      1,
+      3,
+      5
+    ]
+  }
+}

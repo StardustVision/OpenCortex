@@ -1,0 +1,453 @@
+{
+  "mode": "conversation",
+  "dataset": "locomo",
+  "retrieval": {
+    "recall@1": 0.0,
+    "precision@1": 0.0,
+    "hit_rate@1": 0.0,
+    "recall@3": 0.0,
+    "precision@3": 0.0,
+    "hit_rate@3": 0.0,
+    "recall@5": 0.0,
+    "precision@5": 0.0,
+    "hit_rate@5": 0.0,
+    "mrr": 0.0,
+    "evaluated_count": 8,
+    "skipped_no_ground_truth": 2,
+    "by_category": {
+      "2": {
+        "recall@1": 0.0,
+        "precision@1": 0.0,
+        "hit_rate@1": 0.0,
+        "recall@3": 0.0,
+        "precision@3": 0.0,
+        "hit_rate@3": 0.0,
+        "recall@5": 0.0,
+        "precision@5": 0.0,
+        "hit_rate@5": 0.0,
+        "mrr": 0.0,
+        "count": 5.0
+      },
+      "3": {
+        "recall@1": 0.0,
+        "precision@1": 0.0,
+        "hit_rate@1": 0.0,
+        "recall@3": 0.0,
+        "precision@3": 0.0,
+        "hit_rate@3": 0.0,
+        "recall@5": 0.0,
+        "precision@5": 0.0,
+        "hit_rate@5": 0.0,
+        "mrr": 0.0,
+        "count": 1.0
+      },
+      "1": {
+        "recall@1": 0.0,
+        "precision@1": 0.0,
+        "hit_rate@1": 0.0,
+        "recall@3": 0.0,
+        "precision@3": 0.0,
+        "hit_rate@3": 0.0,
+        "recall@5": 0.0,
+        "precision@5": 0.0,
+        "hit_rate@5": 0.0,
+        "mrr": 0.0,
+        "count": 2.0
+      }
+    }
+  },
+  "accuracy": {
+    "f1": {
+      "overall": 0.3218,
+      "by_category": {
+        "2": {
+          "f1": 0.2169,
+          "n": 6
+        },
+        "3": {
+          "f1": 0.25,
+          "n": 1
+        },
+        "1": {
+          "f1": 0.5556,
+          "n": 3
+        }
+      },
+      "excluded_categories": [
+        "5"
+      ]
+    },
+    "baseline_f1": 0.5032,
+    "baseline_by_category": {
+      "2": {
+        "f1": 0.3386,
+        "n": 6
+      },
+      "3": {
+        "f1": 0.3333,
+        "n": 1
+      },
+      "1": {
+        "f1": 0.8889,
+        "n": 3
+      }
+    },
+    "delta_f1": "-0.1813",
+    "jscore": {
+      "overall": 0.6,
+      "by_category": {
+        "2": {
+          "jscore": 0.5,
+          "n": 6
+        },
+        "3": {
+          "jscore": 1.0,
+          "n": 1
+        },
+        "1": {
+          "jscore": 0.6667,
+          "n": 3
+        }
+      },
+      "baseline_overall": 0.9,
+      "baseline_by_category": {
+        "2": {
+          "jscore": 0.8333,
+          "n": 6
+        },
+        "3": {
+          "jscore": 1.0,
+          "n": 1
+        },
+        "1": {
+          "jscore": 1.0,
+          "n": 3
+        }
+      },
+      "delta": "-0.3000"
+    }
+  },
+  "token_reduction": {
+    "baseline_avg_tokens": 21161,
+    "oc_avg_tokens": 1006,
+    "baseline_total_tokens": 211614,
+    "oc_total_tokens": 10055,
+    "reduction_pct": 95.2,
+    "raw_baseline_avg_tokens": 21122,
+    "truncation_applied": false,
+    "max_context_tokens": 32000
+  },
+  "latency": {
+    "p50_ms": 11085.0,
+    "p95_ms": 17659.0,
+    "p99_ms": 18948.0,
+    "mean_ms": 12534.7,
+    "min_ms": 8593.4,
+    "max_ms": 19270.2,
+    "count": 10
+  },
+  "metadata": {
+    "timestamp": "2026-03-19T10:36:17.705186+00:00",
+    "run_id": "eval_conversation_808bacb2",
+    "llm_model": "Qwen3-235B-A22B-Instruct-2507",
+    "server": "http://127.0.0.1:8921",
+    "dataset_path": "benchmarks/locomo10.json",
+    "top_k": 10,
+    "max_context_tokens": 32000,
+    "concurrency": 5,
+    "total_qa": 10,
+    "enable_llm_judge": false,
+    "jscore_enabled": true,
+    "seed": 42
+  },
+  "per_query": [
+    {
+      "question": "When did Caroline go to the LGBTQ support group?",
+      "answer": "7 May 2023",
+      "category": "2",
+      "expected_uris": [
+        "opencortex://eval_conversation_808bacb2/eval_runner/memories/events/8_May_2023_Caroline_Caroline_attended_an__917cf033"
+      ],
+      "latency_ms": 15689.741750014946,
+      "retrieved_uris": [
+        "opencortex://convtest/user/sonnet/memories/events/8f3a643fced8",
+        "opencortex://conv-bench/user/sonnet/memories/events/1673c59670d3",
+        "opencortex://conv-test4/user/sonnet/memories/events/6fdacbaeabf8",
+        "opencortex://conv-test3/user/sonnet/memories/events/a7c1faca9377",
+        "opencortex://eval_conversation_80863d38/user/eval_runner/memories/events/eed51886df18",
+        "opencortex://conv-bench/user/sonnet/memories/events/a85558fe7755",
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/ea01b520ef37",
+        "opencortex://eval_conversation_7d93a415/user/eval_runner/memories/events/26_March_2023_Dave_Dave_attended_a_music__cdc69728",
+        "opencortex://eval_conversation_5cac650c/user/eval_runner/memories/events/9_June_2023_Melanie_Melanie_has_a_husband_ee2f8de9"
+      ],
+      "oc_prediction": "Yesterday, 7 May, 2023",
+      "oc_prompt_tokens": 652,
+      "bl_prediction": "On 7 May, 2023",
+      "baseline_prompt_tokens": 21163,
+      "raw_baseline_tokens": 21122,
+      "oc_f1": 0.8571428571428571,
+      "bl_f1": 0.8571428571428571,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "When did Melanie paint a sunrise?",
+      "answer": "2022",
+      "category": "2",
+      "expected_uris": [],
+      "latency_ms": 15381.499207927845,
+      "retrieved_uris": [
+        "opencortex://eval_conversation_ac2e325f/user/eval_runner/memories/events/8_May_2023_Melanie_Melanie_painted_a_lake_170d933c",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/8_May_2023_Melanie_Melanie_painted_a_lake_170d933c",
+        "opencortex://eval_conversation_v6full/user/eval_runner/memories/events/8_July_2023_Audrey_Audrey_agrees_to_join__0e338c4d",
+        "opencortex://eval_conversation_ac2e325f/user/eval_runner/memories/events/5_June_2022_Joanna_Joanna_has_a_picture_o_af9b56f0",
+        "opencortex://eval_conversation_aae5e9f1/user/eval_runner/memories/events/22_October_2023_Caroline_Caroline_went_th_36135b3d",
+        "opencortex://eval_conversation_v5test/user/eval_runner/memories/events/21_July_2023_Jon_Jon_expressed_a_need_for_806807ae",
+        "opencortex://eval_conversation_v6/user/eval_runner/memories/events/21_July_2023_Jon_Jon_expressed_a_need_for_806807ae",
+        "opencortex://eval_conversation_7d93a415/user/eval_runner/memories/events/31_May_2023_Calvin_Calvin_feels_a_sense_o_02d9926a",
+        "opencortex://eval_hotpotqa_quick/resources/public/The_Hork-Bajir_Chronicles"
+      ],
+      "oc_prediction": "Last year, a lake sunrise.",
+      "oc_prompt_tokens": 604,
+      "bl_prediction": "Last year",
+      "baseline_prompt_tokens": 21159,
+      "raw_baseline_tokens": 21122,
+      "oc_f1": 0.0,
+      "bl_f1": 0.0,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What fields would Caroline be likely to pursue in her educaton?",
+      "answer": "Psychology, counseling certification",
+      "category": "3",
+      "expected_uris": [
+        "opencortex://eval_conversation_808bacb2/eval_runner/memories/events/8_May_2023_Caroline_Caroline_is_planning__9499db6a"
+      ],
+      "latency_ms": 19270.20166593138,
+      "retrieved_uris": [
+        "opencortex://eval_memory_d88eaef7/eval_runner/memories/events/Follows_environmental_conservation_news",
+        "opencortex://eval_memory_9a550714/eval_runner/memories/events/Follows_environmental_conservation_news",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/13_September_2023_Caroline_Caroline_spend_4772feda",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/1cb2d8839ddb",
+        "opencortex://eval_conversation_80863d38/user/eval_runner/memories/events/b3300563dbda",
+        "opencortex://eval_memory_9a550714/eval_runner/memories/events/Is_an_active_member_of_local_conservation_groups",
+        "opencortex://eval_conversation_85d25025/user/eval_runner/memories/events/13_September_2023_Caroline_Caroline_spend_4772feda",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/16_June_2023_John_John_mentions_the_impor_18c78110",
+        "opencortex://eval_hotpotqa_quick/resources/public/Brian_Doyle-Murray"
+      ],
+      "oc_prediction": "Counseling, mental health, environmental conservation.",
+      "oc_prompt_tokens": 1454,
+      "bl_prediction": "Counseling and mental health.",
+      "baseline_prompt_tokens": 21168,
+      "raw_baseline_tokens": 21122,
+      "oc_f1": 0.25,
+      "bl_f1": 0.3333333333333333,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What did Caroline research?",
+      "answer": "Adoption agencies",
+      "category": "1",
+      "expected_uris": [
+        "opencortex://eval_conversation_808bacb2/eval_runner/memories/events/25_May_2023_Caroline_Caroline_is_research_d52b45ac"
+      ],
+      "latency_ms": 15140.421374933794,
+      "retrieved_uris": [
+        "opencortex://eval_conversation_80863d38/user/eval_runner/memories/events/f9ee6de96248",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/7bdccc6e942c",
+        "opencortex://eval_conversation_v5test/user/eval_runner/memories/events/8_May_2023_Melanie_Melanie_is_going_swimm_29e28d91",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/8c2b16dd2f5e",
+        "opencortex://eval_memory_9f313f8e/eval_runner/memories/events/Notices_seasonal_changes_in_the_air",
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/8_May_2023_Melanie_Melanie_is_going_swimm_29e28d91",
+        "opencortex://eval_conversation_v6full/user/eval_runner/memories/events/8_May_2023_Melanie_Melanie_is_going_swimm_29e28d91",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/52347ffe84ae",
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/6e1bdb5c661d",
+        "opencortex://eval_hotpotqa_quick/resources/public/Scott_Parkin"
+      ],
+      "oc_prediction": "Caroline researched adoption agencies.",
+      "oc_prompt_tokens": 1171,
+      "bl_prediction": "Adoption agencies and career options",
+      "baseline_prompt_tokens": 21157,
+      "raw_baseline_tokens": 21122,
+      "oc_f1": 0.6666666666666666,
+      "bl_f1": 0.6666666666666666,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What is Caroline's identity?",
+      "answer": "Transgender woman",
+      "category": "1",
+      "expected_uris": [],
+      "latency_ms": 9603.554208064452,
+      "retrieved_uris": [
+        "opencortex://eval_conversation_80863d38/user/eval_runner/memories/events/f9ee6de96248",
+        "opencortex://test_flat_v2/user/tester/memories/events/Caroline_is_a_transgender_woman",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/a8f209885d4e",
+        "opencortex://eval_conversation_v5test/user/eval_runner/memories/events/25_August_2023_Caroline_Caroline_made_a_s_a5fe0776",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/d5e5dc420703",
+        "opencortex://eval_conversation_80863d38/user/eval_runner/memories/events/219538f2d708",
+        "opencortex://eval_conversation_fa6ce034/user/eval_runner/memories/events/17_August_2023_Caroline_Caroline_values_h_aa673452",
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/45fa8559ec8b",
+        "opencortex://eval_memory_9f313f8e/eval_runner/memories/events/ssn_517-42-8931"
+      ],
+      "oc_prediction": "Transgender woman, artist, activist",
+      "oc_prompt_tokens": 1137,
+      "bl_prediction": "Transgender woman",
+      "baseline_prompt_tokens": 21157,
+      "raw_baseline_tokens": 21122,
+      "oc_f1": 1.0,
+      "bl_f1": 1.0,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "When did Melanie run a charity race?",
+      "answer": "The sunday before 25 May 2023",
+      "category": "2",
+      "expected_uris": [
+        "opencortex://eval_conversation_808bacb2/eval_runner/memories/events/25_May_2023_Melanie_Melanie_ran_a_charity_06455653"
+      ],
+      "latency_ms": 9655.381000018679,
+      "retrieved_uris": [
+        "opencortex://bench-team/user/glm-user/memories/events/1_14_pm_on_25_May_2023_Melanie_Caroline_H_c0483bb7",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/25_May_2023_Melanie_Melanie_ran_a_charity_06455653",
+        "opencortex://bench6/user/sonnet-full/memories/events/1_14_pm_on_25_May_2023_Melanie_Caroline_H_c0483bb7",
+        "opencortex://test-team/user/glm-user/memories/events/1_14_pm_on_25_May_2023_Melanie_Caroline_H_c0483bb7",
+        "opencortex://eval_conversation_85d25025/user/eval_runner/memories/events/8_May_2023_Caroline_Caroline_attended_an__917cf033",
+        "opencortex://eval_conversation_ac2e325f/user/eval_runner/memories/events/8_May_2023_Melanie_Painting_is_a_fun_way__5684fda6",
+        "opencortex://eval_conversation_v6/user/eval_runner/memories/events/8_May_2023_Caroline_Caroline_attended_an__917cf033",
+        "opencortex://eval_conversation_v6full/user/eval_runner/memories/events/8_May_2023_Caroline_Caroline_attended_an__917cf033",
+        "opencortex://conv-test3/user/sonnet/memories/events/ff20e9bb2316",
+        "opencortex://eval_document_682627c8/resources/public/943e8ca75103"
+      ],
+      "oc_prediction": "Last Saturday, May 25.",
+      "oc_prompt_tokens": 1246,
+      "bl_prediction": "Last Saturday, May 20",
+      "baseline_prompt_tokens": 21159,
+      "raw_baseline_tokens": 21122,
+      "oc_f1": 0.4444444444444445,
+      "bl_f1": 0.22222222222222224,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "When is Melanie planning on going camping?",
+      "answer": "June 2023",
+      "category": "2",
+      "expected_uris": [
+        "opencortex://eval_conversation_808bacb2/eval_runner/memories/events/25_May_2023_Melanie_Melanie_s_kids_are_ex_b464b4df"
+      ],
+      "latency_ms": 9842.300374992192,
+      "retrieved_uris": [
+        "opencortex://eval_conversation_v5test/user/eval_runner/memories/events/3_July_2023_Caroline_Caroline_is_currentl_bfcdaff2",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/17_July_2023_Melanie_Melanie_went_camping_fabad95f",
+        "opencortex://eval_conversation_43eec7c1/user/eval_runner/memories/events/1_February_2023_Gina_Gina_s_goal_is_to_cr_f2dc012c",
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/4_November_2023_Audrey_Audrey_enjoys_chec_18f10ae2",
+        "opencortex://eval_conversation_85d25025/user/eval_runner/memories/events/21_July_2023_Gina_Gina_built_a_new_websit_7ff2c665",
+        "opencortex://eval_conversation_ac2e325f/user/eval_runner/memories/events/27_June_2023_Melanie_Melanie_went_camping_64accd61",
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/3_July_2023_Caroline_Caroline_is_currentl_bfcdaff2",
+        "opencortex://eval_hotpotqa_quick/resources/public/Jeffrey_Stanley"
+      ],
+      "oc_prediction": "No future camping plans mentioned.",
+      "oc_prompt_tokens": 509,
+      "bl_prediction": "Next month, as planned earlier.",
+      "baseline_prompt_tokens": 21161,
+      "raw_baseline_tokens": 21122,
+      "oc_f1": 0.0,
+      "bl_f1": 0.0,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What is Caroline's relationship status?",
+      "answer": "Single",
+      "category": "1",
+      "expected_uris": [
+        "opencortex://eval_conversation_808bacb2/eval_runner/memories/events/9_June_2023_Caroline_Caroline_has_known_h_09af0ab5",
+        "opencortex://eval_conversation_808bacb2/eval_runner/memories/events/25_May_2023_Caroline_Caroline_is_excited__e5ef11b7"
+      ],
+      "latency_ms": 8593.42716599349,
+      "retrieved_uris": [
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/ce176c75c19f",
+        "opencortex://eval_conversation_80863d38/user/eval_runner/memories/events/4153ca14cffb",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/2578f8c015e8",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/d58f46996bcb",
+        "opencortex://eval_conversation_80863d38/user/eval_runner/memories/events/a411bc7ea7e5",
+        "opencortex://conv-test4/user/sonnet/memories/events/1cbb9712769e",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/1a3157039108",
+        "opencortex://conv-bench/user/sonnet/memories/events/4c99b137eb16",
+        "opencortex://eval_conversation_5cac650c/user/eval_runner/memories/events/19_October_2023_Calvin_Calvin_and_Frank_O_ac6c3b68"
+      ],
+      "oc_prediction": "Caroline's relationship status is not mentioned.",
+      "oc_prompt_tokens": 1242,
+      "bl_prediction": "Single, focused on adoption and career.",
+      "baseline_prompt_tokens": 21160,
+      "raw_baseline_tokens": 21122,
+      "oc_f1": 0.0,
+      "bl_f1": 1.0,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "When did Caroline give a speech at a school?",
+      "answer": "The week before 9 June 2023",
+      "category": "2",
+      "expected_uris": [
+        "opencortex://eval_conversation_808bacb2/eval_runner/memories/events/9_June_2023_Caroline_Caroline_gave_a_talk_5fa9da39"
+      ],
+      "latency_ms": 10223.154874984175,
+      "retrieved_uris": [
+        "opencortex://eval_conversation_80863d38/user/eval_runner/memories/events/fe0bfba735f1",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/c65aecd94138",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/0b5caae03d6f",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/7bdccc6e942c",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/1cecfc35244b",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/52347ffe84ae",
+        "opencortex://conv-bench/user/sonnet/memories/events/0c6e9edb42a9",
+        "opencortex://eval_conversation_80863d38/user/eval_runner/memories/events/8d06da5be236",
+        "opencortex://conv-bench/user/sonnet/memories/events/66b42072aaf6"
+      ],
+      "oc_prediction": "Recently, exact date not specified.",
+      "oc_prompt_tokens": 1350,
+      "bl_prediction": "On 9 June, 2023.",
+      "baseline_prompt_tokens": 21162,
+      "raw_baseline_tokens": 21122,
+      "oc_f1": 0.0,
+      "bl_f1": 0.6666666666666665,
+      "oc_jscore": 1.0,
+      "bl_jscore": 0.0
+    },
+    {
+      "question": "When did Caroline meet up with her friends, family, and mentors?",
+      "answer": "The week before 9 June 2023",
+      "category": "2",
+      "expected_uris": [
+        "opencortex://eval_conversation_808bacb2/eval_runner/memories/events/9_June_2023_Caroline_Caroline_s_friends_f_283d9025"
+      ],
+      "latency_ms": 11946.901625022292,
+      "retrieved_uris": [
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/1_December_2023_John_John_enjoys_nature_a_2327e63a",
+        "opencortex://eval_memory_9f313f8e/eval_runner/memories/events/Has_experienced_secondary_trauma_from_yea_147b7d23",
+        "opencortex://conv-bench/user/sonnet/memories/events/b33e1c87f863",
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/27_June_2023_Caroline_Caroline_received_a_f6502ba6",
+        "opencortex://eval_conversation_7d93a415/user/eval_runner/memories/events/1_December_2023_John_John_enjoys_nature_a_2327e63a",
+        "opencortex://eval_memory_9f313f8e/eval_runner/memories/events/Participates_in_alumni_networking_events",
+        "opencortex://eval_conversation_v6full/user/eval_runner/memories/events/1_December_2023_John_John_enjoys_nature_a_2327e63a",
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/2d2ffd022698",
+        "opencortex://eval_conversation_v6full/user/eval_runner/memories/events/15_August_2023_Sam_Sam_expresses_gratitud_ac1f5551"
+      ],
+      "oc_prediction": "No specific date mentioned.",
+      "oc_prompt_tokens": 690,
+      "bl_prediction": "Last week.",
+      "baseline_prompt_tokens": 21168,
+      "raw_baseline_tokens": 21122,
+      "oc_f1": 0.0,
+      "bl_f1": 0.28571428571428575,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    }
+  ]
+}

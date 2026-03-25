@@ -1,0 +1,362 @@
+{
+  "mode": "document",
+  "dataset": "qasper",
+  "retrieval": {
+    "recall@1": 0.0,
+    "precision@1": 0.0,
+    "hit_rate@1": 0.0,
+    "recall@3": 0.0,
+    "precision@3": 0.0,
+    "hit_rate@3": 0.0,
+    "recall@5": 0.0,
+    "precision@5": 0.0,
+    "hit_rate@5": 0.0,
+    "mrr": 0.0,
+    "evaluated_count": 0,
+    "skipped_no_ground_truth": 10,
+    "by_category": {}
+  },
+  "accuracy": {
+    "f1": {
+      "overall": 0.0693,
+      "by_category": {
+        "qasper": {
+          "f1": 0.0693,
+          "n": 10
+        }
+      },
+      "excluded_categories": [
+        "5"
+      ]
+    },
+    "baseline_f1": 0.2229,
+    "baseline_by_category": {
+      "qasper": {
+        "f1": 0.2229,
+        "n": 10
+      }
+    },
+    "delta_f1": "-0.1536",
+    "jscore": {
+      "overall": 0.4,
+      "by_category": {
+        "qasper": {
+          "jscore": 0.4,
+          "n": 10
+        }
+      },
+      "baseline_overall": 0.7,
+      "baseline_by_category": {
+        "qasper": {
+          "jscore": 0.7,
+          "n": 10
+        }
+      },
+      "delta": "-0.3000"
+    }
+  },
+  "token_reduction": {
+    "baseline_avg_tokens": 7604,
+    "oc_avg_tokens": 2265,
+    "baseline_total_tokens": 76043,
+    "oc_total_tokens": 22654,
+    "reduction_pct": 70.2,
+    "raw_baseline_avg_tokens": 7526,
+    "truncation_applied": false,
+    "max_context_tokens": 32000
+  },
+  "latency": {
+    "p50_ms": 9464.2,
+    "p95_ms": 11286.5,
+    "p99_ms": 11550.4,
+    "mean_ms": 7814.4,
+    "min_ms": 2061.2,
+    "max_ms": 11616.3,
+    "count": 10
+  },
+  "metadata": {
+    "timestamp": "2026-03-20T10:13:45.073429+00:00",
+    "run_id": "eval_document_bcd4228d",
+    "llm_model": "MiniMax-M2.7",
+    "server": "http://127.0.0.1:8921",
+    "dataset_path": "benchmarks/datasets/qasper/qasper-dev-v0.2.json",
+    "top_k": 10,
+    "max_context_tokens": 32000,
+    "concurrency": 5,
+    "total_qa": 10,
+    "enable_llm_judge": false,
+    "jscore_enabled": true,
+    "seed": 42
+  },
+  "per_query": [
+    {
+      "question": "which multilingual approaches do they compare with?",
+      "answer": "BIBREF19 BIBREF20",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 8903.078082948923,
+      "retrieved_uris": [
+        "opencortex://eval_document_682627c8/resources/public/673a2ad028bf",
+        "opencortex://eval_document_682627c8/resources/public/dde4898959b7",
+        "opencortex://eval_document_682627c8/resources/public/0c6b5f1d2150",
+        "opencortex://eval_document_5d2e3b60/resources/public/5537040ab30d",
+        "opencortex://eval_document_682627c8/resources/public/dd60905df155",
+        "opencortex://eval_document_5d2e3b60/resources/public/abd8288c7d96",
+        "opencortex://eval_document_5d2e3b60/resources/public/f33028e2d776",
+        "opencortex://eval_document_5d2e3b60/resources/public/b0b2eb5437d8",
+        "opencortex://eval_document_682627c8/resources/public/cae811625fab"
+      ],
+      "oc_prediction": "Based on the provided context, the multilingual approaches compared are:\n\n1. **Mix-source approach** - incorporates German monolingual data to enhance source-side representation\n2. **Mix-multi-source approach** - adds French-German parallel data to exploit multilinguality\n\nAdditionally, in the NER/dialogue evaluation portion, they compare **German BERT** versus **multilingual BERT**.",
+      "oc_prompt_tokens": 2248,
+      "bl_prediction": "Based on the paper, the multilingual approaches they compare with are:\n\n1. **Multilingual NMT (MNMT)** - specifically the approach from BIBREF19\n2. **MNMT with back translation** - the approach from BIBREF22\n\nThey also mention a variant called **pivoting$_{\\rm m}$**, which uses MNMT to translate source to pivot then to target in two separate steps.",
+      "baseline_prompt_tokens": 8097,
+      "raw_baseline_tokens": 8015,
+      "oc_f1": 0.0,
+      "bl_f1": 0.04081632653061224,
+      "oc_jscore": 0.0,
+      "bl_jscore": 0.0
+    },
+    {
+      "question": "what are the pivot-based baselines?",
+      "answer": "pivoting pivoting$_{\\rm m}$",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 10025.238125002943,
+      "retrieved_uris": [
+        "opencortex://eval_document_682627c8/resources/public/673a2ad028bf",
+        "opencortex://eval_document_3a4828ca/resources/public/c342dd324b03",
+        "opencortex://eval_document_3a4828ca/resources/public/99f8c1d22004",
+        "opencortex://eval_document_5d709e1e/resources/public/5e3fa3d03393",
+        "opencortex://eval_document_b0dfb2a9/resources/public/c9ff64bd2452",
+        "opencortex://eval_document_682627c8/resources/public/31a73987cc02",
+        "opencortex://eval_document_5d709e1e/resources/public/6872b6edf16f"
+      ],
+      "oc_prediction": "Based on the context, pivot-based baselines refer to a two-step translation approach where source language is first translated to an intermediate pivot language, then from pivot to the target language. The paper notes that pivoting \"emerges as a strong baseline but is inefficient due to its two-step process.\" This method leverages supervised source↔pivot parallel data and is used as a comparison against the proposed zero-shot translation methods like MLM+BRLM-SA.",
+      "oc_prompt_tokens": 1888,
+      "bl_prediction": "Based on the paper, the pivot-based baselines include:\n\n1. **Standard pivoting**: Translates source language to pivot language first, then translates the pivot to target language in two separate steps.\n\n2. **pivoting<sub>m</sub>**: A multilingual version that uses multilingual NMT (MNMT) to translate source to pivot, then to target in two separate steps, where each step receives supervised signal from parallel corpora.\n\nThe paper notes that pivoting is described as \"the strongest baseline\" in zero-shot translation scenarios, though it has drawbacks including doubled decoding time and error propagation problems.",
+      "baseline_prompt_tokens": 8092,
+      "raw_baseline_tokens": 8015,
+      "oc_f1": 0.031746031746031744,
+      "bl_f1": 0.024096385542168676,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "which datasets did they experiment with?",
+      "answer": "Europarl MultiUN",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 10883.47695802804,
+      "retrieved_uris": [
+        "opencortex://eval_document_682627c8/resources/public/d399ad40407c",
+        "opencortex://eval_document_682627c8/resources/public/403126ecc2ea",
+        "opencortex://eval_document_682627c8/resources/public/dee32d702b5c",
+        "opencortex://eval_document_682627c8/resources/public/1b45411b2e48",
+        "opencortex://eval_document_1be96e40/resources/public/Charles_Nungesser",
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/2_October_2023_John_John_recently_had_an__77792569",
+        "opencortex://eval_document_682627c8/resources/public/5846810ab47a",
+        "opencortex://eval_conversation_5cac650c/user/eval_runner/memories/events/2_October_2023_John_John_recently_had_an__77792569",
+        "opencortex://eval_document_682627c8/resources/public/b1970d32a00a"
+      ],
+      "oc_prediction": "Based on the provided context, the experiments utilized the following datasets:\n\n1. **Text classification datasets:**\n   - 20 newsgroups (11,314 training documents)\n   - Fisher corpus (40-topic telephone conversations with 1,374 training and 1,372 test documents)\n   - CSAT\n\n2. **Biomedical NER dataset:**\n   - Biomedical Named Entity Recognition data (using BioBERT)\n\n3. **Covid-19 QA dataset:**\n   - Deepset-AI Covid-QA dataset (1,380 questions over full-text research papers)",
+      "oc_prompt_tokens": 1678,
+      "bl_prediction": "They experimented with two public datasets: **Europarl** and **MultiUN**.\n\nFor Europarl, they evaluated on three language triples: French-English-Spanish (Fr-En-Es), German-English-French (De-En-Fr), and Romanian-English-German (Ro-En-De).\n\nFor MultiUN, they used four languages: English (pivot), Arabic, Spanish, and Russian, resulting in six zero-shot translation directions.",
+      "baseline_prompt_tokens": 8094,
+      "raw_baseline_tokens": 8015,
+      "oc_f1": 0.0,
+      "bl_f1": 0.09756097560975609,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "what language pairs are explored?",
+      "answer": "De-En, En-Fr, Fr-En, En-Es, Ro-En, En-De, Ar-En, En-Ru",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 10026.451291982085,
+      "retrieved_uris": [
+        "opencortex://eval_document_682627c8/resources/public/3846c32316f4",
+        "opencortex://eval_document_682627c8/resources/public/2e2d5dcd3474",
+        "opencortex://eval_document_682627c8/resources/public/9d4812f715c1",
+        "opencortex://eval_document_682627c8/resources/public/4c50c7386cb1",
+        "opencortex://eval_document_682627c8/resources/public/55e8cc4df910",
+        "opencortex://eval_document_3a4828ca/resources/public/5a1fd1e2f7a1",
+        "opencortex://eval_document_682627c8/resources/public/71fa864ff111",
+        "opencortex://eval_document_682627c8/resources/public/237c9f667394",
+        "opencortex://eval_document_682627c8/resources/public/d6bb63e2de20"
+      ],
+      "oc_prediction": "The language pairs explored include:\n\n1. **English to Hindi** (parent task in transfer learning)\n2. **Bengali to Hindi**\n3. **Gujarati to Hindi**\n4. **Marathi to Hindi**\n5. **Malayalam to Hindi**\n6. **Tamil to Hindi**\n7. **English to German** (with additional French-German data in multi-source experiments)\n8. **Ukrainian to Russian** (for cross-lingual semantic projection)",
+      "oc_prompt_tokens": 2372,
+      "bl_prediction": "Based on the paper, the language pairs explored are:\n\n**Europarl Dataset:**\n- French-English-Spanish (Fr-En-Es)\n- German-English-French (De-En-Fr)\n- Romanian-English-German (Ro-En-De)\n\n**MultiUN Dataset:**\n- Arabic-English-Spanish-Russian (Ar-En-Es-Ru)\n- Six zero-shot translation directions between Arabic, Spanish, and Russian (e.g., Es→Ar, Es→Ru, Ar→Es, etc.)\n\nEnglish serves as the pivot language in all experiments. The paper also mentions Arabic→Spanish as an example of low-resource translation in the introduction.",
+      "baseline_prompt_tokens": 8091,
+      "raw_baseline_tokens": 8015,
+      "oc_f1": 0.0,
+      "bl_f1": 0.0,
+      "oc_jscore": 0.0,
+      "bl_jscore": 0.0
+    },
+    {
+      "question": "what ner models were evaluated?",
+      "answer": "Stanford NER spaCy 2.0  recurrent model with a CRF top layer",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 10883.473749971017,
+      "retrieved_uris": [
+        "opencortex://eval_document_b0dfb2a9/resources/public/04fd88d5f9ea",
+        "opencortex://eval_document_682627c8/resources/public/26a22af17228",
+        "opencortex://eval_document_3a4828ca/resources/public/f7e9598268b5",
+        "opencortex://eval_document_682627c8/resources/public/1b45411b2e48",
+        "opencortex://eval_document_3a4828ca/resources/public/ec226d7c581b",
+        "opencortex://eval_document_682627c8/resources/public/4159a5a3be9a",
+        "opencortex://eval_document_3a4828ca/resources/public/ef83788edf93",
+        "opencortex://eval_document_3a4828ca/resources/public/5b4b26d415b4",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/25_August_2023_Melanie_Melanie_volunteere_b3402978",
+        "opencortex://eval_document_1be96e40/resources/public/Kansas_Song"
+      ],
+      "oc_prediction": "Based on the research paper context, the NER models evaluated include:\n\n1. **Stanford NER** (feature-based baseline)\n2. **spaCy 2.0** (with 200D embeddings)\n3. **Bidirectional LSTM-CRF** with character-level features\n4. **CRF** variants (CRF-VT, CRF-MA)\n5. **LSTM-CRF** variants (LSTM-CRF-VT)\n6. **Crowd-aware models**: CRF-MA, LSTM-Crowd, and **ALCrowd** (with adversarial learning)\n\nThe paper also mentions experiments with **BERT** and **BioBERT** for biomedical NER tasks.",
+      "oc_prompt_tokens": 2211,
+      "bl_prediction": "The NER models evaluated were:\n\n1. **Stanford NER** - a CRF-based classifier using lexical and contextual features\n2. **spaCy 2.0** - a CNN-based transition system for named entity recognition\n3. **Char-biLSTM+biLSTM+CRF** - a recurrent model that uses bidirectional LSTM cells for character-based feature extraction combined with word embeddings, followed by a CRF layer for sequence labeling",
+      "baseline_prompt_tokens": 5535,
+      "raw_baseline_tokens": 5460,
+      "oc_f1": 0.1846153846153846,
+      "bl_f1": 0.3157894736842105,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "what is the source of the news sentences?",
+      "answer": "ilur.am",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 2306.1876660212874,
+      "retrieved_uris": [
+        "opencortex://eval_document_1be96e40/resources/public/Billings_Bulls",
+        "opencortex://eval_document_5d709e1e/resources/public/183ce93ff054",
+        "opencortex://eval_document_682627c8/resources/public/997df075f918",
+        "opencortex://eval_document_3a4828ca/resources/public/0399e28318b3",
+        "opencortex://eval_document_5d709e1e/resources/public/bdba14ce279a",
+        "opencortex://eval_document_682627c8/resources/public/6fb118f07968",
+        "opencortex://eval_document_5d709e1e/resources/public/8d03fd2e79dc",
+        "opencortex://eval_document_5d709e1e/resources/public/28ab13071db5"
+      ],
+      "oc_prediction": "The news sentences are sourced from over 250 Armenian news articles published on ilur.am between August 2012 and July 2018.",
+      "oc_prompt_tokens": 2568,
+      "bl_prediction": "The news sentences were selected from over 250 news texts from **ilur.am**, an Armenian news website.",
+      "baseline_prompt_tokens": 5538,
+      "raw_baseline_tokens": 5460,
+      "oc_f1": 0.10526315789473684,
+      "bl_f1": 0.13333333333333333,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "did they use a crowdsourcing platform for manual annotations?",
+      "answer": "no",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 2061.1567919841036,
+      "retrieved_uris": [
+        "opencortex://eval_document_682627c8/resources/public/a85e13c0c62f",
+        "opencortex://eval_document_682627c8/resources/public/4da175e2cbe9",
+        "opencortex://eval_document_682627c8/resources/public/46718db05e74",
+        "opencortex://eval_document_5d709e1e/resources/public/bdba14ce279a",
+        "opencortex://eval_document_682627c8/resources/public/ed4bf425a885",
+        "opencortex://eval_document_5d709e1e/resources/public/8d03fd2e79dc",
+        "opencortex://eval_document_5d709e1e/resources/public/276a1cfba92a",
+        "opencortex://eval_document_3a4828ca/resources/public/8ae430ac1d06",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/28_January_2023_John_John_attended_a_comm_de888acc"
+      ],
+      "oc_prediction": "yes",
+      "oc_prompt_tokens": 2187,
+      "bl_prediction": "No",
+      "baseline_prompt_tokens": 5544,
+      "raw_baseline_tokens": 5460,
+      "oc_f1": 0.0,
+      "bl_f1": 1.0,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "what are the topics pulled from Reddit?",
+      "answer": "politics, business, science, and AskReddit, and 1000 additional posts from the Reddit frontpage. ",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 11616.312958998606,
+      "retrieved_uris": [
+        "opencortex://eval_document_b0dfb2a9/resources/public/3e80d17c38e1",
+        "opencortex://eval_document_b0dfb2a9/resources/public/d924521efd8a",
+        "opencortex://eval_document_682627c8/resources/public/2f0dfdd6e727",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/16_June_2023_John_John_appreciates_specia_76cdd6bf",
+        "opencortex://eval_document_5d709e1e/resources/public/86df1994ede5",
+        "opencortex://eval_document_5d709e1e/resources/public/ff78f1595e17",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/16_June_2023_Maria_Maria_appreciates_the__97b66e80",
+        "opencortex://eval_document_3a4828ca/resources/public/d81b6dfa226b",
+        "opencortex://eval_document_b0dfb2a9/resources/public/4ebadc406e7b"
+      ],
+      "oc_prediction": "The topics/subreddits pulled from Reddit include: politics, business, science, AskReddit, and the Reddit frontpage. The study also mentions other topics found to have dogmatic content, such as religion, LGBT issues, guns, Libertarianism, Anarcho_Capitalism, climate change, abortion, world news, relationship advice, and artificial intelligence.",
+      "oc_prompt_tokens": 2647,
+      "bl_prediction": "The topics pulled from Reddit include:\n\n- **Politics**\n- **Business**\n- **Science**\n- **AskReddit**\n- **Reddit frontpage** (general)\n\nThe researchers randomly sampled 1,000 posts each from the subreddits focused on politics, business, science, and AskReddit, plus an additional 1,000 posts from the Reddit frontpage, for a total training dataset of 5,000 posts.",
+      "baseline_prompt_tokens": 8126,
+      "raw_baseline_tokens": 8048,
+      "oc_f1": 0.29166666666666663,
+      "bl_f1": 0.4,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What predictive model do they build?",
+      "answer": "logistic regression models",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 6918.306750012562,
+      "retrieved_uris": [
+        "opencortex://eval_document_b0dfb2a9/resources/public/d924521efd8a",
+        "opencortex://eval_document_682627c8/resources/public/7404a5783e5e",
+        "opencortex://eval_document_682627c8/resources/public/b09148598d31",
+        "opencortex://eval_document_682627c8/resources/public/041be49238a2",
+        "opencortex://eval_document_5d709e1e/resources/public/1b77a575eea0",
+        "opencortex://eval_document_682627c8/resources/public/5d0144a1ade9",
+        "opencortex://eval_memory_633c2936/eval_runner/memories/events/Struggled_with_recurring_stress_dreams_ab_1d34f048",
+        "opencortex://eval_document_682627c8/resources/public/dbe6adfc52a4",
+        "opencortex://eval_document_5d709e1e/resources/public/cf2cdb2c1387"
+      ],
+      "oc_prediction": "They build a computational/machine learning model to predict dogmatism in new social media content, specifically applied to Reddit comments. The model analyzes linguistic markers associated with rigid belief systems to identify dogmatic tendencies in online discourse.",
+      "oc_prompt_tokens": 2142,
+      "bl_prediction": "The researchers build a **logistic regression classifier** to predict dogmatism in comments. They compare different feature sets:\n\n- **BOW (bag-of-words)**: Unigram features using TF-IDF\n- **SENT (sentiment signals)**: Sentiment-based features\n- **LING (linguistic features)**: Features based on LIWC categories (certainty, tentativeness, insight, perception, relativity, pronouns, verb tense, sentiment, etc.)\n- **BOW+LING**: A combination of bag-of-words and linguistic features\n\nThe final model applied to analyze millions of Reddit posts uses the **BOW+LING combination**, which achieved the best performance with an AUC of 0.881 within Reddit and 0.791 on held-out New York Times comments.",
+      "baseline_prompt_tokens": 8125,
+      "raw_baseline_tokens": 8048,
+      "oc_f1": 0.0,
+      "bl_f1": 0.048780487804878044,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What accuracy does the proposed system achieve?",
+      "answer": "F1 scores of 85.99 on the DL-PS data,  75.15 on the EC-MT data and 71.53 on the EC-UQ data ",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 4520.256916061044,
+      "retrieved_uris": [
+        "opencortex://eval_document_682627c8/resources/public/6fe94756e04a",
+        "opencortex://eval_document_682627c8/resources/public/27ddd037fa2e",
+        "opencortex://eval_document_682627c8/resources/public/65b3d68eac7b",
+        "opencortex://eval_document_682627c8/resources/public/9286b359b9d5",
+        "opencortex://eval_document_682627c8/resources/public/cfed67fca46b",
+        "opencortex://eval_document_682627c8/resources/public/e4e00bcec8e8",
+        "opencortex://eval_document_5d709e1e/resources/public/6f7f0f8d101a",
+        "opencortex://eval_document_682627c8/resources/public/52c7d820474f",
+        "opencortex://eval_document_682627c8/resources/public/12bd9a00239b",
+        "opencortex://eval_document_682627c8/resources/public/8dc652dbb6da"
+      ],
+      "oc_prediction": "Based on the provided context, the specific proposed system achieves top accuracy in five of seven languages in the CoNLL-SIGMORPHON 2018 shared task (Task 2). No single numerical accuracy percentage is provided for the overall proposed system across all the",
+      "oc_prompt_tokens": 2713,
+      "bl_prediction": "The paper does not report accuracy metrics. Instead, it evaluates the systems using entity-level **Precision (P), Recall (R), and F1 score**. \n\nBased on the reported results, the proposed ALCrowd system achieves:\n- **+1.08 F1 improvement** over LSTM-CRF baseline on DL-PS dataset\n- **+1.24 F1 improvement** over LSTM-CRF baseline on EC-MT dataset\n- **+2.38 F1 improvement** over LSTM-CRF baseline on EC-UQ dataset\n\nALCrowd performs the best among all compared systems, with statistically significant improvements (p-value < 10⁻⁵ by t-test).",
+      "baseline_prompt_tokens": 10801,
+      "raw_baseline_tokens": 10721,
+      "oc_f1": 0.08,
+      "bl_f1": 0.1686746987951807,
+      "oc_jscore": 0.0,
+      "bl_jscore": 0.0
+    }
+  ]
+}

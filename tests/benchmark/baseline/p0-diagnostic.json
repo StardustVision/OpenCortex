@@ -1,0 +1,1645 @@
+{
+  "summary": {
+    "count": 50.0,
+    "recall@1": 0.57,
+    "recall@3": 0.76,
+    "recall@5": 0.79,
+    "precision@1": 0.58,
+    "precision@3": 0.26,
+    "precision@5": 0.16400000000000003,
+    "hit_rate@1": 0.58,
+    "hit_rate@3": 0.78,
+    "hit_rate@5": 0.8,
+    "accuracy@1": 0.58,
+    "accuracy@3": 0.78,
+    "accuracy@5": 0.8,
+    "mrr": 0.664
+  },
+  "token_comparison": {
+    "count": 0.0,
+    "avg_tokens_with_memory": 0.0,
+    "avg_tokens_without_memory": 0.0,
+    "total_tokens_with_memory": 0.0,
+    "total_tokens_without_memory": 0.0,
+    "token_reduction": 0.0,
+    "token_reduction_ratio": 0.0
+  },
+  "by_category": {
+    "preference": {
+      "count": 10.0,
+      "recall@1": 0.7,
+      "recall@3": 0.8,
+      "recall@5": 0.8,
+      "precision@1": 0.7,
+      "precision@3": 0.26666666666666666,
+      "precision@5": 0.16,
+      "hit_rate@1": 0.7,
+      "hit_rate@3": 0.8,
+      "hit_rate@5": 0.8,
+      "accuracy@1": 0.7,
+      "accuracy@3": 0.8,
+      "accuracy@5": 0.8,
+      "mrr": 0.7333333333333333
+    },
+    "profile": {
+      "count": 10.0,
+      "recall@1": 0.4,
+      "recall@3": 0.4,
+      "recall@5": 0.4,
+      "precision@1": 0.4,
+      "precision@3": 0.13333333333333333,
+      "precision@5": 0.08,
+      "hit_rate@1": 0.4,
+      "hit_rate@3": 0.4,
+      "hit_rate@5": 0.4,
+      "accuracy@1": 0.4,
+      "accuracy@3": 0.4,
+      "accuracy@5": 0.4,
+      "mrr": 0.4
+    },
+    "entity": {
+      "count": 10.0,
+      "recall@1": 0.3,
+      "recall@3": 0.8,
+      "recall@5": 0.9,
+      "precision@1": 0.3,
+      "precision@3": 0.26666666666666666,
+      "precision@5": 0.18,
+      "hit_rate@1": 0.3,
+      "hit_rate@3": 0.8,
+      "hit_rate@5": 0.9,
+      "accuracy@1": 0.3,
+      "accuracy@3": 0.8,
+      "accuracy@5": 0.9,
+      "mrr": 0.5033333333333333
+    },
+    "event": {
+      "count": 10.0,
+      "recall@1": 0.65,
+      "recall@3": 0.8,
+      "recall@5": 0.85,
+      "precision@1": 0.7,
+      "precision@3": 0.3,
+      "precision@5": 0.2,
+      "hit_rate@1": 0.7,
+      "hit_rate@3": 0.9,
+      "hit_rate@5": 0.9,
+      "accuracy@1": 0.7,
+      "accuracy@3": 0.9,
+      "accuracy@5": 0.9,
+      "mrr": 0.7833333333333333
+    },
+    "hard_keyword": {
+      "count": 10.0,
+      "recall@1": 0.8,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "precision@1": 0.8,
+      "precision@3": 0.3333333333333333,
+      "precision@5": 0.2,
+      "hit_rate@1": 0.8,
+      "hit_rate@3": 1.0,
+      "hit_rate@5": 1.0,
+      "accuracy@1": 0.8,
+      "accuracy@3": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 0.9
+    }
+  },
+  "by_difficulty": {
+    "easy": {
+      "count": 26.0,
+      "recall@1": 0.6153846153846154,
+      "recall@3": 0.7692307692307693,
+      "recall@5": 0.7692307692307693,
+      "precision@1": 0.6153846153846154,
+      "precision@3": 0.2564102564102564,
+      "precision@5": 0.15384615384615385,
+      "hit_rate@1": 0.6153846153846154,
+      "hit_rate@3": 0.7692307692307693,
+      "hit_rate@5": 0.7692307692307693,
+      "accuracy@1": 0.6153846153846154,
+      "accuracy@3": 0.7692307692307693,
+      "accuracy@5": 0.7692307692307693,
+      "mrr": 0.6730769230769231
+    },
+    "medium": {
+      "count": 19.0,
+      "recall@1": 0.5,
+      "recall@3": 0.6842105263157895,
+      "recall@5": 0.7631578947368421,
+      "precision@1": 0.5263157894736842,
+      "precision@3": 0.24561403508771926,
+      "precision@5": 0.16842105263157894,
+      "hit_rate@1": 0.5263157894736842,
+      "hit_rate@3": 0.7368421052631579,
+      "hit_rate@5": 0.7894736842105263,
+      "accuracy@1": 0.5263157894736842,
+      "accuracy@3": 0.7368421052631579,
+      "accuracy@5": 0.7894736842105263,
+      "mrr": 0.624561403508772
+    },
+    "hard": {
+      "count": 5.0,
+      "recall@1": 0.6,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "precision@1": 0.6,
+      "precision@3": 0.3333333333333333,
+      "precision@5": 0.2,
+      "hit_rate@1": 0.6,
+      "hit_rate@3": 1.0,
+      "hit_rate@5": 1.0,
+      "accuracy@1": 0.6,
+      "accuracy@3": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 0.7666666666666667
+    }
+  },
+  "scored_count": 50,
+  "skipped_count": 0,
+  "skipped": [],
+  "query_results": [
+    {
+      "query": "What editor theme does the user prefer?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_dark_mode"
+      ],
+      "category": "preference",
+      "difficulty": "easy",
+      "query_id": "q_pref_01",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_dark_mode",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_YAML_for_config",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_vim_keybindings",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_async_code"
+      ],
+      "recall@1": 1.0,
+      "precision@1": 1.0,
+      "hit_rate@1": 1.0,
+      "accuracy@1": 1.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "How should I format indentation?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_uses_4-space_indentation"
+      ],
+      "category": "preference",
+      "difficulty": "easy",
+      "query_id": "q_pref_02",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_uses_4-space_indentation",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_vim_keybindings",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_YAML_for_config",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_dark_mode",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_async_code"
+      ],
+      "recall@1": 1.0,
+      "precision@1": 1.0,
+      "hit_rate@1": 1.0,
+      "accuracy@1": 1.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "Which language should I use for the backend?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_Python_for_backend"
+      ],
+      "category": "preference",
+      "difficulty": "medium",
+      "query_id": "q_pref_03",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_Python_for_backend",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_YAML_for_config",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_async_code",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Senior_backend_engineer_at_TechCorp",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_requires_Python_type_hints"
+      ],
+      "recall@1": 1.0,
+      "precision@1": 1.0,
+      "hit_rate@1": 1.0,
+      "accuracy@1": 1.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "Should I add type annotations?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_requires_Python_type_hints"
+      ],
+      "category": "preference",
+      "difficulty": "medium",
+      "query_id": "q_pref_04",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_requires_Python_type_hints",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_YAML_for_config",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_uses_4-space_indentation",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/URI_format_opencortex_team_user_uid_type_cat_id"
+      ],
+      "recall@1": 1.0,
+      "precision@1": 1.0,
+      "hit_rate@1": 1.0,
+      "accuracy@1": 1.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "What test framework does the user like?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_pytest"
+      ],
+      "category": "preference",
+      "difficulty": "easy",
+      "query_id": "q_pref_05",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_YAML_for_config",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_async_code",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_pytest",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_vim_keybindings",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_Python_for_backend"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 0.3333333333333333
+    },
+    {
+      "query": "Should this API call be async or sync?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_async_code"
+      ],
+      "category": "preference",
+      "difficulty": "hard",
+      "query_id": "q_pref_06",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_async_code",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_requires_Python_type_hints",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_YAML_for_config",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/URI_format_opencortex_team_user_uid_type_cat_id",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_Python_for_backend"
+      ],
+      "recall@1": 1.0,
+      "precision@1": 1.0,
+      "hit_rate@1": 1.0,
+      "accuracy@1": 1.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "What keybindings does the user use?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_vim_keybindings"
+      ],
+      "category": "preference",
+      "difficulty": "easy",
+      "query_id": "q_pref_07",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_vim_keybindings",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_YAML_for_config",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_uses_4-space_indentation",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_requires_Python_type_hints",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_async_code"
+      ],
+      "recall@1": 1.0,
+      "precision@1": 1.0,
+      "hit_rate@1": 1.0,
+      "accuracy@1": 1.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "How should I format the commit message?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_uses_conventional_commits"
+      ],
+      "category": "preference",
+      "difficulty": "medium",
+      "query_id": "q_pref_08",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_uses_4-space_indentation",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/URI_format_opencortex_team_user_uid_type_cat_id",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_YAML_for_config",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_requires_Python_type_hints",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_vim_keybindings"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "Should I use JSON or YAML for the config file?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_YAML_for_config"
+      ],
+      "category": "preference",
+      "difficulty": "medium",
+      "query_id": "q_pref_09",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_YAML_for_config",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_async_code",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_Python_for_backend",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_requires_Python_type_hints",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/URI_format_opencortex_team_user_uid_type_cat_id"
+      ],
+      "recall@1": 1.0,
+      "precision@1": 1.0,
+      "hit_rate@1": 1.0,
+      "accuracy@1": 1.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "How to install Python packages in this project?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_uses_uv_package_manager"
+      ],
+      "category": "preference",
+      "difficulty": "medium",
+      "query_id": "q_pref_10",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_requires_Python_type_hints",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_Python_for_backend",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_YAML_for_config",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_pytest",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/URI_format_opencortex_team_user_uid_type_cat_id"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What is the user's job title?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Senior_backend_engineer_at_TechCorp"
+      ],
+      "category": "profile",
+      "difficulty": "easy",
+      "query_id": "q_prof_01",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Senior_backend_engineer_at_TechCorp",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_YAML_for_config",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_uses_4-space_indentation",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_async_code"
+      ],
+      "recall@1": 1.0,
+      "precision@1": 1.0,
+      "hit_rate@1": 1.0,
+      "accuracy@1": 1.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "What programming languages does the user know?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Codes_in_Python_and_Go"
+      ],
+      "category": "profile",
+      "difficulty": "easy",
+      "query_id": "q_prof_02",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_requires_Python_type_hints",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_Python_for_backend",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_YAML_for_config",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_async_code",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_uses_4-space_indentation"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What project is the user working on?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Works_on_OpenCortex_project",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Lead_maintainer_of_OpenCortex"
+      ],
+      "category": "profile",
+      "difficulty": "easy",
+      "query_id": "q_prof_03",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Senior_backend_engineer_at_TechCorp",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_YAML_for_config",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_requires_Python_type_hints",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_Python_for_backend",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_async_code"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What timezone is the user in?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/User_timezone_is_UTC_8_Shanghai"
+      ],
+      "category": "profile",
+      "difficulty": "easy",
+      "query_id": "q_prof_04",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/User_timezone_is_UTC_8_Shanghai",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_async_code",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_uses_4-space_indentation",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_requires_Python_type_hints",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_YAML_for_config"
+      ],
+      "recall@1": 1.0,
+      "precision@1": 1.0,
+      "hit_rate@1": 1.0,
+      "accuracy@1": 1.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "What is the user's name?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Hugo_bilingual_Chinese_English"
+      ],
+      "category": "profile",
+      "difficulty": "easy",
+      "query_id": "q_prof_05",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_uses_4-space_indentation",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/User_timezone_is_UTC_8_Shanghai",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Senior_backend_engineer_at_TechCorp",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_YAML_for_config",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_requires_Python_type_hints"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What operating system does the user use for development?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Uses_macOS_with_Apple_M2"
+      ],
+      "category": "profile",
+      "difficulty": "easy",
+      "query_id": "q_prof_06",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_YAML_for_config",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_Python_for_backend",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_async_code",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/User_timezone_is_UTC_8_Shanghai",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Senior_backend_engineer_at_TechCorp"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What is the user's technical background?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Background_in_distributed_systems",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Experience_with_multiple_vector_DBs"
+      ],
+      "category": "profile",
+      "difficulty": "medium",
+      "query_id": "q_prof_07",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Senior_backend_engineer_at_TechCorp",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_YAML_for_config",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_Python_for_backend",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/User_timezone_is_UTC_8_Shanghai",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_requires_Python_type_hints"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "Who maintains the OpenCortex project?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Lead_maintainer_of_OpenCortex"
+      ],
+      "category": "profile",
+      "difficulty": "easy",
+      "query_id": "q_prof_08",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Lead_maintainer_of_OpenCortex",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/URI_format_opencortex_team_user_uid_type_cat_id",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Works_on_OpenCortex_project",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/OpenCortex_uses_embedded_Qdrant",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Server_entry_opencortex-server_on_port_8921"
+      ],
+      "recall@1": 1.0,
+      "precision@1": 1.0,
+      "hit_rate@1": 1.0,
+      "accuracy@1": 1.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "What IDE does the user use?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Uses_Cursor_IDE_and_iTerm2"
+      ],
+      "category": "profile",
+      "difficulty": "easy",
+      "query_id": "q_prof_09",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_YAML_for_config",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_uses_4-space_indentation",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_vim_keybindings",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_requires_Python_type_hints",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_async_code"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What vector databases has the user worked with?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Experience_with_multiple_vector_DBs"
+      ],
+      "category": "profile",
+      "difficulty": "medium",
+      "query_id": "q_prof_10",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Experience_with_multiple_vector_DBs",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Senior_backend_engineer_at_TechCorp",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_uses_4-space_indentation",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_YAML_for_config",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Works_on_OpenCortex_project"
+      ],
+      "recall@1": 1.0,
+      "precision@1": 1.0,
+      "hit_rate@1": 1.0,
+      "accuracy@1": 1.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "What vector database does OpenCortex use?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/OpenCortex_uses_embedded_Qdrant"
+      ],
+      "category": "entity",
+      "difficulty": "easy",
+      "query_id": "q_ent_01",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Experience_with_multiple_vector_DBs",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Works_on_OpenCortex_project",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/OpenCortex_uses_embedded_Qdrant",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Server_entry_opencortex-server_on_port_8921",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/URI_format_opencortex_team_user_uid_type_cat_id"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 0.3333333333333333
+    },
+    {
+      "query": "How does the search retriever work?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/HierarchicalRetriever_wave-based_search"
+      ],
+      "category": "entity",
+      "difficulty": "medium",
+      "query_id": "q_ent_02",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Works_on_OpenCortex_project",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Senior_backend_engineer_at_TechCorp",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/HierarchicalRetriever_wave-based_search",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/URI_format_opencortex_team_user_uid_type_cat_id"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 0.3333333333333333
+    },
+    {
+      "query": "What are the three content layers L0 L1 L2?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/CortexFS_three-layer_filesystem"
+      ],
+      "category": "entity",
+      "difficulty": "easy",
+      "query_id": "q_ent_03",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/URI_format_opencortex_team_user_uid_type_cat_id",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Server_entry_opencortex-server_on_port_8921",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/CortexFS_three-layer_filesystem",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/HierarchicalRetriever_wave-based_search",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Senior_backend_engineer_at_TechCorp"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 0.3333333333333333
+    },
+    {
+      "query": "How does query intent analysis work?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/IntentRouter_3-layer_query_analysis"
+      ],
+      "category": "entity",
+      "difficulty": "medium",
+      "query_id": "q_ent_04",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/IntentRouter_3-layer_query_analysis",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/HierarchicalRetriever_wave-based_search",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_requires_Python_type_hints",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_uses_4-space_indentation",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Works_on_OpenCortex_project"
+      ],
+      "recall@1": 1.0,
+      "precision@1": 1.0,
+      "hit_rate@1": 1.0,
+      "accuracy@1": 1.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "How is the MCP server implemented?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/MCP_server_Node_js_stdio_proxy_9_tools"
+      ],
+      "category": "entity",
+      "difficulty": "easy",
+      "query_id": "q_ent_05",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Config_paths_server_json_mcp_json",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/MCP_server_Node_js_stdio_proxy_9_tools",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Server_entry_opencortex-server_on_port_8921",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Works_on_OpenCortex_project",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/URI_format_opencortex_team_user_uid_type_cat_id"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 0.5
+    },
+    {
+      "query": "How are conversations split into traces?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/TraceSplitter_LLM_conversation_decomposition"
+      ],
+      "category": "entity",
+      "difficulty": "medium",
+      "query_id": "q_ent_06",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/TraceSplitter_LLM_conversation_decomposition",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/HierarchicalRetriever_wave-based_search",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/IntentRouter_3-layer_query_analysis",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/URI_format_opencortex_team_user_uid_type_cat_id",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Works_on_OpenCortex_project"
+      ],
+      "recall@1": 1.0,
+      "precision@1": 1.0,
+      "hit_rate@1": 1.0,
+      "accuracy@1": 1.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "What is the scoring formula for search results?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Scoring_4-factor_fusion_formula"
+      ],
+      "category": "entity",
+      "difficulty": "medium",
+      "query_id": "q_ent_07",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/HierarchicalRetriever_wave-based_search",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Works_on_OpenCortex_project",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/IntentRouter_3-layer_query_analysis",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Experience_with_multiple_vector_DBs",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Scoring_4-factor_fusion_formula"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 0.2
+    },
+    {
+      "query": "How is sparse embedding integrated?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/BM25_sparse_via_CompositeHybridEmbedder"
+      ],
+      "category": "entity",
+      "difficulty": "hard",
+      "query_id": "q_ent_08",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/OpenCortex_uses_embedded_Qdrant",
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Local_embedding_reranker_integrated",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/BM25_sparse_via_CompositeHybridEmbedder",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Server_entry_opencortex-server_on_port_8921"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 0.3333333333333333
+    },
+    {
+      "query": "What is the source code directory structure?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Project_directory_structure_overview"
+      ],
+      "category": "entity",
+      "difficulty": "easy",
+      "query_id": "q_ent_09",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Project_directory_structure_overview",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Works_on_OpenCortex_project",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Senior_backend_engineer_at_TechCorp",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/CortexFS_three-layer_filesystem",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/URI_format_opencortex_team_user_uid_type_cat_id"
+      ],
+      "recall@1": 1.0,
+      "precision@1": 1.0,
+      "hit_rate@1": 1.0,
+      "accuracy@1": 1.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "What is the memory context protocol lifecycle?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/ContextManager_prepare_commit_end_lifecycle"
+      ],
+      "category": "entity",
+      "difficulty": "medium",
+      "query_id": "q_ent_10",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Works_on_OpenCortex_project",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/URI_format_opencortex_team_user_uid_type_cat_id",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Server_entry_opencortex-server_on_port_8921",
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Local_embedding_reranker_integrated",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/CortexFS_three-layer_filesystem"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What bugs were fixed this week?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Fixed_IntentRouter_cache_key_bug",
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Fixed_knowledge_candidates_extraction_bug"
+      ],
+      "category": "event",
+      "difficulty": "medium",
+      "query_id": "q_evt_01",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Works_on_OpenCortex_project",
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Local_embedding_reranker_integrated",
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Fixed_knowledge_candidates_extraction_bug",
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Fixed_IntentRouter_cache_key_bug",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Senior_backend_engineer_at_TechCorp"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.5,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.4,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 0.3333333333333333
+    },
+    {
+      "query": "When was the legacy code cleanup done?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Legacy_cleanup_completed"
+      ],
+      "category": "event",
+      "difficulty": "easy",
+      "query_id": "q_evt_02",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Legacy_cleanup_completed",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Works_on_OpenCortex_project",
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Fixed_knowledge_candidates_extraction_bug",
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Fixed_IntentRouter_cache_key_bug"
+      ],
+      "recall@1": 1.0,
+      "precision@1": 1.0,
+      "hit_rate@1": 1.0,
+      "accuracy@1": 1.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "When was local embedding integrated?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Local_embedding_reranker_integrated"
+      ],
+      "category": "event",
+      "difficulty": "easy",
+      "query_id": "q_evt_03",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Local_embedding_reranker_integrated",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/OpenCortex_uses_embedded_Qdrant",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/BM25_sparse_via_CompositeHybridEmbedder",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/CortexFS_three-layer_filesystem"
+      ],
+      "recall@1": 1.0,
+      "precision@1": 1.0,
+      "hit_rate@1": 1.0,
+      "accuracy@1": 1.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "What was the orjson migration about?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/orjson_migration_completed"
+      ],
+      "category": "event",
+      "difficulty": "medium",
+      "query_id": "q_evt_04",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/orjson_migration_completed",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Works_on_OpenCortex_project",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Server_entry_opencortex-server_on_port_8921",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/CortexFS_three-layer_filesystem"
+      ],
+      "recall@1": 1.0,
+      "precision@1": 1.0,
+      "hit_rate@1": 1.0,
+      "accuracy@1": 1.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "What happened with Phase 1 planning?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Phase_1_optimization_planning_started",
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/GPT-5_4_review_findings_applied_to_plan"
+      ],
+      "category": "event",
+      "difficulty": "medium",
+      "query_id": "q_evt_05",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Phase_1_optimization_planning_started",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Works_on_OpenCortex_project",
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Fixed_IntentRouter_cache_key_bug",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_YAML_for_config",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/User_timezone_is_UTC_8_Shanghai"
+      ],
+      "recall@1": 0.5,
+      "precision@1": 1.0,
+      "hit_rate@1": 1.0,
+      "accuracy@1": 1.0,
+      "recall@3": 0.5,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 0.5,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "When was document scan batch import deployed?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Document_scan_batch_import_deployed"
+      ],
+      "category": "event",
+      "difficulty": "easy",
+      "query_id": "q_evt_06",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Document_scan_batch_import_deployed",
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Local_embedding_reranker_integrated",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Experience_with_multiple_vector_DBs",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Works_on_OpenCortex_project",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Senior_backend_engineer_at_TechCorp"
+      ],
+      "recall@1": 1.0,
+      "precision@1": 1.0,
+      "hit_rate@1": 1.0,
+      "accuracy@1": 1.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "What was the knowledge_candidates bug?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Fixed_knowledge_candidates_extraction_bug"
+      ],
+      "category": "event",
+      "difficulty": "medium",
+      "query_id": "q_evt_07",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Fixed_knowledge_candidates_extraction_bug",
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Fixed_IntentRouter_cache_key_bug",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Works_on_OpenCortex_project",
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Local_embedding_reranker_integrated",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/URI_format_opencortex_team_user_uid_type_cat_id"
+      ],
+      "recall@1": 1.0,
+      "precision@1": 1.0,
+      "hit_rate@1": 1.0,
+      "accuracy@1": 1.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "What was the LoCoMo benchmark F1 score?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/LoCoMo_benchmark_OC_0_22_vs_BL_0_34"
+      ],
+      "category": "event",
+      "difficulty": "hard",
+      "query_id": "q_evt_08",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Local_embedding_reranker_integrated",
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/LoCoMo_benchmark_OC_0_22_vs_BL_0_34",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Works_on_OpenCortex_project",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/BM25_sparse_via_CompositeHybridEmbedder"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 0.5
+    },
+    {
+      "query": "When were prompts centralized?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Prompt_centralization_completed"
+      ],
+      "category": "event",
+      "difficulty": "easy",
+      "query_id": "q_evt_09",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Local_embedding_reranker_integrated",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_requires_Python_type_hints",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Server_entry_opencortex-server_on_port_8921",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_YAML_for_config",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/HierarchicalRetriever_wave-based_search"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 0.0,
+      "precision@3": 0.0,
+      "hit_rate@3": 0.0,
+      "accuracy@3": 0.0,
+      "recall@5": 0.0,
+      "precision@5": 0.0,
+      "hit_rate@5": 0.0,
+      "accuracy@5": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "What did the GPT-5.4 review find?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/GPT-5_4_review_findings_applied_to_plan"
+      ],
+      "category": "event",
+      "difficulty": "hard",
+      "query_id": "q_evt_10",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/GPT-5_4_review_findings_applied_to_plan",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Works_on_OpenCortex_project",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_uses_4-space_indentation",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Experience_with_multiple_vector_DBs",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_pytest",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/User_timezone_is_UTC_8_Shanghai",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Senior_backend_engineer_at_TechCorp",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/HierarchicalRetriever_wave-based_search",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_Python_for_backend",
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Local_embedding_reranker_integrated",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_YAML_for_config",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/BM25_sparse_via_CompositeHybridEmbedder",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_requires_Python_type_hints",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/IntentRouter_3-layer_query_analysis",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Lead_maintainer_of_OpenCortex",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/CortexFS_three-layer_filesystem",
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Fixed_knowledge_candidates_extraction_bug",
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Fixed_IntentRouter_cache_key_bug",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/OpenCortex_uses_embedded_Qdrant",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Scoring_4-factor_fusion_formula",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Server_entry_opencortex-server_on_port_8921",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/TraceSplitter_LLM_conversation_decomposition",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/URI_format_opencortex_team_user_uid_type_cat_id",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_async_code",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/MCP_server_Node_js_stdio_proxy_9_tools",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_vim_keybindings",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/SCORE_PROPAGATION_ALPHA_0_5_for_hierarchy",
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/LoCoMo_benchmark_OC_0_22_vs_BL_0_34",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_dark_mode",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Project_directory_structure_overview"
+      ],
+      "recall@1": 1.0,
+      "precision@1": 1.0,
+      "hit_rate@1": 1.0,
+      "accuracy@1": 1.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "What does QDRANT_COLLECTION_NOT_FOUND error mean?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/QDRANT_COLLECTION_NOT_FOUND_fix_call_init"
+      ],
+      "category": "hard_keyword",
+      "difficulty": "easy",
+      "query_id": "q_kw_01",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/QDRANT_COLLECTION_NOT_FOUND_fix_call_init",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/OpenCortex_uses_embedded_Qdrant",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/URI_format_opencortex_team_user_uid_type_cat_id",
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Local_embedding_reranker_integrated"
+      ],
+      "recall@1": 1.0,
+      "precision@1": 1.0,
+      "hit_rate@1": 1.0,
+      "accuracy@1": 1.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "Where is server.json located?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Config_paths_server_json_mcp_json"
+      ],
+      "category": "hard_keyword",
+      "difficulty": "easy",
+      "query_id": "q_kw_02",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Config_paths_server_json_mcp_json",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/MCP_server_Node_js_stdio_proxy_9_tools",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Server_entry_opencortex-server_on_port_8921",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Senior_backend_engineer_at_TechCorp",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/URI_format_opencortex_team_user_uid_type_cat_id"
+      ],
+      "recall@1": 1.0,
+      "precision@1": 1.0,
+      "hit_rate@1": 1.0,
+      "accuracy@1": 1.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "What is the embedding dimension for BGE-M3?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Embedding_dimensions_e5-large_1024_BGE-M3_1024"
+      ],
+      "category": "hard_keyword",
+      "difficulty": "easy",
+      "query_id": "q_kw_03",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Embedding_dimensions_e5-large_1024_BGE-M3_1024",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/BM25_sparse_via_CompositeHybridEmbedder",
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Local_embedding_reranker_integrated",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/CortexFS_three-layer_filesystem",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Experience_with_multiple_vector_DBs"
+      ],
+      "recall@1": 1.0,
+      "precision@1": 1.0,
+      "hit_rate@1": 1.0,
+      "accuracy@1": 1.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "What is the opencortex URI format?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/URI_format_opencortex_team_user_uid_type_cat_id"
+      ],
+      "category": "hard_keyword",
+      "difficulty": "easy",
+      "query_id": "q_kw_04",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/URI_format_opencortex_team_user_uid_type_cat_id",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Works_on_OpenCortex_project",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Server_entry_opencortex-server_on_port_8921",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Lead_maintainer_of_OpenCortex",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/OpenCortex_uses_embedded_Qdrant"
+      ],
+      "recall@1": 1.0,
+      "precision@1": 1.0,
+      "hit_rate@1": 1.0,
+      "accuracy@1": 1.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "How to start opencortex-server?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Server_entry_opencortex-server_on_port_8921"
+      ],
+      "category": "hard_keyword",
+      "difficulty": "easy",
+      "query_id": "q_kw_05",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Server_entry_opencortex-server_on_port_8921",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Works_on_OpenCortex_project",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Lead_maintainer_of_OpenCortex",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/URI_format_opencortex_team_user_uid_type_cat_id",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/OpenCortex_uses_embedded_Qdrant"
+      ],
+      "recall@1": 1.0,
+      "precision@1": 1.0,
+      "hit_rate@1": 1.0,
+      "accuracy@1": 1.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "What is _HOTNESS_LAMBDA and its half-life?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/HOTNESS_LAMBDA_ln_2_7_7-day_half-life"
+      ],
+      "category": "hard_keyword",
+      "difficulty": "medium",
+      "query_id": "q_kw_06",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/HOTNESS_LAMBDA_ln_2_7_7-day_half-life",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/BM25_sparse_via_CompositeHybridEmbedder",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/User_timezone_is_UTC_8_Shanghai",
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Local_embedding_reranker_integrated"
+      ],
+      "recall@1": 1.0,
+      "precision@1": 1.0,
+      "hit_rate@1": 1.0,
+      "accuracy@1": 1.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "How does RequestContextMiddleware work?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/RequestContextMiddleware_headers_contextvars"
+      ],
+      "category": "hard_keyword",
+      "difficulty": "medium",
+      "query_id": "q_kw_07",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Works_on_OpenCortex_project",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/RequestContextMiddleware_headers_contextvars",
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Local_embedding_reranker_integrated",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/IntentRouter_3-layer_query_analysis",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/URI_format_opencortex_team_user_uid_type_cat_id"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 0.5
+    },
+    {
+      "query": "What does filter_translator.py do?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/filter_translator_py_VikingDB_DSL_Qdrant_Filter"
+      ],
+      "category": "hard_keyword",
+      "difficulty": "medium",
+      "query_id": "q_kw_08",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_requires_Python_type_hints",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/filter_translator_py_VikingDB_DSL_Qdrant_Filter",
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Local_embedding_reranker_integrated",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Works_on_OpenCortex_project",
+        "opencortex://bench_8d5e91b3/user/runner/memories/preferences/User_prefers_Python_for_backend"
+      ],
+      "recall@1": 0.0,
+      "precision@1": 0.0,
+      "hit_rate@1": 0.0,
+      "accuracy@1": 0.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 0.5
+    },
+    {
+      "query": "What is SCORE_PROPAGATION_ALPHA?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/SCORE_PROPAGATION_ALPHA_0_5_for_hierarchy"
+      ],
+      "category": "hard_keyword",
+      "difficulty": "hard",
+      "query_id": "q_kw_09",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/SCORE_PROPAGATION_ALPHA_0_5_for_hierarchy",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Works_on_OpenCortex_project",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Lead_maintainer_of_OpenCortex",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/User_timezone_is_UTC_8_Shanghai",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Experience_with_multiple_vector_DBs"
+      ],
+      "recall@1": 1.0,
+      "precision@1": 1.0,
+      "hit_rate@1": 1.0,
+      "accuracy@1": 1.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "How to deploy with Docker?",
+      "expected_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Docker_deployment_docker_compose_up_-d"
+      ],
+      "category": "hard_keyword",
+      "difficulty": "easy",
+      "query_id": "q_kw_10",
+      "predicted_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Docker_deployment_docker_compose_up_-d",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Works_on_OpenCortex_project",
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/Local_embedding_reranker_integrated",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Server_entry_opencortex-server_on_port_8921",
+        "opencortex://bench_8d5e91b3/user/runner/memories/entities/Config_paths_server_json_mcp_json"
+      ],
+      "recall@1": 1.0,
+      "precision@1": 1.0,
+      "hit_rate@1": 1.0,
+      "accuracy@1": 1.0,
+      "recall@3": 1.0,
+      "precision@3": 0.3333333333333333,
+      "hit_rate@3": 1.0,
+      "accuracy@3": 1.0,
+      "recall@5": 1.0,
+      "precision@5": 0.2,
+      "hit_rate@5": 1.0,
+      "accuracy@5": 1.0,
+      "mrr": 1.0
+    }
+  ],
+  "metadata": {
+    "timestamp": "2026-03-14T06:19:14.133479+00:00",
+    "run_id": "bench_8d5e91b3",
+    "base_url": "http://127.0.0.1:8921",
+    "dataset": "/Users/hugo/CodeSpace/Work/OpenCortex/tests/benchmark/dataset.json",
+    "memories_seeded": 50,
+    "queries_total": 50,
+    "ks": [
+      1,
+      3,
+      5
+    ]
+  }
+}

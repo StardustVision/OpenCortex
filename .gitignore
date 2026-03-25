@@ -21,3 +21,7 @@ ruvector.db
 data_e2e_demo/
 .worktrees/
 benchmark_*/
+.ace/
+.mcp.json
+mcp.json
+data_hotpotqa/

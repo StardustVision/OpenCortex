@@ -1,0 +1,453 @@
+{
+  "mode": "document",
+  "dataset": "hotpotqa",
+  "retrieval": {
+    "recall@1": 0.0,
+    "precision@1": 0.0,
+    "hit_rate@1": 0.0,
+    "recall@3": 0.0,
+    "precision@3": 0.0,
+    "hit_rate@3": 0.0,
+    "recall@5": 0.0,
+    "precision@5": 0.0,
+    "hit_rate@5": 0.0,
+    "mrr": 0.0,
+    "evaluated_count": 10,
+    "skipped_no_ground_truth": 0,
+    "by_category": {
+      "comparison": {
+        "recall@1": 0.0,
+        "precision@1": 0.0,
+        "hit_rate@1": 0.0,
+        "recall@3": 0.0,
+        "precision@3": 0.0,
+        "hit_rate@3": 0.0,
+        "recall@5": 0.0,
+        "precision@5": 0.0,
+        "hit_rate@5": 0.0,
+        "mrr": 0.0,
+        "count": 3.0
+      },
+      "bridge": {
+        "recall@1": 0.0,
+        "precision@1": 0.0,
+        "hit_rate@1": 0.0,
+        "recall@3": 0.0,
+        "precision@3": 0.0,
+        "hit_rate@3": 0.0,
+        "recall@5": 0.0,
+        "precision@5": 0.0,
+        "hit_rate@5": 0.0,
+        "mrr": 0.0,
+        "count": 7.0
+      }
+    }
+  },
+  "accuracy": {
+    "f1": {
+      "overall": 0.625,
+      "by_category": {
+        "comparison": {
+          "f1": 1.0,
+          "n": 3
+        },
+        "bridge": {
+          "f1": 0.4643,
+          "n": 7
+        }
+      },
+      "excluded_categories": [
+        "5"
+      ]
+    },
+    "baseline_f1": 0.7571,
+    "baseline_by_category": {
+      "comparison": {
+        "f1": 1.0,
+        "n": 3
+      },
+      "bridge": {
+        "f1": 0.6531,
+        "n": 7
+      }
+    },
+    "delta_f1": "-0.1321",
+    "oc_em": 0.5,
+    "bl_em": 0.7,
+    "sp_f1": 0.2794,
+    "joint_f1": 0.2258,
+    "jscore": {
+      "overall": 0.7,
+      "by_category": {
+        "comparison": {
+          "jscore": 1.0,
+          "n": 3
+        },
+        "bridge": {
+          "jscore": 0.5714,
+          "n": 7
+        }
+      },
+      "baseline_overall": 0.8,
+      "baseline_by_category": {
+        "comparison": {
+          "jscore": 1.0,
+          "n": 3
+        },
+        "bridge": {
+          "jscore": 0.7143,
+          "n": 7
+        }
+      },
+      "delta": "-0.1000"
+    }
+  },
+  "token_reduction": {
+    "baseline_avg_tokens": 2010,
+    "oc_avg_tokens": 1387,
+    "baseline_total_tokens": 20097,
+    "oc_total_tokens": 13871,
+    "reduction_pct": 31.0,
+    "raw_baseline_avg_tokens": 1933,
+    "truncation_applied": false,
+    "max_context_tokens": 32000
+  },
+  "latency": {
+    "p50_ms": 22703.5,
+    "p95_ms": 37670.5,
+    "p99_ms": 38647.0,
+    "mean_ms": 23402.8,
+    "min_ms": 8148.4,
+    "max_ms": 38891.2,
+    "count": 10
+  },
+  "metadata": {
+    "timestamp": "2026-03-19T10:21:11.229753+00:00",
+    "run_id": "eval_document_cd94e734",
+    "llm_model": "Qwen3-235B-A22B-Instruct-2507",
+    "server": "http://127.0.0.1:8921",
+    "dataset_path": "benchmarks/datasets/hotpotqa/hotpot_dev_distractor_v1.json",
+    "top_k": 10,
+    "max_context_tokens": 32000,
+    "concurrency": 5,
+    "total_qa": 10,
+    "enable_llm_judge": false,
+    "jscore_enabled": true,
+    "seed": 42
+  },
+  "per_query": [
+    {
+      "question": "Were Scott Derrickson and Ed Wood of the same nationality?",
+      "answer": "yes",
+      "category": "comparison",
+      "expected_uris": [
+        "opencortex://eval_document_cd94e734/resources/public/Ed_Wood",
+        "opencortex://eval_document_cd94e734/resources/public/Scott_Derrickson"
+      ],
+      "latency_ms": 38891.19904197287,
+      "retrieved_uris": [
+        "opencortex://eval_hotpotqa_10/resources/public/Scott_Derrickson",
+        "opencortex://eval_hotpotqa_q50/resources/public/Scott_Derrickson",
+        "opencortex://eval_hotpotqa_quick/resources/public/Scott_Derrickson",
+        "opencortex://eval_hotpotqa_quick/resources/public/Embassy_of_the_United_States_Nairobi",
+        "opencortex://eval_hotpotqa_quick/resources/public/Adam_Collis",
+        "opencortex://eval_hotpotqa_quick/resources/public/Tosca_1956_film",
+        "opencortex://eval_memory_9f313f8e/eval_runner/memories/events/Supports_charity_work_primarily_through_r_33d67a19",
+        "opencortex://eval_hotpotqa_q50/resources/public/Ed_Wood",
+        "opencortex://eval_hotpotqa_10/resources/public/Ed_Wood",
+        "opencortex://eval_hotpotqa_quick/resources/public/Ed_Wood"
+      ],
+      "oc_prediction": "Yes",
+      "oc_prompt_tokens": 2337,
+      "bl_prediction": "Yes",
+      "baseline_prompt_tokens": 1474,
+      "raw_baseline_tokens": 1405,
+      "oc_f1": 1.0,
+      "bl_f1": 1.0,
+      "oc_em": 1.0,
+      "bl_em": 1.0,
+      "sp_f1": 0.5,
+      "joint_f1": 0.5,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What government position was held by the woman who portrayed Corliss Archer in the film Kiss and Tell?",
+      "answer": "Chief of Protocol",
+      "category": "bridge",
+      "expected_uris": [
+        "opencortex://eval_document_cd94e734/resources/public/Shirley_Temple",
+        "opencortex://eval_document_cd94e734/resources/public/Kiss_and_Tell_1945_film"
+      ],
+      "latency_ms": 22702.885666978545,
+      "retrieved_uris": [],
+      "oc_prediction": "No government position held",
+      "oc_prompt_tokens": 85,
+      "bl_prediction": "United States ambassador",
+      "baseline_prompt_tokens": 1594,
+      "raw_baseline_tokens": 1512,
+      "oc_f1": 0.0,
+      "bl_f1": 0.0,
+      "oc_em": 0.0,
+      "bl_em": 0.0,
+      "sp_f1": 0.0,
+      "joint_f1": 0.0,
+      "oc_jscore": 0.0,
+      "bl_jscore": 0.0
+    },
+    {
+      "question": "What science fantasy young adult series, told in first person, has a set of companion books narrating the stories of enslaved worlds and alien species?",
+      "answer": "Animorphs",
+      "category": "bridge",
+      "expected_uris": [
+        "opencortex://eval_document_cd94e734/resources/public/The_Hork-Bajir_Chronicles",
+        "opencortex://eval_document_cd94e734/resources/public/Animorphs"
+      ],
+      "latency_ms": 36178.42350003775,
+      "retrieved_uris": [
+        "opencortex://eval_conversation_5cac650c/user/eval_runner/memories/events/5_December_2023_Sam_Sam_offers_Evan_suppo_7332f57a",
+        "opencortex://eval_hotpotqa_10/resources/public/Animorphs",
+        "opencortex://eval_hotpotqa_10/resources/public/Victoria_Hanley",
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/4c1d72a4e31a",
+        "opencortex://eval_hotpotqa_q50/resources/public/Victoria_Hanley",
+        "opencortex://eval_document_1be96e40/resources/public/Victoria_Hanley",
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/0c2fa1c87f20",
+        "opencortex://eval_hotpotqa_q50/resources/public/The_Divide_trilogy",
+        "opencortex://eval_hotpotqa_q50/resources/public/Animorphs"
+      ],
+      "oc_prediction": "Animorphs",
+      "oc_prompt_tokens": 1572,
+      "bl_prediction": "Animorphs",
+      "baseline_prompt_tokens": 2099,
+      "raw_baseline_tokens": 2002,
+      "oc_f1": 1.0,
+      "bl_f1": 1.0,
+      "oc_em": 1.0,
+      "bl_em": 1.0,
+      "sp_f1": 0.25,
+      "joint_f1": 0.25,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "Are the Laleli Mosque and Esma Sultan Mansion located in the same neighborhood?",
+      "answer": "no",
+      "category": "comparison",
+      "expected_uris": [
+        "opencortex://eval_document_cd94e734/resources/public/Laleli_Mosque",
+        "opencortex://eval_document_cd94e734/resources/public/Esma_Sultan_Mansion"
+      ],
+      "latency_ms": 34419.054250000045,
+      "retrieved_uris": [
+        "opencortex://eval_document_1be96e40/resources/public/Laleli_Mosque",
+        "opencortex://eval_hotpotqa_10/resources/public/Esma_Sultan_Mansion",
+        "opencortex://eval_hotpotqa_q50/resources/public/Laleli_Mosque",
+        "opencortex://eval_hotpotqa_10/resources/public/Laleli_Mosque",
+        "opencortex://eval_hotpotqa_quick/resources/public/Laleli_Mosque",
+        "opencortex://eval_hotpotqa_q50/resources/public/Esma_Sultan_Mansion",
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/20_September_2022_John_John_s_mobile_game_1ea937e7",
+        "opencortex://eval_hotpotqa_10/resources/public/Science_Fantasy_magazine",
+        "opencortex://eval_hotpotqa_quick/resources/public/Gin_pennant",
+        "opencortex://eval_hotpotqa_10/resources/public/Left_Behind_The_Kids"
+      ],
+      "oc_prediction": "No",
+      "oc_prompt_tokens": 2289,
+      "bl_prediction": "No",
+      "baseline_prompt_tokens": 1149,
+      "raw_baseline_tokens": 1074,
+      "oc_f1": 1.0,
+      "bl_f1": 1.0,
+      "oc_em": 1.0,
+      "bl_em": 1.0,
+      "sp_f1": 0.5,
+      "joint_f1": 0.5,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "The director of the romantic comedy \"Big Stone Gap\" is based in what New York city?",
+      "answer": "Greenwich Village, New York City",
+      "category": "bridge",
+      "expected_uris": [
+        "opencortex://eval_document_cd94e734/resources/public/Adriana_Trigiani",
+        "opencortex://eval_document_cd94e734/resources/public/Big_Stone_Gap_film"
+      ],
+      "latency_ms": 22704.10970901139,
+      "retrieved_uris": [],
+      "oc_prediction": "New York City",
+      "oc_prompt_tokens": 80,
+      "bl_prediction": "Greenwich Village",
+      "baseline_prompt_tokens": 1803,
+      "raw_baseline_tokens": 1726,
+      "oc_f1": 0.7499999999999999,
+      "bl_f1": 0.5714285714285715,
+      "oc_em": 0.0,
+      "bl_em": 0.0,
+      "sp_f1": 0.0,
+      "joint_f1": 0.0,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "2014 S/S is the debut album of a South Korean boy group that was formed by who?",
+      "answer": "YG Entertainment",
+      "category": "bridge",
+      "expected_uris": [
+        "opencortex://eval_document_cd94e734/resources/public/Winner_band",
+        "opencortex://eval_document_cd94e734/resources/public/2014_S_S"
+      ],
+      "latency_ms": 22711.113709025085,
+      "retrieved_uris": [
+        "opencortex://eval_hotpotqa_10/resources/public/Winner_band",
+        "opencortex://eval_hotpotqa_q50/resources/public/Winner_band",
+        "opencortex://eval_hotpotqa_quick/resources/public/Where_We_Belong_Lostprophets_song",
+        "opencortex://eval_conversation_aae5e9f1/user/eval_runner/memories/events/13_September_2023_Melanie_Melanie_enjoys__cc4ecb2d",
+        "opencortex://eval_conversation_fa6ce034/user/eval_runner/memories/events/22_October_2023_Melanie_Melanie_values_th_5eb14d61",
+        "opencortex://eval_document_1be96e40/resources/public/History_band",
+        "opencortex://eval_conversation_43eec7c1/user/eval_runner/memories/events/13_September_2023_Melanie_Melanie_enjoys__cc4ecb2d",
+        "opencortex://eval_hotpotqa_q50/resources/public/Seventeen_discography",
+        "opencortex://eval_memory_9f313f8e/eval_runner/memories/events/Uses_hormone_replacement_therapy_under_re_db2c0cbd"
+      ],
+      "oc_prediction": "YG Entertainment",
+      "oc_prompt_tokens": 1249,
+      "bl_prediction": "YG Entertainment",
+      "baseline_prompt_tokens": 1592,
+      "raw_baseline_tokens": 1517,
+      "oc_f1": 1.0,
+      "bl_f1": 1.0,
+      "oc_em": 1.0,
+      "bl_em": 1.0,
+      "sp_f1": 0.22222222222222224,
+      "joint_f1": 0.22222222222222224,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "Who was known by his stage name Aladin and helped organizations improve their performance as a consultant?",
+      "answer": "Eenasul Fateh",
+      "category": "bridge",
+      "expected_uris": [
+        "opencortex://eval_document_cd94e734/resources/public/Management_consulting",
+        "opencortex://eval_document_cd94e734/resources/public/Eenasul_Fateh"
+      ],
+      "latency_ms": 18417.003375012428,
+      "retrieved_uris": [
+        "opencortex://eval_document_5d709e1e/resources/public/ffd1c45daedc",
+        "opencortex://eval_document_3a4828ca/resources/public/00253c76cf88",
+        "opencortex://eval_document_3a4828ca/resources/public/69c2673c4bda",
+        "opencortex://eval_document_3a4828ca/resources/public/34159d874d83",
+        "opencortex://eval_document_682627c8/resources/public/44458b02fb76",
+        "opencortex://eval_document_682627c8/resources/public/296e798b2e70",
+        "opencortex://eval_document_682627c8/resources/public/764996382eb7",
+        "opencortex://eval_hotpotqa_quick/resources/public/Management_consulting",
+        "opencortex://eval_document_682627c8/resources/public/0636c4cf7318"
+      ],
+      "oc_prediction": "No one",
+      "oc_prompt_tokens": 2316,
+      "bl_prediction": "Eenasul Fateh",
+      "baseline_prompt_tokens": 2451,
+      "raw_baseline_tokens": 2367,
+      "oc_f1": 0.0,
+      "bl_f1": 1.0,
+      "oc_em": 0.0,
+      "bl_em": 1.0,
+      "sp_f1": 0.25,
+      "joint_f1": 0.0,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "The arena where the Lewiston Maineiacs played their home games can seat how many people?",
+      "answer": "3,677 seated",
+      "category": "bridge",
+      "expected_uris": [
+        "opencortex://eval_document_cd94e734/resources/public/Androscoggin_Bank_Colisée",
+        "opencortex://eval_document_cd94e734/resources/public/Lewiston_Maineiacs"
+      ],
+      "latency_ms": 17842.493333970197,
+      "retrieved_uris": [
+        "opencortex://eval_hotpotqa_quick/resources/public/Lewiston_Maineiacs",
+        "opencortex://eval_hotpotqa_10/resources/public/Androscoggin_Bank_Colisée",
+        "opencortex://eval_hotpotqa_quick/resources/public/Androscoggin_Bank_Colisée",
+        "opencortex://eval_hotpotqa_q50/resources/public/Androscoggin_Bank_Colisée",
+        "opencortex://eval_hotpotqa_10/resources/public/Lewiston_Maineiacs",
+        "opencortex://eval_hotpotqa_q50/resources/public/Lewiston_Maineiacs",
+        "opencortex://eval_hotpotqa_quick/resources/public/Buffett_Foundation",
+        "opencortex://eval_conversation_v6full/user/eval_runner/memories/events/27_June_2023_Caroline_Caroline_received_a_f6502ba6",
+        "opencortex://eval_document_1be96e40/resources/public/Hammerjack_s"
+      ],
+      "oc_prediction": "3,677 people",
+      "oc_prompt_tokens": 2047,
+      "bl_prediction": "3,677 seated",
+      "baseline_prompt_tokens": 4309,
+      "raw_baseline_tokens": 4231,
+      "oc_f1": 0.5,
+      "bl_f1": 1.0,
+      "oc_em": 0.0,
+      "bl_em": 1.0,
+      "sp_f1": 0.5714285714285715,
+      "joint_f1": 0.28571428571428575,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "Who is older, Annie Morton or Terry Richardson?",
+      "answer": "Terry Richardson",
+      "category": "bridge",
+      "expected_uris": [
+        "opencortex://eval_document_cd94e734/resources/public/Terry_Richardson",
+        "opencortex://eval_document_cd94e734/resources/public/Annie_Morton"
+      ],
+      "latency_ms": 8148.38804199826,
+      "retrieved_uris": [],
+      "oc_prediction": "Unknown",
+      "oc_prompt_tokens": 69,
+      "bl_prediction": "Annie Morton",
+      "baseline_prompt_tokens": 1765,
+      "raw_baseline_tokens": 1700,
+      "oc_f1": 0.0,
+      "bl_f1": 0.0,
+      "oc_em": 0.0,
+      "bl_em": 0.0,
+      "sp_f1": 0.0,
+      "joint_f1": 0.0,
+      "oc_jscore": 0.0,
+      "bl_jscore": 0.0
+    },
+    {
+      "question": "Are Local H and For Against both from the United States?",
+      "answer": "yes",
+      "category": "comparison",
+      "expected_uris": [
+        "opencortex://eval_document_cd94e734/resources/public/For_Against",
+        "opencortex://eval_document_cd94e734/resources/public/Local_H"
+      ],
+      "latency_ms": 12013.061041943729,
+      "retrieved_uris": [
+        "opencortex://eval_conversation_7d93a415/user/eval_runner/memories/events/15_September_2023_Jolene_Jolene_uses_esse_d1700900",
+        "opencortex://eval_hotpotqa_q50/resources/public/United_States_Senate_election_in_Illinois_1978",
+        "opencortex://eval_hotpotqa_q50/resources/public/For_Against",
+        "opencortex://eval_hotpotqa_10/resources/public/United_States_Senate_election_in_Illinois_1978",
+        "opencortex://eval_hotpotqa_quick/resources/public/For_Against",
+        "opencortex://eval_document_1be96e40/resources/public/United_States_Senate_election_in_Illinois_1978",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/5_December_2023_Sam_Sam_offers_Evan_suppo_7332f57a",
+        "opencortex://eval_hotpotqa_quick/resources/public/Local_H",
+        "opencortex://eval_conversation_5cac650c/user/eval_runner/memories/events/11_January_2024_Evan_Evan_believes_nature_3bb08406",
+        "opencortex://eval_document_1be96e40/resources/public/Local_H"
+      ],
+      "oc_prediction": "Yes",
+      "oc_prompt_tokens": 1827,
+      "bl_prediction": "Yes",
+      "baseline_prompt_tokens": 1861,
+      "raw_baseline_tokens": 1792,
+      "oc_f1": 1.0,
+      "bl_f1": 1.0,
+      "oc_em": 1.0,
+      "bl_em": 1.0,
+      "sp_f1": 0.5,
+      "joint_f1": 0.5,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    }
+  ]
+}

@@ -1,0 +1,128 @@
+{
+  "mode": "conversation",
+  "dataset": "locomo",
+  "retrieval": {
+    "recall@1": 0.0,
+    "precision@1": 0.0,
+    "hit_rate@1": 0.0,
+    "recall@3": 0.0,
+    "precision@3": 0.0,
+    "hit_rate@3": 0.0,
+    "recall@5": 0.0,
+    "precision@5": 0.0,
+    "hit_rate@5": 0.0,
+    "mrr": 0.0,
+    "evaluated_count": 0,
+    "skipped_no_ground_truth": 5,
+    "by_category": {}
+  },
+  "accuracy": {
+    "f1": {
+      "overall": 0.0,
+      "by_category": {
+        "2": {
+          "f1": 0.0,
+          "n": 2
+        },
+        "3": {
+          "f1": 0.0,
+          "n": 1
+        },
+        "1": {
+          "f1": 0.0,
+          "n": 2
+        }
+      },
+      "excluded_categories": [
+        "5"
+      ]
+    }
+  },
+  "token_reduction": {
+    "baseline_avg_tokens": 0,
+    "oc_avg_tokens": 0,
+    "baseline_total_tokens": 0,
+    "oc_total_tokens": 0,
+    "reduction_pct": 0.0
+  },
+  "latency": {
+    "p50_ms": 11950.6,
+    "p95_ms": 11970.0,
+    "p99_ms": 11973.8,
+    "mean_ms": 11954.9,
+    "min_ms": 11947.2,
+    "max_ms": 11974.7,
+    "count": 5
+  },
+  "metadata": {
+    "timestamp": "2026-03-16T07:41:38.191701+00:00",
+    "run_id": "eval_timing_diag",
+    "llm_model": "Qwen3-235B-A22B-Instruct-2507",
+    "server": "http://127.0.0.1:8921",
+    "dataset_path": "benchmarks/locomo10.json",
+    "top_k": 10,
+    "max_context_tokens": 32000,
+    "concurrency": 5,
+    "total_qa": 5,
+    "enable_llm_judge": false,
+    "jscore_enabled": false,
+    "seed": 42
+  },
+  "per_query": [
+    {
+      "question": "When did Caroline go to the LGBTQ support group?",
+      "answer": "7 May 2023",
+      "category": "2",
+      "expected_uris": [],
+      "latency_ms": 11974.701583967544,
+      "retrieved_uris": [],
+      "oc_prediction": "No information available.",
+      "oc_prompt_tokens": 44,
+      "oc_f1": 0.0
+    },
+    {
+      "question": "When did Melanie paint a sunrise?",
+      "answer": "2022",
+      "category": "2",
+      "expected_uris": [],
+      "latency_ms": 11951.368083944544,
+      "retrieved_uris": [],
+      "oc_prediction": "No information available.",
+      "oc_prompt_tokens": 39,
+      "oc_f1": 0.0
+    },
+    {
+      "question": "What fields would Caroline be likely to pursue in her educaton?",
+      "answer": "Psychology, counseling certification",
+      "category": "3",
+      "expected_uris": [],
+      "latency_ms": 11947.213083971292,
+      "retrieved_uris": [],
+      "oc_prediction": "No information available.",
+      "oc_prompt_tokens": 48,
+      "oc_f1": 0.0
+    },
+    {
+      "question": "What did Caroline research?",
+      "answer": "Adoption agencies",
+      "category": "1",
+      "expected_uris": [],
+      "latency_ms": 11950.475667021237,
+      "retrieved_uris": [],
+      "oc_prediction": "No information available.",
+      "oc_prompt_tokens": 38,
+      "oc_f1": 0.0
+    },
+    {
+      "question": "What is Caroline's identity?",
+      "answer": "Transgender woman",
+      "category": "1",
+      "expected_uris": [],
+      "latency_ms": 11950.624666991644,
+      "retrieved_uris": [],
+      "oc_prediction": "No information available.",
+      "oc_prompt_tokens": 38,
+      "oc_f1": 0.0
+    }
+  ]
+}

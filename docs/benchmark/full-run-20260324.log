@@ -1,0 +1,35 @@
+[14:06:26] Mode: memory | Run ID: eval_memory_553d7c44
+[14:06:26] Isolated collection: bench_98683ca9
+[14:06:26] Ingesting dataset...
+[14:06:27]   Ingested 0/2058 (2058 errors)
+[14:06:27]   ERROR: attribute p988_a0: Client error '401 Unauthorized' for url 'http://127.0.0.1:8921/api/v1/memory/store'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
+[14:06:27]   ERROR: attribute p782_a0: Client error '401 Unauthorized' for url 'http://127.0.0.1:8921/api/v1/memory/store'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
+[14:06:27]   ERROR: attribute p730_a0: Client error '401 Unauthorized' for url 'http://127.0.0.1:8921/api/v1/memory/store'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
+[14:06:27]   ERROR: attribute p243_a0: Client error '401 Unauthorized' for url 'http://127.0.0.1:8921/api/v1/memory/store'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
+[14:06:27]   ERROR: attribute p400_a0: Client error '401 Unauthorized' for url 'http://127.0.0.1:8921/api/v1/memory/store'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
+[14:06:28] Evaluating 2061 QA items (top_k=10)...
+[14:06:28]   Retrieve error: Client error '401 Unauthorized' for url 'http://127.0.0.1:8921/api/v1/memory/search'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
+[14:06:28]   Retrieve error: Client error '401 Unauthorized' for url 'http://127.0.0.1:8921/api/v1/memory/search'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
+[14:06:28]   Retrieve error: Client error '401 Unauthorized' for url 'http://127.0.0.1:8921/api/v1/memory/search'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
+[14:06:28]   Retrieve error: Client error '401 Unauthorized' for url 'http://127.0.0.1:8921/api/v1/memory/search'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
+[14:06:28]   Retrieve error: Client error '401 Unauthorized' for url 'http://127.0.0.1:8921/api/v1/memory/search'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
+[14:06:37]   Retrieve error: Client error '401 Unauthorized' for url 'http://127.0.0.1:8921/api/v1/memory/search'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
+[14:06:38]   Retrieve error: Client error '401 Unauthorized' for url 'http://127.0.0.1:8921/api/v1/memory/search'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
+[14:06:38]   Retrieve error: Client error '401 Unauthorized' for url 'http://127.0.0.1:8921/api/v1/memory/search'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
+[14:06:41]   Retrieve error: Client error '401 Unauthorized' for url 'http://127.0.0.1:8921/api/v1/memory/search'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
+[14:06:44]   Retrieve error: Client error '401 Unauthorized' for url 'http://127.0.0.1:8921/api/v1/memory/search'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401

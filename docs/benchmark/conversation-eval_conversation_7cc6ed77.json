@@ -1,0 +1,158 @@
+{
+  "mode": "conversation",
+  "dataset": "conversation",
+  "retrieval": {
+    "recall@1": 0.0,
+    "precision@1": 0.0,
+    "hit_rate@1": 0.0,
+    "recall@3": 0.0,
+    "precision@3": 0.0,
+    "hit_rate@3": 0.0,
+    "recall@5": 0.0,
+    "precision@5": 0.0,
+    "hit_rate@5": 0.0,
+    "mrr": 0.0,
+    "evaluated_count": 0,
+    "skipped_no_ground_truth": 3,
+    "by_category": {}
+  },
+  "accuracy": {
+    "f1": {
+      "overall": 0.265,
+      "by_category": {
+        "2": {
+          "f1": 0.2308,
+          "n": 2
+        },
+        "3": {
+          "f1": 0.3333,
+          "n": 1
+        }
+      }
+    },
+    "baseline_f1": 0.3175,
+    "baseline_by_category": {
+      "2": {
+        "f1": 0.3333,
+        "n": 2
+      },
+      "3": {
+        "f1": 0.2857,
+        "n": 1
+      }
+    },
+    "delta_f1": "-0.0525"
+  },
+  "token_reduction": {
+    "baseline_avg_tokens": 21181,
+    "oc_avg_tokens": 12877,
+    "baseline_total_tokens": 63544,
+    "oc_total_tokens": 38632,
+    "reduction_pct": 39.2,
+    "raw_baseline_avg_tokens": 21122,
+    "truncation_applied": false,
+    "max_context_tokens": 32000
+  },
+  "latency": {
+    "p50_ms": 3521.5,
+    "p95_ms": 3624.4,
+    "p99_ms": 3633.5,
+    "mean_ms": 3531.1,
+    "min_ms": 3436.1,
+    "max_ms": 3635.8,
+    "count": 3
+  },
+  "metadata": {
+    "timestamp": "2026-03-14T14:32:30.475132+00:00",
+    "run_id": "eval_conversation_7cc6ed77",
+    "llm_model": "Qwen3-235B-A22B-Instruct-2507",
+    "server": "http://127.0.0.1:8921",
+    "dataset_path": "benchmarks/locomo10.json",
+    "top_k": 10,
+    "max_context_tokens": 32000,
+    "concurrency": 1,
+    "total_qa": 3,
+    "enable_llm_judge": false,
+    "seed": 42
+  },
+  "per_query": [
+    {
+      "question": "When did Caroline go to the LGBTQ support group?",
+      "answer": "7 May 2023",
+      "category": "2",
+      "expected_uris": [],
+      "latency_ms": 3635.7887079939246,
+      "retrieved_uris": [
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/eb51c3327e3f",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/d155cbc4fc09",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/dbd2d18076d8",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/43800fca2c48",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/dfc89ef8a903",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/2a26ed09aecd",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/41fbeaf27b18",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/345bb4368221",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/b239abdeb2a8",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/1a3157039108"
+      ],
+      "oc_prediction": "Caroline went to the LGBTQ support group yesterday (7 May, 2023).",
+      "oc_prompt_tokens": 12400,
+      "bl_prediction": "8 May, 2023",
+      "baseline_prompt_tokens": 21181,
+      "raw_baseline_tokens": 21122,
+      "oc_f1": 0.4615384615384615,
+      "bl_f1": 0.6666666666666666
+    },
+    {
+      "question": "When did Melanie paint a sunrise?",
+      "answer": "2022",
+      "category": "2",
+      "expected_uris": [],
+      "latency_ms": 3436.147875036113,
+      "retrieved_uris": [
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/bf4921f94b02",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/d443924731f9",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/e989f7fea92d",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/bdc2f05a1646",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/eb51c3327e3f",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/90175254ac57",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/20374f4813d5",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/bb0556b2f3b6",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/7c93b059d83c",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/a8f209885d4e"
+      ],
+      "oc_prediction": "Melanie painted the lake sunrise last year.",
+      "oc_prompt_tokens": 14013,
+      "bl_prediction": "Last year",
+      "baseline_prompt_tokens": 21177,
+      "raw_baseline_tokens": 21122,
+      "oc_f1": 0.0,
+      "bl_f1": 0.0
+    },
+    {
+      "question": "What fields would Caroline be likely to pursue in her educaton?",
+      "answer": "Psychology, counseling certification",
+      "category": "3",
+      "expected_uris": [],
+      "latency_ms": 3521.49204199668,
+      "retrieved_uris": [
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/2a26ed09aecd",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/dfc89ef8a903",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/43800fca2c48",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/b239abdeb2a8",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/eb51c3327e3f",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/345bb4368221",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/d443924731f9",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/cc2bbeaec8c9",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/d155cbc4fc09",
+        "opencortex://eval_conversation_7cc6ed77/user/eval_runner/memories/events/dbd2d18076d8"
+      ],
+      "oc_prediction": "Counseling and mental health",
+      "oc_prompt_tokens": 12219,
+      "bl_prediction": "Counseling or mental health",
+      "baseline_prompt_tokens": 21186,
+      "raw_baseline_tokens": 21122,
+      "oc_f1": 0.3333333333333333,
+      "bl_f1": 0.28571428571428575
+    }
+  ]
+}

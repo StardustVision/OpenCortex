@@ -1,0 +1,556 @@
+{
+  "mode": "document",
+  "dataset": "qasper",
+  "retrieval": {
+    "recall@1": 0.0,
+    "precision@1": 0.0,
+    "hit_rate@1": 0.0,
+    "recall@3": 0.0,
+    "precision@3": 0.0,
+    "hit_rate@3": 0.0,
+    "recall@5": 0.0,
+    "precision@5": 0.0,
+    "hit_rate@5": 0.0,
+    "mrr": 0.0,
+    "evaluated_count": 0,
+    "skipped_no_ground_truth": 20,
+    "by_category": {}
+  },
+  "accuracy": {
+    "f1": {
+      "overall": 0.0759,
+      "by_category": {
+        "qasper": {
+          "f1": 0.0759,
+          "n": 20
+        }
+      },
+      "excluded_categories": [
+        "5"
+      ]
+    },
+    "baseline_f1": 0.342,
+    "baseline_by_category": {
+      "qasper": {
+        "f1": 0.342,
+        "n": 20
+      }
+    },
+    "delta_f1": "-0.2661",
+    "jscore": {
+      "overall": 0.15,
+      "by_category": {
+        "qasper": {
+          "jscore": 0.15,
+          "n": 20
+        }
+      },
+      "baseline_overall": 0.8,
+      "baseline_by_category": {
+        "qasper": {
+          "jscore": 0.8,
+          "n": 20
+        }
+      },
+      "delta": "-0.6500"
+    }
+  },
+  "token_reduction": {
+    "baseline_avg_tokens": 7366,
+    "oc_avg_tokens": 810,
+    "baseline_total_tokens": 147312,
+    "oc_total_tokens": 16207,
+    "reduction_pct": 89.0,
+    "raw_baseline_avg_tokens": 7285,
+    "truncation_applied": false,
+    "max_context_tokens": 32000
+  },
+  "latency": {
+    "p50_ms": 4943.6,
+    "p95_ms": 9196.4,
+    "p99_ms": 10011.4,
+    "mean_ms": 4931.8,
+    "min_ms": 1311.4,
+    "max_ms": 10215.2,
+    "count": 20
+  },
+  "metadata": {
+    "timestamp": "2026-03-18T11:00:32.716538+00:00",
+    "run_id": "eval_document_3a4828ca",
+    "llm_model": "Qwen3-235B-A22B-Instruct-2507",
+    "server": "http://127.0.0.1:8921",
+    "dataset_path": "benchmarks/datasets/qasper/qasper-dev-v0.2.json",
+    "top_k": 10,
+    "max_context_tokens": 32000,
+    "concurrency": 5,
+    "total_qa": 20,
+    "enable_llm_judge": false,
+    "jscore_enabled": true,
+    "seed": 42
+  },
+  "per_query": [
+    {
+      "question": "which multilingual approaches do they compare with?",
+      "answer": "BIBREF19 BIBREF20",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 1967.6391249522567,
+      "retrieved_uris": [
+        "opencortex://eval_document_682627c8/resources/public/7f225ccd9603",
+        "opencortex://eval_document_682627c8/resources/public/37a312135568",
+        "opencortex://eval_conversation_v6full/user/eval_runner/memories/events/21_October_2022_John_John_organized_a_pro_95522698",
+        "opencortex://eval_document_682627c8/resources/public/be6068295dab"
+      ],
+      "oc_prediction": "The provided context does not mention any multilingual approaches or comparisons with such approaches. Therefore, based on the information given, the answer is:\n\n**No multilingual approaches are compared.**",
+      "oc_prompt_tokens": 973,
+      "bl_prediction": "They compare with multilingual NMT (MNMT) BIBREF19 and an improved version of MNMT BIBREF22 that incorporates back translation.",
+      "baseline_prompt_tokens": 8097,
+      "raw_baseline_tokens": 8015,
+      "oc_f1": 0.0,
+      "bl_f1": 0.1111111111111111,
+      "oc_jscore": 0.0,
+      "bl_jscore": 0.0
+    },
+    {
+      "question": "what are the pivot-based baselines?",
+      "answer": "pivoting pivoting$_{\\rm m}$",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 3309.6518330276012,
+      "retrieved_uris": [
+        "opencortex://eval_document_682627c8/resources/public/7f225ccd9603",
+        "opencortex://eval_document_682627c8/resources/public/37a312135568",
+        "opencortex://eval_document_682627c8/resources/public/305485e9f164"
+      ],
+      "oc_prediction": "The provided context does not mention \"pivot-based baselines,\" so there is no information available to answer the question. \n\nAnswer: Not mentioned",
+      "oc_prompt_tokens": 898,
+      "bl_prediction": "The pivot-based baselines are the pivoting method and the pivot-synthetic method. The pivoting method translates the source language to the pivot language and then to the target language in two steps, while the pivot-synthetic method trains a source→target model using pseudo-parallel data generated from source-pivot or pivot-target parallel data.",
+      "baseline_prompt_tokens": 8092,
+      "raw_baseline_tokens": 8015,
+      "oc_f1": 0.0,
+      "bl_f1": 0.048780487804878044,
+      "oc_jscore": 0.0,
+      "bl_jscore": 0.0
+    },
+    {
+      "question": "which datasets did they experiment with?",
+      "answer": "Europarl MultiUN",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 8876.290459069423,
+      "retrieved_uris": [
+        "opencortex://eval_conversation_7d93a415/user/eval_runner/memories/events/2_October_2023_John_John_recently_had_an__77792569",
+        "opencortex://eval_conversation_v6full/user/eval_runner/memories/events/2_October_2023_John_John_recently_had_an__77792569",
+        "opencortex://eval_memory_9f313f8e/eval_runner/memories/events/LASIK_eye_surgery_completed_at_age_31",
+        "opencortex://eval_document_682627c8/resources/public/50d03c5485fd",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/1_October_2023_Audrey_Audrey_enjoys_birdw_66c28fb3",
+        "opencortex://eval_conversation_v6full/user/eval_runner/memories/events/19_October_2023_Calvin_Calvin_started_tou_03bc57e6",
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/22_September_2023_Dave_Dave_suggested_jam_9f6ac6fc",
+        "opencortex://eval_document_682627c8/resources/public/305485e9f164"
+      ],
+      "oc_prediction": "MEDDOCAN 2019 and NUBes-PHI",
+      "oc_prompt_tokens": 869,
+      "bl_prediction": "They experimented with the Europarl and MultiUN datasets.",
+      "baseline_prompt_tokens": 8094,
+      "raw_baseline_tokens": 8015,
+      "oc_f1": 0.0,
+      "bl_f1": 0.5,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "what language pairs are explored?",
+      "answer": "De-En, En-Fr, Fr-En, En-Es, Ro-En, En-De, Ar-En, En-Ru",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 4668.29287505243,
+      "retrieved_uris": [
+        "opencortex://eval_document_682627c8/resources/public/a5c7e59535c4",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/13_October_2023_Andrew_Andrew_had_a_board_1c9bf3de",
+        "opencortex://eval_hotpotqa_quick/resources/public/Afrikaans",
+        "opencortex://eval_memory_633c2936/eval_runner/memories/events/Felt_the_emotional_weight_of_elder_commun_1fbc78e2"
+      ],
+      "oc_prediction": "The language pair explored is Afrikaans and Dutch.",
+      "oc_prompt_tokens": 756,
+      "bl_prediction": "The language pairs explored are French-English-Spanish (Fr-En-Es), German-English-French (De-En-Fr), Romanian-English-German (Ro-En-De), and Arabic-English-Spanish-Russian (Ar-En-Es-Ru) with English as the pivot language.",
+      "baseline_prompt_tokens": 8091,
+      "raw_baseline_tokens": 8015,
+      "oc_f1": 0.0,
+      "bl_f1": 0.0,
+      "oc_jscore": 0.0,
+      "bl_jscore": 0.0
+    },
+    {
+      "question": "what ner models were evaluated?",
+      "answer": "Stanford NER spaCy 2.0  recurrent model with a CRF top layer",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 4875.596125028096,
+      "retrieved_uris": [
+        "opencortex://eval_document_682627c8/resources/public/ed54be2d020f",
+        "opencortex://eval_document_682627c8/resources/public/8032d8b99b34",
+        "opencortex://eval_document_682627c8/resources/public/b9018767204b",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/9_June_2023_Caroline_Caroline_aims_to_pas_e4dc2e07"
+      ],
+      "oc_prediction": "The paper does not specify which Named Entity Recognition (NER) models were evaluated. It only mentions that entity-level annotations support the development of domain-specific NER models. Therefore, no specific NER models are named or evaluated in the provided context.",
+      "oc_prompt_tokens": 852,
+      "bl_prediction": "The NER models evaluated were Stanford NER, spaCy 2.0, and a recurrent model with bidirectional LSTM for character-based feature extraction and a CRF layer.",
+      "baseline_prompt_tokens": 5535,
+      "raw_baseline_tokens": 5460,
+      "oc_f1": 0.04347826086956522,
+      "bl_f1": 0.6206896551724138,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "what is the source of the news sentences?",
+      "answer": "ilur.am",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 6915.27120792307,
+      "retrieved_uris": [
+        "opencortex://eval_document_682627c8/resources/public/d1e0c0248415",
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/06c307679717",
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/18_March_2022_Nate_Nate_believes_in_Joann_6a5a67a9",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/19_October_2023_Audrey_Audrey_has_dogs_th_ba1cb774",
+        "opencortex://eval_conversation_v6full/user/eval_runner/memories/events/13_June_2023_Andrew_Andrew_mentioned_that_aa6a4cbb",
+        "opencortex://eval_conversation_22debcfb/user/eval_runner/memories/events/383d1a8629b5",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/13_June_2023_Audrey_Audrey_shared_a_pictu_3faa3945",
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/3_May_2023_Andrew_Andrew_escapes_the_city_0710ad84",
+        "opencortex://eval_memory_9f313f8e/eval_runner/memories/events/Do_not_remember_Loves_contemporary_dance__067830de",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/3_April_2023_Gina_Gina_plans_to_work_with_ff69a125"
+      ],
+      "oc_prediction": "The source of the news sentences is not explicitly mentioned in the provided context. The context includes chat messages, personal reflections, and a research study on a crowdsourcing learning system for named entity recognition, but no specific source for \"news sentences\" is identified.",
+      "oc_prompt_tokens": 954,
+      "bl_prediction": "The source of the news sentences is ilur.am.",
+      "baseline_prompt_tokens": 5538,
+      "raw_baseline_tokens": 5460,
+      "oc_f1": 0.0,
+      "bl_f1": 0.2857142857142857,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "did they use a crowdsourcing platform for manual annotations?",
+      "answer": "no",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 1311.3976250169799,
+      "retrieved_uris": [
+        "opencortex://eval_document_682627c8/resources/public/ecd694fe1702",
+        "opencortex://eval_document_682627c8/resources/public/9d624158431c",
+        "opencortex://eval_document_682627c8/resources/public/f4c9b9be0c3e",
+        "opencortex://eval_document_682627c8/resources/public/1bb727d5f26e",
+        "opencortex://eval_memory_d88eaef7/eval_runner/memories/events/Likes_attending_film_festivals",
+        "opencortex://eval_document_1be96e40/resources/public/Winner_band",
+        "opencortex://bench-team/user/minimax-user/memories/events/5_19_pm_on_5_August_2023_John_Maria_Hey_M_cf5858ad"
+      ],
+      "oc_prediction": "no",
+      "oc_prompt_tokens": 1507,
+      "bl_prediction": "No",
+      "baseline_prompt_tokens": 5544,
+      "raw_baseline_tokens": 5460,
+      "oc_f1": 1.0,
+      "bl_f1": 1.0,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "what are the topics pulled from Reddit?",
+      "answer": "politics, business, science, and AskReddit, and 1000 additional posts from the Reddit frontpage. ",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 2084.4072910258546,
+      "retrieved_uris": [
+        "opencortex://eval_document_1be96e40/resources/public/Androscoggin_Bank_Colisée",
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/27_June_2023_Caroline_Caroline_treasures__d3454127",
+        "opencortex://eval_memory_d88eaef7/eval_runner/memories/events/Do_not_remember_Keeps_indoor_plants_for_a_38ac91b2",
+        "opencortex://eval_conversation_85d25025/user/eval_runner/memories/events/27_June_2023_Caroline_Caroline_treasures__d3454127"
+      ],
+      "oc_prediction": "The provided context does not mention Reddit or any topics pulled from it. Therefore, based on the given information, the answer is:\n\nno",
+      "oc_prompt_tokens": 574,
+      "bl_prediction": "The topics pulled from Reddit include politics, business, science, AskReddit, and the Reddit frontpage.",
+      "baseline_prompt_tokens": 8126,
+      "raw_baseline_tokens": 8048,
+      "oc_f1": 0.13333333333333333,
+      "bl_f1": 0.6666666666666666,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What predictive model do they build?",
+      "answer": "logistic regression models",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 2080.167333013378,
+      "retrieved_uris": [
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/17_August_2023_Melanie_Melanie_finished_a_a68f17e8",
+        "opencortex://eval_document_682627c8/resources/public/e1b10d5ec6be",
+        "opencortex://eval_memory_a5a0dcf1/eval_runner/memories/events/Do_not_remember_Reads_crime_mystery_novel_c9633de2",
+        "opencortex://eval_memory_d88eaef7/eval_runner/memories/events/Do_not_remember_Enjoys_visiting_science_m_bad549d3"
+      ],
+      "oc_prediction": "They build a multilingual attention-based neural machine translation model.",
+      "oc_prompt_tokens": 750,
+      "bl_prediction": "They build a logistic regression model to predict dogmatism in comments, using features such as unigram bag-of-words (BOW), sentiment signals (SENT), and linguistic features (LING) derived from psychological theories and LIWC categories.",
+      "baseline_prompt_tokens": 8125,
+      "raw_baseline_tokens": 8048,
+      "oc_f1": 0.0,
+      "bl_f1": 0.125,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What accuracy does the proposed system achieve?",
+      "answer": "F1 scores of 85.99 on the DL-PS data,  75.15 on the EC-MT data and 71.53 on the EC-UQ data ",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 5757.471333025023,
+      "retrieved_uris": [
+        "opencortex://bench_8d5e91b3/user/runner/memories/events/GPT-5_4_review_findings_applied_to_plan",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/9_April_2023_Deborah_Deborah_went_biking__ac6420bb",
+        "opencortex://eval_document_682627c8/resources/public/f4aa0c5c552a",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/21_August_2023_Deborah_Deborah_went_to_a__d45a3fdc"
+      ],
+      "oc_prediction": "The provided context does not specify the accuracy achieved by the proposed system.",
+      "oc_prompt_tokens": 390,
+      "bl_prediction": "The paper does not provide a single overall accuracy value for the proposed system (ALCrowd). Instead, it reports F1 scores for different datasets: ALCrowd achieves **+1.08 F1 improvement** on DL-PS, **+1.24 F1 improvement** on EC-MT, and **+2.38 F1 improvement** on EC-UQ compared to the LSTM-CRF baseline. Specific F1 scores for ALCrowd are shown in Tables 2 and 3 but are not summarized in the text.",
+      "baseline_prompt_tokens": 10801,
+      "raw_baseline_tokens": 10721,
+      "oc_f1": 0.0,
+      "bl_f1": 0.21917808219178084,
+      "oc_jscore": 0.0,
+      "bl_jscore": 0.0
+    },
+    {
+      "question": "What crowdsourcing platform is used?",
+      "answer": "unanswerable",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 2618.5877500101924,
+      "retrieved_uris": [
+        "opencortex://eval_document_682627c8/resources/public/ecd694fe1702",
+        "opencortex://eval_document_682627c8/resources/public/1bb727d5f26e",
+        "opencortex://eval_document_682627c8/resources/public/f4c9b9be0c3e",
+        "opencortex://eval_document_682627c8/resources/public/9d624158431c",
+        "opencortex://eval_memory_d88eaef7/eval_runner/memories/events/Likes_attending_film_festivals",
+        "opencortex://eval_document_1be96e40/resources/public/Winner_band",
+        "opencortex://bench-team/user/minimax-user/memories/events/5_19_pm_on_5_August_2023_John_Maria_Hey_M_cf5858ad"
+      ],
+      "oc_prediction": "The provided context does not mention any crowdsourcing platform.",
+      "oc_prompt_tokens": 1500,
+      "bl_prediction": "The paper does not specify the use of a particular crowdsourcing platform. Instead, it mentions that undergraduate students were hired to annotate the sentences. Therefore, no specific crowdsourcing platform (like Amazon Mechanical Turk) was used. \n\nAnswer: No crowdsourcing platform is specified; undergraduate students were hired directly.",
+      "baseline_prompt_tokens": 10798,
+      "raw_baseline_tokens": 10721,
+      "oc_f1": 0.0,
+      "bl_f1": 0.0,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "How do they match words before reordering them?",
+      "answer": "unanswerable",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 5132.6663750223815,
+      "retrieved_uris": [
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/2_June_2023_Andrew_Andrew_is_thankful_for_c2f6b0c8",
+        "opencortex://eval_memory_9f313f8e/eval_runner/memories/events/Do_not_remember_Prefers_independent_books_b5d16d0d",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/3_July_2023_Andrew_Andrew_finds_cooking_c_1aa94eef",
+        "opencortex://eval_memory_9f313f8e/eval_runner/memories/events/Do_not_remember_Occasional_migraine_heada_f439480d",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/19_October_2023_Audrey_Audrey_went_to_a_p_e3c12fc4",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/2_April_2023_Andrew_Andrew_finds_hiking_w_10864396"
+      ],
+      "oc_prediction": "The provided context does not contain information about how words are matched before reordering them. Therefore, the question cannot be answered based on the given text.",
+      "oc_prompt_tokens": 624,
+      "bl_prediction": "They use a bilingual dictionary (Google Translate word translation in their case) to translate each word in the source language into English before reordering.",
+      "baseline_prompt_tokens": 4556,
+      "raw_baseline_tokens": 4475,
+      "oc_f1": 0.0,
+      "bl_f1": 0.0,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "On how many language pairs do they show that preordering assisting language sentences helps translation quality?",
+      "answer": "5",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 3417.6900420570746,
+      "retrieved_uris": [
+        "opencortex://eval_document_1be96e40/resources/public/Screaming_Trees",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/7_February_2022_Nate_Nate_is_open_to_tryi_99a72f88",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/20_May_2022_Joanna_Joanna_has_written_at__0bd4c4dd",
+        "opencortex://eval_document_b0dfb2a9/resources/public/971746dee1d6"
+      ],
+      "oc_prediction": "The provided context does not mention anything about preordering assisting language sentences or experiments conducted on specific language pairs regarding this technique. Therefore, based on the given information, the answer is:\n\n**0**",
+      "oc_prompt_tokens": 672,
+      "bl_prediction": "They show that preordering assisting language sentences helps translation quality on five language pairs: Bengali-Hindi, Gujarati-Hindi, Marathi-Hindi, Tamil-Hindi, and Malayalam-Hindi.",
+      "baseline_prompt_tokens": 4575,
+      "raw_baseline_tokens": 4475,
+      "oc_f1": 0.0,
+      "bl_f1": 0.0,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "Which dataset(s) do they experiment with?",
+      "answer": "IITB English-Hindi parallel corpus BIBREF22 ILCI English-Hindi parallel corpus",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 6921.622165944427,
+      "retrieved_uris": [
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/9_February_2023_Jolene_Jolene_accomplishe_8820c37b",
+        "opencortex://eval_document_682627c8/resources/public/3fe214a20938",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/22_November_2023_Andrew_Andrew_has_at_lea_f287de08",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/19_June_2022_John_John_is_considering_goi_ee247e5e",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/27_January_2023_Deborah_Deborah_visits_he_06937659",
+        "opencortex://bench_8d5e91b3/user/runner/memories/profile/Experience_with_multiple_vector_DBs",
+        "opencortex://eval_document_682627c8/resources/public/50d03c5485fd"
+      ],
+      "oc_prediction": "They experiment with the Europarl and MultiUN datasets.",
+      "oc_prompt_tokens": 723,
+      "bl_prediction": "They experiment with the IITB English-Hindi parallel corpus and the ILCI (Indian Language Corpora Initiative) multilingual parallel corpus.",
+      "baseline_prompt_tokens": 4554,
+      "raw_baseline_tokens": 4475,
+      "oc_f1": 0.0,
+      "bl_f1": 0.5833333333333334,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "Which information about text structure is included in the corpus?",
+      "answer": "paragraphs lines Information on physical page segmentation (for PDFs only), paragraph segmentation, and line segmentation",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 6178.066292079166,
+      "retrieved_uris": [
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/11_November_2022_Joanna_One_of_the_actors_66648496",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/16_July_2023_John_John_s_game_next_month__ffa907d5",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/21_October_2023_John_John_keeps_a_plaque__a3c16825",
+        "opencortex://eval_document_682627c8/resources/public/b17cf78987f8"
+      ],
+      "oc_prediction": "The corpus includes information about semantic properties and uses complex QA templates to structure the text, enabling controlled analysis of relational knowledge.",
+      "oc_prompt_tokens": 491,
+      "bl_prediction": "The corpus includes information on paragraphs, lines, and physical page segmentation (for PDFs) as part of the text structure. This information is represented in the textstructure layer using textspan elements in the TCF format.",
+      "baseline_prompt_tokens": 5423,
+      "raw_baseline_tokens": 5337,
+      "oc_f1": 0.06060606060606061,
+      "bl_f1": 0.4186046511627907,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "Which information about typography is included in the corpus?",
+      "answer": "font type font style Information on the font type and font style (e.g., italics, bold print) of a token and its position on the physical page",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 9142.812166013755,
+      "retrieved_uris": [
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/21_October_2023_John_John_keeps_a_plaque__a3c16825",
+        "opencortex://eval_document_1be96e40/resources/public/Index_Magazine",
+        "opencortex://eval_document_1be96e40/resources/public/Savoia-Marchetti_SM_79",
+        "opencortex://eval_memory_633c2936/eval_runner/memories/events/vehicle_plate_number_KNG-4275",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/5_September_2022_Nate_Nate_tried_to_stay__787529c4",
+        "opencortex://eval_memory_633c2936/eval_runner/memories/events/Keeps_mementos_from_travels",
+        "opencortex://eval_conversation_a36cd323/user/eval_runner/memories/events/4_September_2022_John_John_bought_new_gam_42eee009",
+        "opencortex://eval_conversation_v6full/user/eval_runner/memories/events/2_October_2023_Tim_Tim_has_a_bookshelf_fi_6cb64bf3"
+      ],
+      "oc_prediction": "No information about typography is included in the corpus.",
+      "oc_prompt_tokens": 1190,
+      "bl_prediction": "The corpus includes information about font type, font style (e.g., italics, bold print), and the position of text on the physical page (for PDFs). This information is specified as attributes to the token elements in the tokens layer.",
+      "baseline_prompt_tokens": 5421,
+      "raw_baseline_tokens": 5337,
+      "oc_f1": 0.06896551724137931,
+      "bl_f1": 0.5660377358490566,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "On which benchmarks they achieve the state of the art?",
+      "answer": "SimpleQuestions WebQSP",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 10215.165000059642,
+      "retrieved_uris": [
+        "opencortex://eval_document_682627c8/resources/public/569907bf91d9",
+        "opencortex://eval_memory_9a550714/eval_runner/memories/events/Do_not_remember_Enjoys_high-intensity_gym_c90b87f9",
+        "opencortex://eval_memory_9f313f8e/eval_runner/memories/events/Attends_church_services_on_major_holidays"
+      ],
+      "oc_prediction": "The provided context does not mention any specific benchmarks or state-of-the-art results. Therefore, the answer is:\n\nNo information available.",
+      "oc_prompt_tokens": 722,
+      "bl_prediction": "They achieve state-of-the-art results on SimpleQuestions and comparable results to the state-of-the-art on WebQSP.",
+      "baseline_prompt_tokens": 8990,
+      "raw_baseline_tokens": 8907,
+      "oc_f1": 0.0,
+      "bl_f1": 0.25,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What they use in their propsoed framework?",
+      "answer": "break the relation names into word sequences  relation-level and word-level relation representations bidirectional LSTMs (BiLSTMs)  residual learning method",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 1978.2656249590218,
+      "retrieved_uris": [
+        "opencortex://eval_document_682627c8/resources/public/d0cd8c7458f2",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/12_August_2023_Jolene_Jolene_designed_not_bf1f5ee1",
+        "opencortex://eval_memory_9f313f8e/eval_runner/memories/events/Do_not_remember_Developed_stage_fright_un_4634f6d7"
+      ],
+      "oc_prediction": "The proposed framework uses two named-entity annotated datasets (a silver-standard corpus for training and a gold-standard corpus for evaluation), pretrained GloVe word embeddings on Armenian text, and evaluates NER systems with deep learning and character-augmented embeddings.",
+      "oc_prompt_tokens": 520,
+      "bl_prediction": "They use a hierarchical matching approach with residual learning (HR-BiLSTM) that combines both word-level and relation-level representations of KB relations, deep bidirectional LSTMs for question encoding, and a two-step relation detection process for entity re-ranking and final relation prediction in their proposed framework.",
+      "baseline_prompt_tokens": 8986,
+      "raw_baseline_tokens": 8907,
+      "oc_f1": 0.08695652173913045,
+      "bl_f1": 0.3333333333333333,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What does KBQA abbreviate for",
+      "answer": "Knowledge Base Question Answering",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 5011.513874982484,
+      "retrieved_uris": [
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/6_May_2023_Audrey_Audrey_will_be_expectin_f198fdc1",
+        "opencortex://eval_document_682627c8/resources/public/430c5f1d30d7",
+        "opencortex://eval_memory_633c2936/eval_runner/memories/events/Enjoys_late-night_coffee_instead_of_chai",
+        "opencortex://eval_memory_9a550714/eval_runner/memories/events/Do_not_remember_Collects_affordable_ename_3b32f460",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/7_January_2024_Tim_Tim_will_be_staying_in_6ab6f8cf"
+      ],
+      "oc_prediction": "The provided context does not mention \"KBQA\" or its abbreviation. Therefore, based on the given text, the answer cannot be determined.",
+      "oc_prompt_tokens": 767,
+      "bl_prediction": "Knowledge Base Question Answering",
+      "baseline_prompt_tokens": 8982,
+      "raw_baseline_tokens": 8907,
+      "oc_f1": 0.0,
+      "bl_f1": 1.0,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What is te core component for KBQA?",
+      "answer": "answer questions by obtaining information from KB tuples ",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 6172.44666593615,
+      "retrieved_uris": [
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/7_January_2024_Tim_Tim_will_be_staying_in_6ab6f8cf",
+        "opencortex://debug_test/runner/memories/events/Test_item_5",
+        "opencortex://eval_conversation_600018c0/eval_runner/memories/events/16_April_2023_Audrey_Audrey_believes_natu_e2ee8af1",
+        "opencortex://eval_memory_9a550714/eval_runner/memories/events/Do_not_remember_Enjoys_high-intensity_gym_c90b87f9"
+      ],
+      "oc_prediction": "The provided context does not contain information about the core component for KBQA (Knowledge Base Question Answering). Therefore, based on the given text, the answer cannot be determined.",
+      "oc_prompt_tokens": 475,
+      "bl_prediction": "The core component for KBQA is relation detection, specifically enhanced by the proposed hierarchical matching model (HR-BiLSTM) that improves relation detection by matching questions to both word-level and relation-level representations of KB relations. This component plays a key role in entity re-ranking and core relation (or chain) identification within the KBQA pipeline.",
+      "baseline_prompt_tokens": 8984,
+      "raw_baseline_tokens": 8907,
+      "oc_f1": 0.125,
+      "bl_f1": 0.11111111111111109,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    }
+  ]
+}

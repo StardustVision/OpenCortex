@@ -1,0 +1,371 @@
+{
+  "mode": "document",
+  "dataset": "qasper",
+  "retrieval": {
+    "recall@1": 0.0,
+    "precision@1": 0.0,
+    "hit_rate@1": 0.0,
+    "recall@3": 0.0,
+    "precision@3": 0.0,
+    "hit_rate@3": 0.0,
+    "recall@5": 0.0,
+    "precision@5": 0.0,
+    "hit_rate@5": 0.0,
+    "mrr": 0.0,
+    "evaluated_count": 0,
+    "skipped_no_ground_truth": 10,
+    "by_category": {}
+  },
+  "accuracy": {
+    "f1": {
+      "overall": 0.1402,
+      "by_category": {
+        "qasper": {
+          "f1": 0.1402,
+          "n": 10
+        }
+      },
+      "excluded_categories": [
+        "5"
+      ]
+    },
+    "baseline_f1": 0.3395,
+    "baseline_by_category": {
+      "qasper": {
+        "f1": 0.3395,
+        "n": 10
+      }
+    },
+    "delta_f1": "-0.1993",
+    "jscore": {
+      "overall": 0.3,
+      "by_category": {
+        "qasper": {
+          "jscore": 0.3,
+          "n": 10
+        }
+      },
+      "baseline_overall": 0.7,
+      "baseline_by_category": {
+        "qasper": {
+          "jscore": 0.7,
+          "n": 10
+        }
+      },
+      "delta": "-0.4000"
+    }
+  },
+  "token_reduction": {
+    "baseline_avg_tokens": 7604,
+    "oc_avg_tokens": 2401,
+    "baseline_total_tokens": 76043,
+    "oc_total_tokens": 24007,
+    "reduction_pct": 68.4,
+    "raw_baseline_avg_tokens": 7526,
+    "truncation_applied": false,
+    "max_context_tokens": 32000
+  },
+  "latency": {
+    "p50_ms": 4817.2,
+    "p95_ms": 10317.9,
+    "p99_ms": 10989.8,
+    "mean_ms": 5833.4,
+    "min_ms": 4033.1,
+    "max_ms": 11157.8,
+    "count": 10
+  },
+  "metadata": {
+    "timestamp": "2026-03-16T15:04:25.400158+00:00",
+    "run_id": "eval_qasper_clean",
+    "llm_model": "Qwen3-235B-A22B-Instruct-2507",
+    "server": "http://127.0.0.1:8921",
+    "dataset_path": "benchmarks/datasets/qasper/qasper-dev-v0.2.json",
+    "top_k": 10,
+    "max_context_tokens": 32000,
+    "concurrency": 5,
+    "total_qa": 10,
+    "enable_llm_judge": false,
+    "jscore_enabled": true,
+    "seed": 42
+  },
+  "per_query": [
+    {
+      "question": "which multilingual approaches do they compare with?",
+      "answer": "BIBREF19 BIBREF20",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 5242.698291083798,
+      "retrieved_uris": [
+        "opencortex://eval_qasper_clean/resources/public/087310f637f0",
+        "opencortex://eval_qasper_clean/resources/public/e9da99c72111",
+        "opencortex://eval_qasper_clean/resources/public/c7dc6d93013a",
+        "opencortex://eval_qasper_clean/resources/public/71be5e969002",
+        "opencortex://eval_qasper_clean/resources/public/fe5fe97529ef",
+        "opencortex://eval_qasper_clean/resources/public/b0c2e3284085",
+        "opencortex://eval_qasper_clean/resources/public/21f6adb62e61",
+        "opencortex://eval_qasper_clean/resources/public/ab2515247c4d",
+        "opencortex://eval_qasper_clean/resources/public/98f21f239e28",
+        "opencortex://eval_qasper_clean/resources/public/d0381b0adcc7"
+      ],
+      "oc_prediction": "They compare with pivoting, multilingual neural machine translation (MNMT), and cross-lingual transfer without pretraining.",
+      "oc_prompt_tokens": 2562,
+      "bl_prediction": "They compare with multilingual NMT (MNMT) systems, specifically referencing works by BIBREF19 and BIBREF22.",
+      "baseline_prompt_tokens": 8097,
+      "raw_baseline_tokens": 8015,
+      "oc_f1": 0.0,
+      "bl_f1": 0.13333333333333336,
+      "oc_jscore": 0.0,
+      "bl_jscore": 0.0
+    },
+    {
+      "question": "what are the pivot-based baselines?",
+      "answer": "pivoting pivoting$_{\\rm m}$",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 11157.835375051945,
+      "retrieved_uris": [
+        "opencortex://eval_qasper_clean/resources/public/01fc4d9f6f8a",
+        "opencortex://eval_qasper_clean/resources/public/b03bac0a8583",
+        "opencortex://eval_qasper_clean/resources/public/9c03d346d1bd",
+        "opencortex://eval_qasper_clean/resources/public/34a1717099e9",
+        "opencortex://eval_qasper_clean/resources/public/779e104fc4e0",
+        "opencortex://eval_qasper_clean/resources/public/5236e36374c0",
+        "opencortex://eval_qasper_clean/resources/public/dd8e7fb12ed8",
+        "opencortex://eval_qasper_clean/resources/public/3f873ad43700",
+        "opencortex://eval_qasper_clean/resources/public/00261bf86c27",
+        "opencortex://eval_qasper_clean/resources/public/253db90b9997"
+      ],
+      "oc_prediction": "The provided context does not mention or define any \"pivot-based baselines.\" Therefore, based on the given information, the question cannot be answered.",
+      "oc_prompt_tokens": 2394,
+      "bl_prediction": "The pivot-based baselines mentioned in the paper are:\n\n1. **Pivoting**: This method involves translating the source language to the pivot language first, and then translating the pivot language to the target language in two separate steps.\n2. **Pivot-synthetic**: This approach trains a source→target model using pseudo-parallel data generated from source–pivot or pivot–target parallel data.\n\nAdditionally, **pivoting$_{\\rm m}$** is specifically referenced as a strong baseline, which uses multilingual NMT (MNMT) to perform the two-step translation (source → pivot → target), with each step benefiting from supervised parallel data.",
+      "baseline_prompt_tokens": 8092,
+      "raw_baseline_tokens": 8015,
+      "oc_f1": 0.0,
+      "bl_f1": 0.07500000000000001,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "which datasets did they experiment with?",
+      "answer": "Europarl MultiUN",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 4467.971957987174,
+      "retrieved_uris": [
+        "opencortex://eval_qasper_clean/resources/public/ded8d5c6b3e8",
+        "opencortex://eval_qasper_clean/resources/public/db7a4ade5664",
+        "opencortex://eval_qasper_clean/resources/public/c349294b5856",
+        "opencortex://eval_qasper_clean/resources/public/a3ec569f0136",
+        "opencortex://eval_qasper_clean/resources/public/52c202baaf61",
+        "opencortex://eval_qasper_clean/resources/public/862b69015fc5",
+        "opencortex://eval_qasper_clean/resources/public/01fc4d9f6f8a",
+        "opencortex://eval_qasper_clean/resources/public/34a1717099e9",
+        "opencortex://eval_qasper_clean/resources/public/9c03d346d1bd",
+        "opencortex://eval_qasper_clean/resources/public/5236e36374c0"
+      ],
+      "oc_prediction": "The provided context does not explicitly mention the specific datasets used in the experiments. Therefore, based on the information given, the datasets cannot be identified.",
+      "oc_prompt_tokens": 2319,
+      "bl_prediction": "The datasets used in the experiments are Europarl and MultiUN.",
+      "baseline_prompt_tokens": 8094,
+      "raw_baseline_tokens": 8015,
+      "oc_f1": 0.0,
+      "bl_f1": 0.4444444444444445,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "what language pairs are explored?",
+      "answer": "De-En, En-Fr, Fr-En, En-Es, Ro-En, En-De, Ar-En, En-Ru",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 9291.24679195229,
+      "retrieved_uris": [
+        "opencortex://eval_qasper_clean/resources/public/01fc4d9f6f8a",
+        "opencortex://eval_qasper_clean/resources/public/087310f637f0",
+        "opencortex://eval_qasper_clean/resources/public/862b69015fc5",
+        "opencortex://eval_qasper_clean/resources/public/a3ec569f0136",
+        "opencortex://eval_qasper_clean/resources/public/db7a4ade5664",
+        "opencortex://eval_qasper_clean/resources/public/9c03d346d1bd",
+        "opencortex://eval_qasper_clean/resources/public/e71885d386fb",
+        "opencortex://eval_qasper_clean/resources/public/b03bac0a8583",
+        "opencortex://eval_qasper_clean/resources/public/76e8aa4e7c51",
+        "opencortex://eval_qasper_clean/resources/public/6495a2de4480"
+      ],
+      "oc_prediction": "The specific language pairs are not explicitly mentioned in the provided context. However, the study focuses on zero-shot machine translation scenarios where source and target languages do not have parallel data but share a high-resource pivot language. Experiments are conducted on the MultiUN dataset, which typically includes multiple languages such as English, French, Spanish, Russian, Arabic, Chinese, and others. The exact source, pivot, and target language combinations used in the study are not specified in the text provided.",
+      "oc_prompt_tokens": 2300,
+      "bl_prediction": "The language pairs explored are:\n- French-English-Spanish (Fr-En-Es)\n- German-English-French (De-En-Fr)\n- Romanian-English-German (Ro-En-De)\n- Arabic-English-Spanish-Russian (Ar-En-Es-Ru), with English as the pivot language and zero-shot translation evaluated between Ar-Es, Ar-Ru, Es-Ar, Es-Ru, Ru-Ar, Ru-Es.",
+      "baseline_prompt_tokens": 8091,
+      "raw_baseline_tokens": 8015,
+      "oc_f1": 0.0,
+      "bl_f1": 0.0,
+      "oc_jscore": 0.0,
+      "bl_jscore": 0.0
+    },
+    {
+      "question": "what ner models were evaluated?",
+      "answer": "Stanford NER spaCy 2.0  recurrent model with a CRF top layer",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 4033.11791701708,
+      "retrieved_uris": [
+        "opencortex://eval_qasper_clean/resources/public/f9b3e3f5dc6f",
+        "opencortex://eval_qasper_clean/resources/public/ded8d5c6b3e8",
+        "opencortex://eval_qasper_clean/resources/public/6bd811e77d4e",
+        "opencortex://eval_qasper_clean/resources/public/52c202baaf61",
+        "opencortex://eval_qasper_clean/resources/public/1eb728e1574b",
+        "opencortex://eval_qasper_clean/resources/public/c349294b5856",
+        "opencortex://eval_qasper_clean/resources/public/7f834d289491",
+        "opencortex://eval_qasper_clean/resources/public/01fc4d9f6f8a",
+        "opencortex://eval_qasper_clean/resources/public/00261bf86c27",
+        "opencortex://eval_qasper_clean/resources/public/dde5cae5b15a"
+      ],
+      "oc_prediction": "The NER models evaluated were Stanford NER, spaCy 2.0, and a bidirectional LSTM-CRF model with character-level features.",
+      "oc_prompt_tokens": 2504,
+      "bl_prediction": "The NER models evaluated were Stanford NER, spaCy 2.0, and a recurrent model with bidirectional LSTM for character-based feature extraction and a CRF top layer.",
+      "baseline_prompt_tokens": 5535,
+      "raw_baseline_tokens": 5460,
+      "oc_f1": 0.5,
+      "bl_f1": 0.6666666666666666,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "what is the source of the news sentences?",
+      "answer": "ilur.am",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 4349.498790921643,
+      "retrieved_uris": [
+        "opencortex://eval_qasper_clean/resources/public/a481b457623c",
+        "opencortex://eval_qasper_clean/resources/public/720bb78674ea",
+        "opencortex://eval_qasper_clean/resources/public/7680e3f7c7ae",
+        "opencortex://eval_qasper_clean/resources/public/519818db4628",
+        "opencortex://eval_qasper_clean/resources/public/76e8aa4e7c51",
+        "opencortex://eval_qasper_clean/resources/public/7b26d1dcdc03",
+        "opencortex://eval_qasper_clean/resources/public/a7647870f715",
+        "opencortex://eval_qasper_clean/resources/public/5ed8d3eef5ed",
+        "opencortex://eval_qasper_clean/resources/public/b146038a785b",
+        "opencortex://eval_qasper_clean/resources/public/c8d8f5367214"
+      ],
+      "oc_prediction": "The source of the news sentences is over 250 news articles from ilur.am.",
+      "oc_prompt_tokens": 2410,
+      "bl_prediction": "The source of the news sentences is ilur.am.",
+      "baseline_prompt_tokens": 5538,
+      "raw_baseline_tokens": 5460,
+      "oc_f1": 0.16666666666666669,
+      "bl_f1": 0.2857142857142857,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "did they use a crowdsourcing platform for manual annotations?",
+      "answer": "no",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 4689.559708000161,
+      "retrieved_uris": [
+        "opencortex://eval_qasper_clean/resources/public/06c6c194ff8a",
+        "opencortex://eval_qasper_clean/resources/public/0d294e036a3b",
+        "opencortex://eval_qasper_clean/resources/public/72a190376496",
+        "opencortex://eval_qasper_clean/resources/public/f9e8f4160a16",
+        "opencortex://eval_qasper_clean/resources/public/2b39a494493a",
+        "opencortex://eval_qasper_clean/resources/public/253db90b9997",
+        "opencortex://eval_qasper_clean/resources/public/3f873ad43700",
+        "opencortex://eval_qasper_clean/resources/public/779e104fc4e0",
+        "opencortex://eval_qasper_clean/resources/public/dd4bc4b0e716",
+        "opencortex://eval_qasper_clean/resources/public/5236e36374c0"
+      ],
+      "oc_prediction": "Yes",
+      "oc_prompt_tokens": 2632,
+      "bl_prediction": "No",
+      "baseline_prompt_tokens": 5544,
+      "raw_baseline_tokens": 5460,
+      "oc_f1": 0.0,
+      "bl_f1": 1.0,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "what are the topics pulled from Reddit?",
+      "answer": "politics, business, science, and AskReddit, and 1000 additional posts from the Reddit frontpage. ",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 4944.79241699446,
+      "retrieved_uris": [
+        "opencortex://eval_qasper_clean/resources/public/03360784093c",
+        "opencortex://eval_qasper_clean/resources/public/dd8e7fb12ed8",
+        "opencortex://eval_qasper_clean/resources/public/ed9d7b1a1a01",
+        "opencortex://eval_qasper_clean/resources/public/e71885d386fb",
+        "opencortex://eval_qasper_clean/resources/public/a7647870f715",
+        "opencortex://eval_qasper_clean/resources/public/519818db4628",
+        "opencortex://eval_qasper_clean/resources/public/6afab4e557d3",
+        "opencortex://eval_qasper_clean/resources/public/4383e8a444ff",
+        "opencortex://eval_qasper_clean/resources/public/7680e3f7c7ae",
+        "opencortex://eval_qasper_clean/resources/public/a90f7f670c03"
+      ],
+      "oc_prediction": "The topics pulled from Reddit include politics, business, science, AskReddit, and the Reddit frontpage.",
+      "oc_prompt_tokens": 2319,
+      "bl_prediction": "The topics pulled from Reddit include politics, business, science, AskReddit, and the Reddit frontpage. These were selected to create a diverse training dataset for the study.",
+      "baseline_prompt_tokens": 8126,
+      "raw_baseline_tokens": 8048,
+      "oc_f1": 0.6666666666666666,
+      "bl_f1": 0.45161290322580644,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What predictive model do they build?",
+      "answer": "logistic regression models",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 4636.753333033994,
+      "retrieved_uris": [
+        "opencortex://eval_qasper_clean/resources/public/edfebdfdf8ed",
+        "opencortex://eval_qasper_clean/resources/public/1a1567276065",
+        "opencortex://eval_qasper_clean/resources/public/dd8e7fb12ed8",
+        "opencortex://eval_qasper_clean/resources/public/b6183cc623ef",
+        "opencortex://eval_qasper_clean/resources/public/03360784093c",
+        "opencortex://eval_qasper_clean/resources/public/2b4155f4cf3b",
+        "opencortex://eval_qasper_clean/resources/public/ed9d7b1a1a01",
+        "opencortex://eval_qasper_clean/resources/public/e71885d386fb",
+        "opencortex://eval_qasper_clean/resources/public/2b39a494493a",
+        "opencortex://eval_qasper_clean/resources/public/5a6f4b655a1d"
+      ],
+      "oc_prediction": "They build a computational model to detect dogmatic language in social media content using a novel corpus annotated with dogmatism scores. The model employs a neural sequence labeling approach with adversarial learning to handle noisy crowd annotations, integrating Bi-LSTMs and a worker discriminator for robustness.",
+      "oc_prompt_tokens": 2477,
+      "bl_prediction": "They build a logistic regression model to predict dogmatism in comments, using features such as unigram bag-of-words (BOW), sentiment signals (SENT), and linguistic features (LING) derived from psychological theories and LIWC categories.",
+      "baseline_prompt_tokens": 8125,
+      "raw_baseline_tokens": 8048,
+      "oc_f1": 0.0,
+      "bl_f1": 0.125,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What accuracy does the proposed system achieve?",
+      "answer": "F1 scores of 85.99 on the DL-PS data,  75.15 on the EC-MT data and 71.53 on the EC-UQ data ",
+      "category": "qasper",
+      "expected_uris": [],
+      "latency_ms": 5520.290624932386,
+      "retrieved_uris": [
+        "opencortex://eval_qasper_clean/resources/public/c349294b5856",
+        "opencortex://eval_qasper_clean/resources/public/7f834d289491",
+        "opencortex://eval_qasper_clean/resources/public/01fc4d9f6f8a",
+        "opencortex://eval_qasper_clean/resources/public/dde5cae5b15a",
+        "opencortex://eval_qasper_clean/resources/public/34a1717099e9",
+        "opencortex://eval_qasper_clean/resources/public/79511f33b35a",
+        "opencortex://eval_qasper_clean/resources/public/f9b3e3f5dc6f",
+        "opencortex://eval_qasper_clean/resources/public/97172407babd"
+      ],
+      "oc_prediction": "The provided context does not specify a numerical accuracy value for the proposed system (ALCrowd). It reports F1 score improvements of +1.08 to +2.38 over LSTM-CRF with statistical significance (p < 1e-5), but no overall accuracy percentage is given. Therefore, the exact accuracy cannot be determined from the text.",
+      "oc_prompt_tokens": 2090,
+      "bl_prediction": "The paper does not provide a single overall accuracy value for the proposed system. Instead, it reports F1 scores for the proposed system (ALCrowd) on different datasets: it achieves +1.08 F1 improvement on DL-PS, +1.24 on EC-MT, and +2.38 on EC-UQ compared to the LSTM-CRF baseline. Specific F1 scores for ALCrowd are given in Tables 2 and 3, but exact values are not stated in the provided text.",
+      "baseline_prompt_tokens": 10801,
+      "raw_baseline_tokens": 10721,
+      "oc_f1": 0.06896551724137931,
+      "bl_f1": 0.21333333333333335,
+      "oc_jscore": 0.0,
+      "bl_jscore": 0.0
+    }
+  ]
+}

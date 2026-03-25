@@ -1,0 +1,145 @@
+[14:08:29] Mode: memory | Run ID: eval_memory_6bd9b4cc
+[14:08:30] Isolated collection: bench_a80ad6d1
+[14:08:30] Ingesting dataset...
+[17:20:07]   Ingested 2058/2058 (0 errors)
+[17:20:08] Evaluating 2061 QA items (top_k=10)...
+[17:22:22]   Progress: 25/2061
+[17:25:14]   Progress: 50/2061
+[17:27:56]   Progress: 75/2061
+[17:30:03]   Progress: 100/2061
+[17:32:25]   Progress: 125/2061
+[17:34:56]   Progress: 150/2061
+[17:37:11]   Progress: 175/2061
+[17:39:16]   Progress: 200/2061
+[17:40:54]   Progress: 225/2061
+[17:42:27]   Progress: 250/2061
+[17:44:17]   Progress: 275/2061
+[17:46:18]   Progress: 300/2061
+[17:48:02]   Progress: 325/2061
+[17:49:55]   Progress: 350/2061
+[17:51:51]   Progress: 375/2061
+[17:53:36]   Progress: 400/2061
+[17:55:24]   Progress: 425/2061
+[17:57:41]   Progress: 450/2061
+[17:59:23]   Progress: 475/2061
+[18:01:44]   Progress: 500/2061
+[18:03:36]   Progress: 525/2061
+[18:05:36]   Progress: 550/2061
+[18:08:32]   Progress: 575/2061
+[18:10:37]   Progress: 600/2061
+[18:12:07]   Progress: 625/2061
+[18:14:15]   Progress: 650/2061
+[18:16:32]   Progress: 675/2061
+[18:18:38]   Progress: 700/2061
+[18:20:31]   Progress: 725/2061
+[18:22:21]   Progress: 750/2061
+[18:24:04]   Progress: 775/2061
+[18:25:46]   Progress: 800/2061
+[18:27:57]   Progress: 825/2061
+[18:29:43]   Progress: 850/2061
+[18:31:22]   Progress: 875/2061
+[18:33:00]   Progress: 900/2061
+[18:34:33]   Progress: 925/2061
+[18:36:31]   Progress: 950/2061
+[18:38:42]   Progress: 975/2061
+[18:40:38]   Progress: 1000/2061
+[18:42:23]   Progress: 1025/2061
+[18:44:16]   Progress: 1050/2061
+[18:45:59]   Progress: 1075/2061
+[18:47:44]   Progress: 1100/2061
+[18:49:35]   Progress: 1125/2061
+[18:51:50]   Progress: 1150/2061
+[18:53:49]   Progress: 1175/2061
+[18:55:59]   Progress: 1200/2061
+[18:57:43]   Progress: 1225/2061
+[18:59:26]   Progress: 1250/2061
+[19:01:28]   Progress: 1275/2061
+[19:03:04]   Progress: 1300/2061
+[19:05:07]   Progress: 1325/2061
+[19:24:40]   Progress: 1350/2061
+[20:15:17]   Progress: 1375/2061
+[20:17:28]   Progress: 1400/2061
+[20:19:07]   Progress: 1425/2061
+[20:20:57]   Progress: 1450/2061
+[20:23:14]   Progress: 1475/2061
+[21:13:00]   Progress: 1500/2061
+[22:25:35]   Progress: 1525/2061
+[23:42:54]   Progress: 1550/2061
+[01:00:54]   Progress: 1575/2061
+[02:50:08]   Progress: 1600/2061
+[03:52:15]   Progress: 1625/2061
+[03:53:54]   Progress: 1650/2061
+[03:55:33]   Progress: 1675/2061
+[03:57:17]   Progress: 1700/2061
+[03:59:02]   Progress: 1725/2061
+[04:48:09]   Progress: 1750/2061
+[06:15:31]   Progress: 1775/2061
+[07:23:54]   Progress: 1800/2061
+[07:25:42]   Progress: 1825/2061
+[08:24:25]   Progress: 1850/2061
+[08:25:47]   Progress: 1875/2061
+[08:59:14]   Progress: 1900/2061
+[09:46:30]   Progress: 1925/2061
+[09:51:15]   Progress: 1950/2061
+[09:52:39]   Progress: 1975/2061
+[09:54:00]   Progress: 2000/2061
+[09:55:32]   Progress: 2025/2061
+[09:56:54]   Progress: 2050/2061
+[09:57:34]   Progress: 2061/2061
+
+============================================================
+  OpenCortex Unified Eval — memory mode (memory)
+============================================================
+
+--- Retrieval Quality (n=1641) ---
+               Recall@1   Recall@3   Recall@5      MRR
+     Overall      0.125      0.201      0.249    0.177
+anti_stereotypical_pref      0.085      0.179      0.261    0.153
+health_and_medical_conditions      0.036      0.072      0.100    0.058
+neutral_preferences      0.101      0.200      0.242    0.169
+sensitive_info      0.473      0.484      0.484    0.481
+stereotypical_pref      0.089      0.192      0.245    0.155
+therapy_background      0.083      0.165      0.216    0.142
+
+============================================================
+          J-Score (LLM-as-Judge) — Primary Metric           
+------------------------------------------------------------
+Category                 Baseline   OpenCortex    Delta
+------------------------------------------------------------
+anti_stereotypical_pref     0.4587       0.4640  +0.0053
+ask_to_forget               0.619       0.6214  +0.0024
+health_and_medical_conditions     0.7229       0.6787  -0.0442
+neutral_preferences        0.6479       0.6676  +0.0197
+sensitive_info             0.3152       0.4837  +0.1685
+stereotypical_pref         0.4554       0.4821  +0.0267
+therapy_background         0.7638       0.7441  -0.0197
+------------------------------------------------------------
+Overall (excl. 5)          0.5803       0.5953  +0.0150
+============================================================
+
+============================================================
+                      QA Accuracy (F1)                      
+------------------------------------------------------------
+Category                 Baseline   OpenCortex    Delta
+------------------------------------------------------------
+anti_stereotypical_pref     0.0439       0.0460  +0.0021
+ask_to_forget              0.0388       0.0432  +0.0044
+health_and_medical_conditions      0.054       0.0505  -0.0035
+neutral_preferences        0.0393       0.0477  +0.0084
+sensitive_info             0.0723       0.0857  +0.0134
+stereotypical_pref         0.0447       0.0425  -0.0022
+therapy_background         0.0284       0.0225  -0.0059
+------------------------------------------------------------
+Overall (excl. 5)          0.0440       0.0465  +0.0025
+  * Category 5 excluded from overall (adversarial)
+============================================================
+
+--- Token Reduction (budget: 32000 tokens) ---
+  Baseline avg:  32,073 tokens (raw: 37,553, truncated)
+  OpenCortex avg: 1,309 tokens
+  Reduction:      95.9%
+
+--- Recall Latency (n=2061) ---
+  p50: 9927ms   p95: 26493ms   p99: 66846ms
+
+[09:57:34] Report saved to docs/benchmark/memory-eval_memory_6bd9b4cc.json

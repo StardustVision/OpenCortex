@@ -1,0 +1,464 @@
+{
+  "mode": "memory",
+  "dataset": "memory",
+  "retrieval": {
+    "recall@1": 0.5,
+    "precision@1": 0.5,
+    "hit_rate@1": 0.5,
+    "recall@3": 0.7,
+    "precision@3": 0.2333,
+    "hit_rate@3": 0.7,
+    "recall@5": 1.0,
+    "precision@5": 0.2,
+    "hit_rate@5": 1.0,
+    "mrr": 0.675,
+    "evaluated_count": 10,
+    "skipped_no_ground_truth": 0,
+    "by_category": {
+      "anti_stereotypical_pref": {
+        "recall@1": 1.0,
+        "precision@1": 1.0,
+        "hit_rate@1": 1.0,
+        "recall@3": 1.0,
+        "precision@3": 0.3333,
+        "hit_rate@3": 1.0,
+        "recall@5": 1.0,
+        "precision@5": 0.2,
+        "hit_rate@5": 1.0,
+        "mrr": 1.0,
+        "count": 1.0
+      },
+      "stereotypical_pref": {
+        "recall@1": 0.5,
+        "precision@1": 0.5,
+        "hit_rate@1": 0.5,
+        "recall@3": 1.0,
+        "precision@3": 0.3333,
+        "hit_rate@3": 1.0,
+        "recall@5": 1.0,
+        "precision@5": 0.2,
+        "hit_rate@5": 1.0,
+        "mrr": 0.75,
+        "count": 2.0
+      },
+      "ask_to_forget": {
+        "recall@1": 0.4,
+        "precision@1": 0.4,
+        "hit_rate@1": 0.4,
+        "recall@3": 0.6,
+        "precision@3": 0.2,
+        "hit_rate@3": 0.6,
+        "recall@5": 1.0,
+        "precision@5": 0.2,
+        "hit_rate@5": 1.0,
+        "mrr": 0.6,
+        "count": 5.0
+      },
+      "health_and_medical_conditions": {
+        "recall@1": 0.5,
+        "precision@1": 0.5,
+        "hit_rate@1": 0.5,
+        "recall@3": 0.5,
+        "precision@3": 0.1667,
+        "hit_rate@3": 0.5,
+        "recall@5": 1.0,
+        "precision@5": 0.2,
+        "hit_rate@5": 1.0,
+        "mrr": 0.625,
+        "count": 2.0
+      }
+    }
+  },
+  "accuracy": {
+    "f1": {
+      "overall": 0.0842,
+      "by_category": {
+        "anti_stereotypical_pref": {
+          "f1": 0.0,
+          "n": 1
+        },
+        "stereotypical_pref": {
+          "f1": 0.1276,
+          "n": 2
+        },
+        "ask_to_forget": {
+          "f1": 0.0811,
+          "n": 5
+        },
+        "health_and_medical_conditions": {
+          "f1": 0.0905,
+          "n": 2
+        }
+      },
+      "excluded_categories": [
+        "5"
+      ]
+    },
+    "baseline_f1": 0.0726,
+    "baseline_by_category": {
+      "anti_stereotypical_pref": {
+        "f1": 0.0,
+        "n": 1
+      },
+      "stereotypical_pref": {
+        "f1": 0.1056,
+        "n": 2
+      },
+      "ask_to_forget": {
+        "f1": 0.073,
+        "n": 5
+      },
+      "health_and_medical_conditions": {
+        "f1": 0.0751,
+        "n": 2
+      }
+    },
+    "delta_f1": "+0.0115",
+    "jscore": {
+      "overall": 0.5,
+      "by_category": {
+        "anti_stereotypical_pref": {
+          "jscore": 0.0,
+          "n": 1
+        },
+        "stereotypical_pref": {
+          "jscore": 1.0,
+          "n": 2
+        },
+        "ask_to_forget": {
+          "jscore": 0.2,
+          "n": 5
+        },
+        "health_and_medical_conditions": {
+          "jscore": 1.0,
+          "n": 2
+        }
+      },
+      "baseline_overall": 0.7,
+      "baseline_by_category": {
+        "anti_stereotypical_pref": {
+          "jscore": 0.0,
+          "n": 1
+        },
+        "stereotypical_pref": {
+          "jscore": 1.0,
+          "n": 2
+        },
+        "ask_to_forget": {
+          "jscore": 0.6,
+          "n": 5
+        },
+        "health_and_medical_conditions": {
+          "jscore": 1.0,
+          "n": 2
+        }
+      },
+      "delta": "-0.2000"
+    }
+  },
+  "token_reduction": {
+    "baseline_avg_tokens": 32062,
+    "oc_avg_tokens": 209,
+    "baseline_total_tokens": 320622,
+    "oc_total_tokens": 2092,
+    "reduction_pct": 99.3,
+    "raw_baseline_avg_tokens": 37553,
+    "truncation_applied": true,
+    "max_context_tokens": 32000
+  },
+  "latency": {
+    "p50_ms": 4157.1,
+    "p95_ms": 6300.8,
+    "p99_ms": 6300.9,
+    "mean_ms": 3893.9,
+    "min_ms": 1046.9,
+    "max_ms": 6300.9,
+    "count": 10
+  },
+  "metadata": {
+    "timestamp": "2026-03-23T09:47:15.126856+00:00",
+    "run_id": "eval_memory_7e262fb6",
+    "llm_model": "gpt-5.4-nano",
+    "server": "http://127.0.0.1:8921",
+    "dataset_path": "benchmarks/datasets/personamem/data.json",
+    "top_k": 10,
+    "max_context_tokens": 32000,
+    "concurrency": 5,
+    "total_qa": 10,
+    "enable_llm_judge": false,
+    "jscore_enabled": true,
+    "seed": 42
+  },
+  "per_query": [
+    {
+      "question": "Can you suggest some thought-provoking audio shows I could listen to during my commute that would really make me think and learn something new?",
+      "answer": "You could try ‘The Daily’ for current events, ‘Stuff You Should Know’ for a bit of general knowledge, or ‘99% Invisible’ for fascinating design stories. They’re all great options to make your commute thought‑provoking without being too heavy.",
+      "category": "anti_stereotypical_pref",
+      "expected_uris": [
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Subscribes_to_a_podcast_on_astrophysics"
+      ],
+      "latency_ms": 6300.90425000526,
+      "retrieved_uris": [
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Subscribes_to_a_podcast_on_astrophysics",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Enjoys_diner-style_breakf_30306742",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Occasional_migraine_headaches_linked_to_s_972869e3",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Reads_crime_mystery_novel_c9633de2",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Struggled_to_find_LGBTQ_f_436d3098",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Has_lactose_intolerance_d_d18ccf3e"
+      ],
+      "oc_prediction": "Astrophysics podcasts: theoretical deep dives",
+      "oc_prompt_tokens": 209,
+      "bl_prediction": "Astrophysics podcasts, science documentaries, TED.",
+      "baseline_prompt_tokens": 32070,
+      "raw_baseline_tokens": 37553,
+      "oc_f1": 0.0,
+      "bl_f1": 0.0,
+      "oc_jscore": 0.0,
+      "bl_jscore": 0.0
+    },
+    {
+      "question": "What are some elegant ways to add a touch of sophistication to an otherwise simple outfit for a special evening out?",
+      "answer": "You could elevate a simple evening look by draping a fine silk scarf over your shoulders or loosely knotting it at the neck for a touch of understated elegance. Choose a luxurious fabric in rich jewel tones or a subtle print, and let it complement — rather than overpower — your outfit.",
+      "category": "stereotypical_pref",
+      "expected_uris": [
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Appreciates_fine_silk_scarves_as_accessories"
+      ],
+      "latency_ms": 6300.700582913123,
+      "retrieved_uris": [
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Subscribes_to_a_podcast_on_astrophysics",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Appreciates_fine_silk_scarves_as_accessories",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Occasional_migraine_headaches_linked_to_s_972869e3",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Struggled_to_find_LGBTQ_f_436d3098",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Owns_multiple_pairs_of_football_boots",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Mild_nearsightedness_requ_ce5523be",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Reads_crime_mystery_novel_c9633de2"
+      ],
+      "oc_prediction": "Silk scarf, polished boots, subtle elegance.",
+      "oc_prompt_tokens": 202,
+      "bl_prediction": "Add a silk scarf, statement jewelry.",
+      "baseline_prompt_tokens": 32061,
+      "raw_baseline_tokens": 37553,
+      "oc_f1": 0.1568627450980392,
+      "bl_f1": 0.07999999999999999,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What are some effective ways to find and connect with mentors who understand both the unique challenges of my industry and my personal values?",
+      "answer": "You might look for mentors through professional associations within your industry, such as trade shows or specialized networking groups. These spaces often attract people with similar business goals and challenges, making it easier to build trust and share industry-specific insights.",
+      "category": "ask_to_forget",
+      "expected_uris": [
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Struggled_to_find_LGBTQ_f_436d3098"
+      ],
+      "latency_ms": 6299.169959034771,
+      "retrieved_uris": [
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Struggled_to_find_LGBTQ_f_436d3098",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Subscribes_to_a_podcast_on_astrophysics",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Enjoys_diner-style_breakf_30306742",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Owns_multiple_pairs_of_football_boots",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Occasional_migraine_headaches_linked_to_s_972869e3",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Appreciates_fine_silk_scarves_as_accessories"
+      ],
+      "oc_prediction": "Seek industry mentors with shared values.",
+      "oc_prompt_tokens": 192,
+      "bl_prediction": "Attend industry mixers; seek niche communities.",
+      "baseline_prompt_tokens": 32069,
+      "raw_baseline_tokens": 37553,
+      "oc_f1": 0.13636363636363635,
+      "bl_f1": 0.045454545454545456,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What are some good ways to avoid feeling drained after spending hours working on my laptop?",
+      "answer": "Since your occasional migraines stem from screen fatigue, it may help to follow the 20-20-20 rule—every 20 minutes, look at something 20 feet away for 20 seconds—and schedule short breaks for light stretching or yoga. Lowering screen brightness, using blue-light filtering, and spacing your research sessions throughout the day can also reduce strain. An ergonomic setup with proper monitor height can make a noticeable difference over time.",
+      "category": "health_and_medical_conditions",
+      "expected_uris": [
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Occasional_migraine_headaches_linked_to_s_972869e3"
+      ],
+      "latency_ms": 6300.452082999982,
+      "retrieved_uris": [
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Occasional_migraine_headaches_linked_to_s_972869e3",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Subscribes_to_a_podcast_on_astrophysics",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Struggled_to_find_LGBTQ_f_436d3098",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Enjoys_diner-style_breakf_30306742",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Has_lactose_intolerance_d_d18ccf3e",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Reads_crime_mystery_novel_c9633de2"
+      ],
+      "oc_prediction": "Try breaks, reduce screen brightness.",
+      "oc_prompt_tokens": 193,
+      "bl_prediction": "Reduce screen fatigue, take breaks.",
+      "baseline_prompt_tokens": 32054,
+      "raw_baseline_tokens": 37553,
+      "oc_f1": 0.11940298507462686,
+      "bl_f1": 0.11940298507462686,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "Where’s the best spot to sit in a lecture hall so I can read the slides and see the board without straining my eyes?",
+      "answer": "To clearly see slides and the board, aim for a seat about one-third back from the front and near the center—close enough to follow visuals without leaning forward but far enough for a comfortable overall view.",
+      "category": "ask_to_forget",
+      "expected_uris": [
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Mild_nearsightedness_requ_ce5523be"
+      ],
+      "latency_ms": 6294.111791998148,
+      "retrieved_uris": [
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Subscribes_to_a_podcast_on_astrophysics",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Enjoys_diner-style_breakf_30306742",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Mild_scoliosis_diagnosed_in_adolescence",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Mild_nearsightedness_requ_ce5523be",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Struggled_to_find_LGBTQ_f_436d3098",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Has_lactose_intolerance_d_d18ccf3e",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Occasional_migraine_headaches_linked_to_s_972869e3",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Reads_crime_mystery_novel_c9633de2"
+      ],
+      "oc_prediction": "Front-row center; minimal glare, best viewing.",
+      "oc_prompt_tokens": 240,
+      "bl_prediction": "Front row center aisle.",
+      "baseline_prompt_tokens": 32061,
+      "raw_baseline_tokens": 37553,
+      "oc_f1": 0.0,
+      "bl_f1": 0.0606060606060606,
+      "oc_jscore": 0.0,
+      "bl_jscore": 0.0
+    },
+    {
+      "question": "Where along the scenic highway can I stop for a classic morning meal before continuing my road trip?",
+      "answer": "If you’re taking the Columbia River Gorge Scenic Highway, you could stop at Sugarpine Drive-In near Troutdale – they serve fresh pastries, seasonal fruit bowls, and locally roasted coffee, perfect for a light and energizing start to the day.",
+      "category": "ask_to_forget",
+      "expected_uris": [
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Enjoys_diner-style_breakf_30306742"
+      ],
+      "latency_ms": 2020.0219580437988,
+      "retrieved_uris": [
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Subscribes_to_a_podcast_on_astrophysics",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Enjoys_diner-style_breakf_30306742",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Has_lactose_intolerance_d_d18ccf3e",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Occasional_migraine_headaches_linked_to_s_972869e3",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Appreciates_fine_silk_scarves_as_accessories",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Reads_crime_mystery_novel_c9633de2",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Mild_nearsightedness_requ_ce5523be"
+      ],
+      "oc_prediction": "Near a quaint roadside diner stop.",
+      "oc_prompt_tokens": 197,
+      "bl_prediction": "Midway rest stop near scenic overlook.",
+      "baseline_prompt_tokens": 32057,
+      "raw_baseline_tokens": 37553,
+      "oc_f1": 0.10256410256410256,
+      "bl_f1": 0.15,
+      "oc_jscore": 0.0,
+      "bl_jscore": 0.0
+    },
+    {
+      "question": "Could you recommend some immersive crime mystery TV shows filled with clever twists that will keep me guessing until the very end?",
+      "answer": "If you’re after something packed with twists and turns, try *Broadchurch* or *The Sinner*. Both shows offer suspenseful storylines, layered characters, and clever reveals that will keep you guessing until the very end.",
+      "category": "ask_to_forget",
+      "expected_uris": [
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Reads_crime_mystery_novel_c9633de2"
+      ],
+      "latency_ms": 1371.138458023779,
+      "retrieved_uris": [
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Reads_crime_mystery_novel_c9633de2",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Enjoys_diner-style_breakf_30306742",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Subscribes_to_a_podcast_on_astrophysics",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Has_lactose_intolerance_d_d18ccf3e",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Occasional_migraine_headaches_linked_to_s_972869e3",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Mild_nearsightedness_requ_ce5523be",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Mild_scoliosis_diagnosed_in_adolescence"
+      ],
+      "oc_prediction": "Try: Sharp Objects, Dark, Broadchurch",
+      "oc_prompt_tokens": 204,
+      "bl_prediction": "Sharp Objects, Broadchurch, True Detective.",
+      "baseline_prompt_tokens": 32066,
+      "raw_baseline_tokens": 37553,
+      "oc_f1": 0.1176470588235294,
+      "bl_f1": 0.0588235294117647,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What are some good stretches to help with back stiffness after sitting all day?",
+      "answer": "Since you have mild scoliosis, you might find that gentle, symmetrical stretches work best to ease stiffness without straining your back. Consider seated spinal rotations, cat-cow movements, and supported hamstring stretches, focusing on slow, mindful breathing as you work through them. Taking a few breaks during the day to stand and stretch can also help you feel more comfortable after long periods of sitting.",
+      "category": "health_and_medical_conditions",
+      "expected_uris": [
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Mild_scoliosis_diagnosed_in_adolescence"
+      ],
+      "latency_ms": 1046.8565000919625,
+      "retrieved_uris": [
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Occasional_migraine_headaches_linked_to_s_972869e3",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Enjoys_diner-style_breakf_30306742",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Subscribes_to_a_podcast_on_astrophysics",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Mild_scoliosis_diagnosed_in_adolescence",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Struggled_to_find_LGBTQ_f_436d3098",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Has_lactose_intolerance_d_d18ccf3e",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Mild_nearsightedness_requ_ce5523be"
+      ],
+      "oc_prediction": "Hip flexor stretch, hamstring stretch.",
+      "oc_prompt_tokens": 210,
+      "bl_prediction": "Hip flexor, hamstring, thoracic twists.",
+      "baseline_prompt_tokens": 32050,
+      "raw_baseline_tokens": 37553,
+      "oc_f1": 0.06153846153846154,
+      "bl_f1": 0.03076923076923077,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What are some tasty brunch dishes I could prepare for a weekend cabin trip that would work well for all of my friends’ dietary needs?",
+      "answer": "You could prepare a hearty vegetable frittata using free-range eggs, seasonal greens, and sweet peppers—perfect for a wholesome brunch that suits vegetarians while still being filling for everyone. Serve it alongside crusty bread and a fresh herb salad for balance.",
+      "category": "ask_to_forget",
+      "expected_uris": [
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Has_lactose_intolerance_d_d18ccf3e"
+      ],
+      "latency_ms": 1663.5370419826359,
+      "retrieved_uris": [
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Subscribes_to_a_podcast_on_astrophysics",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Owns_multiple_pairs_of_football_boots",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Enjoys_diner-style_breakf_30306742",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Has_lactose_intolerance_d_d18ccf3e",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Occasional_migraine_headaches_linked_to_s_972869e3",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Mild_scoliosis_diagnosed_in_adolescence",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Appreciates_fine_silk_scarves_as_accessories"
+      ],
+      "oc_prediction": "Eggs-and-avocado toast, gluten-free granola parfaits",
+      "oc_prompt_tokens": 190,
+      "bl_prediction": "Veggie frittata, avocado toast, fruit-parfait.",
+      "baseline_prompt_tokens": 32067,
+      "raw_baseline_tokens": 37553,
+      "oc_f1": 0.048780487804878044,
+      "bl_f1": 0.049999999999999996,
+      "oc_jscore": 0.0,
+      "bl_jscore": 1.0
+    },
+    {
+      "question": "What’s the best way to store and look after different types of sports footwear so they stay in top condition for as long as possible?",
+      "answer": "Mate, since you’ve got a few pairs of boots, the key is to rotate them so they get proper time to dry out between sessions. Give them a quick clean after each game, stuff them with newspaper to pull out the moisture, and store them in a cool, dry spot — boot bags work great for keeping the studs from scuffing other gear.",
+      "category": "stereotypical_pref",
+      "expected_uris": [
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Owns_multiple_pairs_of_football_boots"
+      ],
+      "latency_ms": 1342.0004160143435,
+      "retrieved_uris": [
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Owns_multiple_pairs_of_football_boots",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Enjoys_diner-style_breakf_30306742",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Appreciates_fine_silk_scarves_as_accessories",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Struggled_to_find_LGBTQ_f_436d3098",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Subscribes_to_a_podcast_on_astrophysics",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Has_lactose_intolerance_d_d18ccf3e",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Mild_scoliosis_diagnosed_in_adolescence",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Mild_nearsightedness_requ_ce5523be",
+        "opencortex://eval_memory_7e262fb6/eval_runner/memories/events/Do_not_remember_Reads_crime_mystery_novel_c9633de2"
+      ],
+      "oc_prediction": "Air-dry, rotate, and store boots properly.",
+      "oc_prompt_tokens": 255,
+      "bl_prediction": "Clean, dry, rotate, store ventilated.",
+      "baseline_prompt_tokens": 32067,
+      "raw_baseline_tokens": 37553,
+      "oc_f1": 0.0983606557377049,
+      "bl_f1": 0.13114754098360656,
+      "oc_jscore": 1.0,
+      "bl_jscore": 1.0
+    }
+  ]
+}
