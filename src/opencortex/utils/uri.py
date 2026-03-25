@@ -56,7 +56,15 @@ class CortexURI:
     SHARED_SUB_SCOPES = {"resources", "shared", "agent", "queue", "temp"}
 
     # Sub-scopes that exist under {team_id}/{user_id}/
-    PRIVATE_SUB_SCOPES = {"memories", "staging", "reinforcement", "feedback", "workspace", "session"}
+    # NOTE: user_id values MUST NOT equal any name in SHARED_SUB_SCOPES, because
+    # _parse uses SHARED_SUB_SCOPES membership to distinguish shared paths from
+    # private paths. A uid equal to "resources", "shared", "agent", "queue", or
+    # "temp" would be misidentified as a shared URI. Token issuance should enforce
+    # this constraint at the identity layer.
+    PRIVATE_SUB_SCOPES = {
+        "memories", "staging", "reinforcement", "feedback",
+        "workspace", "session", "trace", "knowledge",
+    }
 
     # All recognized sub-scopes (for validation of the path component after tenant_id or user_id)
     ALL_SUB_SCOPES = SHARED_SUB_SCOPES | PRIVATE_SUB_SCOPES
@@ -97,6 +105,10 @@ class CortexURI:
         tenant_id = parts[0]
 
         # Determine sub_scope and user_id
+        # Disambiguation rule: if parts[1] is in SHARED_SUB_SCOPES it is a
+        # team-level path; otherwise parts[1] is treated as user_id (private).
+        # Constraint: user_id values must not equal any SHARED_SUB_SCOPES name
+        # (see class-level note on PRIVATE_SUB_SCOPES).
         sub_scope = ""
         user_id = ""
         if len(parts) > 1:

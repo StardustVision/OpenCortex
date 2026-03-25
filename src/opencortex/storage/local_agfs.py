@@ -71,8 +71,8 @@ class LocalAGFS:
     def _resolve(self, path: str) -> Path:
         """Translate a /local/<...> path to an absolute filesystem path.
 
-        /local/user/memories  ->  {data_root}/user/memories
-        /local               ->  {data_root}
+        /local/t1/alice/memories  ->  {data_root}/t1/alice/memories
+        /local                    ->  {data_root}
         """
         if path.startswith("/local"):
             remainder = path[len("/local"):]

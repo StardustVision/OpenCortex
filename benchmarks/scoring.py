@@ -177,5 +177,7 @@ async def jscore_judge(
         ground_truth=ground_truth,
         prediction=prediction,
     )
-    response = await llm_complete_fn(user_prompt, 32, system=JSCORE_SYSTEM, temperature=0)
+    response = await llm_complete_fn(
+        user_prompt, 512, system=JSCORE_SYSTEM, temperature=0
+    )
     return _parse_jscore_label(response)

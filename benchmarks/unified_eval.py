@@ -67,8 +67,7 @@ from benchmarks.scoring import (
 # ---------------------------------------------------------------------------
 # LoCoMo / default: concise 5-6 word answers (Mem0-aligned)
 ANSWER_PROMPT = (
-    "Based on the above context, answer in 5-6 words.\n\n"
-    "Question: {question}\nAnswer:"
+    "Based on the above context, answer in 5-6 words.\n\nQuestion: {question}\nAnswer:"
 )
 ANSWER_PROMPT_CAT5 = (
     "Based on the above context, answer the question.\n\n"
@@ -130,22 +129,28 @@ def _get_adapter(mode: str, dataset: str = ""):
     # Dataset-specific adapters
     if dataset == "hotpotqa":
         from benchmarks.adapters.hotpotqa import HotPotQAAdapter
+
         return HotPotQAAdapter()
 
     # Default mode-based routing
     if mode == "memory":
         from benchmarks.adapters.memory import MemoryAdapter
+
         return MemoryAdapter()
     elif mode == "conversation":
         from benchmarks.adapters.conversation import ConversationAdapter
+
         return ConversationAdapter()
     elif mode == "document":
         from benchmarks.adapters.document import DocumentAdapter
+
         return DocumentAdapter()
     raise ValueError(f"Unknown mode: {mode}")
 
 
-def _build_prompt(context: str, question: str, category: str = "", dataset: str = "") -> str:
+def _build_prompt(
+    context: str, question: str, category: str = "", dataset: str = ""
+) -> str:
     """Build LLM prompt from retrieved context and question.
 
     Uses dataset-specific prompt when available, falls back to LoCoMo defaults.
@@ -167,16 +172,24 @@ async def run_mode(
     """Run evaluation for a single mode. Returns the report dict."""
     # Tenant isolation
     run_id = args.run_id or f"eval_{mode}_{uuid4().hex[:8]}"
+    collection_id = f"bench_{uuid4().hex[:8]}"
     data_root = args.data_root
-    jwt_token = args.token or generate_token(run_id, "eval_runner", ensure_secret(data_root))
+    jwt_token = args.token or generate_token(
+        run_id, "eval_runner", ensure_secret(data_root)
+    )
 
     log(f"Mode: {mode} | Run ID: {run_id}")
 
-    # Init clients
-    oc = OCClient(args.server, jwt_token, timeout=120.0)
+    oc = OCClient(args.server, jwt_token, timeout=120.0, collection=collection_id)
+    await oc.create_collection(collection_id)
+    log(f"Isolated collection: {collection_id}")
+
     llm = LLMClient(
-        args.llm_base, args.llm_key, args.llm_model,
-        api_style=args.llm_api_style, no_thinking=args.no_thinking,
+        args.llm_base,
+        args.llm_key,
+        args.llm_model,
+        api_style=args.llm_api_style,
+        no_thinking=args.no_thinking,
     )
 
     try:
@@ -184,15 +197,21 @@ async def run_mode(
         adapter = _get_adapter(mode, args.dataset)
         dataset_path = args.data or _default_dataset_path(mode, args.dataset)
         if not dataset_path:
-            raise ValueError("--data is required (or use --mode all for default datasets)")
+            raise ValueError(
+                "--data is required (or use --mode all for default datasets)"
+            )
         adapter.load_dataset(dataset_path)
 
         # Phase 1: Ingest
         if not args.skip_ingest:
             log("Ingesting dataset...")
-            ingest_result = await adapter.ingest(oc, max_conv=args.max_conv, max_qa=args.max_qa)
-            log(f"  Ingested {ingest_result.ingested_items}/{ingest_result.total_items}"
-                f" ({len(ingest_result.errors)} errors)")
+            ingest_result = await adapter.ingest(
+                oc, max_conv=args.max_conv, max_qa=args.max_qa
+            )
+            log(
+                f"  Ingested {ingest_result.ingested_items}/{ingest_result.total_items}"
+                f" ({len(ingest_result.errors)} errors)"
+            )
             if ingest_result.errors:
                 for err in ingest_result.errors[:5]:
                     log(f"  ERROR: {err}")
@@ -225,13 +244,16 @@ async def run_mode(
                 results: List[Dict] = []
                 if not args.baseline_only:
                     try:
-                        results, latency_ms = await adapter.retrieve(oc, qa_item, args.top_k)
+                        results, latency_ms = await adapter.retrieve(
+                            oc, qa_item, args.top_k
+                        )
                     except Exception as e:
                         log(f"  Retrieve error: {e}")
                         results = []
                     record["latency_ms"] = latency_ms
                     retrieved_uris = [
-                        r.get("uri", "") for r in results
+                        r.get("uri", "")
+                        for r in results
                         if isinstance(r, dict) and r.get("uri")
                     ]
                     record["retrieved_uris"] = retrieved_uris
@@ -241,17 +263,23 @@ async def run_mode(
                     for r in results:
                         if isinstance(r, dict):
                             ctx_parts.append(
-                                r.get("content") or r.get("overview") or r.get("abstract", "")
+                                r.get("content")
+                                or r.get("overview")
+                                or r.get("abstract", "")
                             )
                         elif isinstance(r, str):
                             ctx_parts.append(r)
-                    oc_context = "\n\n---\n\n".join(ctx_parts) if ctx_parts else "(no results)"
+                    oc_context = (
+                        "\n\n---\n\n".join(ctx_parts) if ctx_parts else "(no results)"
+                    )
 
                 # OC path: LLM answer
                 oc_prediction = ""
                 oc_prompt = ""
                 if not args.baseline_only and oc_context:
-                    oc_prompt = _build_prompt(oc_context, qa_item.question, qa_item.category, args.dataset)
+                    oc_prompt = _build_prompt(
+                        oc_context, qa_item.question, qa_item.category, args.dataset
+                    )
                     try:
                         oc_prediction = await llm.complete(oc_prompt, max_tokens=512)
                     except Exception as e:
@@ -264,8 +292,15 @@ async def run_mode(
                 bl_prompt = ""
                 if not args.oc_only:
                     raw_context = adapter.get_baseline_context(qa_item)
-                    truncated_context = truncate_to_budget(raw_context, args.max_context_tokens)
-                    bl_prompt = _build_prompt(truncated_context, qa_item.question, qa_item.category, args.dataset)
+                    truncated_context = truncate_to_budget(
+                        raw_context, args.max_context_tokens
+                    )
+                    bl_prompt = _build_prompt(
+                        truncated_context,
+                        qa_item.question,
+                        qa_item.category,
+                        args.dataset,
+                    )
                     try:
                         bl_prediction = await llm.complete(bl_prompt, max_tokens=512)
                     except Exception as e:
@@ -290,7 +325,8 @@ async def run_mode(
                     # SP F1: retrieved titles vs gold titles
                     gold_titles = set(qa_item.meta.get("gold_titles", []))
                     retrieved_titles = {
-                        r.get("abstract", "") for r in results
+                        r.get("abstract", "")
+                        for r in results
                         if isinstance(r, dict) and r.get("abstract")
                     }
                     sp = supporting_fact_f1(retrieved_titles, gold_titles)
@@ -302,22 +338,34 @@ async def run_mode(
                 if args.enable_llm_judge:
                     if oc_prediction:
                         record["oc_judge"] = await llm_judge_score(
-                            oc_prediction, qa_item.answer, qa_item.question, llm.complete
+                            oc_prediction,
+                            qa_item.answer,
+                            qa_item.question,
+                            llm.complete,
                         )
                     if bl_prediction:
                         record["bl_judge"] = await llm_judge_score(
-                            bl_prediction, qa_item.answer, qa_item.question, llm.complete
+                            bl_prediction,
+                            qa_item.answer,
+                            qa_item.question,
+                            llm.complete,
                         )
 
                 # J-score (always-on for Cat 1-4, Mem0-aligned binary judge)
                 if not args.disable_jscore and cat != 5:
                     if oc_prediction:
                         record["oc_jscore"] = await jscore_judge(
-                            oc_prediction, qa_item.answer, qa_item.question, llm.complete
+                            oc_prediction,
+                            qa_item.answer,
+                            qa_item.question,
+                            llm.complete,
                         )
                     if bl_prediction:
                         record["bl_jscore"] = await jscore_judge(
-                            bl_prediction, qa_item.answer, qa_item.question, llm.complete
+                            bl_prediction,
+                            qa_item.answer,
+                            qa_item.question,
+                            llm.complete,
                         )
 
                 done_count += 1
@@ -327,19 +375,22 @@ async def run_mode(
                 return record
 
         records = await asyncio.gather(
-            *[eval_one(item) for item in qa_items], return_exceptions=True,
+            *[eval_one(item) for item in qa_items],
+            return_exceptions=True,
         )
         # Filter out exceptions, log them
         clean_records = []
         for i, r in enumerate(records):
             if isinstance(r, Exception):
                 log(f"  QA #{i} failed: {r}")
-                clean_records.append({
-                    "question": qa_items[i].question,
-                    "answer": qa_items[i].answer,
-                    "category": qa_items[i].category,
-                    "error": str(r),
-                })
+                clean_records.append(
+                    {
+                        "question": qa_items[i].question,
+                        "answer": qa_items[i].answer,
+                        "category": qa_items[i].category,
+                        "error": str(r),
+                    }
+                )
             else:
                 clean_records.append(r)
         records = clean_records
@@ -353,8 +404,16 @@ async def run_mode(
 
         # QA Accuracy — Category 5 (adversarial) excluded from overall per LoCoMo protocol
         EXCLUDE_CATS = {"5"}
-        oc_f1s = [r["oc_f1"] for r in records if "oc_f1" in r and r.get("category") not in EXCLUDE_CATS]
-        bl_f1s = [r["bl_f1"] for r in records if "bl_f1" in r and r.get("category") not in EXCLUDE_CATS]
+        oc_f1s = [
+            r["oc_f1"]
+            for r in records
+            if "oc_f1" in r and r.get("category") not in EXCLUDE_CATS
+        ]
+        bl_f1s = [
+            r["bl_f1"]
+            for r in records
+            if "bl_f1" in r and r.get("category") not in EXCLUDE_CATS
+        ]
 
         # Per-category F1 (all categories including Cat 5)
         oc_by_cat: Dict[str, List[float]] = {}
@@ -373,7 +432,10 @@ async def run_mode(
                 cat: {"f1": round(sum(s) / len(s), 4), "n": len(s)}
                 for cat, s in oc_by_cat.items()
             }
-            accuracy["f1"] = {"overall": round(oc_overall, 4), "by_category": oc_cat_agg}
+            accuracy["f1"] = {
+                "overall": round(oc_overall, 4),
+                "by_category": oc_cat_agg,
+            }
             accuracy["f1"]["excluded_categories"] = list(EXCLUDE_CATS)
         if bl_f1s:
             bl_overall = sum(bl_f1s) / len(bl_f1s)
@@ -445,14 +507,21 @@ async def run_mode(
 
         # Token reduction
         token_records = [
-            r for r in records
+            r
+            for r in records
             if "oc_prompt_tokens" in r and "baseline_prompt_tokens" in r
         ]
         token_metrics = compute_token_metrics(token_records)
         # Add raw baseline info
-        raw_tokens = [r.get("raw_baseline_tokens", 0) for r in records if "raw_baseline_tokens" in r]
+        raw_tokens = [
+            r.get("raw_baseline_tokens", 0)
+            for r in records
+            if "raw_baseline_tokens" in r
+        ]
         if raw_tokens:
-            token_metrics["raw_baseline_avg_tokens"] = round(sum(raw_tokens) / len(raw_tokens))
+            token_metrics["raw_baseline_avg_tokens"] = round(
+                sum(raw_tokens) / len(raw_tokens)
+            )
             token_metrics["truncation_applied"] = any(
                 r.get("raw_baseline_tokens", 0) > r.get("baseline_prompt_tokens", 0)
                 for r in records
@@ -498,17 +567,21 @@ async def run_mode(
         return report
 
     finally:
+        await oc.delete_collection(collection_id)
         await oc.close()
         await llm.close()
 
 
 async def run(args):
     """Main entry point."""
+
     def log(msg):
         ts = time.strftime("%H:%M:%S")
         print(f"[{ts}] {msg}", flush=True)
 
-    modes = ["memory", "conversation", "document"] if args.mode == "all" else [args.mode]
+    modes = (
+        ["memory", "conversation", "document"] if args.mode == "all" else [args.mode]
+    )
     reports = []
 
     for mode in modes:
@@ -519,12 +592,15 @@ async def run(args):
         # Write summary report for --mode all
         summary = {
             "mode": "all",
-            "modes": {r["mode"]: {
-                "retrieval": r.get("retrieval", {}),
-                "accuracy": r.get("accuracy", {}),
-                "token_reduction": r.get("token_reduction", {}),
-                "latency": r.get("latency", {}),
-            } for r in reports},
+            "modes": {
+                r["mode"]: {
+                    "retrieval": r.get("retrieval", {}),
+                    "accuracy": r.get("accuracy", {}),
+                    "token_reduction": r.get("token_reduction", {}),
+                    "latency": r.get("latency", {}),
+                }
+                for r in reports
+            },
             "metadata": {
                 "timestamp": reports[-1]["metadata"]["timestamp"],
                 "modes_run": [r["mode"] for r in reports],
@@ -544,35 +620,69 @@ def main():
     p = argparse.ArgumentParser(description="OpenCortex Unified Evaluation Framework")
 
     # Mode + dataset
-    p.add_argument("--mode", required=True, choices=["memory", "conversation", "document", "all"])
-    p.add_argument("--dataset", default="", help="Dataset name (personamem, locomo, longmemeval, qasper, longbench, cmrc, hotpotqa)")
+    p.add_argument(
+        "--mode", required=True, choices=["memory", "conversation", "document", "all"]
+    )
+    p.add_argument(
+        "--dataset",
+        default="",
+        help="Dataset name (personamem, locomo, longmemeval, qasper, longbench, cmrc, hotpotqa)",
+    )
     p.add_argument("--data", default="", help="Dataset file path")
 
     # Server
-    p.add_argument("--server", default="http://127.0.0.1:8921", help="OpenCortex server URL")
-    p.add_argument("--token", default="", help="JWT Bearer token (auto-generated if empty)")
-    p.add_argument("--data-root", default="./data", help="Server data_root for JWT generation")
+    p.add_argument(
+        "--server", default="http://127.0.0.1:8921", help="OpenCortex server URL"
+    )
+    p.add_argument(
+        "--token", default="", help="JWT Bearer token (auto-generated if empty)"
+    )
+    p.add_argument(
+        "--data-root", default="./data", help="Server data_root for JWT generation"
+    )
 
     # LLM
     p.add_argument("--llm-base", required=True, help="LLM API base URL")
     p.add_argument("--llm-key", required=True, help="LLM API key")
     p.add_argument("--llm-model", required=True, help="LLM model name")
-    p.add_argument("--llm-api-style", default="auto", choices=["auto", "openai", "anthropic"])
-    p.add_argument("--no-thinking", action="store_true", help="Disable LLM reasoning/thinking")
+    p.add_argument(
+        "--llm-api-style", default="auto", choices=["auto", "openai", "anthropic"]
+    )
+    p.add_argument(
+        "--no-thinking", action="store_true", help="Disable LLM reasoning/thinking"
+    )
 
     # Eval params
     p.add_argument("--top-k", type=int, default=10, help="Retrieval limit")
-    p.add_argument("--max-context-tokens", type=int, default=32000, help="Baseline prompt budget")
-    p.add_argument("--concurrency", type=int, default=5, help="Concurrent QA evaluations")
-    p.add_argument("--enable-llm-judge", action="store_true", help="Enable legacy LLM-as-Judge scoring (3-point scale)")
-    p.add_argument("--disable-jscore", action="store_true", help="Disable J-score (Mem0-aligned binary LLM judge)")
+    p.add_argument(
+        "--max-context-tokens", type=int, default=32000, help="Baseline prompt budget"
+    )
+    p.add_argument(
+        "--concurrency", type=int, default=5, help="Concurrent QA evaluations"
+    )
+    p.add_argument(
+        "--enable-llm-judge",
+        action="store_true",
+        help="Enable legacy LLM-as-Judge scoring (3-point scale)",
+    )
+    p.add_argument(
+        "--disable-jscore",
+        action="store_true",
+        help="Disable J-score (Mem0-aligned binary LLM judge)",
+    )
 
     # Run control
-    p.add_argument("--skip-ingest", action="store_true", help="Skip ingestion (reuse existing data)")
+    p.add_argument(
+        "--skip-ingest",
+        action="store_true",
+        help="Skip ingestion (reuse existing data)",
+    )
     p.add_argument("--oc-only", action="store_true", help="Skip baseline evaluation")
     p.add_argument("--baseline-only", action="store_true", help="Skip OC evaluation")
     p.add_argument("--max-qa", type=int, default=0, help="Limit QA count (0=all)")
-    p.add_argument("--max-conv", type=int, default=0, help="Limit conversation count (0=all)")
+    p.add_argument(
+        "--max-conv", type=int, default=0, help="Limit conversation count (0=all)"
+    )
     p.add_argument("--output", default="", help="Report output directory")
     p.add_argument("--run-id", default="", help="Reuse tenant from previous run")
     p.add_argument("--seed", type=int, default=42, help="Random seed")
