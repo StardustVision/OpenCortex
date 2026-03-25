@@ -295,13 +295,11 @@ class MemoryOrchestrator:
         Resolution order:
         1. If ``embedding_provider == "local"``, create a
            :class:`LocalEmbedder` using FastEmbed ONNX inference (BGE-M3).
-        2. If ``embedding_provider == "volcengine"``, create a
-           :class:`VolcengineDenseEmbedder` using config values.
-        3. If ``embedding_provider == "openai"``, create an
+        2. If ``embedding_provider == "openai"``, create an
            :class:`OpenAIDenseEmbedder` (works with any OpenAI-compatible API).
-        4. If nothing works, log a warning and return ``None``.
+        3. If nothing works, log a warning and return ``None``.
 
-        All embedders are wrapped with :class:`CachedEmbedder` for LRU caching.
+        All embedders are wrapped with BM25 sparse (hybrid search) then LRU cache.
 
         Returns:
             An :class:`EmbedderBase` instance, or ``None`` if creation fails.
@@ -360,10 +358,7 @@ class MemoryOrchestrator:
                     "(model=%s)",
                     model_name,
                 )
-                from opencortex.models.embedder.sparse import BM25SparseEmbedder
-                from opencortex.models.embedder.base import CompositeHybridEmbedder
-                composite = CompositeHybridEmbedder(embedder, BM25SparseEmbedder())
-                return self._wrap_with_cache(composite)
+                return self._wrap_with_cache(self._wrap_with_hybrid(embedder))
             except ImportError as exc:
                 logger.warning(
                     "[MemoryOrchestrator] Cannot create Volcengine embedder — "
@@ -415,10 +410,7 @@ class MemoryOrchestrator:
                     "(model=%s)",
                     model_name,
                 )
-                from opencortex.models.embedder.sparse import BM25SparseEmbedder
-                from opencortex.models.embedder.base import CompositeHybridEmbedder
-                composite = CompositeHybridEmbedder(embedder, BM25SparseEmbedder())
-                return self._wrap_with_cache(composite)
+                return self._wrap_with_cache(self._wrap_with_hybrid(embedder))
             except ImportError as exc:
                 logger.warning(
                     "[MemoryOrchestrator] Cannot create OpenAI embedder — "
@@ -481,13 +473,7 @@ class MemoryOrchestrator:
                 model_name, detected_dim,
             )
 
-            # Wrap with BM25 sparse for hybrid search
-            from opencortex.models.embedder.sparse import BM25SparseEmbedder
-            from opencortex.models.embedder.base import CompositeHybridEmbedder
-            hybrid = CompositeHybridEmbedder(embedder, BM25SparseEmbedder())
-
-            # Wrap with LRU cache
-            return self._wrap_with_cache(hybrid)
+            return self._wrap_with_cache(self._wrap_with_hybrid(embedder))
 
         except ImportError as exc:
             logger.warning(
@@ -502,6 +488,18 @@ class MemoryOrchestrator:
                 exc,
             )
             return None
+
+    def _wrap_with_hybrid(self, embedder):
+        """Wrap dense embedder with BM25 sparse for hybrid search.
+
+        No-op if embedder is already hybrid.
+        """
+        from opencortex.models.embedder.base import HybridEmbedderBase
+        if isinstance(embedder, HybridEmbedderBase):
+            return embedder
+        from opencortex.models.embedder.sparse import BM25SparseEmbedder
+        from opencortex.models.embedder.base import CompositeHybridEmbedder
+        return CompositeHybridEmbedder(embedder, BM25SparseEmbedder())
 
     def _wrap_with_cache(self, embedder: EmbedderBase) -> EmbedderBase:
         """Wrap an embedder with LRU cache."""
