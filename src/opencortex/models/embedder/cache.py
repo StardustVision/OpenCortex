@@ -82,6 +82,14 @@ class CachedEmbedder(EmbedderBase):
         self._inner.close()
 
     @property
+    def is_sparse(self) -> bool:
+        return self._inner.is_sparse
+
+    @property
+    def is_hybrid(self) -> bool:
+        return self._inner.is_hybrid
+
+    @property
     def stats(self) -> Dict[str, Any]:
         return {
             "cache_size": len(self._cache),
