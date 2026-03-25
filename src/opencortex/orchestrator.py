@@ -321,57 +321,11 @@ class MemoryOrchestrator:
             return self._create_local_embedder()
 
         if provider == "volcengine":
-            try:
-                from opencortex.models.embedder.volcengine_embedders import (
-                    VolcengineDenseEmbedder,
-                )
-
-                api_key = (
-                    self._config.embedding_api_key
-                    or os.environ.get("OPENCORTEX_EMBEDDING_API_KEY", "")
-                )
-                if not api_key:
-                    logger.warning(
-                        "[MemoryOrchestrator] embedding_provider='volcengine' but no "
-                        "api_key found in config or OPENCORTEX_EMBEDDING_API_KEY env var. "
-                        "Skipping auto-embedder creation."
-                    )
-                    return None
-
-                model_name = self._config.embedding_model
-                if not model_name:
-                    logger.warning(
-                        "[MemoryOrchestrator] embedding_provider='volcengine' but "
-                        "embedding_model is not set. Skipping auto-embedder creation."
-                    )
-                    return None
-
-                embedder = VolcengineDenseEmbedder(
-                    model_name=model_name,
-                    api_key=api_key,
-                    api_base=self._config.embedding_api_base
-                    or "https://ark.cn-beijing.volces.com/api/v3",
-                    dimension=self._config.embedding_dimension or None,
-                )
-                logger.info(
-                    "[MemoryOrchestrator] Auto-created VolcengineDenseEmbedder "
-                    "(model=%s)",
-                    model_name,
-                )
-                return self._wrap_with_cache(self._wrap_with_hybrid(embedder))
-            except ImportError as exc:
-                logger.warning(
-                    "[MemoryOrchestrator] Cannot create Volcengine embedder — "
-                    "volcenginesdkarkruntime not installed: %s",
-                    exc,
-                )
-                return None
-            except Exception as exc:
-                logger.warning(
-                    "[MemoryOrchestrator] Failed to create Volcengine embedder: %s",
-                    exc,
-                )
-                return None
+            logger.warning(
+                "[MemoryOrchestrator] embedding_provider='volcengine' is deprecated. "
+                "Use 'openai' with the same API key/base URL."
+            )
+            return None
 
         if provider == "openai":
             try:
