@@ -24,7 +24,7 @@ Core subsystems:
 - Python 3.10+, async-first (HTTP server backend)
 - Node.js >= 18 (MCP server + plugin hooks, zero external deps)
 - Vector store: Qdrant (embedded local mode, no separate process)
-- Embedding: Local (multilingual-e5-large) / Volcengine / OpenAI-compatible
+- Embedding: Local (multilingual-e5-large) / OpenAI-compatible
 - Reranking: Local (jina-reranker-v2-base-multilingual) / API
 - HTTP: FastAPI + uvicorn + httpx
 - MCP: Node.js stdio proxy (9 tools → HTTP API)

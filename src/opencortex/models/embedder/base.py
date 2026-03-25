@@ -228,7 +228,7 @@ class CompositeHybridEmbedder(HybridEmbedderBase):
 
     Example:
         >>> dense = OpenAIDenseEmbedder(...)
-        >>> sparse = VolcengineSparseEmbedder(...)
+        >>> sparse = BM25SparseEmbedder(...)
         >>> embedder = CompositeHybridEmbedder(dense, sparse)
         >>> result = embedder.embed("test")
     """

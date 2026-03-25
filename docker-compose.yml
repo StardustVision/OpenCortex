@@ -16,10 +16,10 @@ services:
       - OPENCORTEX_DATA_ROOT=/data
       # - OPENCORTEX_EMBEDDING_DIMENSION=1024
       # ---- Embedding ----
-      # - OPENCORTEX_EMBEDDING_PROVIDER=volcengine
-      # - OPENCORTEX_EMBEDDING_MODEL=doubao-embedding-vision-250615
+      # - OPENCORTEX_EMBEDDING_PROVIDER=openai
+      # - OPENCORTEX_EMBEDDING_MODEL=text-embedding-3-large
       # - OPENCORTEX_EMBEDDING_API_KEY=your-api-key
-      # - OPENCORTEX_EMBEDDING_API_BASE=https://ark.cn-beijing.volces.com/api/v3
+      # - OPENCORTEX_EMBEDDING_API_BASE=https://api.openai.com/v1
       # ---- LLM (for intent analysis) ----
       # - OPENCORTEX_LLM_MODEL=
       # - OPENCORTEX_LLM_API_KEY=

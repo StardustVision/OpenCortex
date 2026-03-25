@@ -4,7 +4,7 @@ Rerank client for OpenCortex retrieval pipeline.
 
 Provides cross-encoder or LLM-based reranking for query-document relevance scoring.
 Supports three modes:
-1. API mode — dedicated Rerank API (Volcengine/Jina/Cohere compatible)
+1. API mode — dedicated Rerank API (Jina/Cohere compatible)
 2. LLM mode — use LLM completion as listwise reranker (fallback)
 3. Disabled — returns zero scores
 """
@@ -190,7 +190,7 @@ class RerankClient:
         return self._http_client
 
     async def _rerank_via_api(self, query: str, documents: List[str]) -> List[float]:
-        """Call Rerank API (Volcengine/Jina/Cohere compatible).
+        """Call Rerank API (Jina/Cohere compatible).
 
         Expected API format:
             POST /rerank
