@@ -19,14 +19,22 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from opencortex.auth.token import decode_token, ensure_secret
+from opencortex.auth.token import (
+    decode_token,
+    ensure_secret,
+    generate_admin_token,
+    load_token_records,
+    save_token_record,
+)
 from opencortex.config import get_config
 from opencortex.http.request_context import (
     reset_request_identity,
     reset_request_project_id,
+    reset_request_role,
     set_collection_name,
     set_request_identity,
     set_request_project_id,
+    set_request_role,
 )
 from opencortex.http.models import (
     IntentShouldRecallRequest,
@@ -114,6 +122,9 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         user_id = claims.get("uid", "default")
         id_tokens = set_request_identity(tenant_id, user_id)
 
+        role = claims.get("role", "user")
+        role_token = set_request_role(role)
+
         project_id = request.headers.get("x-project-id", "public")
         project_token = set_request_project_id(project_id)
 
@@ -126,6 +137,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         finally:
             reset_request_identity(id_tokens)
             reset_request_project_id(project_token)
+            reset_request_role(role_token)
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +153,17 @@ async def _lifespan(app: FastAPI):
     _orchestrator = MemoryOrchestrator(config=config)
     await _orchestrator.init()
     logger.info("[HTTP] Orchestrator initialized (data_root=%s)", config.data_root)
+
+    # Auto-generate admin token on first startup
+    records = load_token_records(config.data_root)
+    admin_rec = next((r for r in records if r.get("role") == "admin"), None)
+    if admin_rec:
+        logger.info("[HTTP] Admin token (existing): %s", admin_rec["token"])
+    else:
+        admin_token = generate_admin_token(_jwt_secret)
+        save_token_record(config.data_root, admin_token, "_system", "_admin", role="admin")
+        logger.info("[HTTP] Admin token (new): %s", admin_token)
+
     try:
         yield
     finally:
