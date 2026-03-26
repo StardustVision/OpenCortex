@@ -50,7 +50,7 @@ def ensure_secret(data_root: str) -> str:
 # Token generation / verification
 # ---------------------------------------------------------------------------
 
-def generate_token(tenant_id: str, user_id: str, secret: str) -> str:
+def generate_token(tenant_id: str, user_id: str, secret: str, *, role: str = "user") -> str:
     """Generate a JWT with tenant and user identity claims.
 
     Claims::
@@ -58,7 +58,8 @@ def generate_token(tenant_id: str, user_id: str, secret: str) -> str:
         {
             "tid": tenant_id,
             "uid": user_id,
-            "iat": <unix timestamp>
+            "iat": <unix timestamp>,
+            "role": "<role>"  # only when role != "user"
         }
 
     The token does **not** expire (no ``exp`` claim).
@@ -68,6 +69,8 @@ def generate_token(tenant_id: str, user_id: str, secret: str) -> str:
         "uid": user_id,
         "iat": int(time.time()),
     }
+    if role != "user":
+        payload["role"] = role
     return jwt.encode(payload, secret, algorithm=_ALGORITHM)
 
 
@@ -83,6 +86,11 @@ def decode_token(token: str, secret: str) -> Dict[str, Any]:
         algorithms=[_ALGORITHM],
         options={"require": ["tid", "uid", "iat"]},
     )
+
+
+def generate_admin_token(secret: str) -> str:
+    """Generate an admin JWT with tid=_system, uid=_admin, role=admin."""
+    return generate_token("_system", "_admin", secret, role="admin")
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +117,8 @@ def save_token_record(
     token: str,
     tenant_id: str,
     user_id: str,
+    *,
+    role: str = "user",
 ) -> None:
     """Save a token record to ``{data_root}/tokens.json``.
 
@@ -127,6 +137,7 @@ def save_token_record(
         "token": token,
         "tenant_id": tenant_id,
         "user_id": user_id,
+        "role": role,
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
     p = _records_path(data_root)
