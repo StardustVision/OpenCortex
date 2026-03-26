@@ -1744,6 +1744,57 @@ class MemoryOrchestrator:
             for r in records
         ]
 
+    async def list_memories_admin(
+        self,
+        tenant_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        category: Optional[str] = None,
+        context_type: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """List memories across all users (admin only). No scope isolation."""
+        self._ensure_init()
+
+        conds: List[Dict[str, Any]] = [
+            {"op": "must_not", "field": "context_type", "conds": ["staging"]},
+        ]
+        if tenant_id:
+            conds.append({"op": "must", "field": "source_tenant_id", "conds": [tenant_id]})
+        if user_id:
+            conds.append({"op": "must", "field": "source_user_id", "conds": [user_id]})
+        if category:
+            conds.append({"op": "must", "field": "category", "conds": [category]})
+        if context_type:
+            conds.append({"op": "must", "field": "context_type", "conds": [context_type]})
+
+        combined: Dict[str, Any] = {"op": "and", "conds": conds}
+
+        records = await self._storage.filter(
+            self._get_collection(),
+            combined,
+            limit=limit,
+            offset=offset,
+            order_by="updated_at",
+            order_desc=True,
+        )
+
+        return [
+            {
+                "uri": r.get("uri", ""),
+                "abstract": r.get("abstract", ""),
+                "category": r.get("category", ""),
+                "context_type": r.get("context_type", ""),
+                "scope": r.get("scope", ""),
+                "project_id": r.get("project_id", ""),
+                "source_tenant_id": r.get("source_tenant_id", ""),
+                "source_user_id": r.get("source_user_id", ""),
+                "updated_at": r.get("updated_at", ""),
+                "created_at": r.get("created_at", ""),
+            }
+            for r in records
+        ]
+
     # =========================================================================
     # Reinforcement Learning
     # =========================================================================
