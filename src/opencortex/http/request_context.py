@@ -110,3 +110,32 @@ def get_collection_name() -> Optional[str]:
 def set_collection_name(name: str) -> Token[Optional[str]]:
     """Set per-request collection name override.  Returns token for later reset."""
     return _collection_name.set(name)
+
+
+# ---------------------------------------------------------------------------
+# Role API
+# ---------------------------------------------------------------------------
+
+_request_role: ContextVar[Optional[str]] = ContextVar(
+    "_request_role", default=None
+)
+
+
+def set_request_role(role: str) -> Token[Optional[str]]:
+    """Set per-request role. Returns token for later reset."""
+    return _request_role.set(role)
+
+
+def reset_request_role(token: Token[Optional[str]]) -> None:
+    """Reset role contextvar."""
+    _request_role.reset(token)
+
+
+def get_effective_role() -> str:
+    """Return the effective role for the current request ('admin' or 'user')."""
+    return _request_role.get() or "user"
+
+
+def is_admin() -> bool:
+    """Return True if the current request is from an admin token."""
+    return get_effective_role() == "admin"
