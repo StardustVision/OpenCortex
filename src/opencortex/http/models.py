@@ -187,3 +187,16 @@ class ContextRequest(BaseModel):
     messages: Optional[List[ContextMessage]] = None
     cited_uris: Optional[List[str]] = None
     config: Optional[ContextConfig] = None
+
+
+# =========================================================================
+# Admin — Token Management
+# =========================================================================
+
+class CreateTokenRequest(BaseModel):
+    tenant_id: str
+    user_id: str
+
+
+class RevokeTokenRequest(BaseModel):
+    token_prefix: str
