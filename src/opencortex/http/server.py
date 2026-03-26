@@ -164,6 +164,9 @@ async def _lifespan(app: FastAPI):
         save_token_record(config.data_root, admin_token, "_system", "_admin", role="admin")
         logger.info("[HTTP] Admin token (new): %s", admin_token)
 
+    from opencortex.http.admin_routes import register_admin_routes
+    register_admin_routes(_orchestrator, _jwt_secret)
+
     try:
         yield
     finally:
@@ -181,6 +184,8 @@ def create_app() -> FastAPI:
         lifespan=_lifespan,
     )
     app.add_middleware(RequestContextMiddleware)
+    from opencortex.http.admin_routes import router as admin_router
+    app.include_router(admin_router)
     _register_routes(app)
     return app
 
@@ -486,103 +491,3 @@ def _register_routes(app: FastAPI) -> None:
         text = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
         return {"status": "ok", "result": text}
 
-    # =====================================================================
-    # Admin
-    # =====================================================================
-
-    @app.post("/api/v1/admin/reembed")
-    async def admin_reembed() -> Dict[str, Any]:
-        """Re-embed all records with the current embedding model."""
-        count = await _orchestrator.reembed_all()
-        return {"status": "ok", "updated": count}
-
-    @app.post("/api/v1/admin/search_debug")
-    async def admin_search_debug(req: MemorySearchRequest) -> Dict[str, Any]:
-        """Diagnostic: show raw vector scores, rerank scores, and fused scores."""
-        import asyncio
-
-        storage = _orchestrator._storage
-        embedder = _orchestrator._embedder
-        retriever = _orchestrator._retriever
-
-        # 1. Raw vector search scores from Qdrant
-        loop = asyncio.get_running_loop()
-        embed_result = await asyncio.wait_for(
-            loop.run_in_executor(None, embedder.embed_query, req.query),
-            timeout=2.0,
-        )
-        raw_results = await storage.search(
-            "context",
-            query_vector=embed_result.dense_vector,
-            sparse_query_vector=embed_result.sparse_vector,
-            limit=req.limit or 10,
-        )
-
-        # 2. Rerank scores (if available)
-        rerank_scores = None
-        if retriever._rerank_client:
-            docs = [r.get("abstract", "") for r in raw_results]
-            rerank_scores = await retriever._rerank_client.rerank(req.query, docs)
-
-        # 3. Build comparison
-        rows = []
-        beta = retriever._fusion_beta
-        for i, r in enumerate(raw_results):
-            raw_score = r.get("_score", 0.0)
-            rr_score = rerank_scores[i] if rerank_scores else None
-            fused = (
-                beta * rr_score + (1 - beta) * raw_score
-                if rr_score is not None
-                else raw_score
-            )
-            rows.append({
-                "rank": i + 1,
-                "abstract": r.get("abstract", "")[:80],
-                "raw_vector_score": round(raw_score, 5),
-                "rerank_score": round(rr_score, 5) if rr_score is not None else None,
-                "fused_score": round(fused, 5),
-                "uri": r.get("uri", ""),
-            })
-
-        return {
-            "query": req.query,
-            "fusion_beta": beta,
-            "rerank_mode": retriever._rerank_client.mode if retriever._rerank_client else "disabled",
-            "results": rows,
-        }
-
-    @app.post("/api/v1/admin/collection")
-    async def create_bench_collection(request: Request):
-        """Create a benchmark-isolated collection (name must start with bench_)."""
-        body = await request.json()
-        name = body.get("name", "")
-        if not name.startswith("bench_"):
-            return JSONResponse({"error": "Collection name must start with bench_"}, status_code=400)
-        dim = _orchestrator._config.embedding_dimension
-        from opencortex.storage.collection_schemas import CollectionSchemas
-        schema = CollectionSchemas.context_collection(name, dim)
-        await _orchestrator._storage.create_collection(name, schema)
-        return {"status": "created", "collection": name}
-
-    @app.delete("/api/v1/admin/collection/{name}")
-    async def delete_bench_collection(name: str, request: Request):
-        """Delete a benchmark-isolated collection (name must start with bench_)."""
-        if not name.startswith("bench_"):
-            return JSONResponse({"error": "Can only delete bench_ collections"}, status_code=400)
-        await _orchestrator._storage.drop_collection(name)
-        return {"status": "deleted", "collection": name}
-
-    # =====================================================================
-    # Migration
-    # =====================================================================
-
-    @app.post("/api/v1/migration/overview-first")
-    async def migration_overview_first(
-        dry_run: bool = False,
-        batch: int = 50,
-    ) -> Dict[str, Any]:
-        """Run v0.3.2 overview-first migration (re-generate L0/L1 from L2)."""
-        from opencortex.migration.v032_overview_first import migrate_overview_first
-        return await migrate_overview_first(
-            _orchestrator, dry_run=dry_run, batch_size=batch,
-        )
