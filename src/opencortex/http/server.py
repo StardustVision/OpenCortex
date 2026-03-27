@@ -91,7 +91,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         path = request.url.path
 
         # Whitelisted paths bypass authentication
-        if path in _AUTH_WHITELIST:
+        if path in _AUTH_WHITELIST or path.startswith("/console"):
             id_tokens = set_request_identity("default", "default")
             project_id = request.headers.get("x-project-id", "public")
             project_token = set_request_project_id(project_id)
@@ -187,6 +187,18 @@ def create_app() -> FastAPI:
     from opencortex.http.admin_routes import router as admin_router
     app.include_router(admin_router)
     _register_routes(app)
+
+    # =====================================================================
+    # Console UI (static files)
+    # =====================================================================
+    import os
+    _web_dist = os.path.join(os.path.dirname(__file__), "..", "..", "..", "web", "dist")
+    _web_dist = os.path.normpath(_web_dist)
+    if os.path.isdir(_web_dist) and os.path.isfile(os.path.join(_web_dist, "index.html")):
+        from starlette.staticfiles import StaticFiles
+        app.mount("/console", StaticFiles(directory=_web_dist, html=True), name="console")
+        logger.info("[HTTP] Console UI mounted at /console (serving %s)", _web_dist)
+
     return app
 
 
