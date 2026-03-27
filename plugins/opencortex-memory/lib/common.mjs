@@ -192,6 +192,11 @@ export function getProjectConfig() {
   return _projectConfig;
 }
 
+// ── UI port ─────────────────────────────────────────────────────────────
+export function getUiPort() {
+  return parseInt(process.env.OPENCORTEX_UI_PORT || getMcpConfig('local.ui_port', 5920), 10);
+}
+
 // ── HTTP URL ────────────────────────────────────────────────────────────
 export function getHttpUrl() {
   const mode = getMcpConfig('mode', 'local');

@@ -7,8 +7,10 @@
  * Session lifecycle (recall/add_message/end) is managed internally;
  * all other tools proxy directly to the HTTP API.
  */
-import { getHttpUrl, getPluginMode, getMcpConfig, ensureDefaultConfig, startLocalHttpServer } from './common.mjs';
+import { join } from 'node:path';
+import { getHttpUrl, getPluginMode, getMcpConfig, ensureDefaultConfig, startLocalHttpServer, PROJECT_DIR, getUiPort } from './common.mjs';
 import { buildClientHeaders, healthCheck, httpPost } from './http-client.mjs';
+import { startUiServer, stopUiServer } from './ui-server.mjs';
 
 // ── Module-level session state ──────────────────────────────────────────
 let _httpUrl = null;
@@ -370,12 +372,28 @@ async function initSession() {
     // best-effort
   }
 
+  // Start UI console server
+  try {
+    const uiPort = getUiPort();
+    const distDir = join(PROJECT_DIR, 'web', 'dist');
+    const started = await startUiServer(distDir, uiPort);
+    if (started) {
+      const token = getMcpConfig('token', '');
+      const url = `http://localhost:${uiPort}${token ? `?token=${token}` : ''}`;
+      _log(`Console: ${url}`);
+    }
+  } catch (e) {
+    _log(`Console server failed: ${e.message}`);
+  }
+
   _initialized = true;
   _log(`session ${_sessionId} (${mode} mode)`);
 }
 
 async function shutdown() {
   const _log = (msg) => process.stderr.write(`[opencortex-mcp] ${msg}\n`);
+
+  stopUiServer();
 
   if (_initialized && _sessionId) {
     const result = await httpContextCall({
