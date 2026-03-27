@@ -14,6 +14,27 @@ import {
   Clock
 } from 'lucide-react';
 
+const DoctorCard: React.FC<{ label: string; value: any }> = ({ label, value }) => {
+  const isOk = value === true || (typeof value === 'string' && value.length > 0) || (typeof value === 'object' && value !== null);
+  const display = typeof value === 'boolean'
+    ? (value ? 'OK' : 'Unavailable')
+    : typeof value === 'string'
+    ? value
+    : typeof value === 'object' && value !== null
+    ? Object.entries(value).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join('\n')
+    : String(value);
+
+  return (
+    <Card className="flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <span className="font-bold text-gray-900">{label}</span>
+        <div className={`w-3 h-3 rounded-full ${isOk ? 'bg-green-500' : 'bg-red-500'}`} />
+      </div>
+      <pre className="text-sm text-gray-500 whitespace-pre-wrap font-sans">{display}</pre>
+    </Card>
+  );
+};
+
 export const System: React.FC = () => {
   const { client } = useApi();
   const [isReembedModalOpen, setIsReembedModalOpen] = useState(false);
@@ -74,15 +95,21 @@ export const System: React.FC = () => {
             {doctorLoading ? (
               <LoadingSpinner />
             ) : doctor ? (
-              Object.entries(doctor).map(([key, value]: [string, any]) => (
-                <Card key={key} className="flex flex-col gap-2">
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-gray-900 capitalize">{key}</span>
-                    <div className={`w-3 h-3 rounded-full ${value.status === 'ok' ? 'bg-green-500' : 'bg-red-500'}`} />
-                  </div>
-                  <p className="text-sm text-gray-500">{value.message || 'No details available.'}</p>
-                </Card>
-              ))
+              <>
+                <DoctorCard label="Initialized" value={doctor.initialized} />
+                <DoctorCard label="Storage" value={doctor.storage} />
+                <DoctorCard label="Embedder" value={doctor.embedder} />
+                <DoctorCard label="LLM" value={doctor.llm} />
+                <DoctorCard label="Rerank" value={doctor.rerank} />
+                {doctor.issues?.length > 0 && (
+                  <Card className="flex flex-col gap-2 md:col-span-2 lg:col-span-3 border-red-200">
+                    <span className="font-bold text-red-600">Issues</span>
+                    <ul className="text-sm text-red-500 list-disc list-inside">
+                      {doctor.issues.map((issue: string, i: number) => <li key={i}>{issue}</li>)}
+                    </ul>
+                  </Card>
+                )}
+              </>
             ) : null}
           </div>
         </section>

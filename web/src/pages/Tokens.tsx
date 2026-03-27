@@ -121,11 +121,16 @@ export const Tokens: React.FC = () => {
                       </td>
                       <td className="py-3 text-xs font-mono text-gray-400">{t.token_prefix}</td>
                       <td className="py-3">
-                        {t.role !== 'admin' && (
-                          <Button variant="ghost" size="sm" className="text-red-500 hover:bg-red-50" onClick={() => setRevokeTarget(t)}>
-                            <Trash2 size={14} />
+                        <div className="flex gap-1">
+                          <Button variant="ghost" size="sm" className="text-gray-400 hover:text-indigo-600 hover:bg-indigo-50" onClick={() => copyToken(t.token)}>
+                            <Copy size={14} />
                           </Button>
-                        )}
+                          {t.role !== 'admin' && (
+                            <Button variant="ghost" size="sm" className="text-red-500 hover:bg-red-50" onClick={() => setRevokeTarget(t)}>
+                              <Trash2 size={14} />
+                            </Button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}

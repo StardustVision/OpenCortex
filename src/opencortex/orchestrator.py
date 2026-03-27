@@ -1742,6 +1742,7 @@ class MemoryOrchestrator:
                 "created_at": r.get("created_at", ""),
             }
             for r in records
+            if r.get("abstract")  # skip directory nodes (empty abstract)
         ]
 
     async def list_memories_admin(
@@ -1793,6 +1794,7 @@ class MemoryOrchestrator:
                 "created_at": r.get("created_at", ""),
             }
             for r in records
+            if r.get("abstract")  # skip directory nodes (empty abstract)
         ]
 
     # =========================================================================

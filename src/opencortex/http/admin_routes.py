@@ -73,6 +73,7 @@ async def admin_list_tokens() -> Dict[str, Any]:
             "role": r.get("role", "user"),
             "created_at": r.get("created_at", ""),
             "token_prefix": r["token"][:20] + "...",
+            "token": r["token"],
         }
         for r in records
     ]}
