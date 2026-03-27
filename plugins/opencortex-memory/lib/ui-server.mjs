@@ -1,4 +1,4 @@
-import { createServer } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { join, extname } from 'node:path';
 
@@ -15,15 +15,41 @@ const MIME_TYPES = {
 };
 
 let _server = null;
+let _apiTarget = 'http://127.0.0.1:8921';
 
 /**
- * Start a static file server for web/dist/.
+ * Proxy /api/* requests to the backend HTTP server.
+ */
+function proxyApiRequest(req, res) {
+  const url = new URL(_apiTarget);
+  const opts = {
+    hostname: url.hostname,
+    port: url.port,
+    path: req.url,
+    method: req.method,
+    headers: { ...req.headers, host: `${url.hostname}:${url.port}` },
+  };
+  const proxy = httpRequest(opts, (proxyRes) => {
+    res.writeHead(proxyRes.statusCode, proxyRes.headers);
+    proxyRes.pipe(res, { end: true });
+  });
+  proxy.on('error', () => {
+    res.writeHead(502);
+    res.end('Bad Gateway');
+  });
+  req.pipe(proxy, { end: true });
+}
+
+/**
+ * Start a static file server for web/dist/ with /api proxy.
  * @param {string} distDir - Absolute path to web/dist/
  * @param {number} port - Port to listen on
+ * @param {string} [apiUrl] - Backend API URL to proxy /api/* to
  * @returns {Promise<boolean>} true if started, false if already running or failed
  */
-export async function startUiServer(distDir, port) {
+export async function startUiServer(distDir, port, apiUrl) {
   if (_server) return false;
+  if (apiUrl) _apiTarget = apiUrl;
 
   // Check if dist dir exists
   try {
@@ -35,10 +61,18 @@ export async function startUiServer(distDir, port) {
   return new Promise((resolve) => {
     const server = createServer(async (req, res) => {
       try {
-        let urlPath = new URL(req.url, `http://localhost:${port}`).pathname;
-        if (urlPath === '/') urlPath = '/index.html';
+        const urlPath = new URL(req.url, `http://localhost:${port}`).pathname;
 
-        const filePath = join(distDir, urlPath);
+        // Proxy /api/* to backend
+        if (urlPath.startsWith('/api/')) {
+          proxyApiRequest(req, res);
+          return;
+        }
+
+        let servePath = urlPath;
+        if (servePath === '/') servePath = '/index.html';
+
+        const filePath = join(distDir, servePath);
 
         // Security: prevent path traversal
         if (!filePath.startsWith(distDir)) {

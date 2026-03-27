@@ -376,7 +376,7 @@ async function initSession() {
   try {
     const uiPort = getUiPort();
     const distDir = join(PROJECT_DIR, 'web', 'dist');
-    const started = await startUiServer(distDir, uiPort);
+    const started = await startUiServer(distDir, uiPort, _httpUrl);
     if (started) {
       const token = getMcpConfig('token', '');
       const url = `http://localhost:${uiPort}${token ? `?token=${token}` : ''}`;
