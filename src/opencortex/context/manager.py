@@ -22,6 +22,7 @@ from opencortex.http.request_context import (
     reset_request_identity,
     set_request_identity,
 )
+from opencortex.utils.text import smart_truncate
 from opencortex.retrieve.intent_router import IntentRouter
 from opencortex.retrieve.types import ContextType, DetailLevel, SearchIntent
 
@@ -736,7 +737,6 @@ class ContextManager:
         """Limit per-item content to max_content_chars at paragraph boundary."""
         if len(text) <= self._max_content_chars:
             return text
-        from opencortex.utils.text import smart_truncate
         truncated = smart_truncate(text, self._max_content_chars)
         omitted = len(text) - len(truncated)
         return f"{truncated} [...{omitted} chars omitted]"

@@ -2,6 +2,10 @@
 import re
 from typing import Any, Awaitable, Callable, Dict, List
 
+_SENTENCE_END_RE = re.compile(r'[.!?。！？][\s]')
+_SENTENCE_TAIL_RE = re.compile(r'[.!?。！？]$')
+_SENTENCE_CHARS = set('.!?。！？')
+
 
 def smart_truncate(text: str, max_chars: int) -> str:
     """Truncate text at the nearest semantic boundary.
@@ -43,12 +47,12 @@ def _truncate_at(text: str, max_chars: int, sep: str) -> str:
 
 def _truncate_at_sentence(text: str, max_chars: int) -> str:
     truncated = text[:max_chars]
-    matches = list(re.finditer(r'[.!?。！？]\s', truncated))
-    if matches:
-        end = matches[-1].end()
-        return text[:end].rstrip()
-    match = re.search(r'[.!?。！？]$', truncated)
-    if match:
+    # Scan backward for last sentence boundary (punctuation + whitespace)
+    for i in range(len(truncated) - 1, 0, -1):
+        if truncated[i - 1] in _SENTENCE_CHARS and truncated[i].isspace():
+            return text[:i].rstrip()
+    # Check if truncated text ends with sentence punctuation
+    if truncated and truncated[-1] in _SENTENCE_CHARS:
         return truncated
     return ""
 

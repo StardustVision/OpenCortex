@@ -308,6 +308,23 @@ def build_rerank_prompt(query: str, docs_text: str) -> str:
 # 10. HyDE (Hypothetical Document Embedding)
 # =========================================================================
 
+def build_hyde_prompt(question: str) -> str:
+    """Build prompt for generating a hypothetical memory observation.
+
+    The generated text is used as the dense-embedding query instead of the
+    original question, bridging the semantic gap between interrogative queries
+    and declarative stored observations.
+    """
+    return (
+        "You are generating a short hypothetical memory observation "
+        "that would answer the following question. Write it as a factual "
+        "statement about a person, as if recorded during a conversation. "
+        "Keep it to 1-2 sentences. Do not include the question.\n\n"
+        f"Question: {question}\n\n"
+        "Hypothetical observation:"
+    )
+
+
 # =========================================================================
 # 11. Overview Compression  (for chunked derivation)
 # =========================================================================
@@ -328,20 +345,3 @@ Rules:
 - Do NOT repeat information
 - Maintain factual accuracy
 - Return ONLY the compressed overview text, no JSON wrapping"""
-
-
-def build_hyde_prompt(question: str) -> str:
-    """Build prompt for generating a hypothetical memory observation.
-
-    The generated text is used as the dense-embedding query instead of the
-    original question, bridging the semantic gap between interrogative queries
-    and declarative stored observations.
-    """
-    return (
-        "You are generating a short hypothetical memory observation "
-        "that would answer the following question. Write it as a factual "
-        "statement about a person, as if recorded during a conversation. "
-        "Keep it to 1-2 sentences. Do not include the question.\n\n"
-        f"Question: {question}\n\n"
-        "Hypothetical observation:"
-    )

@@ -44,6 +44,8 @@ from uuid import uuid4
 from opencortex.config import CortexConfig, get_config
 from opencortex.prompts import build_doc_summarization_prompt, build_layer_derivation_prompt
 from opencortex.http.request_context import get_effective_identity, get_effective_project_id
+from opencortex.utils.json_parse import parse_json_from_response
+from opencortex.utils.text import smart_truncate, chunked_llm_derive
 from opencortex.core.context import Context, ContextType as CoreContextType
 from opencortex.core.message import Message
 from opencortex.core.user_id import UserIdentifier
@@ -782,8 +784,6 @@ class MemoryOrchestrator:
 
         if self._llm_completion:
             if len(content) > 4000:
-                from opencortex.utils.text import chunked_llm_derive
-                from opencortex.utils.json_parse import parse_json_from_response
                 try:
                     result = await chunked_llm_derive(
                         content=content,
@@ -807,7 +807,6 @@ class MemoryOrchestrator:
             prompt = build_layer_derivation_prompt(content, user_abstract)
             try:
                 response = await self._llm_completion(prompt)
-                from opencortex.utils.json_parse import parse_json_from_response
                 data = parse_json_from_response(response)
                 if isinstance(data, dict):
                     llm_abstract = (data.get("abstract") or "").strip()
@@ -2525,14 +2524,12 @@ class MemoryOrchestrator:
 
     async def _generate_abstract_overview(self, content: str, file_path: str) -> tuple:
         """Use LLM to generate abstract (L0) and overview (L1) from content."""
-        from opencortex.utils.text import smart_truncate
+        fallback_overview = smart_truncate(content, 500)
 
         if not self._llm_completion:
-            return file_path, smart_truncate(content, 500)
+            return file_path, fallback_overview
 
         if len(content) > 3000:
-            from opencortex.utils.text import chunked_llm_derive
-            from opencortex.utils.json_parse import parse_json_from_response
             try:
                 result = await chunked_llm_derive(
                     content=content,
@@ -2542,22 +2539,21 @@ class MemoryOrchestrator:
                     merge_policy="abstract_overview",
                     max_chars_per_chunk=3000,
                 )
-                return result.get("abstract", file_path), result.get("overview", smart_truncate(content, 500))
+                return result.get("abstract", file_path), result.get("overview", fallback_overview)
             except Exception:
                 pass
-            return file_path, smart_truncate(content, 500)
+            return file_path, fallback_overview
 
         prompt = build_doc_summarization_prompt(file_path, content)
         try:
             response = await self._llm_completion(prompt)
-            from opencortex.utils.json_parse import parse_json_from_response
             data = parse_json_from_response(response)
             if isinstance(data, dict):
-                return data.get("abstract", file_path), data.get("overview", smart_truncate(content, 500))
+                return data.get("abstract", file_path), data.get("overview", fallback_overview)
         except Exception:
             pass
 
-        return file_path, smart_truncate(content, 500)
+        return file_path, fallback_overview
 
     def _auto_uri(self, context_type: str, category: str, abstract: str = "") -> str:
         """Generate a URI based on context type, category, and abstract text.

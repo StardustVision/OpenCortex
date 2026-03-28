@@ -61,7 +61,7 @@ class UserIdentifier:
     def agent_id(self) -> str:
         return self._agent_id
 
-    def unique_space_name(self, short: bool = True) -> str:
+    def unique_space_name(self) -> str:
         """Anonymized space name: {user_id}_{md5}."""
         h = hashlib.md5((self._user_id + self._agent_id).encode()).hexdigest()
         return f"{self._user_id}_{h}"

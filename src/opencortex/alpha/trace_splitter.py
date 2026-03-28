@@ -13,6 +13,8 @@ Design doc §5.2, §10.2.
 import orjson as json
 import logging
 import uuid
+
+from opencortex.utils.text import smart_truncate
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 
 from opencortex.alpha.types import Trace, Turn, TraceOutcome, TurnStatus
@@ -41,7 +43,6 @@ class TraceSplitter:
             role = msg.get("role", "unknown")
             content = msg.get("content", "")
             if len(content) > 2000:
-                from opencortex.utils.text import smart_truncate
                 truncated = smart_truncate(content, 2000)
                 content = f"{truncated} [...{len(content) - len(truncated)} chars omitted]"
             lines.append(f"[Turn {i}] {role}: {content}")

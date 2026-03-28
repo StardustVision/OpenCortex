@@ -18,6 +18,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 from opencortex.prompts import build_rerank_prompt
 from opencortex.retrieve.rerank_config import RerankConfig
 from opencortex.utils.cache import AsyncTTLCache
+from opencortex.utils.text import smart_truncate
 
 logger = logging.getLogger(__name__)
 
@@ -265,7 +266,6 @@ class RerankClient:
 
     def _build_rerank_prompt(self, query: str, documents: List[str]) -> str:
         """Build LLM prompt for listwise reranking."""
-        from opencortex.utils.text import smart_truncate
         docs_text = "\n".join(
             f"[{i}] {smart_truncate(doc, 500)}" for i, doc in enumerate(documents)
         )
