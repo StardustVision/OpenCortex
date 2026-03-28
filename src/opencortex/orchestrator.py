@@ -1102,16 +1102,24 @@ class MemoryOrchestrator:
         await self._storage.upsert(self._get_collection(), record)
         upsert_ms = int((asyncio.get_running_loop().time() - upsert_started) * 1000)
 
-        # Write to filesystem (L0 abstract + L1 overview + L2 content)
-        fs_write_started = asyncio.get_running_loop().time()
-        await self._fs.write_context(
-            uri=uri,
-            content=content,
-            abstract=abstract,
-            overview=overview,
-            is_leaf=is_leaf,
+        # CortexFS write — fire-and-forget (L0/L1 already in Qdrant payload)
+        _fs_task = asyncio.create_task(
+            self._fs.write_context(
+                uri=uri,
+                content=content,
+                abstract=abstract,
+                overview=overview,
+                is_leaf=is_leaf,
+            )
         )
-        fs_write_ms = int((asyncio.get_running_loop().time() - fs_write_started) * 1000)
+        _fs_task.add_done_callback(
+            lambda t: (
+                not t.cancelled() and t.exception() and logger.warning(
+                    "[Orchestrator] CortexFS write failed for %s: %s", uri, t.exception()
+                )
+            )
+        )
+        fs_write_ms = 0  # Non-blocking
 
         ctx.meta["dedup_action"] = "created"
         total_ms = int((asyncio.get_running_loop().time() - add_started) * 1000)
