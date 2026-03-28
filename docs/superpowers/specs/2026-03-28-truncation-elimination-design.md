@@ -1,6 +1,6 @@
 # Truncation Elimination Design Spec
 
-> **Goal:** Remove all hard character-level truncation from the data pipeline. Content must be split at paragraph/sentence boundaries. Hash/ID must use full length for new data.
+> **Goal:** Eliminate collision-prone hash truncation and all hard character-level content truncation from the data pipeline. Content must be split at paragraph/sentence boundaries. Hash/ID lengths increased to eliminate practical collision risk for new data.
 
 ## Scope
 
@@ -21,10 +21,11 @@ Out of scope: log-only truncation (llm_factory error logs, intent_analyzer debug
 def smart_truncate(text: str, max_chars: int) -> str:
     """Truncate text at the nearest paragraph or sentence boundary.
 
-    Priority: paragraph boundary (\n\n) > line boundary (\n) > sentence boundary (. ! ?)
+    Priority: paragraph boundary (\\n\\n) > line boundary (\\n) > sentence boundary (. ! ?)
     Returns text up to max_chars, never cutting mid-paragraph.
     If a single paragraph exceeds max_chars, falls back to sentence boundary.
-    If a single sentence exceeds max_chars, returns it whole (never mid-word cut).
+    If a single sentence exceeds max_chars, falls back to word boundary.
+    GUARANTEE: return value is always ≤ max_chars.
     """
 ```
 
@@ -46,15 +47,35 @@ async def chunked_llm_derive(
     content: str,
     prompt_builder: Callable[[str], str],
     llm_fn: Callable[[str], Awaitable[str]],
+    parse_fn: Callable[[str], dict],
+    merge_policy: str = "default",
     max_chars_per_chunk: int = 3000,
 ) -> dict:
     """Split content into chunks, call LLM on each, merge results.
 
-    Returns merged {abstract, overview, keywords}:
-    - abstract: from first chunk (most representative)
-    - overview: concatenated from all chunks, deduplicated
-    - keywords: union of all chunks, deduplicated
+    prompt_builder: Takes a single content chunk string, returns a full prompt.
+                    Callers with multi-arg builders (e.g. build_doc_summarization_prompt(file_path, content))
+                    must wrap them with functools.partial or a lambda before passing.
+    parse_fn:       Parses LLM response string into a dict.
+    merge_policy:   "default" merges {abstract, overview, keywords}:
+                    - abstract: from first chunk (most representative)
+                    - overview: concatenated from all chunks
+                    - keywords: union of all chunks, deduplicated
+                    "abstract_overview" merges only {abstract, overview} (for _generate_abstract_overview).
     """
+```
+
+**Caller adaptation examples:**
+
+```python
+# A1: _generate_abstract_overview — needs (file_path, content)
+builder = lambda chunk: build_doc_summarization_prompt(file_path, chunk)
+result = await chunked_llm_derive(content, builder, llm_fn, parse_fn, merge_policy="abstract_overview")
+return result["abstract"], result["overview"]
+
+# A2: _derive_layers — needs (content, user_abstract)
+builder = lambda chunk: build_layer_derivation_prompt(chunk, user_abstract)
+result = await chunked_llm_derive(content, builder, llm_fn, parse_fn)
 ```
 
 ### Site-by-Site Changes
@@ -99,11 +120,13 @@ Prompt text changes from `Content:` (no label change needed, just remove `[:4000
 
 **After:** `smart_truncate(doc, 500)` — paragraph-aware truncation per document. This keeps LLM prompt size bounded while preserving semantic completeness.
 
-## Track B: Hash/ID → Full Length (New Data Only)
+## Track B: Eliminate Collision-Prone Hash/ID Truncation (New Data Only)
 
 ### Backward Compatibility
 
-Old data retains original short-hash URIs. New data uses full-length hashes. All queries are exact URI matches, so mixed lengths coexist without issues. No migration needed.
+Old data retains original short-hash URIs. New data uses longer hashes/IDs. All queries are exact URI matches, so mixed lengths coexist without issues. No migration needed for Qdrant data.
+
+**Exception:** `cortex_fs.py:654` (`_shorten_component`) must keep `[:8]` because `_uri_to_path()` recomputes the hash on every access — changing it would break existing filesystem paths. See B8.
 
 ### Site-by-Site Changes
 
@@ -131,13 +154,17 @@ Old data retains original short-hash URIs. New data uses full-length hashes. All
 
 **After:** `uuid4().hex`
 
-#### B5. `uri.py:346` — Semantic node name length cap
+#### B5. `uri.py:346` (`sanitize_segment`) + `semantic_name.py:12` (`semantic_node_name`)
 
-**Before:** `safe[:50]` hard character cut.
+Two functions with overlapping logic. `sanitize_segment` does `safe[:50]` with no hash suffix. `semantic_node_name` does `safe[:max_length-9]_{hash[:8]}` when exceeding max_length.
 
-**After:** `smart_truncate(safe, 80)` — truncate at word boundary. Increase limit to 80 chars (still bounded for filesystem safety). If truncated, no suffix added (hash suffix already provides uniqueness).
+**sanitize_segment — Before:** `safe.strip("_")[:50]` — hard character cut, no uniqueness guarantee.
 
-Note: `smart_truncate` works on word boundaries here since node names don't have paragraph structure.
+**sanitize_segment — After:** Increase cap to `[:80]` and truncate at underscore boundary (word-safe for slugified strings). Since `sanitize_segment` is a low-level URI helper (not a naming function), it does not add hash suffixes — callers that need uniqueness use `semantic_node_name` instead.
+
+**semantic_name — Before:** `safe[:max_length-9]_{hash[:8]}` with `max_length=50`.
+
+**semantic_name — After:** Increase `max_length` default to `80`. Hash suffix changed from `[:8]` to `[:16]` (see B7). Truncation prefix cut at underscore boundary instead of hard character cut.
 
 #### B6. `uri.py:355` — Fallback temp ID
 
@@ -151,11 +178,13 @@ Note: `smart_truncate` works on word boundaries here since node names don't have
 
 **After:** `hashlib.sha256(...).hexdigest()[:16]` (16 chars, 64 bits). Full 64 makes URIs unnecessarily long.
 
-#### B8. `cortex_fs.py:654` — Filesystem component hash
+#### B8. `cortex_fs.py:654` — Filesystem component hash — **DO NOT CHANGE**
 
 **Before:** `hashlib.sha256(...).hexdigest()[:8]`
 
-**After:** `hashlib.sha256(...).hexdigest()[:16]`
+**After:** Keep `[:8]` unchanged.
+
+**Reason:** `_shorten_component()` is called by `_uri_to_path()` on every read and write to compute the filesystem path from a URI. Changing the hash length would cause the same URI to map to a different local path, making all existing `.abstract.md`, `.overview.md`, and `content.md` files unreadable. A migration script would need to rename every directory on disk, which is fragile and out of scope. The 8-char hash here is a filesystem dedup suffix for the rare case of path components exceeding 255 bytes — collision risk is acceptable at this scale.
 
 #### B9. `user_id.py:68` — Space name hash
 
