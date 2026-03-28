@@ -15,6 +15,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from opencortex.config import CortexConfig, init_config
+from opencortex.context.manager import ConversationBuffer
 from opencortex.http.request_context import set_request_identity, reset_request_identity
 from opencortex.orchestrator import MemoryOrchestrator
 
@@ -35,6 +36,7 @@ class TestContextManager(unittest.TestCase):
             data_root=self.temp_dir,
             embedding_dimension=MockEmbedder.DIMENSION,
             rerank_provider="disabled",
+            merged_event_ttl_hours=48,
         )
         init_config(self.config)
         self._identity_tokens = set_request_identity("testteam", "alice")
@@ -258,6 +260,39 @@ class TestContextManager(unittest.TestCase):
         self.assertAlmostEqual(feedback_calls[0][1], 0.1)
 
         orch.feedback = original_feedback
+
+    def test_06b_merged_events_get_ttl(self):
+        """Merged conversation events should be summarized and expire by config."""
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        cm = orch._context_manager
+
+        sk = ("testteam", "alice", "sess_007")
+        cm._conversation_buffers[sk] = ConversationBuffer(
+            messages=["user likes dark mode", "assistant confirmed preference"],
+            token_count=32,
+            start_msg_index=0,
+            immediate_uris=[],
+        )
+
+        self._run(cm._merge_buffer(sk, "sess_007", "testteam", "alice"))
+
+        records = list(self.storage._records["context"].values())
+        merged = [
+            r for r in records
+            if r.get("category") == "events" and (r.get("meta") or {}).get("layer") == "merged"
+        ]
+        self.assertEqual(len(merged), 1)
+        self.assertTrue(merged[0].get("abstract"))
+
+        # Verify TTL matches configured 48h (within 5-minute tolerance)
+        from datetime import datetime, timezone, timedelta
+        ttl_str = merged[0].get("ttl_expires_at")
+        self.assertTrue(ttl_str)
+        expires = datetime.strptime(ttl_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        expected = datetime.now(timezone.utc) + timedelta(hours=48)
+        self.assertLess(abs((expires - expected).total_seconds()), 300)
+
         self._run(orch.close())
 
     # -----------------------------------------------------------------

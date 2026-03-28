@@ -51,9 +51,6 @@ export interface SearchResponse {
   search_intent?: Record<string, unknown>;
 }
 
-/** Union type for items displayed in the memory list panel */
-export type MemoryItem = MemoryRecord | SearchResult;
-
 export interface ListResponse {
   results: MemoryRecord[];
   total: number;
@@ -132,3 +129,6 @@ export interface AdminListResponse {
   results: AdminMemoryRecord[];
   total: number;
 }
+
+/** Union type for items displayed in the memory list panel */
+export type MemoryItem = MemoryRecord | SearchResult | AdminMemoryRecord;

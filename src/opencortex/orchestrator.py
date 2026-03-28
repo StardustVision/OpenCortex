@@ -617,13 +617,8 @@ class MemoryOrchestrator:
             "session_id": session_id,
             "project_id": get_effective_project_id(),
             "mergeable": False,
-            "ttl_expires_at": "",
+            "ttl_expires_at": self._ttl_from_hours(self._config.immediate_event_ttl_hours),
         }
-        # 24h TTL safety net — explicit delete on merge/end is the primary cleanup
-        from datetime import datetime, timedelta, timezone
-        record["ttl_expires_at"] = (
-            datetime.now(timezone.utc) + timedelta(hours=24)
-        ).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         if vector:
             record["vector"] = vector
@@ -1092,9 +1087,13 @@ class MemoryOrchestrator:
 
         # Set TTL for staging records (24 hours from now)
         if context_type == "staging":
-            from datetime import datetime, timezone, timedelta
-            expires = datetime.now(timezone.utc) + timedelta(hours=24)
-            record["ttl_expires_at"] = expires.strftime("%Y-%m-%dT%H:%M:%SZ")
+            record["ttl_expires_at"] = self._ttl_from_hours(self._config.immediate_event_ttl_hours)
+        elif (
+            (context_type or "memory") == "memory"
+            and effective_category == "events"
+            and (meta or {}).get("layer") == "merged"
+        ):
+            record["ttl_expires_at"] = self._ttl_from_hours(self._config.merged_event_ttl_hours)
 
         upsert_started = asyncio.get_running_loop().time()
         await self._storage.upsert(self._get_collection(), record)
@@ -1127,6 +1126,14 @@ class MemoryOrchestrator:
             fs_write_ms,
         )
         return ctx
+
+    def _ttl_from_hours(self, hours: int) -> str:
+        """Return RFC3339 UTC expiry string. Non-positive values disable TTL."""
+        if hours <= 0:
+            return ""
+        from datetime import datetime, timedelta, timezone
+        expires = datetime.now(timezone.utc) + timedelta(hours=hours)
+        return expires.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # ------------------------------------------------------------------
     # Write-time dedup helpers

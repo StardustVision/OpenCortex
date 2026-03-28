@@ -8,6 +8,8 @@ class TestAlphaConfig(unittest.TestCase):
         cfg = CortexConfig()
         self.assertIsNotNone(cfg.cortex_alpha)
         self.assertTrue(cfg.cortex_alpha.observer_enabled)
+        self.assertEqual(cfg.immediate_event_ttl_hours, 24)
+        self.assertEqual(cfg.merged_event_ttl_hours, 168)
         # Phase 2 LLM components default OFF (Phase 1 shrinkage)
         self.assertFalse(cfg.cortex_alpha.trace_splitter_enabled)
         self.assertFalse(cfg.cortex_alpha.archivist_enabled)

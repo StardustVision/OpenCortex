@@ -109,6 +109,9 @@ class CortexConfig:
     # OpenCortex HTTP Server (FastAPI)
     http_server_host: str = "127.0.0.1"
     http_server_port: int = 8921
+    # Event retention
+    immediate_event_ttl_hours: int = 24
+    merged_event_ttl_hours: int = 168
     # Cortex Alpha
     cortex_alpha: CortexAlphaConfig = field(default_factory=CortexAlphaConfig)
 

@@ -20,10 +20,37 @@ import {
   ChevronUp
 } from 'lucide-react';
 
+const getMemorySelectionKey = (memory: MemoryItem | null) => {
+  if (!memory) return '';
+  const tenantId = 'source_tenant_id' in memory ? memory.source_tenant_id : '';
+  const userId = 'source_user_id' in memory ? memory.source_user_id : '';
+  return [memory.uri, tenantId, userId].join('::');
+};
+
+const matchesSelectedMemory = (
+  memory: MemoryItem,
+  uri: string,
+  tenantId: string | null,
+  userId: string | null
+) => {
+  if (memory.uri !== uri) return false;
+
+  const memoryTenantId = 'source_tenant_id' in memory ? memory.source_tenant_id : '';
+  const memoryUserId = 'source_user_id' in memory ? memory.source_user_id : '';
+
+  if (tenantId || userId) {
+    return memoryTenantId === (tenantId || '') && memoryUserId === (userId || '');
+  }
+
+  return true;
+};
+
 export const Memories: React.FC = () => {
   const { client, role } = useApi();
   const [searchParams, setSearchParams] = useSearchParams();
   const selectedUri = searchParams.get('uri');
+  const selectedTenantId = searchParams.get('tenant_id');
+  const selectedUserId = searchParams.get('user_id');
 
   const [memories, setMemories] = useState<MemoryItem[]>([]);
   const [, setTotal] = useState(0);
@@ -44,6 +71,7 @@ export const Memories: React.FC = () => {
   const [showMetadata, setShowMetadata] = useState(false);
   const [adminFilters, setAdminFilters] = useState({ tenant_id: '', user_id: '' });
   const [users, setUsers] = useState<{ tenant_id: string; user_id: string }[]>([]);
+  const selectedKey = getMemorySelectionKey(selectedMemory);
 
   useEffect(() => {
     if (role === 'admin' && client) {
@@ -120,51 +148,57 @@ export const Memories: React.FC = () => {
 
   useEffect(() => {
     if (selectedUri) {
-      const found = memories.find(m => m.uri === selectedUri);
+      const found = memories.find(m => matchesSelectedMemory(m, selectedUri, selectedTenantId, selectedUserId));
       if (found) {
         setSelectedMemory(found);
       } else {
-        // If not in current list, we should probably fetch it specifically, 
-        // but for now we'll just wait for it to appear or assume it's there.
+        setSelectedMemory(null);
       }
     } else {
       setSelectedMemory(null);
     }
-  }, [selectedUri, memories]);
-
-  const fetchContent = useCallback(async (uri: string, memory: MemoryItem) => {
-    if (!client) return;
-    setContentLoading(true);
-    try {
-      // Search results may already have overview/content inline
-      const hasInlineOverview = 'overview' in memory && !!memory.overview;
-      const hasInlineContent = 'content' in memory && !!memory.content;
-
-      const [abs, over, full] = await Promise.all([
-        client.getContentAbstract(uri),
-        hasInlineOverview ? Promise.resolve({ status: 'ok', result: (memory as SearchResult).overview! }) : client.getContentOverview(uri),
-        hasInlineContent ? Promise.resolve({ status: 'ok', result: (memory as SearchResult).content! }) : client.getContentRead(uri),
-      ]);
-      setContent({
-        abstract: abs.result,
-        overview: over.result,
-        full: full.result
-      });
-    } catch (error) {
-      console.error('Failed to fetch content', error);
-    } finally {
-      setContentLoading(false);
-    }
-  }, [client]);
+  }, [selectedUri, selectedTenantId, selectedUserId, memories]);
 
   useEffect(() => {
-    if (selectedMemory) {
-      fetchContent(selectedMemory.uri, selectedMemory);
-    }
-  }, [selectedMemory, fetchContent]);
+    if (!selectedMemory || !client) return;
+    let cancelled = false;
+
+    setContent({ abstract: '', overview: '', full: '' });
+    setContentLoading(true);
+
+    const uri = selectedMemory.uri;
+    const hasInlineOverview = 'overview' in selectedMemory && !!selectedMemory.overview;
+    const hasInlineContent = 'content' in selectedMemory && !!selectedMemory.content;
+
+    Promise.all([
+      client.getContentAbstract(uri),
+      hasInlineOverview ? Promise.resolve({ status: 'ok', result: (selectedMemory as SearchResult).overview! }) : client.getContentOverview(uri),
+      hasInlineContent ? Promise.resolve({ status: 'ok', result: (selectedMemory as SearchResult).content! }) : client.getContentRead(uri),
+    ]).then(([abs, over, full]) => {
+      if (!cancelled) {
+        setContent({ abstract: abs.result, overview: over.result, full: full.result });
+      }
+    }).catch(error => {
+      console.error('Failed to fetch content', error);
+    }).finally(() => {
+      if (!cancelled) setContentLoading(false);
+    });
+
+    return () => { cancelled = true; };
+  }, [selectedMemory, client]);
 
   const handleSelect = (memory: MemoryItem) => {
-    setSearchParams({ uri: memory.uri });
+    setSelectedMemory(memory);
+
+    const nextParams: Record<string, string> = { uri: memory.uri };
+    if ('source_tenant_id' in memory && memory.source_tenant_id) {
+      nextParams.tenant_id = memory.source_tenant_id;
+    }
+    if ('source_user_id' in memory && memory.source_user_id) {
+      nextParams.user_id = memory.source_user_id;
+    }
+
+    setSearchParams(nextParams);
   };
 
   const handleFeedback = async (reward: number) => {
@@ -257,10 +291,10 @@ export const Memories: React.FC = () => {
           <div className="flex-1 overflow-y-auto space-y-3 pr-2">
             {memories.map((memory) => (
               <div 
-                key={memory.uri}
+                key={getMemorySelectionKey(memory)}
                 onClick={() => handleSelect(memory)}
                 className={`p-4 rounded-lg border cursor-pointer transition-all ${
-                  selectedUri === memory.uri 
+                  selectedKey === getMemorySelectionKey(memory)
                     ? 'border-indigo-500 bg-indigo-50' 
                     : 'border-gray-200 bg-white hover:border-gray-300'
                 }`}
@@ -308,7 +342,7 @@ export const Memories: React.FC = () => {
         {/* Right Panel: Detail */}
         <div className="w-[60%] overflow-y-auto pr-2">
           {selectedMemory ? (
-            <div className="space-y-6">
+            <div key={selectedKey} className="space-y-6">
               <Card>
                 <div className="flex items-start justify-between gap-4 mb-4">
                   <h2 className="text-xl font-bold text-gray-900">{selectedMemory.abstract}</h2>
