@@ -90,5 +90,91 @@ class TestSmartSplit(unittest.TestCase):
         self.assertEqual(smart_split("", 100), [""])
 
 
+import asyncio
+
+
+class TestChunkedLLMDerive(unittest.TestCase):
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def test_single_chunk_passthrough(self):
+        from opencortex.utils.text import chunked_llm_derive
+
+        async def mock_llm(prompt):
+            return '{"abstract": "Sum", "overview": "Over", "keywords": ["k1"]}'
+
+        def mock_parse(response):
+            import json
+            return json.loads(response)
+
+        result = self._run(chunked_llm_derive(
+            content="Short content",
+            prompt_builder=lambda c: f"Summarize: {c}",
+            llm_fn=mock_llm,
+            parse_fn=mock_parse,
+            max_chars_per_chunk=3000,
+        ))
+        self.assertEqual(result["abstract"], "Sum")
+        self.assertEqual(result["overview"], "Over")
+        self.assertEqual(result["keywords"], ["k1"])
+
+    def test_multi_chunk_merges_keywords(self):
+        from opencortex.utils.text import chunked_llm_derive
+
+        call_count = 0
+        async def mock_llm(prompt):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return '{"abstract": "First", "overview": "Overview 1.", "keywords": ["a", "b"]}'
+            elif call_count == 2:
+                return '{"abstract": "Second", "overview": "Overview 2.", "keywords": ["b", "c"]}'
+            # Compression call for overview
+            return '{"abstract": "Compressed", "overview": "Compressed overview.", "keywords": []}'
+
+        def mock_parse(response):
+            import json
+            return json.loads(response)
+
+        text = "Para one content.\n\n" + "Para two content."
+        result = self._run(chunked_llm_derive(
+            content=text,
+            prompt_builder=lambda c: f"Summarize: {c}",
+            llm_fn=mock_llm,
+            parse_fn=mock_parse,
+            max_chars_per_chunk=20,
+        ))
+        self.assertEqual(result["abstract"], "First")
+        self.assertIn("a", result["keywords"])
+        self.assertIn("b", result["keywords"])
+        self.assertIn("c", result["keywords"])
+
+    def test_abstract_overview_merge_policy(self):
+        from opencortex.utils.text import chunked_llm_derive
+
+        async def mock_llm(prompt):
+            if "compress" in prompt.lower() or "Compress" in prompt:
+                return '{"abstract": "compressed abs", "overview": "compressed over"}'
+            return '{"abstract": "abs", "overview": "over"}'
+
+        def mock_parse(response):
+            import json
+            return json.loads(response)
+
+        text = "Chunk one.\n\nChunk two."
+        result = self._run(chunked_llm_derive(
+            content=text,
+            prompt_builder=lambda c: f"Summarize: {c}",
+            llm_fn=mock_llm,
+            parse_fn=mock_parse,
+            merge_policy="abstract_overview",
+            max_chars_per_chunk=15,
+        ))
+        self.assertIn("abstract", result)
+        self.assertIn("overview", result)
+        self.assertNotIn("keywords", result)
+
+
 if __name__ == "__main__":
     unittest.main()

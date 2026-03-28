@@ -308,6 +308,28 @@ def build_rerank_prompt(query: str, docs_text: str) -> str:
 # 10. HyDE (Hypothetical Document Embedding)
 # =========================================================================
 
+# =========================================================================
+# 11. Overview Compression  (for chunked derivation)
+# =========================================================================
+
+def build_overview_compression_prompt(overviews: str) -> str:
+    """Compress multiple chunk overviews into a single 3-8 sentence overview.
+
+    Args:
+        overviews: Concatenated overviews from multiple chunks.
+    """
+    return f"""Compress the following multiple overview sections into a single coherent overview.
+
+Source overviews:
+{overviews}
+
+Rules:
+- Produce 3-8 sentences that cover the key facts from ALL source overviews
+- Do NOT repeat information
+- Maintain factual accuracy
+- Return ONLY the compressed overview text, no JSON wrapping"""
+
+
 def build_hyde_prompt(question: str) -> str:
     """Build prompt for generating a hypothetical memory observation.
 

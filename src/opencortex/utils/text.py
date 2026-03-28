@@ -1,6 +1,6 @@
 """Paragraph-aware text truncation and splitting utilities."""
 import re
-from typing import List
+from typing import Any, Awaitable, Callable, Dict, List
 
 
 def smart_truncate(text: str, max_chars: int) -> str:
@@ -117,6 +117,90 @@ def _split_by_lines(text: str, max_chars: int) -> List[str]:
     if current:
         chunks.append(current)
     return chunks if chunks else [text[:max_chars]]
+
+
+async def chunked_llm_derive(
+    content: str,
+    prompt_builder: Callable[[str], str],
+    llm_fn: Callable[[str], Awaitable[str]],
+    parse_fn: Callable[[str], dict],
+    merge_policy: str = "default",
+    max_chars_per_chunk: int = 3000,
+) -> Dict[str, Any]:
+    """Split content into chunks, call LLM on each, merge results.
+
+    prompt_builder: Takes content string, returns prompt. Wrap multi-arg
+                    builders with lambda/partial before passing.
+    parse_fn:       Parses LLM response into dict.
+    merge_policy:   "default" — merges {abstract, overview, keywords}
+                    "abstract_overview" — merges {abstract, overview} only
+    """
+    chunks = smart_split(content, max_chars_per_chunk)
+
+    if len(chunks) == 1:
+        prompt = prompt_builder(chunks[0])
+        response = await llm_fn(prompt)
+        result = parse_fn(response)
+        if merge_policy == "abstract_overview":
+            return {
+                "abstract": result.get("abstract", ""),
+                "overview": result.get("overview", ""),
+            }
+        return result
+
+    # Process each chunk
+    chunk_results = []
+    for chunk in chunks:
+        prompt = prompt_builder(chunk)
+        try:
+            response = await llm_fn(prompt)
+            parsed = parse_fn(response)
+            if isinstance(parsed, dict):
+                chunk_results.append(parsed)
+        except Exception:
+            pass
+
+    if not chunk_results:
+        return {"abstract": "", "overview": ""}
+
+    # Merge: abstract from first chunk
+    abstract = chunk_results[0].get("abstract", "")
+
+    # Merge: overview via second-pass compression
+    all_overviews = "\n\n".join(
+        r.get("overview", "") for r in chunk_results if r.get("overview")
+    )
+    if all_overviews and len(chunk_results) > 1:
+        try:
+            from opencortex.prompts import build_overview_compression_prompt
+            compress_prompt = build_overview_compression_prompt(all_overviews)
+            compress_response = await llm_fn(compress_prompt)
+            overview = compress_response.strip()
+        except Exception:
+            overview = chunk_results[0].get("overview", "")
+    else:
+        overview = all_overviews
+
+    if merge_policy == "abstract_overview":
+        return {"abstract": abstract, "overview": overview}
+
+    # Merge: keywords deduplicated union
+    all_keywords = []
+    seen: set = set()
+    for r in chunk_results:
+        kw = r.get("keywords", [])
+        if isinstance(kw, list):
+            for k in kw:
+                k_lower = str(k).lower()
+                if k_lower not in seen:
+                    seen.add(k_lower)
+                    all_keywords.append(k)
+
+    return {
+        "abstract": abstract,
+        "overview": overview,
+        "keywords": all_keywords,
+    }
 
 
 def _split_by_words(text: str, max_chars: int) -> List[str]:
