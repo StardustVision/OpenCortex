@@ -167,6 +167,12 @@ class TraceListRequest(BaseModel):
 # Context Protocol
 # =========================================================================
 
+class ToolCallRecord(BaseModel):
+    """Structured tool usage record from MCP add_message."""
+    name: str
+    summary: str = ""
+
+
 class ContextMessage(BaseModel):
     role: str
     content: str
@@ -185,6 +191,7 @@ class ContextRequest(BaseModel):
     )
     phase: str                     # prepare | commit | end
     messages: Optional[List[ContextMessage]] = None
+    tool_calls: Optional[List[ToolCallRecord]] = None
     cited_uris: Optional[List[str]] = None
     config: Optional[ContextConfig] = None
 

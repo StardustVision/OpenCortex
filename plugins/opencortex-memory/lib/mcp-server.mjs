@@ -102,7 +102,8 @@ const TOOLS = {
     + 'Records the conversation turn for future recall and knowledge extraction. '
     + 'Pass cited_uris for opencortex:// URIs you referenced from recall results.', {
       user_message:       { type: 'string', description: "The user's message", required: true },
-      assistant_response: { type: 'string', description: 'Your response to the user', required: true },
+      assistant_response: { type: 'string', description: 'Your conversational conclusion — what you found, decided, or recommended. Do NOT include tool output, code blocks, or execution details.', required: true },
+      tool_calls:         { type: 'array',  description: 'Tools you used this turn. Each item: {name, summary}. summary is a short one-line description of what the tool did.' },
       cited_uris:         { type: 'array',  description: 'opencortex:// URIs referenced in response' },
     }],
   end: [null, null,
@@ -197,6 +198,7 @@ async function handleAddMessage(args) {
       { role: 'assistant', content: args.assistant_response },
     ],
   };
+  if (args.tool_calls) body.tool_calls = args.tool_calls;
   if (args.cited_uris) body.cited_uris = args.cited_uris;
 
   return await httpContextCall(body);
@@ -306,9 +308,13 @@ User sends message
 - If no relevant memories are found, respond normally
 
 ### Step 3: add_message (AFTER answering)
-- Call \`add_message\` with the user's message and your response
+- Call \`add_message\` with:
+  - \`user_message\`: the user's original message
+  - \`assistant_response\`: your conversational conclusion ONLY — what you found, decided, or recommended
+    - Do NOT include: tool output, code blocks, command results, diffs, logs
+    - Do include: decisions, findings, next steps, explanations
+  - \`tool_calls\`: list of tools you used, each with {name, summary}
 - Pass \`cited_uris\` for any opencortex:// URIs you referenced
-- This persists the conversation for future recall and knowledge extraction
 - This is NOT optional — skipping means the conversation is lost forever
 
 ## Session Lifecycle (Automatic)

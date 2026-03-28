@@ -11,6 +11,7 @@ from typing import Awaitable, Callable, List, Optional
 from opencortex.core.message import Message
 from opencortex.prompts import build_intent_analysis_prompt
 from opencortex.retrieve.types import ContextType, QueryPlan, TypedQuery
+from opencortex.utils.cache import AsyncTTLCache
 from opencortex.utils.json_parse import parse_json_from_response as _parse_json_from_response
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,7 @@ class IntentAnalyzer:
         """
         self._llm_completion = llm_completion
         self.max_recent_messages = max_recent_messages
+        self._cache = AsyncTTLCache(ttl_seconds=60.0, max_size=128)
 
     async def analyze(
         self,
@@ -98,6 +100,16 @@ class IntentAnalyzer:
             target_abstract,
         )
 
+        # Check cache before calling LLM
+        cache_key = AsyncTTLCache.make_key(
+            prompt,
+            context_type.value if context_type else "",
+        )
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            logger.debug("[IntentAnalyzer] Cache hit for intent analysis")
+            return cached
+
         # Call LLM
         response = await completion_fn(prompt)
 
@@ -130,11 +142,13 @@ class IntentAnalyzer:
             )
         logger.debug(f"[IntentAnalyzer] Reasoning: {parsed.get('reasoning', '')[:200]}...")
 
-        return QueryPlan(
+        result = QueryPlan(
             queries=queries,
             session_context=self._summarize_context(compression_summary, current_message),
             reasoning=parsed.get("reasoning", ""),
         )
+        self._cache.put(cache_key, result)
+        return result
 
     def _build_context_prompt(
         self,

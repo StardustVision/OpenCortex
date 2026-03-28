@@ -1,5 +1,11 @@
 // HTTP client using native fetch (Node.js >= 18)
+import { Agent, setGlobalDispatcher } from 'undici';
 import { getMcpConfig, getProjectId } from './common.mjs';
+
+setGlobalDispatcher(new Agent({
+  keepAliveTimeout: 30_000,
+  connections: 10,
+}));
 
 /**
  * Build per-request HTTP headers from MCP config.

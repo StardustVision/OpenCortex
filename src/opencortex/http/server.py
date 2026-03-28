@@ -466,6 +466,7 @@ def _register_routes(app: FastAPI) -> None:
             messages=[m.model_dump() for m in req.messages] if req.messages else None,
             cited_uris=req.cited_uris,
             config=req.config.model_dump() if req.config else None,
+            tool_calls=[t.model_dump() for t in req.tool_calls] if req.tool_calls else None,
         )
 
     # =====================================================================
