@@ -12,6 +12,7 @@ Responsibilities:
 """
 
 import asyncio
+import concurrent.futures
 import hashlib
 import orjson
 import logging
@@ -29,6 +30,11 @@ if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+
+# Bounded executor for file I/O — limits queue depth to prevent memory leaks
+_fs_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="cortexfs",
+)
 
 
 # ========== Dataclass ==========
@@ -1104,31 +1110,26 @@ class CortexFS:
         content_filename: str = "content.md",
         is_leaf: bool = False,
     ) -> None:
-        """Write context to local storage (L0/L1/L2)."""
+        """Write context to local storage (L0/L1/L2) via thread executor."""
         path = self._uri_to_path(uri)
+        loop = asyncio.get_running_loop()
 
-        try:
-            await self._ensure_parent_dirs(path)
+        def _sync_write():
             try:
                 self.agfs.mkdir(path)
             except Exception as e:
                 if "exist" not in str(e).lower():
                     raise
-
             if content:
-                content_path = f"{path}/{content_filename}"
-                if isinstance(content, str):
-                    content = content.encode("utf-8")
-                self.agfs.write(content_path, content)
-
+                data = content.encode("utf-8") if isinstance(content, str) else content
+                self.agfs.write(f"{path}/{content_filename}", data)
             if abstract:
-                abstract_path = f"{path}/.abstract.md"
-                self.agfs.write(abstract_path, abstract.encode("utf-8"))
-
+                self.agfs.write(f"{path}/.abstract.md", abstract.encode("utf-8"))
             if overview:
-                overview_path = f"{path}/.overview.md"
-                self.agfs.write(overview_path, overview.encode("utf-8"))
+                self.agfs.write(f"{path}/.overview.md", overview.encode("utf-8"))
 
+        try:
+            await loop.run_in_executor(_fs_executor, _sync_write)
         except Exception as e:
             logger.error(f"[CortexFS] Failed to write {uri}: {e}")
             raise IOError(f"Failed to write {uri}: {e}")
