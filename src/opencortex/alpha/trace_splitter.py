@@ -40,9 +40,10 @@ class TraceSplitter:
         for i, msg in enumerate(messages):
             role = msg.get("role", "unknown")
             content = msg.get("content", "")
-            # Truncate very long messages for the prompt
             if len(content) > 2000:
-                content = content[:2000] + "... [truncated]"
+                from opencortex.utils.text import smart_truncate
+                truncated = smart_truncate(content, 2000)
+                content = f"{truncated} [...{len(content) - len(truncated)} chars omitted]"
             lines.append(f"[Turn {i}] {role}: {content}")
         return "\n".join(lines)
 

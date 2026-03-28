@@ -174,7 +174,7 @@ async def admin_search_debug(req: MemorySearchRequest) -> Dict[str, Any]:
         )
         rows.append({
             "rank": i + 1,
-            "abstract": r.get("abstract", "")[:80],
+            "abstract": r.get("abstract", ""),
             "raw_vector_score": round(raw_score, 5),
             "rerank_score": round(rr_score, 5) if rr_score is not None else None,
             "fused_score": round(fused, 5),

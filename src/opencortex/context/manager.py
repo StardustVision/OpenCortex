@@ -733,10 +733,13 @@ class ContextManager:
         return items
 
     def _clamp(self, text: str) -> str:
-        """Hard limit per-item content to max_content_chars."""
+        """Limit per-item content to max_content_chars at paragraph boundary."""
         if len(text) <= self._max_content_chars:
             return text
-        return text[: self._max_content_chars] + "...[truncated]"
+        from opencortex.utils.text import smart_truncate
+        truncated = smart_truncate(text, self._max_content_chars)
+        omitted = len(text) - len(truncated)
+        return f"{truncated} [...{omitted} chars omitted]"
 
     def _build_instructions(
         self,

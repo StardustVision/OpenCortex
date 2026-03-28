@@ -265,8 +265,9 @@ class RerankClient:
 
     def _build_rerank_prompt(self, query: str, documents: List[str]) -> str:
         """Build LLM prompt for listwise reranking."""
+        from opencortex.utils.text import smart_truncate
         docs_text = "\n".join(
-            f"[{i}] {doc[:500]}" for i, doc in enumerate(documents)
+            f"[{i}] {smart_truncate(doc, 500)}" for i, doc in enumerate(documents)
         )
         return build_rerank_prompt(query, docs_text)
 
