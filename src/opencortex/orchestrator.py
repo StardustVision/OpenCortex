@@ -781,6 +781,29 @@ class MemoryOrchestrator:
             return {"abstract": user_abstract, "overview": user_overview, "keywords": ""}
 
         if self._llm_completion:
+            if len(content) > 4000:
+                from opencortex.utils.text import chunked_llm_derive
+                from opencortex.utils.json_parse import parse_json_from_response
+                try:
+                    result = await chunked_llm_derive(
+                        content=content,
+                        prompt_builder=lambda chunk: build_layer_derivation_prompt(chunk, user_abstract),
+                        llm_fn=self._llm_completion,
+                        parse_fn=parse_json_from_response,
+                        max_chars_per_chunk=4000,
+                    )
+                    keywords_list = result.get("keywords", [])
+                    if isinstance(keywords_list, list):
+                        keywords = ", ".join(str(k) for k in keywords_list if k)
+                    else:
+                        keywords = str(keywords_list)
+                    return {
+                        "abstract": user_abstract or result.get("abstract", ""),
+                        "overview": user_overview or result.get("overview", ""),
+                        "keywords": keywords,
+                    }
+                except Exception as e:
+                    logger.warning("[Orchestrator] _derive_layers chunked LLM failed: %s", e)
             prompt = build_layer_derivation_prompt(content, user_abstract)
             try:
                 response = await self._llm_completion(prompt)
@@ -2502,22 +2525,39 @@ class MemoryOrchestrator:
 
     async def _generate_abstract_overview(self, content: str, file_path: str) -> tuple:
         """Use LLM to generate abstract (L0) and overview (L1) from content."""
+        from opencortex.utils.text import smart_truncate
+
         if not self._llm_completion:
-            # Fallback: filename as abstract, first 500 chars as overview
-            return file_path, content[:500]
+            return file_path, smart_truncate(content, 500)
+
+        if len(content) > 3000:
+            from opencortex.utils.text import chunked_llm_derive
+            from opencortex.utils.json_parse import parse_json_from_response
+            try:
+                result = await chunked_llm_derive(
+                    content=content,
+                    prompt_builder=lambda chunk: build_doc_summarization_prompt(file_path, chunk),
+                    llm_fn=self._llm_completion,
+                    parse_fn=parse_json_from_response,
+                    merge_policy="abstract_overview",
+                    max_chars_per_chunk=3000,
+                )
+                return result.get("abstract", file_path), result.get("overview", smart_truncate(content, 500))
+            except Exception:
+                pass
+            return file_path, smart_truncate(content, 500)
 
         prompt = build_doc_summarization_prompt(file_path, content)
-
         try:
             response = await self._llm_completion(prompt)
             from opencortex.utils.json_parse import parse_json_from_response
             data = parse_json_from_response(response)
             if isinstance(data, dict):
-                return data.get("abstract", file_path), data.get("overview", content[:500])
+                return data.get("abstract", file_path), data.get("overview", smart_truncate(content, 500))
         except Exception:
             pass
 
-        return file_path, content[:500]
+        return file_path, smart_truncate(content, 500)
 
     def _auto_uri(self, context_type: str, category: str, abstract: str = "") -> str:
         """Generate a URI based on context type, category, and abstract text.

@@ -157,13 +157,13 @@ def build_doc_summarization_prompt(file_path: str, content: str) -> str:
 
     Args:
         file_path: Document file path.
-        content: Full document content (truncated to 3000 chars inside the prompt).
+        content: Document content (caller handles chunking for oversized content).
     """
     return f"""Summarize this document for a memory system.
 
 File: {file_path}
-Content (first 3000 chars):
-{content[:3000]}
+Content:
+{content}
 
 Return JSON: {{"abstract": "1-2 sentence summary", "overview": "1 paragraph overview"}}"""
 
@@ -176,7 +176,7 @@ def build_layer_derivation_prompt(content: str, user_abstract: str = "") -> str:
     """Build prompt for parallel L0/L1/keywords derivation from L2 content.
 
     Args:
-        content: Full content text (truncated to 4000 chars in the prompt).
+        content: Content text (caller handles chunking for oversized content).
         user_abstract: Optional user-supplied abstract to guide generation.
     """
     user_hint = ""
@@ -188,7 +188,7 @@ def build_layer_derivation_prompt(content: str, user_abstract: str = "") -> str:
     return f"""Analyze the following content and produce a structured summary for a memory system.
 {user_hint}
 Content:
-{content[:4000]}
+{content}
 
 Return a JSON object with exactly these fields:
 {{
