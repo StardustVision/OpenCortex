@@ -74,7 +74,7 @@ class TestCommitToolCalls(unittest.TestCase):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        return asyncio.run(coro)
 
     def test_commit_stores_tool_calls_in_meta(self):
         """Immediate records written by _commit should carry tool_calls in meta."""
@@ -251,7 +251,7 @@ class TestNoiseReductionE2E(unittest.TestCase):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        return asyncio.run(coro)
 
     def test_tool_calls_not_in_event_body(self):
         """tool_calls should be in meta only, not polluting event text."""
