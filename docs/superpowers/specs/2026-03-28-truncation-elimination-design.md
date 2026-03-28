@@ -6,7 +6,7 @@
 
 Two tracks executed in one plan:
 
-- **Track A** — Content truncation: 6 sites across prompts, orchestrator, trace_splitter, admin_routes, rerank_client
+- **Track A** — Content truncation: 7 sites across prompts, orchestrator, trace_splitter, admin_routes, rerank_client, context/manager
 - **Track B** — Hash/ID truncation: 10 sites across orchestrator, uri, semantic_name, cortex_fs, user_id, archivist, trace_splitter
 
 Out of scope: log-only truncation (llm_factory error logs, intent_analyzer debug logs, migration scripts already executed).
@@ -59,9 +59,13 @@ async def chunked_llm_derive(
     parse_fn:       Parses LLM response string into a dict.
     merge_policy:   "default" merges {abstract, overview, keywords}:
                     - abstract: from first chunk (most representative)
-                    - overview: concatenated from all chunks
+                    - overview: second-pass LLM compression — all chunk overviews are concatenated
+                      and fed back to the LLM with a "compress into 3-8 sentences" prompt to
+                      preserve the existing overview field contract (short summary, not raw concat).
+                      If LLM unavailable, take first chunk's overview as fallback.
                     - keywords: union of all chunks, deduplicated
-                    "abstract_overview" merges only {abstract, overview} (for _generate_abstract_overview).
+                    "abstract_overview" merges only {abstract, overview} with same compression
+                    (for _generate_abstract_overview).
     """
 ```
 
@@ -120,6 +124,12 @@ Prompt text changes from `Content:` (no label change needed, just remove `[:4000
 
 **After:** `smart_truncate(doc, 500)` — paragraph-aware truncation per document. This keeps LLM prompt size bounded while preserving semantic completeness.
 
+#### A7. `context/manager.py:735-739` — `_clamp()` output truncation
+
+**Before:** `text[:max_content_chars] + "...[truncated]"` — hard character cut on overview and content fields returned to the MCP client via recall.
+
+**After:** `smart_truncate(text, max_content_chars)`. If truncated, append `f" [...{len(text) - len(result)} chars omitted]"`. This is an outbound truncation (data going to the agent), not a storage truncation, but it's still in the data pipeline and should respect paragraph boundaries.
+
 ## Track B: Eliminate Collision-Prone Hash/ID Truncation (New Data Only)
 
 ### Backward Compatibility
@@ -136,17 +146,21 @@ Old data retains original short-hash URIs. New data uses longer hashes/IDs. All 
 
 **After:** `uuid4().hex` (32 chars, 128 bits)
 
-#### B2. `orchestrator.py:656` — Source document ID
+#### B2. `orchestrator.py:656` — Source document ID — **DO NOT CHANGE**
 
-**Before:** `hashlib.sha256(...).hexdigest()[:16]` (16 chars, 64 bits)
+**Before:** `hashlib.sha256(...).hexdigest()[:16]`
 
-**After:** `hashlib.sha256(...).hexdigest()` (64 chars, 256 bits)
+**After:** Keep `[:16]` unchanged.
 
-#### B3. `orchestrator.py:658` — Fallback source document ID
+**Reason:** `source_doc_id` is a deterministic grouping key for document-scoped search, not a unique record ID. It's computed from `source_path` and used as an exact-match filter in `hierarchical_retriever.py:237`. If the same document is re-ingested after a hash length change, it would produce a different `source_doc_id`, splitting the document into two groups and breaking scoped retrieval. The 16-char hash (64 bits) provides sufficient collision resistance for this use case.
+
+#### B3. `orchestrator.py:658` — Fallback source document ID — **DO NOT CHANGE**
 
 **Before:** `uuid4().hex[:16]`
 
-**After:** `uuid4().hex`
+**After:** Keep `[:16]` unchanged.
+
+**Reason:** Must match the length convention of B2 for consistency in the `source_doc_id` field. Changing one without the other would create mixed-length IDs in the same field.
 
 #### B4. `orchestrator.py:2541` — Auto-URI fallback node name
 
