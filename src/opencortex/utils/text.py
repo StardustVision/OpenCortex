@@ -149,16 +149,18 @@ async def chunked_llm_derive(
         return result
 
     # Process each chunk
+    import logging
+    _logger = logging.getLogger(__name__)
     chunk_results = []
-    for chunk in chunks:
+    for i, chunk in enumerate(chunks):
         prompt = prompt_builder(chunk)
         try:
             response = await llm_fn(prompt)
             parsed = parse_fn(response)
             if isinstance(parsed, dict):
                 chunk_results.append(parsed)
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.warning("chunked_llm_derive: chunk %d/%d failed: %s", i + 1, len(chunks), exc)
 
     if not chunk_results:
         return {"abstract": "", "overview": ""}
