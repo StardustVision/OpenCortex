@@ -11,6 +11,7 @@ Responsibilities:
 - Vector sync (sync vector store on rm/mv)
 """
 
+import atexit
 import asyncio
 import concurrent.futures
 import hashlib
@@ -35,6 +36,7 @@ logger = logging.getLogger(__name__)
 _fs_executor = concurrent.futures.ThreadPoolExecutor(
     max_workers=4, thread_name_prefix="cortexfs",
 )
+atexit.register(_fs_executor.shutdown, wait=False)
 
 
 # ========== Dataclass ==========

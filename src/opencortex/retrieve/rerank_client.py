@@ -9,6 +9,7 @@ Supports three modes:
 3. Disabled — returns zero scores
 """
 
+import hashlib
 import orjson as json
 import logging
 import re
@@ -119,7 +120,10 @@ class RerankClient:
             return []
 
         # Check cache before running reranker
-        cache_key = AsyncTTLCache.make_key(query, *[d[:50] for d in documents])
+        cache_key = AsyncTTLCache.make_key(
+            query, len(documents),
+            *[hashlib.md5(d.encode()).hexdigest() for d in documents],
+        )
         cached = self._cache.get(cache_key)
         if cached is not None:
             logger.debug("[RerankClient] Cache hit for rerank query")
