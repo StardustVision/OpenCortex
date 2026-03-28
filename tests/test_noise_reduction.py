@@ -231,6 +231,97 @@ class TestCommitToolCalls(unittest.TestCase):
         self._run(orch.close())
 
 
+class TestNoiseReductionE2E(unittest.TestCase):
+    """Full pipeline: MCP-style add_message with tool_calls → verify storage."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp(prefix="noise_e2e_")
+        self.config = CortexConfig(
+            data_root=self.temp_dir,
+            embedding_dimension=MockEmbedder.DIMENSION,
+            rerank_provider="disabled",
+        )
+        init_config(self.config)
+        self._tokens = set_request_identity("testteam", "alice")
+        self.storage = InMemoryStorage()
+        self.embedder = MockEmbedder()
+
+    def tearDown(self):
+        reset_request_identity(self._tokens)
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _run(self, coro):
+        return asyncio.get_event_loop().run_until_complete(coro)
+
+    def test_tool_calls_not_in_event_body(self):
+        """tool_calls should be in meta only, not polluting event text."""
+        orch = MemoryOrchestrator(config=self.config, storage=self.storage, embedder=self.embedder)
+        self._run(orch.init())
+        cm = orch._context_manager
+
+        self._run(cm.handle(
+            session_id="e2e", phase="prepare",
+            tenant_id="testteam", user_id="alice", turn_id="t1",
+            messages=[{"role": "user", "content": "fix the right panel bug"}],
+        ))
+
+        self._run(cm.handle(
+            session_id="e2e", phase="commit",
+            tenant_id="testteam", user_id="alice", turn_id="t1",
+            messages=[
+                {"role": "user", "content": "fix the right panel bug"},
+                {"role": "assistant", "content": "Fixed stale content state with cancelled flag."},
+            ],
+            tool_calls=[
+                {"name": "Read", "summary": "web/src/pages/Memories.tsx"},
+                {"name": "Edit", "summary": "modified selectedMemory useEffect"},
+            ],
+        ))
+
+        # Check records in the "context" collection
+        records = list(self.storage._records.get("context", {}).values())
+
+        # Event body should NOT contain tool names
+        for r in records:
+            abstract = r.get("abstract", "")
+            self.assertNotIn("[tool-use]", abstract)
+
+        # meta.tool_calls should exist on at least one record
+        has_tool_calls = any(r.get("meta", {}).get("tool_calls") for r in records)
+        self.assertTrue(has_tool_calls, "Should have tool_calls in meta")
+
+        # tool_calls content check
+        tc_records = [r for r in records if r.get("meta", {}).get("tool_calls")]
+        tc = tc_records[0]["meta"]["tool_calls"]
+        self.assertEqual(tc[0]["name"], "Read")
+
+        self._run(orch.close())
+
+    def test_backward_compat_no_tool_calls(self):
+        """Without tool_calls, commit works exactly as before."""
+        orch = MemoryOrchestrator(config=self.config, storage=self.storage, embedder=self.embedder)
+        self._run(orch.init())
+        cm = orch._context_manager
+
+        self._run(cm.handle(
+            session_id="bc", phase="prepare",
+            tenant_id="testteam", user_id="alice", turn_id="t1",
+            messages=[{"role": "user", "content": "hello"}],
+        ))
+
+        result = self._run(cm.handle(
+            session_id="bc", phase="commit",
+            tenant_id="testteam", user_id="alice", turn_id="t1",
+            messages=[
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "hi there"},
+            ],
+        ))
+        self.assertTrue(result["accepted"])
+
+        self._run(orch.close())
+
+
 class TestConversationBufferDataclass(unittest.TestCase):
     """Test ConversationBuffer dataclass field defaults."""
 
