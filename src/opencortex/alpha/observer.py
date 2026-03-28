@@ -54,14 +54,18 @@ class Observer:
     def record_batch(
         self, session_id: str, messages: List[Dict[str, Any]],
         tenant_id: str, user_id: str,
+        tool_calls: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         """Record a batch of messages (from client debounce buffer)."""
         for msg in messages:
-            self._transcripts[session_id].append({
+            entry = {
                 "role": msg["role"],
                 "content": msg["content"],
                 "timestamp": msg.get("timestamp", time.time()),
-            })
+            }
+            if msg["role"] == "assistant" and tool_calls:
+                entry["tool_calls"] = tool_calls
+            self._transcripts[session_id].append(entry)
 
     def get_transcript(self, session_id: str) -> List[Dict[str, Any]]:
         """Get full transcript for a session (non-destructive)."""
