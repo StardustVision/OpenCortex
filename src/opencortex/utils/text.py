@@ -9,6 +9,8 @@ def smart_truncate(text: str, max_chars: int) -> str:
     Priority: paragraph (\\n\\n) > line (\\n) > sentence (. ! ?) > word > hard cut.
     GUARANTEE: return value is always <= max_chars.
     """
+    if max_chars <= 0:
+        return text
     if len(text) <= max_chars:
         return text
 
@@ -62,9 +64,13 @@ def _truncate_at_word(text: str, max_chars: int) -> str:
 def smart_split(text: str, max_chars: int) -> List[str]:
     """Split text into chunks, each <= max_chars, at paragraph boundaries.
 
-    No content is lost — chunks joined with \\n\\n equal the original text.
-    For oversized paragraphs, falls back to line splitting, then word splitting.
+    Each chunk is a complete paragraph or group of paragraphs.
+    Used for chunked LLM processing of oversized content.
+    Content is preserved within each chunk but separators between chunks
+    may differ from the original when line-level splitting is needed.
     """
+    if max_chars <= 0:
+        return [text] if text else [""]
     if len(text) <= max_chars:
         return [text]
 
@@ -124,7 +130,15 @@ def _split_by_words(text: str, max_chars: int) -> List[str]:
         else:
             if current:
                 chunks.append(current)
-            current = word if len(word) <= max_chars else word[:max_chars]
+            if len(word) <= max_chars:
+                current = word
+            else:
+                for i in range(0, len(word), max_chars):
+                    piece = word[i:i + max_chars]
+                    if i + max_chars < len(word):
+                        chunks.append(piece)
+                    else:
+                        current = piece
     if current:
         chunks.append(current)
     return chunks if chunks else [text[:max_chars]]
