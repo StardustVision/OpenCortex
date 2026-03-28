@@ -150,7 +150,10 @@ export const Memories: React.FC = () => {
     if (selectedUri) {
       const found = memories.find(m => matchesSelectedMemory(m, selectedUri, selectedTenantId, selectedUserId));
       if (found) {
-        setSelectedMemory(found);
+        setSelectedMemory(prev => {
+          if (prev && getMemorySelectionKey(prev) === getMemorySelectionKey(found)) return prev;
+          return found;
+        });
       } else {
         setSelectedMemory(null);
       }
@@ -289,13 +292,15 @@ export const Memories: React.FC = () => {
           </div>
 
           <div className="flex-1 overflow-y-auto space-y-3 pr-2">
-            {memories.map((memory) => (
-              <div 
-                key={getMemorySelectionKey(memory)}
+            {memories.map((memory) => {
+              const key = getMemorySelectionKey(memory);
+              return (
+              <div
+                key={key}
                 onClick={() => handleSelect(memory)}
                 className={`p-4 rounded-lg border cursor-pointer transition-all ${
-                  selectedKey === getMemorySelectionKey(memory)
-                    ? 'border-indigo-500 bg-indigo-50' 
+                  selectedKey === key
+                    ? 'border-indigo-500 bg-indigo-50'
                     : 'border-gray-200 bg-white hover:border-gray-300'
                 }`}
               >
@@ -317,8 +322,9 @@ export const Memories: React.FC = () => {
                   )}
                 </div>
               </div>
-            ))}
-            
+              );
+            })}
+
             {loading && <LoadingSpinner />}
             
             {!loading && !isSearchMode && memories.length > 0 && (

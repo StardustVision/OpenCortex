@@ -36,6 +36,7 @@ import asyncio
 import hashlib
 import logging
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 from uuid import uuid4
@@ -1085,7 +1086,7 @@ class MemoryOrchestrator:
         record["speaker"] = (meta or {}).get("speaker", "")
         record["event_date"] = (meta or {}).get("event_date")
 
-        # Set TTL for staging records (24 hours from now)
+        # Set TTL for short-lived record types
         if context_type == "staging":
             record["ttl_expires_at"] = self._ttl_from_hours(self._config.immediate_event_ttl_hours)
         elif (
@@ -1131,7 +1132,6 @@ class MemoryOrchestrator:
         """Return RFC3339 UTC expiry string. Non-positive values disable TTL."""
         if hours <= 0:
             return ""
-        from datetime import datetime, timedelta, timezone
         expires = datetime.now(timezone.utc) + timedelta(hours=hours)
         return expires.strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -1569,7 +1569,6 @@ class MemoryOrchestrator:
 
     async def _update_access_stats_batch(self, records: list) -> None:
         """Parallel batch update access_count + accessed_at (no individual get)."""
-        from datetime import datetime, timezone
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         async def _one(r: dict) -> None:
@@ -1909,7 +1908,6 @@ class MemoryOrchestrator:
     async def cleanup_expired_staging(self) -> int:
         """Delete records past their TTL (staging + immediate + any with TTL)."""
         self._ensure_init()
-        from datetime import datetime, timezone
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         # Scan all records with non-empty ttl_expires_at
