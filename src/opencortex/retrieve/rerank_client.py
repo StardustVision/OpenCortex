@@ -16,6 +16,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from opencortex.prompts import build_rerank_prompt
 from opencortex.retrieve.rerank_config import RerankConfig
+from opencortex.utils.cache import AsyncTTLCache
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,8 @@ class RerankClient:
         self._mode = self._detect_mode()
         # Reusable HTTP client for connection pooling (lazy-created on first API call)
         self._http_client: Optional[Any] = None
+        # Cache for rerank scores: TTL 120s, max 64 entries
+        self._cache = AsyncTTLCache(ttl_seconds=120.0, max_size=64)
         # Initialize local reranker if mode is "local"
         self._init_local_reranker()
         logger.info("[RerankClient] Initialized in '%s' mode", self._mode)
@@ -115,10 +118,19 @@ class RerankClient:
         if not documents:
             return []
 
+        # Check cache before running reranker
+        cache_key = AsyncTTLCache.make_key(query, *[d[:50] for d in documents])
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            logger.debug("[RerankClient] Cache hit for rerank query")
+            return cached
+
         max_k = self._config.max_candidates or len(documents)
 
         if len(documents) <= max_k:
-            return await self._rerank_batch(query, documents)
+            scores = await self._rerank_batch(query, documents)
+            self._cache.put(cache_key, scores)
+            return scores
 
         # Sliding window: score all documents in batches of max_k
         import asyncio
@@ -142,6 +154,7 @@ class RerankClient:
                 for i, s in enumerate(batch_scores):
                     scores[start + i] = s
 
+        self._cache.put(cache_key, scores)
         return scores
 
     async def _rerank_batch(self, query: str, documents: List[str]) -> List[float]:

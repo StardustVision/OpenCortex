@@ -9,6 +9,7 @@ from opencortex.models.embedder.base import (
     truncate_and_normalize,
 )
 
+from opencortex.models.embedder.cache import CachedEmbedder
 from opencortex.models.embedder.sparse import BM25SparseEmbedder
 
 try:
@@ -26,4 +27,5 @@ __all__ = [
     "EmbedResult",
     "truncate_and_normalize",
     "OpenAIDenseEmbedder",
+    "CachedEmbedder",
 ]
