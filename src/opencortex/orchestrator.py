@@ -579,7 +579,7 @@ class MemoryOrchestrator:
         from uuid import uuid4
 
         tid, uid = get_effective_identity()
-        nid = uuid4().hex[:12]
+        nid = uuid4().hex
         uri = CortexURI.build_private(tid, uid, "memories", "events", nid)
 
         # Embed without LLM
@@ -2578,7 +2578,7 @@ class MemoryOrchestrator:
         from opencortex.utils.semantic_name import semantic_node_name
 
         tid, uid = get_effective_identity()
-        node_name = semantic_node_name(abstract) if abstract else uuid4().hex[:12]
+        node_name = semantic_node_name(abstract) if abstract else uuid4().hex
 
         if context_type == "memory":
             cat = category if category in self._USER_MEMORY_CATEGORIES else "events"

@@ -343,7 +343,14 @@ class CortexURI:
             text,
         )
         safe = re.sub(r"_+", "_", safe)
-        safe = safe.strip("_")[:50]
+        safe = safe.strip("_")
+        if len(safe) > 80:
+            prefix = safe[:80]
+            last_underscore = prefix.rfind("_")
+            if last_underscore > 0:
+                safe = prefix[:last_underscore]
+            else:
+                safe = prefix
         return safe or "unnamed"
 
     @classmethod
@@ -352,7 +359,7 @@ class CortexURI:
         import datetime
         import uuid
 
-        temp_id = uuid.uuid4().hex[:6]
+        temp_id = uuid.uuid4().hex[:16]
         ts = datetime.datetime.now().strftime("%m%d%H%M")
         return cls.build_shared(tenant_id, "temp", f"{ts}_{temp_id}")
 

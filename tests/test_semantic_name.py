@@ -28,10 +28,10 @@ class TestSemanticNodeName(unittest.TestCase):
     def test_truncation_with_hash(self):
         from opencortex.utils.semantic_name import semantic_node_name
         long_text = "a" * 100
-        result = semantic_node_name(long_text, max_length=50)
-        self.assertLessEqual(len(result), 50)
-        # Should end with _<8-char-hash>
-        self.assertRegex(result, r"_[a-f0-9]{8}$")
+        result = semantic_node_name(long_text, max_length=80)
+        self.assertLessEqual(len(result), 80)
+        # Should end with _<16-char-hash>
+        self.assertRegex(result, r"_[a-f0-9]{16}$")
 
     def test_empty_returns_unnamed(self):
         from opencortex.utils.semantic_name import semantic_node_name

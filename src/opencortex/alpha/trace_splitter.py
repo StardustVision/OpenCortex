@@ -139,7 +139,7 @@ class TraceSplitter:
 
         traces = []
         for task in tasks:
-            trace_id = f"tr-{uuid.uuid4().hex[:12]}"
+            trace_id = f"tr-{uuid.uuid4().hex}"
             indices = task.get("turn_indices", list(range(len(messages))))
             turns = self._messages_to_turns(messages, indices)
 

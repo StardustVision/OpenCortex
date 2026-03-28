@@ -9,17 +9,17 @@ import hashlib
 import re
 
 
-def semantic_node_name(text: str, max_length: int = 50) -> str:
+def semantic_node_name(text: str, max_length: int = 80) -> str:
     """Sanitize text for use as a URI node name.
 
     Preserves letters, digits, CJK characters, underscores, and hyphens.
     Replaces all other characters with underscores. Merges consecutive
-    underscores. If the result exceeds *max_length*, truncates and appends
-    a SHA-256 hash suffix for uniqueness.
+    underscores. If the result exceeds *max_length*, truncates at underscore
+    boundary and appends a SHA-256 hash suffix for uniqueness.
 
     Args:
         text: Input text (e.g., abstract, filename).
-        max_length: Maximum output length (default 50).
+        max_length: Maximum output length (default 80).
 
     Returns:
         URI-safe, deterministic node name. Returns ``"unnamed"`` for empty input.
@@ -35,7 +35,12 @@ def semantic_node_name(text: str, max_length: int = 50) -> str:
         return "unnamed"
 
     if len(safe) > max_length:
-        hash_suffix = hashlib.sha256(text.encode()).hexdigest()[:8]
-        safe = f"{safe[:max_length - 9]}_{hash_suffix}"
+        hash_suffix = hashlib.sha256(text.encode()).hexdigest()[:16]
+        prefix_limit = max_length - 17  # _<16-char-hash>
+        prefix = safe[:prefix_limit]
+        last_underscore = prefix.rfind("_")
+        if last_underscore > 0:
+            prefix = prefix[:last_underscore]
+        safe = f"{prefix}_{hash_suffix}"
 
     return safe

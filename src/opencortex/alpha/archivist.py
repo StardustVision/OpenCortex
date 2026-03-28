@@ -155,7 +155,7 @@ class Archivist:
                 continue
 
             k = Knowledge(
-                knowledge_id=f"k-{uuid.uuid4().hex[:12]}",
+                knowledge_id=f"k-{uuid.uuid4().hex}",
                 knowledge_type=ktype,
                 tenant_id=tenant_id,
                 user_id=user_id,
