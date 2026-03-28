@@ -39,6 +39,7 @@ class ConversationBuffer:
     token_count: int = 0
     start_msg_index: int = 0
     immediate_uris: list = dc_field(default_factory=list)
+    tool_calls_per_turn: list = dc_field(default_factory=list)
 
 
 class ContextManager:
@@ -124,6 +125,7 @@ class ContextManager:
         messages: Optional[List[Dict[str, str]]] = None,
         cited_uris: Optional[List[str]] = None,
         config: Optional[Dict[str, Any]] = None,
+        tool_calls: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Unified entry point — dispatches to prepare/commit/end."""
         if phase == "prepare":
@@ -142,6 +144,7 @@ class ContextManager:
                 raise ValueError("commit requires at least user + assistant messages")
             return await self._commit(
                 session_id, turn_id, messages, tenant_id, user_id, cited_uris,
+                tool_calls,
             )
 
         elif phase == "end":
@@ -344,6 +347,7 @@ class ContextManager:
         tenant_id: str,
         user_id: str,
         cited_uris: Optional[List[str]] = None,
+        tool_calls: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         sk = self._make_session_key(tenant_id, user_id, session_id)
         self._touch_session(sk)
@@ -360,10 +364,11 @@ class ContextManager:
                 "turn_id": turn_id,
             }
 
-        # Write to Observer (synchronous in-memory buffer)
+        # Observer gets full data including tool_calls
         observer_ok = True
         try:
-            self._observer.record_batch(session_id, messages, tenant_id, user_id)
+            self._observer.record_batch(session_id, messages, tenant_id, user_id,
+                                        tool_calls=tool_calls)
         except Exception as exc:
             observer_ok = False
             logger.warning(
@@ -384,26 +389,42 @@ class ContextManager:
                 self._pending_tasks.add(task)
                 task.add_done_callback(self._pending_tasks.discard)
 
-        # Conversation mode: write immediate records for each message
+        # Build write items (don't mutate buffer yet)
         buffer = self._conversation_buffers.setdefault(sk, ConversationBuffer())
-        for msg in messages:
+        write_items = []
+        for i, msg in enumerate(messages):
             text = msg.get("content", msg.get("assistant_response", msg.get("user_message", "")))
-            if text:
-                try:
-                    tokens_for_identity = set_request_identity(tenant_id, user_id)
-                    try:
-                        im_uri = await self._orchestrator._write_immediate(
-                            session_id=session_id,
-                            msg_index=buffer.start_msg_index + len(buffer.messages),
-                            text=text,
-                        )
-                        buffer.messages.append(text)
-                        buffer.immediate_uris.append(im_uri)
-                        buffer.token_count += self._estimate_tokens(text)
-                    finally:
-                        reset_request_identity(tokens_for_identity)
-                except Exception as exc:
-                    logger.warning("[ContextManager] Immediate write failed: %s", exc)
+            if not text:
+                continue
+            role = msg.get("role", "")
+            idx = buffer.start_msg_index + len(buffer.messages) + i
+            tc = tool_calls if role == "assistant" else None
+            write_items.append((text, idx, tc))
+
+        # Parallel immediate writes
+        if write_items:
+            tokens_for_identity = set_request_identity(tenant_id, user_id)
+            try:
+                results = await asyncio.gather(*[
+                    self._orchestrator._write_immediate(
+                        session_id=session_id, msg_index=idx,
+                        text=text, tool_calls=tc,
+                    )
+                    for text, idx, tc in write_items
+                ], return_exceptions=True)
+            finally:
+                reset_request_identity(tokens_for_identity)
+
+            for (text, idx, tc), result in zip(write_items, results):
+                if isinstance(result, Exception):
+                    logger.warning("[ContextManager] Immediate write failed: %s", result)
+                    continue
+                buffer.messages.append(text)
+                buffer.immediate_uris.append(result)
+                buffer.token_count += self._estimate_tokens(text)
+
+            if tool_calls:
+                buffer.tool_calls_per_turn.append(tool_calls)
 
         # Check merge threshold
         if buffer.token_count >= 1000:
@@ -448,6 +469,12 @@ class ContextManager:
         tokens_for_identity = None
         try:
             combined = "\n\n".join(buffer.messages)
+
+            # Aggregate tool_calls across all turns in this buffer
+            all_tool_calls = []
+            for tc_list in buffer.tool_calls_per_turn:
+                all_tool_calls.extend(tc_list)
+
             tokens_for_identity = set_request_identity(tenant_id, user_id)
             await self._orchestrator.add(
                 abstract="",
@@ -462,6 +489,7 @@ class ContextManager:
                         buffer.start_msg_index + len(buffer.messages) - 1,
                     ],
                     "session_id": session_id,
+                    "tool_calls": all_tool_calls if all_tool_calls else [],
                 },
                 session_id=session_id,
             )

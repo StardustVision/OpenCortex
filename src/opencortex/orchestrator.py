@@ -570,7 +570,8 @@ class MemoryOrchestrator:
             use_llm_fallback=getattr(base, "use_llm_fallback", True),
         )
 
-    async def _write_immediate(self, session_id: str, msg_index: int, text: str) -> str:
+    async def _write_immediate(self, session_id: str, msg_index: int, text: str,
+                               tool_calls: Optional[list] = None) -> str:
         """Write a single message for immediate searchability. No LLM, no CortexFS."""
         from opencortex.http.request_context import get_effective_identity, get_effective_project_id
         from opencortex.utils.uri import CortexURI
@@ -613,7 +614,8 @@ class MemoryOrchestrator:
             "source_user_id": uid,
             "source_tenant_id": tid,
             "keywords": "",
-            "meta": {"layer": "immediate", "msg_index": msg_index, "session_id": session_id},
+            "meta": {"layer": "immediate", "msg_index": msg_index, "session_id": session_id,
+                     "tool_calls": tool_calls or []},
             "session_id": session_id,
             "project_id": get_effective_project_id(),
             "mergeable": False,
