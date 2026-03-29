@@ -216,7 +216,11 @@ class CortexConfig:
         return config
 
     def _apply_env_overrides(self) -> None:
-        """Override config fields from OPENCORTEX_* environment variables."""
+        """Override config fields from OPENCORTEX_* environment variables.
+
+        Supports nested dataclass fields via JSON strings, e.g.:
+          OPENCORTEX_CORTEX_ALPHA='{"trace_splitter_enabled":true,"archivist_enabled":true}'
+        """
         for f in fields(self):
             env_key = f"OPENCORTEX_{f.name.upper()}"
             env_val = os.environ.get(env_key)
@@ -228,6 +232,18 @@ class CortexConfig:
                     setattr(self, f.name, float(env_val))
                 elif f.type is bool:
                     setattr(self, f.name, env_val.lower() in ("1", "true", "yes"))
+                elif f.name == "cortex_alpha":
+                    import json
+                    try:
+                        data = json.loads(env_val)
+                        if isinstance(data, dict):
+                            # Merge with existing defaults
+                            current = getattr(self, f.name)
+                            for k, v in data.items():
+                                if hasattr(current, k):
+                                    setattr(current, k, v)
+                    except (json.JSONDecodeError, TypeError) as exc:
+                        logger.warning("[CortexConfig] Failed to parse %s: %s", env_key, exc)
                 else:
                     setattr(self, f.name, env_val)
 

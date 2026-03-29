@@ -6,7 +6,7 @@ services:
       - "8921:8921"
     volumes:
       - ./.cortex:/data
-      - ./server.json:/app/server.json:ro
+      # - ./server.json:/app/server.json:ro
     environment:
       # ---- Server ----
       - OPENCORTEX_HTTP_SERVER_HOST=0.0.0.0
@@ -30,7 +30,7 @@ services:
       # - OPENCORTEX_RERANK_API_BASE=
       # - OPENCORTEX_RERANK_THRESHOLD=0.0
       # - OPENCORTEX_RERANK_FUSION_BETA=0.7
-      # ---- Cortex Alpha ----
-      # Knowledge extraction is configured via server.json (mounted above).
-      # Set cortex_alpha.trace_splitter_enabled and archivist_enabled to true.
+      # ---- Cortex Alpha (knowledge extraction) ----
+      # Requires LLM config above. JSON string, merged with defaults.
+      # - OPENCORTEX_CORTEX_ALPHA={"trace_splitter_enabled":true,"archivist_enabled":true,"archivist_trigger_threshold":5}
     restart: unless-stopped
