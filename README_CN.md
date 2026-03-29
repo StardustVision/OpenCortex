@@ -50,7 +50,7 @@ OpenCortex 将每条记忆存储为三个精度层级，最大程度减少 Token
 基于强化学习的记忆排序系统。Agent 给记忆正反馈时，其奖励分数增加，在未来的搜索中排名更高。长期不用的记忆自然衰减。公式：
 
 ```
-最终分数 = beta * 精排分数 + (1 - beta) * 检索分数 + rl_weight * 奖励分数
+最终分数 = beta * 精排分数 + (1 - beta) * 检索分数 + reward_weight * 奖励分数
 ```
 
 ### Cortex Alpha
@@ -168,7 +168,7 @@ HierarchicalRetriever
   |-- 查询嵌入 -> Qdrant 向量搜索
   |-- 前沿批处理: 基于波次的并行目录遍历
   |-- 分数传播: child_score = a * child + (1-a) * parent
-  |-- RL 融合: final += rl_weight * reward_score
+  |-- RL 融合: final += reward_weight * reward_score
   |-- 可选精排: final = b * rerank + (1-b) * retrieval
   |-- 收敛检测: top-K 稳定 3 轮后停止
   |
@@ -420,7 +420,7 @@ Intent Router 分析每个查询，自动选择检索策略：
 正反馈提升记忆分数，负反馈抑制。时间衰减确保陈旧记忆淡出：
 
 ```
-最终分数 = beta * 精排分数 + (1-beta) * 检索分数 + rl_weight * 奖励分数
+最终分数 = beta * 精排分数 + (1-beta) * 检索分数 + reward_weight * 奖励分数
 
 feedback(uri, reward=+1.0)  ->  未来搜索 +0.05 加成
 feedback(uri, reward=-1.0)  ->  -0.05 惩罚

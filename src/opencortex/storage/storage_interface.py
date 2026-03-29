@@ -36,7 +36,7 @@ class StorageInterface(ABC):
         Create a new collection.`
 
         Args:
-            name: Collection name (e.g., "memory", "resource", "skill")
+            name: Collection name (e.g., "memory", "resource", "knowledge")
             schema: Schema definition including:
                 - vector_dim: int - Vector dimension (default: 2048)
                 - distance: str - Distance metric ("cosine", "euclid", "dot")

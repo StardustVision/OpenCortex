@@ -880,7 +880,7 @@ class QdrantStorageAdapter(StorageInterface):
 
     async def get_profile(self, collection: str, id: str):
         """Return a Profile dataclass for the given record, or None."""
-        from opencortex.storage.qdrant.rl_types import Profile
+        from opencortex.storage.qdrant.reward_types import Profile
 
         client = await self._ensure_client()
         point_id = self._to_point_id(id)
@@ -922,7 +922,7 @@ class QdrantStorageAdapter(StorageInterface):
         """
         import math
         from datetime import datetime, timezone
-        from opencortex.storage.qdrant.rl_types import DecayResult
+        from opencortex.storage.qdrant.reward_types import DecayResult
 
         now = datetime.now(timezone.utc)
         result = DecayResult()

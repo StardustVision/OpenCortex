@@ -57,19 +57,13 @@ Analyze the current task, identify context gaps, and generate queries to fill in
 
 OpenCortex supports the following context types, **each type has a different query style**:
 
-### 1. skill (Execution Capability)
-
-**Purpose**: Executable tools, functions, APIs, automation scripts
-
-**Query Style**: **Start with verbs, maintain operational intent**
-
-### 2. resource (Knowledge Resources)
+### 1. resource (Knowledge Resources)
 
 **Purpose**: Documents, specifications, guides, code, configurations, and other structured knowledge
 
 **Query Style**: **Noun phrases, describing knowledge content**
 
-### 3. memory (User/Agent Memory)
+### 2. memory (User/Agent Memory)
 
 **Purpose**: User personalization information or Agent execution experience
 
@@ -83,7 +77,7 @@ OpenCortex supports the following context types, **each type has a different que
     "queries": [
         {{
             "query": "Specific query text",
-            "context_type": "skill|resource|memory",
+            "context_type": "resource|memory",
             "intent": "Purpose of the query",
             "priority": 1
         }}
@@ -140,7 +134,7 @@ def build_router_prompt(query: str, context_type: Optional[str] = None) -> str:
 
     Args:
         query: User query text.
-        context_type: Optional context type restriction value (e.g. "skill").
+        context_type: Optional context type restriction value (e.g. "memory").
     """
     scope_section = ""
     if context_type:

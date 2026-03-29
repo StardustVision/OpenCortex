@@ -382,7 +382,7 @@ class ContextManager:
         # Mark turn as committed
         self._committed_turns.setdefault(sk, set()).add(turn_id)
 
-        # RL reward for cited URIs (async, non-blocking)
+        # Reward scoring for cited URIs (async, non-blocking)
         if cited_uris:
             valid_uris = [u for u in cited_uris if u.startswith("opencortex://")]
             if valid_uris:
@@ -817,11 +817,11 @@ class ContextManager:
             )
 
     # =========================================================================
-    # RL reward for cited URIs
+    # Reward scoring for cited URIs
     # =========================================================================
 
     async def _apply_cited_rewards(self, uris: List[str]) -> None:
-        """Apply +0.1 RL reward to each cited memory URI."""
+        """Apply +0.1 reward to each cited memory URI."""
         for uri in uris:
             try:
                 await self._orchestrator.feedback(uri=uri, reward=0.1)

@@ -67,7 +67,7 @@ class HierarchicalRetriever:
         embedder: Optional[Any],
         rerank_config: Optional[RerankConfig] = None,
         llm_completion: Optional[Any] = None,
-        rl_weight: float = 0.05,
+        reward_weight: float = 0.05,
         hot_weight: float = 0.03,
         use_frontier_batching: bool = True,
         max_waves: int = 8,
@@ -91,7 +91,7 @@ class HierarchicalRetriever:
         # Use rerank threshold if available, otherwise use a default
         self.threshold = rerank_config.threshold if rerank_config else 0
 
-        self._rl_weight = rl_weight
+        self._reward_weight = reward_weight
         self._hot_weight = hot_weight
         self._use_frontier_batching = use_frontier_batching
         self._max_waves = max_waves
@@ -325,11 +325,11 @@ class HierarchicalRetriever:
                 limit=limit,
                 text_query=text_query,
             )
-            # Apply RL + hotness boost to scroll results
+            # Apply reward + hotness boost to scroll results
             for r in results:
                 reward = r.get("reward_score", 0.0)
-                if reward != 0 and self._rl_weight:
-                    r["_score"] = r.get("_score", 0.0) + self._rl_weight * reward
+                if reward != 0 and self._reward_weight:
+                    r["_score"] = r.get("_score", 0.0) + self._reward_weight * reward
                 if self._hot_weight:
                     r["_score"] = r.get("_score", 0.0) + self._hot_weight * self._compute_hotness(r)
             results.sort(key=lambda r: r.get("_score", 0.0), reverse=True)
@@ -682,8 +682,8 @@ class HierarchicalRetriever:
                 retrieval_score = r.get("_score", 0.0)
                 fused = beta * rerank_scores[i] + (1 - beta) * retrieval_score
                 reward = r.get("reward_score", 0.0)
-                if reward != 0 and self._rl_weight:
-                    fused += self._rl_weight * reward
+                if reward != 0 and self._reward_weight:
+                    fused += self._reward_weight * reward
                 if self._hot_weight:
                     fused += self._hot_weight * self._compute_hotness(r)
                 points.append((r["uri"], fused))
@@ -692,8 +692,8 @@ class HierarchicalRetriever:
             for r in global_results:
                 score = r.get("_score", 0.0)
                 reward = r.get("reward_score", 0.0)
-                if reward != 0 and self._rl_weight:
-                    score += self._rl_weight * reward
+                if reward != 0 and self._reward_weight:
+                    score += self._reward_weight * reward
                 if self._hot_weight:
                     score += self._hot_weight * self._compute_hotness(r)
                 points.append((r["uri"], score))
@@ -813,8 +813,8 @@ class HierarchicalRetriever:
                     alpha * score + (1 - alpha) * current_score if current_score else score
                 )
                 reward = r.get("reward_score", 0.0)
-                if reward != 0 and self._rl_weight:
-                    final_score += self._rl_weight * reward
+                if reward != 0 and self._reward_weight:
+                    final_score += self._reward_weight * reward
                 if self._hot_weight:
                     final_score += self._hot_weight * self._compute_hotness(r)
 
@@ -1011,8 +1011,8 @@ class HierarchicalRetriever:
                         else raw_score
                     )
                     reward = child.get("reward_score", 0.0)
-                    if reward != 0 and self._rl_weight:
-                        child["_final_score"] += self._rl_weight * reward
+                    if reward != 0 and self._reward_weight:
+                        child["_final_score"] += self._reward_weight * reward
                     if self._hot_weight:
                         child["_final_score"] += self._hot_weight * self._compute_hotness(child)
 
@@ -1060,8 +1060,8 @@ class HierarchicalRetriever:
                             if parent_score else raw_score
                         )
                         reward = r.get("reward_score", 0.0)
-                        if reward != 0 and self._rl_weight:
-                            r["_final_score"] += self._rl_weight * reward
+                        if reward != 0 and self._reward_weight:
+                            r["_final_score"] += self._reward_weight * reward
                         if self._hot_weight:
                             r["_final_score"] += self._hot_weight * self._compute_hotness(r)
                         children_by_parent[p_uri].append(r)
@@ -1113,8 +1113,8 @@ class HierarchicalRetriever:
                             if parent_score else raw_score
                         )
                         reward = r.get("reward_score", 0.0)
-                        if reward != 0 and self._rl_weight:
-                            r["_final_score"] += self._rl_weight * reward
+                        if reward != 0 and self._reward_weight:
+                            r["_final_score"] += self._reward_weight * reward
                         if self._hot_weight:
                             r["_final_score"] += self._hot_weight * self._compute_hotness(r)
                         if s_uri not in children_by_parent:
@@ -1203,7 +1203,7 @@ class HierarchicalRetriever:
         """Direct vector search for flat (non-hierarchical) records.
 
         Fallback when no directory starting points exist — skips frontier
-        batching and does a simple nearest-neighbour query.  Applies RL +
+        batching and does a simple nearest-neighbour query.  Applies reward +
         hotness boosts identically to the frontier path.
         """
         results = await self.storage.search(
@@ -1216,8 +1216,8 @@ class HierarchicalRetriever:
         )
         for r in results:
             reward = r.get("reward_score", 0.0)
-            if reward != 0 and self._rl_weight:
-                r["_score"] = r.get("_score", 0.0) + self._rl_weight * reward
+            if reward != 0 and self._reward_weight:
+                r["_score"] = r.get("_score", 0.0) + self._reward_weight * reward
             if self._hot_weight:
                 r["_score"] = r.get("_score", 0.0) + self._hot_weight * self._compute_hotness(r)
         results.sort(key=lambda r: r.get("_score", 0.0), reverse=True)
@@ -1232,7 +1232,7 @@ class HierarchicalRetriever:
     ) -> List[Dict[str, Any]]:
         """Run standalone lexical search if storage supports it.
 
-        Uses hasattr detection (same pattern as RL methods) so InMemoryStorage
+        Uses hasattr detection (same pattern as reward methods) so InMemoryStorage
         in tests gracefully returns empty results.
         """
         if not hasattr(self.storage, "search_lexical"):
@@ -1244,11 +1244,11 @@ class HierarchicalRetriever:
                 filter=filter,
                 limit=limit,
             )
-            # Apply RL + hotness boost
+            # Apply reward + hotness boost
             for r in results:
                 reward = r.get("reward_score", 0.0)
-                if reward != 0 and self._rl_weight:
-                    r["_score"] = r.get("_score", 0.0) + self._rl_weight * reward
+                if reward != 0 and self._reward_weight:
+                    r["_score"] = r.get("_score", 0.0) + self._reward_weight * reward
                 if self._hot_weight:
                     r["_score"] = r.get("_score", 0.0) + self._hot_weight * self._compute_hotness(r)
             return results
@@ -1508,8 +1508,6 @@ class HierarchicalRetriever:
             ]
         elif context_type == ContextType.RESOURCE:
             return [CortexURI.build_shared(tid, "resources")]
-        elif context_type == ContextType.SKILL:
-            return [CortexURI.build_shared(tid, "shared", "skills")]
         elif context_type == ContextType.CASE:
             return [CortexURI.build_shared(tid, "shared", "cases")]
         elif context_type == ContextType.PATTERN:
@@ -1520,7 +1518,6 @@ class HierarchicalRetriever:
                 CortexURI.build_private(tid, uid, "memories"),
                 CortexURI.build_shared(tid, "shared", "patterns"),
                 CortexURI.build_shared(tid, "shared", "cases"),
-                CortexURI.build_shared(tid, "shared", "skills"),
                 CortexURI.build_shared(tid, "resources"),
             ]
         return []

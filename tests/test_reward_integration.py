@@ -1,7 +1,7 @@
 """
-RL integration tests for OpenCortex.
+Reward scoring integration tests for OpenCortex.
 
-Tests the full reinforcement learning pipeline through the Orchestrator:
+Tests the full feedback scoring pipeline through the Orchestrator:
   feedback → update_reward → get_profile → decay → protect → search boost
 
 Uses real embedding API + embedded Qdrant (no external vector DB).

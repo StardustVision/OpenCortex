@@ -537,7 +537,7 @@ class CortexFS:
                 # No target_uri: query all types
                 typed_queries = [
                     TypedQuery(query=query, context_type=ctx_type, intent="", priority=1)
-                    for ctx_type in [ContextType.MEMORY, ContextType.RESOURCE, ContextType.SKILL]
+                    for ctx_type in [ContextType.MEMORY, ContextType.RESOURCE]
                 ]
 
         # Concurrent execution
@@ -722,8 +722,6 @@ class CortexFS:
 
         if "/memories" in uri:
             return ContextType.MEMORY
-        elif "/skills" in uri:
-            return ContextType.SKILL
         return ContextType.RESOURCE
 
     # ========== Vector Sync Helper Methods ==========

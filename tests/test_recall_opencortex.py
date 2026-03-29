@@ -37,7 +37,7 @@ TEST_CASES: list[TestCase] = [
     ),
     TestCase(
         id=2,
-        query="Score Fusion 公式中 beta 和 rl_weight 分别是多少？",
+        query="Score Fusion 公式中 beta 和 reward_weight 分别是多少？",
         difficulty="easy",
         description="Score fusion parameter values",
         expected_keywords=["0.7", "0.05"],

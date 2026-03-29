@@ -16,7 +16,7 @@
 
 LLM-based agents operate within finite context windows. When a session ends, everything the agent learned &mdash; user preferences, debugging solutions, architectural decisions &mdash; is lost. The next session starts from zero.
 
-OpenCortex solves this by giving agents a **persistent, searchable, self-improving memory**. Think of it as long-term memory for AI: the agent stores what it learns, recalls relevant context when needed, and surfaces the most useful memories first through reinforcement learning.
+OpenCortex solves this by giving agents a **persistent, searchable, self-improving memory**. Think of it as long-term memory for AI: the agent stores what it learns, recalls relevant context when needed, and surfaces the most useful memories first through reward-based feedback scoring.
 
 It is not a key-value store. It is a complete memory engine with layered summaries, semantic retrieval, intent-aware routing, reinforcement-driven ranking, and automatic knowledge extraction from conversations.
 
@@ -47,10 +47,10 @@ When you store a memory, L1 is generated automatically. When you search, the sys
 
 ### SONA (Self-Organizing Neural Attention)
 
-The reinforcement learning system that ranks memories. When an agent gives positive feedback to a memory, its reward score increases and it surfaces higher in future searches. Unused memories decay over time. The formula:
+The reward-based feedback system that ranks memories. When an agent gives positive feedback to a memory, its reward score increases and it surfaces higher in future searches. Unused memories decay over time. The formula:
 
 ```
-final_score = beta * rerank_score + (1 - beta) * retrieval_score + rl_weight * reward_score
+final_score = beta * rerank_score + (1 - beta) * retrieval_score + reward_weight * reward_score
 ```
 
 ### Cortex Alpha
@@ -168,7 +168,7 @@ HierarchicalRetriever
   |-- Embed query -> vector search in Qdrant
   |-- Frontier batching: wave-based parallel directory traversal
   |-- Score propagation: child_score = a * child + (1-a) * parent
-  |-- RL fusion: final += rl_weight * reward_score
+  |-- RL fusion: final += reward_weight * reward_score
   |-- Optional rerank: final = b * rerank + (1-b) * retrieval
   |-- Convergence check: stop when top-K stable for 3 waves
   |
@@ -417,7 +417,7 @@ The Intent Router analyzes each query and selects the retrieval strategy automat
 Positive feedback boosts a memory's score; negative feedback suppresses it. Time decay ensures stale memories fade:
 
 ```
-final_score = beta * rerank + (1-beta) * retrieval + rl_weight * reward
+final_score = beta * rerank + (1-beta) * retrieval + reward_weight * reward
 
 feedback(uri, reward=+1.0)  ->  +0.05 boost in future searches
 feedback(uri, reward=-1.0)  ->  -0.05 penalty

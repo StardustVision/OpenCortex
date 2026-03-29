@@ -2,12 +2,12 @@
 
 ## Overview
 
-OpenCortex is a memory and context management system for AI agents. It provides persistent, searchable, self-improving memory through three-layer summaries, reinforcement learning ranking, and trace-based knowledge extraction.
+OpenCortex is a memory and context management system for AI agents. It provides persistent, searchable, self-improving memory through three-layer summaries, reward-based feedback ranking, and trace-based knowledge extraction.
 
 Core subsystems:
 - **MemoryOrchestrator** — unified API layer wiring all components
 - **CortexFS** — three-layer filesystem (L0 abstract / L1 overview / L2 content)
-- **HierarchicalRetriever** — frontier-batching wave search with RL score fusion
+- **HierarchicalRetriever** — frontier-batching wave search with reward score fusion
 - **IntentRouter** — 3-layer query analysis (keywords → LLM → memory triggers)
 - **ContextManager** — three-phase lifecycle for Memory Context Protocol (prepare/commit/end)
 - **Observer** — real-time session transcript recording
@@ -16,7 +16,7 @@ Core subsystems:
 - **Archivist** — knowledge extraction from traces
 - **Sandbox** — quality gate for knowledge candidates (stat + LLM verification)
 - **KnowledgeStore** — approved knowledge persistence and search
-- **QdrantStorageAdapter** — embedded Qdrant with RL fields (reward, decay, protect)
+- **QdrantStorageAdapter** — embedded Qdrant with feedback scoring fields (reward, decay, protect)
 - **RequestContextMiddleware** — per-request identity via HTTP headers
 
 ## Tech Stack
@@ -47,13 +47,13 @@ src/opencortex/
   storage/
     vikingdb_interface.py        # Abstract interface (25 async methods)
     cortex_fs.py                 # CortexFS three-layer filesystem (formerly VikingFS)
-    collection_schemas.py        # Collection schemas (includes RL fields)
+    collection_schemas.py        # Collection schemas (includes reward scoring fields)
     qdrant/
-      adapter.py                 # QdrantStorageAdapter (standard + RL faces)
+      adapter.py                 # QdrantStorageAdapter (standard + reward scoring faces)
       filter_translator.py       # VikingDB DSL → Qdrant Filter translation
-      rl_types.py                # Profile / DecayResult dataclasses
+      reward_types.py            # Profile / DecayResult dataclasses
   retrieve/
-    hierarchical_retriever.py    # Wave-based frontier batching + RL fusion
+    hierarchical_retriever.py    # Wave-based frontier batching + reward scoring fusion
     intent_router.py             # IntentRouter (keyword + LLM + memory triggers)
     intent_analyzer.py           # LLM intent analysis → QueryPlan
     rerank_client.py             # RerankClient (API / local / LLM / disabled)
@@ -108,7 +108,7 @@ tests/
   - Identity: JWT claims `tid`/`uid` → `get_effective_identity()`
 - **Server config** (`CortexConfig`): only server-side settings — storage, embedding, LLM, rerank, HTTP bind. Loads from `server.json` or `~/.opencortex/server.json`.
 - **Client config** (`mcp.json`): connection + token. Loads from `mcp.json` or `~/.opencortex/mcp.json`. Node.js `buildClientHeaders()` attaches `Authorization: Bearer <token>` to every HTTP request.
-- RL methods (`update_reward`, `get_profile`, `apply_decay`, `set_protected`) are not in the interface — detected via `hasattr` on the adapter
+- Reward scoring methods (`update_reward`, `get_profile`, `apply_decay`, `set_protected`) are not in the interface — detected via `hasattr` on the adapter
 - Package management uses `uv` (not pip)
 - VikingFS has been renamed to CortexFS; old name retained for backward compatibility
 
@@ -128,7 +128,7 @@ Headers:    mcp.json → buildClientHeaders() → Authorization: Bearer <JWT>
 ```
 recall (prepare)         → ContextManager → IntentRouter + search() + knowledge_search()
                            → returns { memory, knowledge, instructions }
-add_message (commit)     → ContextManager → Observer.record_batch() + async RL reward
+add_message (commit)     → ContextManager → Observer.record_batch() + async reward scoring
 end (end)                → ContextManager → orchestrator.session_end()
                            → Observer.flush → TraceSplitter → TraceStore → Archivist
 ```
@@ -183,16 +183,16 @@ route(query, session_context=None)
 ### Score Fusion Formula
 
 ```
-final = beta * rerank_score + (1 - beta) * retrieval_score + rl_weight * reward_score
+final = beta * rerank_score + (1 - beta) * retrieval_score + reward_weight * reward_score
 ```
 
-Where `rl_weight = 0.05` (conservative), `beta = 0.7` (rerank weight).
+Where `reward_weight = 0.05` (conservative), `beta = 0.7` (rerank weight).
 
 ### Storage Dual-Write
 
 Each memory is written to both:
 1. **CortexFS**: `.abstract.md` (L0) + `.overview.md` (L1) + `content.md` (L2)
-2. **Qdrant**: embedding vector + L0/L1 as payload fields + RL fields
+2. **Qdrant**: embedding vector + L0/L1 as payload fields + reward scoring fields
 
 Search returns L0/L1 from Qdrant (zero filesystem I/O). L2 requires a CortexFS read.
 

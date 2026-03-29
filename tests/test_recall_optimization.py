@@ -339,7 +339,7 @@ class TestParallelLexicalRetrieval(unittest.TestCase):
                 embedder=embedder,
                 rerank_config=None,
                 use_frontier_batching=False,
-                rl_weight=0.0,
+                reward_weight=0.0,
             )
 
             await storage.create_collection("context")

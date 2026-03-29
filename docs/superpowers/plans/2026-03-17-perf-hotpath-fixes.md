@@ -370,8 +370,8 @@ if still_starved:
             if parent_score else raw_score
         )
         reward = r.get("reward_score", 0.0)
-        if reward != 0 and self._rl_weight:
-            r["_final_score"] += self._rl_weight * reward
+        if reward != 0 and self._reward_weight:
+            r["_final_score"] += self._reward_weight * reward
         if self._hot_weight:
             r["_final_score"] += self._hot_weight * self._compute_hotness(r)
         if s_uri not in children_by_parent:

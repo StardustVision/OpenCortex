@@ -23,7 +23,6 @@ class ResourceContentType(str, Enum):
 class ContextType(str, Enum):
     """Context type"""
 
-    SKILL = "skill"
     MEMORY = "memory"
     RESOURCE = "resource"
 
@@ -86,13 +85,10 @@ class Context:
         """Derive context type from URI path segments.
 
         Works with tenant-based URIs:
-          .../agent/skills/... -> skill
           .../memories/... -> memory (user or agent)
           everything else -> resource
         """
-        if "/agent/skills" in self.uri:
-            return "skill"
-        elif "/memories" in self.uri:
+        if "/memories" in self.uri:
             return "memory"
         else:
             return "resource"
@@ -164,11 +160,6 @@ class Context:
 
         if self.user:
             data["user"] = self.user.to_dict()
-
-        # Add skill-specific fields from meta
-        if self.context_type == "skill":
-            data["name"] = self.meta.get("name", "")
-            data["description"] = self.meta.get("description", "")
 
         return data
 

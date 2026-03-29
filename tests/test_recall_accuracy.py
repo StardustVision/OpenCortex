@@ -52,7 +52,7 @@ TEST_QUESTIONS: list[TestQuestion] = [
         description="Three-layer filesystem contents",
     ),
     TestQuestion(
-        query="RL 融合的 rl_weight 参数是多少？",
+        query="反馈排序的 reward_weight 参数是多少？",
         expected_keywords=["0.05"],
         difficulty="easy",
         source_doc="architecture.md",

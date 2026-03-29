@@ -82,7 +82,7 @@ class MemoryOrchestrator:
     Top-level orchestrator for OpenCortex memory operations.
 
     Wires together storage, filesystem, retrieval, embedding, and
-    reinforcement learning into a single coherent API.
+    reward-based feedback scoring into a single coherent API.
 
     Args:
         config: CortexConfig instance. Uses global config if not provided.
@@ -897,7 +897,7 @@ class MemoryOrchestrator:
             category: Category hint (e.g. "preferences", "entities", "patterns").
             parent_uri: Explicit parent URI. Auto-derived if not provided.
             uri: Explicit URI. Auto-generated if not provided.
-            context_type: Explicit context type ("memory", "resource", "skill").
+            context_type: Explicit context type ("memory", "resource", "case", "pattern").
                           Auto-derived from URI if not provided.
             is_leaf: Whether this is a leaf node (default True).
             meta: Additional metadata dict.
@@ -1837,12 +1837,12 @@ class MemoryOrchestrator:
         ]
 
     # =========================================================================
-    # Reinforcement Learning
+    # Reward-based Feedback Scoring
     # =========================================================================
 
     async def feedback(self, uri: str, reward: float) -> None:
         """
-        Submit a reward signal for a context (reinforcement learning).
+        Submit a reward signal for a context.
 
         Positive rewards reinforce retrieval; negative rewards penalize it.
         The reinforced score formula:
@@ -2003,7 +2003,7 @@ class MemoryOrchestrator:
 
     async def get_profile(self, uri: str) -> Optional[Dict[str, Any]]:
         """
-        Get the reinforcement learning profile for a context.
+        Get the feedback scoring profile for a context.
 
         Returns:
             Profile dict with reward_score, retrieval_count, feedback counts,
@@ -2586,10 +2586,6 @@ class MemoryOrchestrator:
         elif context_type == "pattern":
             return CortexURI.build_shared(tid, "shared", "patterns", node_name)
 
-        elif context_type == "skill":
-            section = category or "general"
-            return CortexURI.build_shared(tid, "shared", "skills", section, node_name)
-
         elif context_type == "resource":
             project = get_effective_project_id()  # e.g. "OpenCortex" or "public"
             if category:
@@ -2672,8 +2668,6 @@ class MemoryOrchestrator:
             return ContextType.CASE
         elif "/shared/patterns/" in uri:
             return ContextType.PATTERN
-        elif "/skills/" in uri:
-            return ContextType.SKILL
         return ContextType.RESOURCE
 
     async def _ensure_parent_records(self, parent_uri: str) -> None:

@@ -100,7 +100,7 @@ class InMemoryStorage(StorageInterface):
 
     Stores records as dicts in a nested {collection: {id: record}} structure.
     Supports cosine similarity search and basic filter evaluation.
-    Also provides reinforcement learning methods (update_reward, get_profile,
+    Also provides reward scoring methods (update_reward, get_profile,
     apply_decay, set_protected).
     """
 
@@ -668,24 +668,6 @@ class TestE2EPhase1(unittest.TestCase):
         self.assertTrue(parsed.is_shared)
         self.assertEqual(parsed.tenant_id, "testteam")
 
-    def test_04_add_skill(self):
-        """Add a shared skill and verify structure."""
-        orch = self._init_orch()
-
-        ctx = self._run(
-            orch.add(
-                abstract="Convert Word documents to Markdown",
-                context_type="skill",
-                meta={"name": "word_to_md", "description": "Word to Markdown converter"},
-            )
-        )
-
-        self.assertIn("/shared/skills/", ctx.uri)
-        self.assertEqual(ctx.context_type, "skill")
-
-        parsed = CortexURI(ctx.uri)
-        self.assertTrue(parsed.is_shared)
-
     # -----------------------------------------------------------------
     # 3. Search
     # -----------------------------------------------------------------
@@ -976,9 +958,6 @@ class TestE2EPhase1(unittest.TestCase):
         mem_ctx = Context(uri="opencortex://t1/u1/memories/preferences/node1")
         self.assertEqual(mem_ctx.context_type, "memory")
         self.assertEqual(mem_ctx.category, "preferences")
-
-        skill_ctx = Context(uri="opencortex://t1/agent/skills/convert_doc")
-        self.assertEqual(skill_ctx.context_type, "skill")
 
         res_ctx = Context(uri="opencortex://t1/resources/docs/api_guide")
         self.assertEqual(res_ctx.context_type, "resource")

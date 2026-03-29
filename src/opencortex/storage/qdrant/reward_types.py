@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Reinforcement learning data types for the Qdrant adapter.
+Reward-based feedback scoring types for the Qdrant adapter.
 
 These dataclasses match the attribute names expected by MemoryOrchestrator
 (e.g. profile.reward_score, profile.positive_feedback_count).
