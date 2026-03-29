@@ -84,17 +84,11 @@ src/opencortex/
   utils/
     uri.py                       # CortexURI tenant-isolated URI scheme
 
-plugins/opencortex-memory/       # MCP plugin (pure Node.js, no hooks)
-  lib/common.mjs                 # Config discovery, state, uv/python detection, server launcher
-  lib/http-client.mjs            # Native fetch wrapper + buildClientHeaders()
-  lib/transcript.mjs             # JSONL parsing (diagnostic utility)
-  lib/mcp-server.mjs             # MCP stdio server (9 tools + session lifecycle)
-  bin/oc-cli.mjs                 # CLI tool
+plugins/opencortex-memory/       # Git submodule → github.com/StardustVision/OpenCortex-Memory
 
 tests/
   test_e2e_phase1.py             # 24 E2E tests
   test_ingestion_e2e.py          # Ingestion pipeline E2E (memory/document/conversation modes)
-  test_mcp_server.mjs            # 9 MCP tests (Node.js)
   test_write_dedup.py            # Write dedup tests
   test_context_manager.py        # Memory Context Protocol tests (8 scenarios)
   test_alpha_*.py                # Cortex Alpha component tests
@@ -224,8 +218,8 @@ docker compose up -d
 # Python core tests (no external dependencies)
 uv run python3 -m unittest tests.test_e2e_phase1 tests.test_write_dedup tests.test_context_manager -v
 
-# Node.js MCP tests (requires running HTTP server)
-node --test tests/test_mcp_server.mjs
+# Node.js MCP tests (in plugin submodule, requires running HTTP server)
+cd plugins/opencortex-memory && npm test
 
 # Full regression
 uv run python3 -m unittest discover -s tests -v

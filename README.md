@@ -251,10 +251,12 @@ Over time: apply_decay() reduces unused memories (0.95x per cycle)
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/StardustVision/OpenCortex.git
+git clone --recurse-submodules https://github.com/StardustVision/OpenCortex.git
 cd OpenCortex
 uv sync
 ```
+
+> If you already cloned without `--recurse-submodules`, run `git submodule update --init --recursive` to fetch the plugin.
 
 `uv sync` creates a virtual environment, installs all dependencies, and sets up the `opencortex-server` command.
 
@@ -568,16 +570,10 @@ await orch.close()
 
 ## Plugin System
 
-The `plugins/opencortex-memory` plugin provides the MCP server (tool proxy for any MCP-compatible client). Implemented in pure Node.js with zero external dependencies.
+The `plugins/opencortex-memory` directory is a **git submodule** pointing to [https://github.com/StardustVision/OpenCortex-Memory](https://github.com/StardustVision/OpenCortex-Memory). It provides the MCP server (tool proxy for any MCP-compatible client), implemented in pure Node.js with zero external dependencies.
 
 ```
-plugins/opencortex-memory/
-  lib/
-    mcp-server.mjs               # MCP stdio server (9 tools -> HTTP)
-    common.mjs                   # Config discovery, state, uv/python detection
-    http-client.mjs              # Native fetch wrapper + Bearer token auth
-    transcript.mjs               # JSONL parsing
-  bin/oc-cli.mjs                 # CLI: health, status, recall, store
+plugins/opencortex-memory/       # Git submodule → github.com/StardustVision/OpenCortex-Memory
 ```
 
 ### Session Lifecycle
@@ -605,7 +601,7 @@ src/opencortex/
   storage/                       # VikingDBInterface + CortexFS + Qdrant adapter
   models/                        # Embedder abstractions (local/API) + LLM factory
 
-plugins/opencortex-memory/       # Claude Code plugin (pure Node.js)
+plugins/opencortex-memory/       # Git submodule → github.com/StardustVision/OpenCortex-Memory
 
 tests/                           # 140+ Python tests + 8 Node.js tests
 ```
@@ -618,8 +614,8 @@ tests/                           # 140+ Python tests + 8 Node.js tests
 # Core tests (no external dependencies)
 uv run python3 -m unittest tests.test_e2e_phase1 tests.test_write_dedup tests.test_context_manager -v
 
-# MCP server tests (requires running HTTP server)
-node --test tests/test_mcp_server.mjs
+# MCP server tests (in plugin submodule, requires running HTTP server)
+cd plugins/opencortex-memory && npm test
 
 # Full regression
 uv run python3 -m unittest discover -s tests -v
