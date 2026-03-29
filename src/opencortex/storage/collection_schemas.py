@@ -126,6 +126,7 @@ class CollectionSchemas:
                 {"FieldName": "outcome", "FieldType": "string"},
                 {"FieldName": "error_code", "FieldType": "string"},
                 {"FieldName": "training_ready", "FieldType": "bool"},
+                {"FieldName": "archivist_processed", "FieldType": "bool"},
                 {"FieldName": "vector", "FieldType": "vector", "Dim": vector_dim},
                 {"FieldName": "abstract", "FieldType": "string"},
                 {"FieldName": "overview", "FieldType": "string"},
@@ -134,7 +135,7 @@ class CollectionSchemas:
             "ScalarIndex": [
                 "trace_id", "session_id", "tenant_id", "user_id",
                 "source", "task_type", "outcome", "training_ready",
-                "created_at",
+                "archivist_processed", "created_at",
             ],
         }
 

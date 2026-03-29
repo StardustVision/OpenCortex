@@ -2196,7 +2196,7 @@ class MemoryOrchestrator:
             return
         try:
             from opencortex.alpha.types import KnowledgeScope
-            traces = await self._trace_store.list_by_session("", tenant_id, user_id)
+            traces = await self._trace_store.list_unprocessed(tenant_id)
             if not traces:
                 return
             knowledge_items = await self._archivist.run(
@@ -2204,9 +2204,14 @@ class MemoryOrchestrator:
             )
             for k in knowledge_items:
                 await self._knowledge_store.save(k)
+            # Mark traces as processed to avoid reprocessing
+            trace_ids = [t.get("trace_id", t.get("id", "")) for t in traces]
+            trace_ids = [tid for tid in trace_ids if tid]
+            if trace_ids:
+                await self._trace_store.mark_processed(trace_ids)
             logger.info(
-                "[Alpha] Archivist extracted %d knowledge candidates",
-                len(knowledge_items),
+                "[Alpha] Archivist extracted %d knowledge candidates from %d traces",
+                len(knowledge_items), len(traces),
             )
         except Exception as exc:
             logger.warning("[Alpha] Archivist failed: %s", exc)

@@ -55,6 +55,7 @@ class TraceStore:
             "outcome": trace.outcome.value if trace.outcome else "",
             "error_code": trace.error_code or "",
             "training_ready": trace.training_ready,
+            "archivist_processed": False,
             "abstract": trace.abstract or "",
             "overview": trace.overview or "",
             "vector": vector,
@@ -114,7 +115,37 @@ class TraceStore:
     async def count_new_traces(self, tenant_id: str) -> int:
         """Count traces not yet processed by Archivist (for trigger)."""
         filter_expr = {
-            "field": "tenant_id", "op": "=", "value": tenant_id,
+            "op": "and",
+            "conditions": [
+                {"field": "tenant_id", "op": "=", "value": tenant_id},
+                {"field": "archivist_processed", "op": "=", "value": False},
+            ],
         }
         results = await self._storage.filter(self._collection, filter_expr)
         return len(results)
+
+    async def list_unprocessed(
+        self, tenant_id: str, limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """List traces not yet processed by Archivist."""
+        filter_expr = {
+            "op": "and",
+            "conditions": [
+                {"field": "tenant_id", "op": "=", "value": tenant_id},
+                {"field": "archivist_processed", "op": "=", "value": False},
+            ],
+        }
+        return await self._storage.filter(
+            self._collection, filter_expr, limit=limit,
+        )
+
+    async def mark_processed(self, trace_ids: List[str]) -> int:
+        """Mark traces as processed by Archivist."""
+        count = 0
+        for tid in trace_ids:
+            existing = await self.get(tid)
+            if existing:
+                existing["archivist_processed"] = True
+                await self._storage.upsert(self._collection, existing)
+                count += 1
+        return count
