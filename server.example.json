@@ -1,0 +1,20 @@
+{
+  "http_server_host": "0.0.0.0",
+  "http_server_port": 8921,
+  "data_root": "/data",
+
+  "embedding_provider": "local",
+  "embedding_dimension": 1024,
+
+  "llm_model": "",
+  "llm_api_key": "",
+  "llm_api_base": "",
+
+  "cortex_alpha": {
+    "observer_enabled": true,
+    "trace_splitter_enabled": true,
+    "archivist_enabled": true,
+    "archivist_trigger_threshold": 5,
+    "sandbox_require_human_approval": true
+  }
+}

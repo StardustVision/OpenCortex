@@ -6,8 +6,7 @@ services:
       - "8921:8921"
     volumes:
       - ./.cortex:/data
-      # Mount config file (optional, env vars override file values)
-      # - ./server.json:/app/server.json:ro
+      - ./server.json:/app/server.json:ro
     environment:
       # ---- Server ----
       - OPENCORTEX_HTTP_SERVER_HOST=0.0.0.0
@@ -31,4 +30,7 @@ services:
       # - OPENCORTEX_RERANK_API_BASE=
       # - OPENCORTEX_RERANK_THRESHOLD=0.0
       # - OPENCORTEX_RERANK_FUSION_BETA=0.7
+      # ---- Cortex Alpha ----
+      # Knowledge extraction is configured via server.json (mounted above).
+      # Set cortex_alpha.trace_splitter_enabled and archivist_enabled to true.
     restart: unless-stopped
