@@ -1,0 +1,3 @@
+[submodule "plugins/opencortex-memory"]
+	path = plugins/opencortex-memory
+	url = git@github.com:StardustVision/OpenCortex-Memory.git
