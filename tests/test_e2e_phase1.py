@@ -1174,6 +1174,38 @@ class TestE2EPhase1(unittest.TestCase):
         self.assertLessEqual(limited["total"], 1)
 
     # -----------------------------------------------------------------
+    # 17. Store Quality Warnings
+    # -----------------------------------------------------------------
+
+    def test_26_store_warnings_short_abstract(self):
+        """Store with short abstract returns warning."""
+        from opencortex.http.server import _check_store_warnings
+        warnings = _check_store_warnings("hi")
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0]["key"], "abstract_too_short")
+
+    def test_27_store_warnings_code_snippet(self):
+        """Store with code-heavy abstract returns warning."""
+        from opencortex.http.server import _check_store_warnings
+        code_text = (
+            "def foo():\n"
+            "    return 42\n"
+            "def bar():\n"
+            "    return 99\n"
+            "class Baz:\n"
+            "    pass\n"
+        )
+        warnings = _check_store_warnings(code_text)
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0]["key"], "code_snippet_detected")
+
+    def test_28_store_warnings_clean(self):
+        """Normal abstract returns no warnings."""
+        from opencortex.http.server import _check_store_warnings
+        warnings = _check_store_warnings("User prefers dark theme in all editors and IDEs")
+        self.assertEqual(len(warnings), 0)
+
+    # -----------------------------------------------------------------
     # Helper
     # -----------------------------------------------------------------
 
