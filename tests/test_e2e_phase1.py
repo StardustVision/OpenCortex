@@ -1143,6 +1143,36 @@ class TestE2EPhase1(unittest.TestCase):
         # Should not raise
         self._run(orch.feedback("opencortex://testteam/alice/memories/ghost", 1.0))
 
+    def test_25_memory_index(self):
+        """memory_index returns memories grouped by context_type."""
+        orch = self._init_orch()
+
+        self._run(orch.add(abstract="User prefers dark theme", category="preferences"))
+        self._run(orch.add(abstract="API docs at example.com", context_type="resource"))
+        self._run(orch.add(abstract="Retry pattern for flaky tests", context_type="pattern"))
+
+        result = self._run(orch.memory_index())
+        self.assertIn("index", result)
+        self.assertIn("total", result)
+        self.assertGreaterEqual(result["total"], 3)
+
+        for group_items in result["index"].values():
+            for item in group_items:
+                self.assertIn("uri", item)
+                self.assertIn("abstract", item)
+                self.assertIn("context_type", item)
+                self.assertIn("category", item)
+                self.assertIn("created_at", item)
+                self.assertLessEqual(len(item["abstract"]), 150)
+
+        filtered = self._run(orch.memory_index(context_type="resource"))
+        self.assertIn("resource", filtered["index"])
+        for key in filtered["index"]:
+            self.assertEqual(key, "resource")
+
+        limited = self._run(orch.memory_index(limit=1))
+        self.assertLessEqual(limited["total"], 1)
+
     # -----------------------------------------------------------------
     # Helper
     # -----------------------------------------------------------------

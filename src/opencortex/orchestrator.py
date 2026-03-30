@@ -1784,6 +1784,69 @@ class MemoryOrchestrator:
             if r.get("abstract")  # skip directory nodes (empty abstract)
         ]
 
+    async def memory_index(
+        self,
+        context_type: Optional[str] = None,
+        limit: int = 200,
+    ) -> Dict[str, Any]:
+        """Return a lightweight index of all memories, grouped by context_type."""
+        self._ensure_init()
+        tid, uid = get_effective_identity()
+
+        scope_filter = {"op": "or", "conds": [
+            {"op": "must", "field": "scope", "conds": ["shared", ""]},
+            {"op": "and", "conds": [
+                {"op": "must", "field": "scope", "conds": ["private"]},
+                {"op": "must", "field": "source_user_id", "conds": [uid]},
+            ]},
+        ]}
+
+        conds: List[Dict[str, Any]] = [
+            {"op": "must_not", "field": "context_type", "conds": ["staging"]},
+            {"op": "must", "field": "is_leaf", "conds": [True]},
+            scope_filter,
+        ]
+        if tid:
+            conds.append({"op": "must", "field": "source_tenant_id", "conds": [tid, ""]})
+
+        if context_type:
+            types = [t.strip() for t in context_type.split(",") if t.strip()]
+            conds.append({"op": "must", "field": "context_type", "conds": types})
+
+        project_id = get_effective_project_id()
+        if project_id and project_id != "public":
+            conds.append({"op": "or", "conds": [
+                {"op": "must", "field": "project_id", "conds": [project_id, "public"]},
+            ]})
+
+        records = await self._storage.filter(
+            self._get_collection(),
+            {"op": "and", "conds": conds},
+            limit=limit,
+            offset=0,
+            order_by="created_at",
+            order_desc=True,
+        )
+
+        index: Dict[str, list] = {}
+        for r in records:
+            abstract = r.get("abstract", "")
+            if not abstract:
+                continue
+            ct = r.get("context_type", "memory")
+            if ct not in index:
+                index[ct] = []
+            index[ct].append({
+                "uri": r.get("uri", ""),
+                "abstract": abstract[:150],
+                "context_type": ct,
+                "category": r.get("category", ""),
+                "created_at": r.get("created_at", ""),
+            })
+
+        total = sum(len(v) for v in index.values())
+        return {"index": index, "total": total}
+
     async def list_memories_admin(
         self,
         tenant_id: Optional[str] = None,

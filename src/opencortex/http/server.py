@@ -327,6 +327,17 @@ def _register_routes(app: FastAPI) -> None:
         )
         return {"results": items, "total": len(items)}
 
+    @app.get("/api/v1/memory/index")
+    async def memory_index(
+        context_type: Optional[str] = None,
+        limit: int = 200,
+    ) -> Dict[str, Any]:
+        """Lightweight index of all memories, grouped by type."""
+        return await _orchestrator.memory_index(
+            context_type=context_type,
+            limit=limit,
+        )
+
     @app.get("/api/v1/memory/stats")
     async def memory_stats() -> Dict[str, Any]:
         return await _orchestrator.stats()
