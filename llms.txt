@@ -1,0 +1,262 @@
+# OpenCortex
+
+> Persistent memory and context management system for AI agents. Provides searchable, self-improving long-term memory through three-layer summaries, reward-based feedback ranking, and automatic knowledge extraction from conversations.
+
+OpenCortex gives AI agents persistent memory that survives across sessions. It stores what agents learn, recalls relevant context when needed, and surfaces the most useful memories first through reinforcement-based scoring. It is not a key-value store — it is a complete memory engine with layered summaries, semantic retrieval, intent-aware routing, and automatic knowledge extraction.
+
+## Quick Start
+
+Prerequisites: Python >= 3.10, Node.js >= 18, uv (Python package manager)
+
+```bash
+git clone --recurse-submodules https://github.com/StardustVision/OpenCortex.git
+cd OpenCortex
+uv sync
+uv run opencortex-token generate   # create JWT identity token
+uv run opencortex-server --port 8921
+curl http://localhost:8921/api/v1/memory/health
+```
+
+## Core Concepts
+
+### Memory Layers (L0 / L1 / L2)
+
+Each memory is stored at three levels of detail to minimize token usage:
+
+- **L0 (Abstract)**: Single sentence summary (~20-50 tokens). Used for vector search indexing.
+- **L1 (Overview)**: Paragraph with reasoning and context (~100-200 tokens). Default retrieval layer.
+- **L2 (Content)**: Complete original content (unlimited). Used for deep analysis.
+
+When stored, L1 is auto-generated. Search returns only the layer needed — 90% served by L0/L1.
+
+### SONA (Self-Organizing Neural Attention)
+
+Reward-based feedback ranking. Positive feedback boosts memory score; unused memories decay over time.
+
+```
+final_score = beta * rerank_score + (1-beta) * retrieval_score + reward_weight * reward_score
+```
+
+### Memory Context Protocol
+
+Platform-agnostic three-phase lifecycle replacing client-specific hooks:
+
+- **prepare**: Before generating a response — recalls relevant memories and knowledge
+- **commit**: After generating a response — records the conversation turn, applies RL reward
+- **end**: Session complete — flushes transcripts, triggers trace splitting and knowledge extraction
+
+### Cortex Alpha (Knowledge Pipeline)
+
+Automatic knowledge extraction from conversations:
+
+Observer (transcript) → TraceSplitter (LLM decomposition) → TraceStore → Archivist (extraction) → Sandbox (quality gate) → KnowledgeStore
+
+### Intent Router
+
+Analyzes each query to auto-select retrieval strategy:
+
+- `quick_lookup`: 3 results at L0 (short confirmatory queries)
+- `recent_recall`: 5 results at L1 (temporal queries)
+- `deep_analysis`: 10 results at L2 (full context needed)
+- `summarize`: 30 results at L1 (aggregation queries)
+
+### URI Namespace
+
+Every memory has a unique address: `opencortex://{tenant}/{user_id}/{type}/{category}/{node_id}`
+
+Complete data isolation between tenants and users via JWT-based identity.
+
+### Three-Mode Ingestion
+
+- **memory**: Pass-through for short text / batch items → single record
+- **document**: Parser → MarkdownParser → heading-based chunking → hierarchy of records
+- **conversation**: Per-message immediate write (zero-LLM) + merge layer (~1000 tokens → LLM chunk)
+
+## Architecture
+
+```
+AI Agent (Claude Code / Cursor / Custom)
+  → MCP Protocol (stdio) → Node.js MCP Server (9 tools) → HTTP → FastAPI Server (:8921)
+    → MemoryOrchestrator → IntentRouter + HierarchicalRetriever + ContextManager + Observer
+      → CortexFS (L0/L1/L2 filesystem) + Qdrant (vectors + RL scoring)
+```
+
+Identity: JWT Bearer token → RequestContextMiddleware → contextvars (tid/uid)
+
+### Dual-Write Storage
+
+Each memory is written to both:
+1. **CortexFS**: `.abstract.md` (L0) + `.overview.md` (L1) + `content.md` (L2)
+2. **Qdrant**: embedding vector + L0/L1 payload + reward scoring fields
+
+Search reads from Qdrant (zero filesystem I/O). L2 requires CortexFS read.
+
+## Tech Stack
+
+- Python 3.10+ async-first (FastAPI + uvicorn + httpx)
+- Node.js >= 18 (MCP server, zero external deps)
+- Qdrant embedded (no separate process)
+- Embedding: local (multilingual-e5-large) or OpenAI-compatible API
+- Reranking: local (jina-reranker-v2-base-multilingual) or API
+- Package manager: uv
+
+## REST API
+
+All endpoints require JWT Bearer token (except /health).
+
+### Core Memory
+
+- `POST /api/v1/memory/store` — Store a memory (auto-generates L1, embedding, URI)
+- `POST /api/v1/memory/batch_store` — Batch store multiple documents
+- `POST /api/v1/memory/search` — Semantic search with intent routing and RL fusion
+- `POST /api/v1/memory/feedback` — Submit RL reward (+1 useful, -1 not useful)
+- `POST /api/v1/memory/forget` — Delete a memory by URI
+- `POST /api/v1/memory/decay` — Trigger global reward decay
+- `POST /api/v1/memory/promote_to_shared` — Promote memory to team-shared scope
+- `GET  /api/v1/memory/list` — List memories with pagination
+- `GET  /api/v1/memory/index` — Get memory index summary
+- `GET  /api/v1/memory/stats` — Storage statistics and configuration
+- `GET  /api/v1/memory/health` — Component health check (no auth required)
+
+### Context Protocol
+
+- `POST /api/v1/context` — Unified lifecycle: prepare / commit / end phases
+
+### Session
+
+- `POST /api/v1/session/begin` — Start a new session (Observer recording)
+- `POST /api/v1/session/message` — Add a message to the session
+- `POST /api/v1/session/messages` — Batch add messages to the session
+- `POST /api/v1/session/end` — End session, trigger trace splitting + knowledge extraction
+
+### Knowledge (Cortex Alpha)
+
+- `POST /api/v1/knowledge/search` — Search approved knowledge
+- `POST /api/v1/knowledge/approve` — Approve a knowledge candidate
+- `POST /api/v1/knowledge/reject` — Reject a knowledge candidate
+- `GET  /api/v1/knowledge/candidates` — List pending knowledge candidates
+- `POST /api/v1/archivist/trigger` — Manually trigger knowledge extraction
+- `GET  /api/v1/archivist/status` — Archivist pipeline status
+
+### Content
+
+- `GET /api/v1/content/abstract` — Read L0 abstract by URI
+- `GET /api/v1/content/overview` — Read L1 overview by URI
+- `GET /api/v1/content/read` — Read L2 full content by URI
+
+### System
+
+- `POST /api/v1/intent/should_recall` — Decide if recall is needed for a query
+- `GET  /api/v1/system/status` — Unified health/stats/doctor status
+
+## MCP Tools (9 tools)
+
+- `store` / `batch_store` / `search` / `feedback` / `decay`
+- `recall` (prepare → search → return context)
+- `add_message` (commit turn to Observer)
+- `end` (close session → trace splitting → knowledge extraction)
+- `system_status`
+
+## Python API
+
+```python
+from opencortex import MemoryOrchestrator, CortexConfig, init_config
+
+init_config(CortexConfig())
+orch = MemoryOrchestrator(embedder=my_embedder)
+await orch.init()
+
+# Store
+ctx = await orch.add(
+    abstract="User prefers dark theme",
+    content="Use dark theme in VS Code, terminal, and browser tools.",
+    category="preferences",
+)
+
+# Search
+result = await orch.search("What theme does the user prefer?")
+
+# Feedback + Decay
+await orch.feedback(uri=ctx.uri, reward=1.0)
+await orch.decay()
+
+# Session lifecycle
+await orch.session_begin(session_id="s1")
+await orch.session_message("s1", "user", "Help me fix this bug")
+await orch.session_end("s1", quality_score=0.9)
+
+# Knowledge search
+results = await orch.knowledge_search("deployment workflow")
+
+await orch.close()
+```
+
+## Configuration
+
+### Server Config (server.json)
+
+Search order: `./server.json` → `~/.opencortex/server.json`
+
+```json
+{
+  "embedding_provider": "local",
+  "http_server_host": "127.0.0.1",
+  "http_server_port": 8921
+}
+```
+
+All fields overridable via `OPENCORTEX_` env prefix.
+
+### Client Config (mcp.json)
+
+Search order: `./mcp.json` → `~/.opencortex/mcp.json`
+
+```json
+{
+  "mode": "remote",
+  "token": "<jwt-token>",
+  "remote": { "http_url": "http://your-server:8921" }
+}
+```
+
+Env overrides: `OPENCORTEX_MODE`, `OPENCORTEX_HTTP_URL`, `OPENCORTEX_TOKEN`.
+
+## Deployment Modes
+
+- **Local**: Auto-starts HTTP server via SessionStart hook; MCP server managed by client
+- **Remote**: Connect to pre-deployed HTTP server; no Python needed on client
+- **Docker**: `docker compose up -d` with volume-mounted config
+
+## Project Structure
+
+```
+src/opencortex/
+  orchestrator.py          # MemoryOrchestrator — unified API layer
+  config.py                # CortexConfig dataclass + env overrides
+  http/                    # FastAPI server + async client + request context
+  retrieve/                # IntentRouter + HierarchicalRetriever + reranking
+  context/                 # ContextManager (Memory Context Protocol lifecycle)
+  alpha/                   # Observer, TraceSplitter, Archivist, Sandbox, KnowledgeStore
+  storage/                 # VikingDBInterface + CortexFS + Qdrant adapter
+  ingest/                  # IngestModeResolver (memory/document/conversation routing)
+  parse/                   # ParserRegistry + parsers (markdown, text, word, excel, ppt, pdf, epub)
+  models/                  # Embedder abstractions (local/API)
+  auth/                    # JWT token generation and validation
+  utils/                   # CortexURI tenant-isolated URI scheme
+plugins/opencortex-memory/ # Git submodule — Node.js MCP server (stdio proxy)
+tests/                     # 140+ Python tests + 8 Node.js tests
+```
+
+## Testing
+
+```bash
+uv run python3 -m unittest tests.test_e2e_phase1 tests.test_write_dedup tests.test_context_manager -v
+cd plugins/opencortex-memory && npm test   # requires running HTTP server
+uv run python3 -m unittest discover -s tests -v   # full regression
+```
+
+## Links
+
+- Source: https://github.com/StardustVision/OpenCortex
+- MCP Plugin: https://github.com/StardustVision/OpenCortex-Memory
+- License: Apache-2.0
