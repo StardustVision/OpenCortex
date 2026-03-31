@@ -36,6 +36,25 @@ export class OpenCortexClient {
     this.token = token;
   }
 
+  private withQuery(
+    path: string,
+    params?: Record<string, string | number | boolean | undefined>
+  ): string {
+    if (!params) {
+      return path;
+    }
+
+    const query = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined) {
+        query.append(key, String(value));
+      }
+    });
+
+    const queryString = query.toString();
+    return queryString ? `${path}?${queryString}` : path;
+  }
+
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const res = await fetch(`${this.baseUrl}${path}`, {
       method,
@@ -193,7 +212,10 @@ export class OpenCortexClient {
 
   // Insights
   generateInsights(days: number = 7): Promise<GenerateInsightsResponse> {
-    return this.request('POST', `/api/v1/insights/generate?days=${days}`);
+    return this.request(
+      'POST',
+      this.withQuery('/api/v1/insights/generate', { days }),
+    );
   }
 
   getLatestInsights(): Promise<LatestReportResponse> {
@@ -201,13 +223,16 @@ export class OpenCortexClient {
   }
 
   getInsightsHistory(limit: number = 10): Promise<ReportHistoryResponse> {
-    return this.request('GET', `/api/v1/insights/history?limit=${limit}`);
+    return this.request(
+      'GET',
+      this.withQuery('/api/v1/insights/history', { limit }),
+    );
   }
 
   getInsightsReport(reportUri: string): Promise<InsightsReport> {
     return this.request(
       'GET',
-      `/api/v1/insights/report?report_uri=${encodeURIComponent(reportUri)}`
+      this.withQuery('/api/v1/insights/report', { report_uri: reportUri })
     );
   }
 }
