@@ -42,8 +42,14 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 from uuid import uuid4
 
 from opencortex.config import CortexConfig, get_config
-from opencortex.prompts import build_doc_summarization_prompt, build_layer_derivation_prompt
-from opencortex.http.request_context import get_effective_identity, get_effective_project_id
+from opencortex.prompts import (
+    build_doc_summarization_prompt,
+    build_layer_derivation_prompt,
+)
+from opencortex.http.request_context import (
+    get_effective_identity,
+    get_effective_project_id,
+)
 from opencortex.utils.json_parse import parse_json_from_response
 from opencortex.utils.text import smart_truncate, chunked_llm_derive
 from opencortex.core.context import Context, ContextType as CoreContextType
@@ -76,6 +82,7 @@ _CONTEXT_COLLECTION = "context"
 
 # Maximum number of batch_add items processed concurrently
 _BATCH_ADD_CONCURRENCY = 8
+
 
 class MemoryOrchestrator:
     """
@@ -131,6 +138,7 @@ class MemoryOrchestrator:
     def _get_collection(self) -> str:
         """Return active collection name (contextvar override or default)."""
         from opencortex.http.request_context import get_collection_name
+
         return get_collection_name() or _CONTEXT_COLLECTION
 
     def _ensure_query_classifier(self):
@@ -138,9 +146,14 @@ class MemoryOrchestrator:
         if self._query_classifier is None and self._config.query_classifier_enabled:
             try:
                 from opencortex.retrieve.query_classifier import QueryFastClassifier
-                self._query_classifier = QueryFastClassifier(self._embedder, self._config)
+
+                self._query_classifier = QueryFastClassifier(
+                    self._embedder, self._config
+                )
             except Exception as e:
-                logger.warning("[Orchestrator] Failed to init QueryFastClassifier: %s", e)
+                logger.warning(
+                    "[Orchestrator] Failed to init QueryFastClassifier: %s", e
+                )
 
     # =========================================================================
     # Initialization
@@ -228,7 +241,9 @@ class MemoryOrchestrator:
         await self._init_alpha()
 
         self._initialized = True
-        logger.info("[MemoryOrchestrator] Initialized (data_root=%s)", self._config.data_root)
+        logger.info(
+            "[MemoryOrchestrator] Initialized (data_root=%s)", self._config.data_root
+        )
         return self
 
     async def _init_alpha(self) -> None:
@@ -237,11 +252,13 @@ class MemoryOrchestrator:
 
         # Observer — always initialized (lightweight in-memory)
         from opencortex.alpha.observer import Observer
+
         self._observer = Observer()
 
         if self._storage and self._embedder and alpha_cfg.trace_splitter_enabled:
             # TraceStore
             from opencortex.alpha.trace_store import TraceStore
+
             self._trace_store = TraceStore(
                 storage=self._storage,
                 embedder=self._embedder,
@@ -254,6 +271,7 @@ class MemoryOrchestrator:
         if self._storage and self._embedder and alpha_cfg.archivist_enabled:
             # KnowledgeStore
             from opencortex.alpha.knowledge_store import KnowledgeStore
+
             self._knowledge_store = KnowledgeStore(
                 storage=self._storage,
                 embedder=self._embedder,
@@ -266,6 +284,7 @@ class MemoryOrchestrator:
         # TraceSplitter (needs LLM)
         if self._llm_completion and alpha_cfg.trace_splitter_enabled:
             from opencortex.alpha.trace_splitter import TraceSplitter
+
             self._trace_splitter = TraceSplitter(
                 llm_fn=self._llm_completion,
                 max_context_tokens=alpha_cfg.trace_splitter_max_context_tokens,
@@ -274,6 +293,7 @@ class MemoryOrchestrator:
         # Archivist (needs LLM)
         if self._llm_completion and alpha_cfg.archivist_enabled:
             from opencortex.alpha.archivist import Archivist
+
             self._archivist = Archivist(
                 llm_fn=self._llm_completion,
                 embedder=self._embedder,
@@ -283,6 +303,7 @@ class MemoryOrchestrator:
 
         # ContextManager — three-phase lifecycle for memory_context protocol
         from opencortex.context import ContextManager
+
         self._context_manager = ContextManager(
             orchestrator=self,
             observer=self._observer,
@@ -336,9 +357,8 @@ class MemoryOrchestrator:
                     OpenAIDenseEmbedder,
                 )
 
-                api_key = (
-                    self._config.embedding_api_key
-                    or os.environ.get("OPENCORTEX_EMBEDDING_API_KEY", "")
+                api_key = self._config.embedding_api_key or os.environ.get(
+                    "OPENCORTEX_EMBEDDING_API_KEY", ""
                 )
                 if not api_key:
                     logger.warning(
@@ -359,12 +379,12 @@ class MemoryOrchestrator:
                 embedder = OpenAIDenseEmbedder(
                     model_name=model_name,
                     api_key=api_key,
-                    api_base=self._config.embedding_api_base or "https://api.openai.com/v1",
+                    api_base=self._config.embedding_api_base
+                    or "https://api.openai.com/v1",
                     dimension=self._config.embedding_dimension or None,
                 )
                 logger.info(
-                    "[MemoryOrchestrator] Auto-created OpenAIDenseEmbedder "
-                    "(model=%s)",
+                    "[MemoryOrchestrator] Auto-created OpenAIDenseEmbedder (model=%s)",
                     model_name,
                 )
                 return self._wrap_with_cache(self._wrap_with_hybrid(embedder))
@@ -403,7 +423,9 @@ class MemoryOrchestrator:
         try:
             from opencortex.models.embedder.local_embedder import LocalEmbedder
 
-            model_name = self._config.embedding_model or "intfloat/multilingual-e5-large"
+            model_name = (
+                self._config.embedding_model or "intfloat/multilingual-e5-large"
+            )
             local_config = {"onnx_intra_op_threads": self._config.onnx_intra_op_threads}
             embedder = LocalEmbedder(model_name=model_name, config=local_config)
             if not embedder.is_available:
@@ -420,14 +442,15 @@ class MemoryOrchestrator:
                 logger.info(
                     "[MemoryOrchestrator] Updating embedding_dimension %d → %d "
                     "from local model",
-                    self._config.embedding_dimension, detected_dim,
+                    self._config.embedding_dimension,
+                    detected_dim,
                 )
                 self._config.embedding_dimension = detected_dim
 
             logger.info(
-                "[MemoryOrchestrator] Auto-created LocalEmbedder "
-                "(model=%s, dim=%d)",
-                model_name, detected_dim,
+                "[MemoryOrchestrator] Auto-created LocalEmbedder (model=%s, dim=%d)",
+                model_name,
+                detected_dim,
             )
 
             return self._wrap_with_cache(self._wrap_with_hybrid(embedder))
@@ -452,18 +475,23 @@ class MemoryOrchestrator:
         No-op if embedder is already hybrid.
         """
         from opencortex.models.embedder.base import HybridEmbedderBase
+
         if isinstance(embedder, HybridEmbedderBase):
             return embedder
         from opencortex.models.embedder.sparse import BM25SparseEmbedder
         from opencortex.models.embedder.base import CompositeHybridEmbedder
+
         return CompositeHybridEmbedder(embedder, BM25SparseEmbedder())
 
     def _wrap_with_cache(self, embedder: EmbedderBase) -> EmbedderBase:
         """Wrap an embedder with LRU cache."""
         try:
             from opencortex.models.embedder.cache import CachedEmbedder
+
             cached = CachedEmbedder(embedder, max_size=10000, ttl_seconds=3600)
-            logger.info("[MemoryOrchestrator] Wrapped embedder with LRU cache (max=10000, ttl=3600s)")
+            logger.info(
+                "[MemoryOrchestrator] Wrapped embedder with LRU cache (max=10000, ttl=3600s)"
+            )
             return cached
         except Exception as exc:
             logger.warning("[MemoryOrchestrator] Failed to wrap with cache: %s", exc)
@@ -495,15 +523,22 @@ class MemoryOrchestrator:
         logger.info(
             "[Orchestrator] Embedding model changed: %s → %s. "
             "Re-embedding %d records ...",
-            previous_model or "(none)", current_model, count,
+            previous_model or "(none)",
+            current_model,
+            count,
         )
         from opencortex.migration.v040_reembed import reembed_all as _reembed_all
+
         updated = await _reembed_all(
-            self._storage, self._get_collection(), self._embedder,
+            self._storage,
+            self._get_collection(),
+            self._embedder,
         )
         logger.info(
             "[Orchestrator] Re-embedded %d records (model: %s → %s)",
-            updated, previous_model or "(none)", current_model,
+            updated,
+            previous_model or "(none)",
+            current_model,
         )
         marker.write_text(current_model)
 
@@ -517,8 +552,10 @@ class MemoryOrchestrator:
 
         try:
             from opencortex.migration.v030_path_redesign import (
-                backfill_new_fields, cleanup_root_junk,
+                backfill_new_fields,
+                cleanup_root_junk,
             )
+
             await cleanup_root_junk(self._storage, self._fs, self._get_collection())
             await backfill_new_fields(self._storage, self._get_collection())
         except Exception as exc:
@@ -526,6 +563,7 @@ class MemoryOrchestrator:
 
         try:
             from opencortex.migration.v040_project_backfill import backfill_project_id
+
             await backfill_project_id(self._storage, self._get_collection())
         except Exception as exc:
             logger.warning("[Orchestrator] Migration v0.4 skipped: %s", exc)
@@ -544,8 +582,11 @@ class MemoryOrchestrator:
             Number of records updated.
         """
         from opencortex.migration.v040_reembed import reembed_all as _reembed_all
+
         count = await _reembed_all(
-            self._storage, self._get_collection(), self._embedder,
+            self._storage,
+            self._get_collection(),
+            self._embedder,
         )
         # Update model marker
         marker = Path(self._config.data_root) / ".embedding_model"
@@ -569,14 +610,23 @@ class MemoryOrchestrator:
             threshold=base.threshold or cfg.rerank_threshold,
             provider=getattr(base, "provider", "") or cfg.rerank_provider,
             fusion_beta=getattr(base, "fusion_beta", 0.0) or cfg.rerank_fusion_beta,
-            max_candidates=getattr(base, "max_candidates", 0) or cfg.rerank_max_candidates,
+            max_candidates=getattr(base, "max_candidates", 0)
+            or cfg.rerank_max_candidates,
             use_llm_fallback=getattr(base, "use_llm_fallback", True),
         )
 
-    async def _write_immediate(self, session_id: str, msg_index: int, text: str,
-                               tool_calls: Optional[list] = None) -> str:
+    async def _write_immediate(
+        self,
+        session_id: str,
+        msg_index: int,
+        text: str,
+        tool_calls: Optional[list] = None,
+    ) -> str:
         """Write a single message for immediate searchability. No LLM, no CortexFS."""
-        from opencortex.http.request_context import get_effective_identity, get_effective_project_id
+        from opencortex.http.request_context import (
+            get_effective_identity,
+            get_effective_project_id,
+        )
         from opencortex.utils.uri import CortexURI
         from uuid import uuid4
 
@@ -600,14 +650,17 @@ class MemoryOrchestrator:
         if self._embedder:
             loop = asyncio.get_running_loop()
             result = await asyncio.wait_for(
-                loop.run_in_executor(None, self._embedder.embed, embed_input), timeout=2.0
+                loop.run_in_executor(None, self._embedder.embed, embed_input),
+                timeout=2.0,
             )
             vector = result.dense_vector
             sparse_vector = result.sparse_vector
 
         record = {
             "uri": uri,
-            "parent_uri": CortexURI.build_private(tid, uid, "memories", "events", session_id),
+            "parent_uri": CortexURI.build_private(
+                tid, uid, "memories", "events", session_id
+            ),
             "is_leaf": True,
             "abstract": text,
             "overview": "",
@@ -617,12 +670,18 @@ class MemoryOrchestrator:
             "source_user_id": uid,
             "source_tenant_id": tid,
             "keywords": "",
-            "meta": {"layer": "immediate", "msg_index": msg_index, "session_id": session_id,
-                     "tool_calls": tool_calls or []},
+            "meta": {
+                "layer": "immediate",
+                "msg_index": msg_index,
+                "session_id": session_id,
+                "tool_calls": tool_calls or [],
+            },
             "session_id": session_id,
             "project_id": get_effective_project_id(),
             "mergeable": False,
-            "ttl_expires_at": self._ttl_from_hours(self._config.immediate_event_ttl_hours),
+            "ttl_expires_at": self._ttl_from_hours(
+                self._config.immediate_event_ttl_hours
+            ),
         }
 
         if vector:
@@ -634,12 +693,21 @@ class MemoryOrchestrator:
         return uri
 
     async def _add_document(
-        self, content, abstract, overview, category, parent_uri,
-        context_type, meta, session_id, source_path,
+        self,
+        content,
+        abstract,
+        overview,
+        category,
+        parent_uri,
+        context_type,
+        meta,
+        session_id,
+        source_path,
     ) -> "Context":
         """Document mode: parse content into chunks, write each to CortexFS + Qdrant."""
         if self._parser_registry is None:
             from opencortex.parse.registry import ParserRegistry
+
             self._parser_registry = ParserRegistry()
         registry = self._parser_registry
         if source_path:
@@ -653,9 +721,15 @@ class MemoryOrchestrator:
             chunks = await registry.parse_content(content, source_format="markdown")
 
         # --- v0.6: Generate source_doc_id for document scoped search ---
-        _effective_source_path = source_path or (meta or {}).get("source_path", "") or (meta or {}).get("file_path", "")
+        _effective_source_path = (
+            source_path
+            or (meta or {}).get("source_path", "")
+            or (meta or {}).get("file_path", "")
+        )
         if _effective_source_path:
-            source_doc_id = hashlib.sha256(_effective_source_path.encode()).hexdigest()[:16]
+            source_doc_id = hashlib.sha256(_effective_source_path.encode()).hexdigest()[
+                :16
+            ]
         else:
             source_doc_id = uuid4().hex[:16]
         source_doc_title = (meta or {}).get("title", "")
@@ -686,7 +760,9 @@ class MemoryOrchestrator:
                     "ingest_mode": "memory",
                     "source_doc_id": source_doc_id,
                     "source_doc_title": source_doc_title,
-                    "source_section_path": chunks[0].meta.get("section_path", "") if chunks else "",
+                    "source_section_path": chunks[0].meta.get("section_path", "")
+                    if chunks
+                    else "",
                     "chunk_role": "document",
                 },
                 session_id=session_id,
@@ -696,8 +772,10 @@ class MemoryOrchestrator:
         # Multi-chunk: create parent + children
         # Title priority: source filename > caller-provided abstract > fallback "Document"
         doc_title = (
-            Path(source_path).stem if source_path
-            else abstract if abstract
+            Path(source_path).stem
+            if source_path
+            else abstract
+            if abstract
             else "Document"
         )
 
@@ -732,9 +810,7 @@ class MemoryOrchestrator:
             # Determine chunk_role: directory chunks (is_leaf=False) become "section",
             # leaf chunks become "leaf". We detect via next chunk's parent_index.
             # A chunk is a directory if any later chunk references it as parent.
-            is_dir_chunk = any(
-                c.parent_index == idx for c in chunks[idx + 1:]
-            )
+            is_dir_chunk = any(c.parent_index == idx for c in chunks[idx + 1 :])
             chunk_role = "section" if is_dir_chunk else "leaf"
 
             chunk_abstract = ""
@@ -743,7 +819,9 @@ class MemoryOrchestrator:
                 parts = []
                 if source_doc_title:
                     parts.append(f"[{source_doc_title}]")
-                sp = chunk.meta.get("source_section_path", "") or chunk.meta.get("section_path", "")
+                sp = chunk.meta.get("source_section_path", "") or chunk.meta.get(
+                    "section_path", ""
+                )
                 if sp:
                     parts.append(f"[{sp}]")
                 parts.append(chunk_abstract)
@@ -771,7 +849,10 @@ class MemoryOrchestrator:
         return parent_ctx
 
     async def _derive_layers(
-        self, user_abstract: str, content: str, user_overview: str = "",
+        self,
+        user_abstract: str,
+        content: str,
+        user_overview: str = "",
     ) -> Dict[str, str]:
         """Derive L0/L1/keywords from L2 in a single LLM call.
 
@@ -780,14 +861,20 @@ class MemoryOrchestrator:
         """
         # Fast path: user already provided both abstract and overview
         if user_abstract and user_overview:
-            return {"abstract": user_abstract, "overview": user_overview, "keywords": ""}
+            return {
+                "abstract": user_abstract,
+                "overview": user_overview,
+                "keywords": "",
+            }
 
         if self._llm_completion:
             if len(content) > 4000:
                 try:
                     result = await chunked_llm_derive(
                         content=content,
-                        prompt_builder=lambda chunk: build_layer_derivation_prompt(chunk, user_abstract),
+                        prompt_builder=lambda chunk: build_layer_derivation_prompt(
+                            chunk, user_abstract
+                        ),
                         llm_fn=self._llm_completion,
                         parse_fn=parse_json_from_response,
                         max_chars_per_chunk=4000,
@@ -803,7 +890,9 @@ class MemoryOrchestrator:
                         "keywords": keywords,
                     }
                 except Exception as e:
-                    logger.warning("[Orchestrator] _derive_layers chunked LLM failed: %s", e)
+                    logger.warning(
+                        "[Orchestrator] _derive_layers chunked LLM failed: %s", e
+                    )
             prompt = build_layer_derivation_prompt(content, user_abstract)
             try:
                 response = await self._llm_completion(prompt)
@@ -830,7 +919,9 @@ class MemoryOrchestrator:
         if not overview and content and len(content) <= 500:
             overview = content
         if not user_abstract and not self._llm_completion:
-            logger.warning("[Orchestrator] No LLM configured — abstract uses raw content")
+            logger.warning(
+                "[Orchestrator] No LLM configured — abstract uses raw content"
+            )
         return {"abstract": abstract, "overview": overview, "keywords": ""}
 
     def _ensure_init(self) -> None:
@@ -999,6 +1090,7 @@ class MemoryOrchestrator:
         # Override vectorization text.
         # Priority: embed_text > abstract+keywords > abstract (default from Context)
         from opencortex.core.context import Vectorize
+
         if embed_text:
             base_text = embed_text
         else:
@@ -1112,13 +1204,17 @@ class MemoryOrchestrator:
 
         # Set TTL for short-lived record types
         if context_type == "staging":
-            record["ttl_expires_at"] = self._ttl_from_hours(self._config.immediate_event_ttl_hours)
+            record["ttl_expires_at"] = self._ttl_from_hours(
+                self._config.immediate_event_ttl_hours
+            )
         elif (
             (context_type or "memory") == "memory"
             and effective_category == "events"
             and (meta or {}).get("layer") == "merged"
         ):
-            record["ttl_expires_at"] = self._ttl_from_hours(self._config.merged_event_ttl_hours)
+            record["ttl_expires_at"] = self._ttl_from_hours(
+                self._config.merged_event_ttl_hours
+            )
 
         upsert_started = asyncio.get_running_loop().time()
         await self._storage.upsert(self._get_collection(), record)
@@ -1130,7 +1226,9 @@ class MemoryOrchestrator:
                 return
             exc = t.exception()
             if exc:
-                logger.warning("[Orchestrator] CortexFS write failed for %s: %s", uri, exc)
+                logger.warning(
+                    "[Orchestrator] CortexFS write failed for %s: %s", uri, exc
+                )
 
         _fs_task = asyncio.create_task(
             self._fs.write_context(
@@ -1189,9 +1287,7 @@ class MemoryOrchestrator:
                 {"op": "must", "field": "is_leaf", "conds": [True]},
             ]
             if category:
-                conds.append(
-                    {"op": "must", "field": "category", "conds": [category]}
-                )
+                conds.append({"op": "must", "field": "category", "conds": [category]})
             # Scope: shared OR (private AND own user)
             conds.append(
                 {
@@ -1202,7 +1298,11 @@ class MemoryOrchestrator:
                             "op": "and",
                             "conds": [
                                 {"op": "must", "field": "scope", "conds": ["private"]},
-                                {"op": "must", "field": "source_user_id", "conds": [uid]},
+                                {
+                                    "op": "must",
+                                    "field": "source_user_id",
+                                    "conds": [uid],
+                                },
                             ],
                         },
                     ],
@@ -1211,7 +1311,9 @@ class MemoryOrchestrator:
             # Project isolation: only dedup within same project
             project_id = get_effective_project_id()
             if project_id:
-                conds.append({"op": "must", "field": "project_id", "conds": [project_id]})
+                conds.append(
+                    {"op": "must", "field": "project_id", "conds": [project_id]}
+                )
 
             dedup_filter = {"op": "and", "conds": conds}
 
@@ -1311,6 +1413,7 @@ class MemoryOrchestrator:
             existing_meta = record.get("meta", {})
             if isinstance(existing_meta, str):
                 import json
+
                 try:
                     existing_meta = json.loads(existing_meta)
                 except (json.JSONDecodeError, TypeError):
@@ -1352,9 +1455,7 @@ class MemoryOrchestrator:
         try:
             await self._fs.rm(uri, recursive=recursive)
         except Exception as e:
-            logger.warning(
-                "[MemoryOrchestrator] FS removal failed for %s: %s", uri, e
-            )
+            logger.warning("[MemoryOrchestrator] FS removal failed for %s: %s", uri, e)
 
         logger.info("[MemoryOrchestrator] Removed %d records for: %s", count, uri)
         return count
@@ -1428,10 +1529,14 @@ class MemoryOrchestrator:
             total_ms = int((asyncio.get_running_loop().time() - search_started) * 1000)
             logger.debug(
                 "[search] should_recall=False tenant=%s user=%s total_ms=%d",
-                tid, uid, total_ms,
+                tid,
+                uid,
+                total_ms,
             )
             return FindResult(
-                memories=[], resources=[], skills=[],
+                memories=[],
+                resources=[],
+                skills=[],
                 search_intent=intent,
             )
 
@@ -1488,21 +1593,35 @@ class MemoryOrchestrator:
                     tq.target_directories = [target_uri]
 
         # Exclude staging from global search
-        staging_exclude = {"op": "must_not", "field": "context_type", "conds": ["staging"]}
+        staging_exclude = {
+            "op": "must_not",
+            "field": "context_type",
+            "conds": ["staging"],
+        }
 
         # Scope-aware filter: return shared + user's private + legacy (no scope)
-        scope_filter = {"op": "or", "conds": [
-            {"op": "must", "field": "scope", "conds": ["shared", ""]},
-            {"op": "and", "conds": [
-                {"op": "must", "field": "scope", "conds": ["private"]},
-                {"op": "must", "field": "source_user_id", "conds": [uid]},
-            ]},
-        ]}
+        scope_filter = {
+            "op": "or",
+            "conds": [
+                {"op": "must", "field": "scope", "conds": ["shared", ""]},
+                {
+                    "op": "and",
+                    "conds": [
+                        {"op": "must", "field": "scope", "conds": ["private"]},
+                        {"op": "must", "field": "source_user_id", "conds": [uid]},
+                    ],
+                },
+            ],
+        }
 
         # Tenant isolation: hard filter by source_tenant_id
         # Empty string covers legacy records without tenant field
         if tid:
-            tenant_filter = {"op": "must", "field": "source_tenant_id", "conds": [tid, ""]}
+            tenant_filter = {
+                "op": "must",
+                "field": "source_tenant_id",
+                "conds": [tid, ""],
+            }
             combined_conds = [staging_exclude, scope_filter, tenant_filter]
         else:
             combined_conds = [staging_exclude, scope_filter]
@@ -1510,9 +1629,16 @@ class MemoryOrchestrator:
         # Project-scoped filter: strict isolation by project_id
         project_id = get_effective_project_id()
         if project_id and project_id != "public":
-            project_filter = {"op": "or", "conds": [
-                {"op": "must", "field": "project_id", "conds": [project_id, "public"]},
-            ]}
+            project_filter = {
+                "op": "or",
+                "conds": [
+                    {
+                        "op": "must",
+                        "field": "project_id",
+                        "conds": [project_id, "public"],
+                    },
+                ],
+            }
             combined_conds.append(project_filter)
 
         if metadata_filter:
@@ -1521,7 +1647,9 @@ class MemoryOrchestrator:
             metadata_filter = {"op": "and", "conds": combined_conds}
 
         # Dynamic hybrid weight: classifier takes precedence over intent router
-        lexical_boost = classification.lexical_boost if classification else intent.lexical_boost
+        lexical_boost = (
+            classification.lexical_boost if classification else intent.lexical_boost
+        )
 
         # Build retrieval coroutines
         retrieval_coros = [
@@ -1537,7 +1665,9 @@ class MemoryOrchestrator:
         ]
 
         query_results = list(await asyncio.gather(*retrieval_coros))
-        retrieval_ms = int((asyncio.get_running_loop().time() - search_started) * 1000) - intent_ms
+        retrieval_ms = (
+            int((asyncio.get_running_loop().time() - search_started) * 1000) - intent_ms
+        )
 
         result = self._aggregate_results(query_results)
         result.search_intent = intent
@@ -1569,17 +1699,26 @@ class MemoryOrchestrator:
         )
 
         # v0.6: Build SearchExplainSummary
-        if getattr(self._config, 'explain_enabled', True) and query_results:
+        if getattr(self._config, "explain_enabled", True) and query_results:
             from opencortex.retrieve.types import SearchExplainSummary
+
             primary = query_results[0]
             result.explain_summary = SearchExplainSummary(
                 total_ms=float(total_ms),
                 query_count=len(query_results),
-                primary_query_class=primary.explain.query_class if primary.explain else "",
+                primary_query_class=primary.explain.query_class
+                if primary.explain
+                else "",
                 primary_path=primary.explain.path if primary.explain else "",
-                doc_scope_hit=any(qr.explain and qr.explain.doc_scope_hit for qr in query_results),
-                time_filter_hit=any(qr.explain and qr.explain.time_filter_hit for qr in query_results),
-                rerank_triggered=any(qr.explain and qr.explain.rerank_ms > 0 for qr in query_results),
+                doc_scope_hit=any(
+                    qr.explain and qr.explain.doc_scope_hit for qr in query_results
+                ),
+                time_filter_hit=any(
+                    qr.explain and qr.explain.time_filter_hit for qr in query_results
+                ),
+                rerank_triggered=any(
+                    qr.explain and qr.explain.rerank_ms > 0 for qr in query_results
+                ),
             )
 
         return result
@@ -1690,7 +1829,11 @@ class MemoryOrchestrator:
                 tq.target_directories = [target_uri]
 
         # Exclude staging from session search
-        staging_exclude = {"op": "must_not", "field": "context_type", "conds": ["staging"]}
+        staging_exclude = {
+            "op": "must_not",
+            "field": "context_type",
+            "conds": ["staging"],
+        }
         if metadata_filter:
             metadata_filter = {"op": "and", "conds": [metadata_filter, staging_exclude]}
         else:
@@ -1732,31 +1875,50 @@ class MemoryOrchestrator:
         tid, uid = get_effective_identity()
 
         # Same scope filter as search(): private own + shared
-        scope_filter = {"op": "or", "conds": [
-            {"op": "must", "field": "scope", "conds": ["shared", ""]},
-            {"op": "and", "conds": [
-                {"op": "must", "field": "scope", "conds": ["private"]},
-                {"op": "must", "field": "source_user_id", "conds": [uid]},
-            ]},
-        ]}
+        scope_filter = {
+            "op": "or",
+            "conds": [
+                {"op": "must", "field": "scope", "conds": ["shared", ""]},
+                {
+                    "op": "and",
+                    "conds": [
+                        {"op": "must", "field": "scope", "conds": ["private"]},
+                        {"op": "must", "field": "source_user_id", "conds": [uid]},
+                    ],
+                },
+            ],
+        }
 
         conds: List[Dict[str, Any]] = [
             {"op": "must_not", "field": "context_type", "conds": ["staging"]},
             scope_filter,
         ]
         if tid:
-            conds.append({"op": "must", "field": "source_tenant_id", "conds": [tid, ""]})
+            conds.append(
+                {"op": "must", "field": "source_tenant_id", "conds": [tid, ""]}
+            )
         if category:
             conds.append({"op": "must", "field": "category", "conds": [category]})
         if context_type:
-            conds.append({"op": "must", "field": "context_type", "conds": [context_type]})
+            conds.append(
+                {"op": "must", "field": "context_type", "conds": [context_type]}
+            )
 
         # Project filter: strict isolation
         project_id = get_effective_project_id()
         if project_id and project_id != "public":
-            conds.append({"op": "or", "conds": [
-                {"op": "must", "field": "project_id", "conds": [project_id, "public"]},
-            ]})
+            conds.append(
+                {
+                    "op": "or",
+                    "conds": [
+                        {
+                            "op": "must",
+                            "field": "project_id",
+                            "conds": [project_id, "public"],
+                        },
+                    ],
+                }
+            )
 
         combined: Dict[str, Any] = {"op": "and", "conds": conds}
 
@@ -1793,13 +1955,19 @@ class MemoryOrchestrator:
         self._ensure_init()
         tid, uid = get_effective_identity()
 
-        scope_filter = {"op": "or", "conds": [
-            {"op": "must", "field": "scope", "conds": ["shared", ""]},
-            {"op": "and", "conds": [
-                {"op": "must", "field": "scope", "conds": ["private"]},
-                {"op": "must", "field": "source_user_id", "conds": [uid]},
-            ]},
-        ]}
+        scope_filter = {
+            "op": "or",
+            "conds": [
+                {"op": "must", "field": "scope", "conds": ["shared", ""]},
+                {
+                    "op": "and",
+                    "conds": [
+                        {"op": "must", "field": "scope", "conds": ["private"]},
+                        {"op": "must", "field": "source_user_id", "conds": [uid]},
+                    ],
+                },
+            ],
+        }
 
         conds: List[Dict[str, Any]] = [
             {"op": "must_not", "field": "context_type", "conds": ["staging"]},
@@ -1807,7 +1975,9 @@ class MemoryOrchestrator:
             scope_filter,
         ]
         if tid:
-            conds.append({"op": "must", "field": "source_tenant_id", "conds": [tid, ""]})
+            conds.append(
+                {"op": "must", "field": "source_tenant_id", "conds": [tid, ""]}
+            )
 
         if context_type:
             types = [t.strip() for t in context_type.split(",") if t.strip()]
@@ -1815,9 +1985,18 @@ class MemoryOrchestrator:
 
         project_id = get_effective_project_id()
         if project_id and project_id != "public":
-            conds.append({"op": "or", "conds": [
-                {"op": "must", "field": "project_id", "conds": [project_id, "public"]},
-            ]})
+            conds.append(
+                {
+                    "op": "or",
+                    "conds": [
+                        {
+                            "op": "must",
+                            "field": "project_id",
+                            "conds": [project_id, "public"],
+                        },
+                    ],
+                }
+            )
 
         records = await self._storage.filter(
             self._get_collection(),
@@ -1836,13 +2015,15 @@ class MemoryOrchestrator:
             ct = r.get("context_type", "memory")
             if ct not in index:
                 index[ct] = []
-            index[ct].append({
-                "uri": r.get("uri", ""),
-                "abstract": abstract[:150],
-                "context_type": ct,
-                "category": r.get("category", ""),
-                "created_at": r.get("created_at", ""),
-            })
+            index[ct].append(
+                {
+                    "uri": r.get("uri", ""),
+                    "abstract": abstract[:150],
+                    "context_type": ct,
+                    "category": r.get("category", ""),
+                    "created_at": r.get("created_at", ""),
+                }
+            )
 
         total = sum(len(v) for v in index.values())
         return {"index": index, "total": total}
@@ -1863,13 +2044,17 @@ class MemoryOrchestrator:
             {"op": "must_not", "field": "context_type", "conds": ["staging"]},
         ]
         if tenant_id:
-            conds.append({"op": "must", "field": "source_tenant_id", "conds": [tenant_id]})
+            conds.append(
+                {"op": "must", "field": "source_tenant_id", "conds": [tenant_id]}
+            )
         if user_id:
             conds.append({"op": "must", "field": "source_user_id", "conds": [user_id]})
         if category:
             conds.append({"op": "must", "field": "category", "conds": [category]})
         if context_type:
-            conds.append({"op": "must", "field": "context_type", "conds": [context_type]})
+            conds.append(
+                {"op": "must", "field": "context_type", "conds": [context_type]}
+            )
 
         combined: Dict[str, Any] = {"op": "and", "conds": conds}
 
@@ -1953,9 +2138,7 @@ class MemoryOrchestrator:
             {"active_count": active_count + 1},
         )
 
-    async def feedback_batch(
-        self, rewards: List[Dict[str, Any]]
-    ) -> None:
+    async def feedback_batch(self, rewards: List[Dict[str, Any]]) -> None:
         """
         Submit batch reward signals.
 
@@ -2060,9 +2243,7 @@ class MemoryOrchestrator:
             await self._storage.set_protected(
                 self._get_collection(), record_id, protected
             )
-            logger.info(
-                "[MemoryOrchestrator] Set protected=%s for: %s", protected, uri
-            )
+            logger.info("[MemoryOrchestrator] Set protected=%s for: %s", protected, uri)
 
     async def get_profile(self, uri: str) -> Optional[Dict[str, Any]]:
         """
@@ -2084,9 +2265,7 @@ class MemoryOrchestrator:
 
         record_id = records[0].get("id", "")
         if hasattr(self._storage, "get_profile"):
-            profile = await self._storage.get_profile(
-                self._get_collection(), record_id
-            )
+            profile = await self._storage.get_profile(self._get_collection(), record_id)
             if profile:
                 return {
                     "id": profile.id,
@@ -2122,7 +2301,9 @@ class MemoryOrchestrator:
             if not health.get("embedder"):
                 issues.append("Embedder unavailable")
             if not health.get("llm"):
-                issues.append("No LLM configured — intent analysis and session extraction disabled")
+                issues.append(
+                    "No LLM configured — intent analysis and session extraction disabled"
+                )
             return {**health, **st, "issues": issues}
 
     # =========================================================================
@@ -2155,6 +2336,7 @@ class MemoryOrchestrator:
                 meta=meta,
             )
         from opencortex.utils.time_utils import get_current_timestamp
+
         return {
             "session_id": session_id,
             "started_at": get_current_timestamp(),
@@ -2236,7 +2418,8 @@ class MemoryOrchestrator:
                     alpha_traces_count = len(traces)
                     logger.info(
                         "[Alpha] Split session %s into %d traces",
-                        session_id, alpha_traces_count,
+                        session_id,
+                        alpha_traces_count,
                     )
 
                     # Check Archivist trigger
@@ -2259,11 +2442,15 @@ class MemoryOrchestrator:
             return
         try:
             from opencortex.alpha.types import KnowledgeScope
+
             traces = await self._trace_store.list_unprocessed(tenant_id)
             if not traces:
                 return
             knowledge_items = await self._archivist.run(
-                traces, tenant_id, user_id, KnowledgeScope.USER,
+                traces,
+                tenant_id,
+                user_id,
+                KnowledgeScope.USER,
             )
             for k in knowledge_items:
                 await self._knowledge_store.save(k)
@@ -2274,7 +2461,8 @@ class MemoryOrchestrator:
                 await self._trace_store.mark_processed(trace_ids)
             logger.info(
                 "[Alpha] Archivist extracted %d knowledge candidates from %d traces",
-                len(knowledge_items), len(traces),
+                len(knowledge_items),
+                len(traces),
             )
         except Exception as exc:
             logger.warning("[Alpha] Archivist failed: %s", exc)
@@ -2295,7 +2483,11 @@ class MemoryOrchestrator:
             return {"results": [], "error": "Knowledge store not initialized"}
         tid, uid = get_effective_identity()
         results = await self._knowledge_store.search(
-            query, tid, uid, types=types, limit=limit,
+            query,
+            tid,
+            uid,
+            types=types,
+            limit=limit,
         )
         return {"results": results, "count": len(results)}
 
@@ -2305,7 +2497,11 @@ class MemoryOrchestrator:
         if not self._knowledge_store:
             return {"ok": False, "error": "Knowledge store not initialized"}
         ok = await self._knowledge_store.approve(knowledge_id)
-        return {"ok": ok, "knowledge_id": knowledge_id, "status": "active" if ok else "not_found"}
+        return {
+            "ok": ok,
+            "knowledge_id": knowledge_id,
+            "status": "active" if ok else "not_found",
+        }
 
     async def knowledge_reject(self, knowledge_id: str) -> Dict[str, Any]:
         """Reject a knowledge candidate (deprecate)."""
@@ -2313,7 +2509,11 @@ class MemoryOrchestrator:
         if not self._knowledge_store:
             return {"ok": False, "error": "Knowledge store not initialized"}
         ok = await self._knowledge_store.reject(knowledge_id)
-        return {"ok": ok, "knowledge_id": knowledge_id, "status": "deprecated" if ok else "not_found"}
+        return {
+            "ok": ok,
+            "knowledge_id": knowledge_id,
+            "status": "deprecated" if ok else "not_found",
+        }
 
     async def knowledge_list_candidates(self) -> Dict[str, Any]:
         """List knowledge candidates pending approval."""
@@ -2386,7 +2586,11 @@ class MemoryOrchestrator:
                         parent_uri=parent_uri,
                         is_leaf=False,
                         context_type="resource",
-                        meta={"source": "batch:scan", "dir_path": d, "ingest_mode": "memory"},
+                        meta={
+                            "source": "batch:scan",
+                            "dir_path": d,
+                            "ingest_mode": "memory",
+                        },
                         dedup=False,
                     )
                     dir_uris[d] = dir_ctx.uri
@@ -2400,7 +2604,9 @@ class MemoryOrchestrator:
             async with sem:
                 content = item.get("content", "")
                 file_path = (item.get("meta") or {}).get("file_path", f"item_{i}")
-                abstract, overview = await self._generate_abstract_overview(content, file_path)
+                abstract, overview = await self._generate_abstract_overview(
+                    content, file_path
+                )
 
                 item_meta = dict(item.get("meta") or {})
                 item_meta.setdefault("source", "batch:scan")
@@ -2409,6 +2615,7 @@ class MemoryOrchestrator:
                 parent_uri = None
                 if scan_meta and file_path:
                     from pathlib import PurePosixPath
+
                     parent_dir = str(PurePosixPath(file_path).parent)
                     parent_uri = dir_uris.get(parent_dir)
 
@@ -2493,13 +2700,17 @@ class MemoryOrchestrator:
                 # Extract node name from old URI (last path segment)
                 parts = uri.rstrip("/").split("/")
                 node_name = parts[-1] if parts else "unnamed"
-                new_uri = CortexURI.build_shared(tid, "resources", project_id, "documents", node_name)
+                new_uri = CortexURI.build_shared(
+                    tid, "resources", project_id, "documents", node_name
+                )
 
                 # 3. Update record fields
                 record["uri"] = new_uri
                 record["scope"] = "shared"
                 record["project_id"] = project_id
-                record["parent_uri"] = CortexURI.build_shared(tid, "resources", project_id, "documents")
+                record["parent_uri"] = CortexURI.build_shared(
+                    tid, "resources", project_id, "documents"
+                )
 
                 # 4. Upsert with new URI
                 await self._storage.upsert(self._get_collection(), record)
@@ -2564,7 +2775,12 @@ class MemoryOrchestrator:
         self._ensure_init()
 
         storage_stats = await self._storage.get_stats()
-        rerank_info = {"enabled": False, "mode": "disabled", "model": None, "fusion_beta": 0.0}
+        rerank_info = {
+            "enabled": False,
+            "mode": "disabled",
+            "model": None,
+            "fusion_beta": 0.0,
+        }
         if self._retriever and self._retriever._rerank_client:
             rc = self._retriever._rerank_client
             rerank_info = {
@@ -2601,13 +2817,17 @@ class MemoryOrchestrator:
             try:
                 result = await chunked_llm_derive(
                     content=content,
-                    prompt_builder=lambda chunk: build_doc_summarization_prompt(file_path, chunk),
+                    prompt_builder=lambda chunk: build_doc_summarization_prompt(
+                        file_path, chunk
+                    ),
                     llm_fn=self._llm_completion,
                     parse_fn=parse_json_from_response,
                     merge_policy="abstract_overview",
                     max_chars_per_chunk=3000,
                 )
-                return result.get("abstract", file_path), result.get("overview", fallback_overview)
+                return result.get("abstract", file_path), result.get(
+                    "overview", fallback_overview
+                )
             except Exception:
                 pass
             return file_path, fallback_overview
@@ -2617,7 +2837,9 @@ class MemoryOrchestrator:
             response = await self._llm_completion(prompt)
             data = parse_json_from_response(response)
             if isinstance(data, dict):
-                return data.get("abstract", file_path), data.get("overview", fallback_overview)
+                return data.get("abstract", file_path), data.get(
+                    "overview", fallback_overview
+                )
         except Exception:
             pass
 
@@ -2657,7 +2879,9 @@ class MemoryOrchestrator:
         elif context_type == "resource":
             project = get_effective_project_id()  # e.g. "OpenCortex" or "public"
             if category:
-                return CortexURI.build_shared(tid, "resources", project, category, node_name)
+                return CortexURI.build_shared(
+                    tid, "resources", project, category, node_name
+                )
             return CortexURI.build_shared(tid, "resources", project, node_name)
 
         elif context_type == "staging":
@@ -2686,7 +2910,9 @@ class MemoryOrchestrator:
             candidate = f"{uri}_{i}"
             if not await self._uri_exists(candidate):
                 return candidate
-        raise ValueError(f"URI conflict unresolved after {max_attempts} attempts: {uri}")
+        raise ValueError(
+            f"URI conflict unresolved after {max_attempts} attempts: {uri}"
+        )
 
     @staticmethod
     def _extract_category_from_uri(uri: str) -> str:
@@ -2697,7 +2923,14 @@ class MemoryOrchestrator:
         """
         parts = uri.split("/")
         # Look for known parent segments, return next part
-        for parent in ("memories", "cases", "patterns", "skills", "staging", "resources"):
+        for parent in (
+            "memories",
+            "cases",
+            "patterns",
+            "skills",
+            "staging",
+            "resources",
+        ):
             if parent in parts:
                 idx = parts.index(parent)
                 if parent in ("cases", "patterns"):
@@ -2816,9 +3049,7 @@ class MemoryOrchestrator:
             await self._storage.upsert(self._get_collection(), record)
             logger.debug("[MemoryOrchestrator] Created directory record: %s", dir_uri)
 
-    def _aggregate_results(
-        self, query_results: List[QueryResult]
-    ) -> FindResult:
+    def _aggregate_results(self, query_results: List[QueryResult]) -> FindResult:
         """Aggregate multiple QueryResults into a single FindResult (deduped by URI)."""
         memories, resources, skills = [], [], []
         seen_uris: set = set()
@@ -2828,7 +3059,11 @@ class MemoryOrchestrator:
                 if ctx.uri in seen_uris:
                     continue
                 seen_uris.add(ctx.uri)
-                if ctx.context_type in (ContextType.MEMORY, ContextType.CASE, ContextType.PATTERN):
+                if ctx.context_type in (
+                    ContextType.MEMORY,
+                    ContextType.CASE,
+                    ContextType.PATTERN,
+                ):
                     memories.append(ctx)
                 elif ctx.context_type == ContextType.RESOURCE:
                     resources.append(ctx)
@@ -2843,3 +3078,58 @@ class MemoryOrchestrator:
             resources=resources,
             skills=skills,
         )
+
+    async def get_user_memory_stats(
+        self,
+        tenant_id: str,
+        user_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Get memory statistics for a user.
+
+        Returns:
+            Dict with keys:
+            - created_in_session: Dict[session_id, count]
+            - feedback_in_session: Dict[session_id, List[feedback]]
+            - total_memories: int
+            - total_feedback_given: int
+        """
+        if not self._storage:
+            return {"created_in_session": {}, "feedback_in_session": {}}
+
+        # Query memories for this user
+        filter_expr = {
+            "op": "and",
+            "conditions": [
+                {"field": "tenant_id", "op": "=", "value": tenant_id},
+                {"field": "user_id", "op": "=", "value": user_id},
+            ],
+        }
+
+        memories = await self._storage.filter(
+            self._get_collection(),
+            filter_expr,
+            limit=10000,
+        )
+
+        created_in_session: Dict[str, int] = {}
+        feedback_in_session: Dict[str, List] = {}
+
+        for mem in memories:
+            session_id = mem.get("session_id", "unknown")
+
+            # Count memories created per session
+            created_in_session[session_id] = created_in_session.get(session_id, 0) + 1
+
+            # Collect feedback per session
+            if mem.get("feedback"):
+                if session_id not in feedback_in_session:
+                    feedback_in_session[session_id] = []
+                feedback_in_session[session_id].extend(mem["feedback"])
+
+        return {
+            "created_in_session": created_in_session,
+            "feedback_in_session": feedback_in_session,
+            "total_memories": len(memories),
+            "total_feedback_given": sum(len(f) for f in feedback_in_session.values()),
+        }
