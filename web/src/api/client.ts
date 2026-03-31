@@ -1,8 +1,14 @@
 import {
   SystemHealth, MemoryStats, SearchResponse, ListResponse, ContentResponse,
   KnowledgeCandidate, ArchivistStatus, SearchDebugResponse,
-  TokenRecord, AuthMe, AdminListResponse
+  TokenRecord, AuthMe, AdminListResponse,
+  GenerateInsightsResponse, LatestReportResponse, ReportHistoryResponse, InsightsReport,
 } from './types';
+
+type OpenCortexApiError = Error & {
+  status: number;
+  payload: unknown;
+};
 
 export class OpenCortexClient {
   private baseUrl: string;
@@ -25,10 +31,14 @@ export class OpenCortexClient {
     
     if (!res.ok) {
       const errorData = await res.json().catch(() => ({}));
-      if (errorData.error === 'feature disabled') {
-        return { error: 'feature disabled' } as any;
+      if ((errorData as { error?: string }).error === 'feature disabled') {
+        return { error: 'feature disabled' } as T;
       }
-      throw new Error(`API error: ${res.status}`);
+
+      const error = new Error(`API error: ${res.status}`) as OpenCortexApiError;
+      error.status = res.status;
+      error.payload = errorData;
+      throw error;
     }
     
     return res.json();
@@ -153,5 +163,25 @@ export class OpenCortexClient {
     if (params.limit) query.append('limit', params.limit.toString());
     if (params.offset) query.append('offset', params.offset.toString());
     return this.request('GET', `/api/v1/admin/memories?${query.toString()}`);
+  }
+
+  // Insights
+  generateInsights(days: number = 7): Promise<GenerateInsightsResponse> {
+    return this.request('POST', `/api/v1/insights/generate?days=${days}`);
+  }
+
+  getLatestInsights(): Promise<LatestReportResponse> {
+    return this.request('GET', '/api/v1/insights/latest');
+  }
+
+  getInsightsHistory(limit: number = 10): Promise<ReportHistoryResponse> {
+    return this.request('GET', `/api/v1/insights/history?limit=${limit}`);
+  }
+
+  getInsightsReport(reportUri: string): Promise<InsightsReport> {
+    return this.request(
+      'GET',
+      `/api/v1/insights/report?report_uri=${encodeURIComponent(reportUri)}`
+    );
   }
 }
