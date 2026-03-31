@@ -132,3 +132,62 @@ export interface AdminListResponse {
 
 /** Union type for items displayed in the memory list panel */
 export type MemoryItem = MemoryRecord | SearchResult | AdminMemoryRecord;
+
+// ---- Insights ----
+
+export interface ReportMetadata {
+  report_uri: string;
+  generated_at: string;
+  period_start: string;
+  period_end: string;
+  total_sessions: number;
+  total_messages: number;
+}
+
+export interface GenerateInsightsResponse {
+  report_uri: string;
+  summary: string;
+  generated_at: string;
+}
+
+export interface LatestReportResponse {
+  report: ReportMetadata | null;
+  message: string;
+}
+
+export interface ReportHistoryResponse {
+  reports: ReportMetadata[];
+  total: number;
+}
+
+export interface SessionFacet {
+  session_id: string;
+  underlying_goal: string;
+  brief_summary: string;
+  goal_categories: string[];
+  outcome: string;
+  user_satisfaction_counts: Record<string, number>;
+  claude_helpfulness: number;
+  session_type: string;
+  friction_counts: Record<string, number>;
+  primary_success: string | null;
+}
+
+export interface InsightsReport {
+  tenant_id: string;
+  user_id: string;
+  report_period: string;
+  generated_at: string;
+  total_sessions: number;
+  total_messages: number;
+  total_duration_hours: number;
+  at_a_glance: string;
+  cache_hits: number;
+  llm_calls: number;
+  project_areas: Record<string, number>;
+  what_works: string[];
+  friction_analysis: Record<string, number>;
+  suggestions: string[];
+  on_the_horizon: string[];
+  session_facets: SessionFacet[];
+}
