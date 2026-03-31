@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime, date
-from typing import Optional, List, Dict, Set, Any
+from typing import Optional, List, Dict, Set, Any, Literal
 
 
 @dataclass
@@ -21,8 +21,8 @@ class SessionRecord:
     memories_created: int
     memories_referenced: int
     feedback_given: int
-    session_type: str
-    outcome: str
+    session_type: Literal["coding", "debugging", "learning", "exploring", "unknown"]
+    outcome: Optional[Literal["success", "partial", "failure", "unknown"]]
 
 
 @dataclass
@@ -47,10 +47,16 @@ class SessionFacet:
     underlying_goal: str
     brief_summary: str
     goal_categories: List[str]
-    outcome: str
+    outcome: Literal[
+        "fully_achieved",
+        "mostly_achieved",
+        "partially_achieved",
+        "not_achieved",
+        "unclear_from_transcript",
+    ]
     user_satisfaction_counts: Dict[str, int]
     claude_helpfulness: float
-    session_type: str
+    session_type: Literal["coding", "debugging", "learning", "exploring", "unknown"]
     friction_counts: Dict[str, int] = field(default_factory=dict)
     friction_detail: List[Dict[str, Any]] = field(default_factory=list)
     primary_success: Optional[str] = None

@@ -1,7 +1,7 @@
 """Tests for insights core data types."""
 
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime
 from opencortex.insights.types import (
     SessionRecord,
     UserActivityWindow,
@@ -28,15 +28,15 @@ class TestSessionRecord(unittest.TestCase):
             memories_created=2,
             memories_referenced=5,
             feedback_given=1,
-            session_type="standard",
-            outcome="successful",
+            session_type="coding",
+            outcome="success",
         )
         self.assertEqual(record.session_id, "sess_123")
         self.assertEqual(record.tenant_id, "tenant_abc")
         self.assertEqual(record.user_id, "user_xyz")
         self.assertEqual(record.project_id, "proj_001")
         self.assertEqual(record.message_count, 25)
-        self.assertEqual(record.outcome, "successful")
+        self.assertEqual(record.outcome, "success")
 
 
 class TestSessionFacet(unittest.TestCase):
@@ -49,10 +49,10 @@ class TestSessionFacet(unittest.TestCase):
             underlying_goal="Implement user auth",
             brief_summary="User worked on authentication module",
             goal_categories=["backend", "security"],
-            outcome="completed",
+            outcome="fully_achieved",
             user_satisfaction_counts={"satisfied": 1, "neutral": 0, "dissatisfied": 0},
             claude_helpfulness=0.85,
-            session_type="standard",
+            session_type="coding",
             friction_counts={"api_errors": 2, "design_decisions": 1},
             friction_detail=[
                 {"type": "api_errors", "description": "Timeout on OAuth endpoint"}
@@ -60,9 +60,58 @@ class TestSessionFacet(unittest.TestCase):
             primary_success="Successfully integrated OAuth provider",
         )
         self.assertEqual(facet.session_id, "sess_123")
-        self.assertEqual(facet.outcome, "completed")
+        self.assertEqual(facet.outcome, "fully_achieved")
         self.assertEqual(len(facet.goal_categories), 2)
         self.assertGreater(facet.claude_helpfulness, 0.8)
+
+    def test_session_facet_default_friction_counts(self):
+        """Test that SessionFacet creates new dict for friction_counts (not shared mutable)."""
+        facet1 = SessionFacet(
+            session_id="sess_1",
+            underlying_goal="Goal 1",
+            brief_summary="Summary 1",
+            goal_categories=["cat1"],
+            outcome="fully_achieved",
+            user_satisfaction_counts={"satisfied": 1},
+            claude_helpfulness=0.9,
+            session_type="coding",
+        )
+        facet2 = SessionFacet(
+            session_id="sess_2",
+            underlying_goal="Goal 2",
+            brief_summary="Summary 2",
+            goal_categories=["cat2"],
+            outcome="partially_achieved",
+            user_satisfaction_counts={"satisfied": 1},
+            claude_helpfulness=0.7,
+            session_type="debugging",
+        )
+        # Verify friction_counts are empty dicts
+        self.assertEqual(facet1.friction_counts, {})
+        self.assertEqual(facet2.friction_counts, {})
+        # Verify they are different objects (not shared)
+        self.assertIsNot(facet1.friction_counts, facet2.friction_counts)
+        # Mutate one and verify the other is unaffected
+        facet1.friction_counts["error"] = 5
+        self.assertEqual(facet1.friction_counts, {"error": 5})
+        self.assertEqual(facet2.friction_counts, {})
+
+    def test_session_facet_omit_optional_fields(self):
+        """Test that omitting optional fields uses correct defaults."""
+        facet = SessionFacet(
+            session_id="sess_123",
+            underlying_goal="Goal",
+            brief_summary="Summary",
+            goal_categories=["cat"],
+            outcome="mostly_achieved",
+            user_satisfaction_counts={"satisfied": 1},
+            claude_helpfulness=0.8,
+            session_type="learning",
+        )
+        # Verify optional fields have correct defaults
+        self.assertEqual(facet.friction_counts, {})
+        self.assertEqual(facet.friction_detail, [])
+        self.assertIsNone(facet.primary_success)
 
 
 class TestUserActivityWindow(unittest.TestCase):
