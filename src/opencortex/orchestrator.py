@@ -3085,26 +3085,23 @@ class MemoryOrchestrator:
         user_id: str,
     ) -> Dict[str, Any]:
         """
-        Get memory statistics for a user.
+        Get memory statistics for a user (admin/insights use).
 
         Returns:
             Dict with keys:
             - created_in_session: Dict[session_id, count]
-            - feedback_in_session: Dict[session_id, List[feedback]]
             - total_memories: int
-            - total_feedback_given: int
+            - total_positive_feedback: int
+            - total_negative_feedback: int
         """
-        if not self._storage:
-            return {"created_in_session": {}, "feedback_in_session": {}}
+        self._ensure_init()
 
-        # Query memories for this user
-        filter_expr = {
-            "op": "and",
-            "conditions": [
-                {"field": "tenant_id", "op": "=", "value": tenant_id},
-                {"field": "user_id", "op": "=", "value": user_id},
-            ],
-        }
+        conds: List[Dict[str, Any]] = [
+            {"op": "must_not", "field": "context_type", "conds": ["staging"]},
+            {"op": "must", "field": "source_tenant_id", "conds": [tenant_id]},
+            {"op": "must", "field": "source_user_id", "conds": [user_id]},
+        ]
+        filter_expr: Dict[str, Any] = {"op": "and", "conds": conds}
 
         memories = await self._storage.filter(
             self._get_collection(),
@@ -3113,23 +3110,18 @@ class MemoryOrchestrator:
         )
 
         created_in_session: Dict[str, int] = {}
-        feedback_in_session: Dict[str, List] = {}
+        total_positive = 0
+        total_negative = 0
 
         for mem in memories:
             session_id = mem.get("session_id", "unknown")
-
-            # Count memories created per session
             created_in_session[session_id] = created_in_session.get(session_id, 0) + 1
-
-            # Collect feedback per session
-            if mem.get("feedback"):
-                if session_id not in feedback_in_session:
-                    feedback_in_session[session_id] = []
-                feedback_in_session[session_id].extend(mem["feedback"])
+            total_positive += mem.get("positive_feedback_count", 0) or 0
+            total_negative += mem.get("negative_feedback_count", 0) or 0
 
         return {
             "created_in_session": created_in_session,
-            "feedback_in_session": feedback_in_session,
             "total_memories": len(memories),
-            "total_feedback_given": sum(len(f) for f in feedback_in_session.values()),
+            "total_positive_feedback": total_positive,
+            "total_negative_feedback": total_negative,
         }
