@@ -271,8 +271,16 @@ class ReportManager:
             "total_messages": report.total_messages,
             "total_duration_hours": report.total_duration_hours,
             "at_a_glance": report.at_a_glance,
+            "interaction_style": report.interaction_style,
+            "what_works_detail": report.what_works_detail,
+            "friction_detail": report.friction_detail,
+            "suggestions_detail": report.suggestions_detail,
+            "on_the_horizon_detail": report.on_the_horizon_detail,
+            "fun_ending": report.fun_ending,
+            "aggregated": report.aggregated,
             "cache_hits": report.cache_hits,
             "llm_calls": report.llm_calls,
+            # Legacy fields for backward compat
             "project_areas": report.project_areas,
             "what_works": report.what_works,
             "friction_analysis": report.friction_analysis,
@@ -294,7 +302,7 @@ class ReportManager:
                 for f in report.session_facets
             ],
         }
-        return json.dumps(data, indent=2)
+        return json.dumps(data, indent=2, default=str)
 
     @staticmethod
     def _escape_html(text: str) -> str:

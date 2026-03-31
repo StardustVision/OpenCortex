@@ -206,5 +206,49 @@ class TestReportManager(unittest.TestCase):
             loop.close()
 
 
+class TestEnrichedSerialization(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.fs = AsyncMock()
+        self.manager = ReportManager(self.fs)
+
+    async def test_serialize_includes_enriched_fields(self):
+        report = InsightsReport(
+            tenant_id="t1", user_id="u1",
+            report_period="2026-03-01 - 2026-03-31",
+            generated_at=datetime(2026, 3, 31, 12, 0),
+            total_sessions=5, total_messages=50,
+            total_duration_hours=3.0,
+            at_a_glance={
+                "whats_working": "Good patterns",
+                "whats_hindering": "Some friction",
+                "quick_wins": "Try feedback",
+                "ambitious_workflows": "Autonomous testing",
+            },
+            interaction_style={"narrative": "Fast coder", "key_pattern": "Iterative"},
+            fun_ending={"headline": "It worked!", "detail": "Session 3"},
+            aggregated={"tool_counts": {"Read": 10}, "languages": {"Python": 5}},
+        )
+        json_str = self.manager._serialize_report_to_json(report)
+        data = json.loads(json_str)
+        self.assertIsInstance(data["at_a_glance"], dict)
+        self.assertEqual(data["at_a_glance"]["whats_working"], "Good patterns")
+        self.assertEqual(data["interaction_style"]["narrative"], "Fast coder")
+        self.assertEqual(data["fun_ending"]["headline"], "It worked!")
+        self.assertIn("tool_counts", data["aggregated"])
+
+    async def test_serialize_backward_compat(self):
+        report = InsightsReport(
+            tenant_id="t1", user_id="u1",
+            report_period="2026-03-01 - 2026-03-31",
+            generated_at=datetime(2026, 3, 31),
+            total_sessions=0, total_messages=0,
+            total_duration_hours=0,
+        )
+        json_str = self.manager._serialize_report_to_json(report)
+        data = json.loads(json_str)
+        self.assertEqual(data["at_a_glance"], {})
+        self.assertIsNone(data["interaction_style"])
+
+
 if __name__ == "__main__":
     unittest.main()
