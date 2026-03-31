@@ -1,79 +1,41 @@
-"""InsightsCollector - collects and aggregates user session data for insights analysis."""
+"""InsightsCollector - fetches session traces for insights analysis."""
 
 import logging
-from datetime import date, datetime, timedelta
+import orjson
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
-from opencortex.insights.types import SessionRecord, UserActivityWindow
+from opencortex.alpha.types import Trace, Turn, TurnStatus, TraceOutcome
 
 logger = logging.getLogger(__name__)
 
 
 class InsightsCollector:
-    """Collects session data from TraceStore and enriches with memory data."""
+    """Fetches traces from TraceStore for a given date range."""
 
-    def __init__(self, trace_store: Any, orchestrator: Any):
+    def __init__(self, trace_store: Any, orchestrator: Any = None):
         """
         Initialize InsightsCollector.
 
         Args:
             trace_store: TraceStore instance for querying traces
-            orchestrator: MemoryOrchestrator instance for memory enrichment
+            orchestrator: Unused, kept for backward compat
         """
         self._trace_store = trace_store
-        self._orchestrator = orchestrator
 
-    async def collect_user_sessions_async(
+    async def fetch_traces(
         self,
         tenant_id: str,
         user_id: str,
         start_date: date,
         end_date: date,
-        min_user_messages: int = 1,
-    ) -> UserActivityWindow:
+    ) -> List[Trace]:
         """
-        Async version of collect_user_sessions.
+        Fetch traces from TraceStore for the given date range.
 
-        Args:
-            tenant_id: Tenant identifier
-            user_id: User identifier
-            start_date: Start date (inclusive)
-            end_date: End date (inclusive)
-            min_user_messages: Minimum user messages to include session
-
-        Returns:
-            UserActivityWindow with aggregated session data
-        """
-        sessions = await self._fetch_sessions_from_traces_async(
-            tenant_id, user_id, start_date, end_date
-        )
-
-        # Deduplicate by session_id
-        sessions = self._deduplicate_sessions(sessions)
-
-        # Filter by minimum user messages
-        sessions = [
-            s for s in sessions if s.get("user_message_count", 0) >= min_user_messages
-        ]
-
-        # Enrich with memory data
-        sessions = self._enrich_with_memory_data(sessions, tenant_id, user_id)
-
-        # Aggregate into window
-        window = self._aggregate_window(sessions, start_date, end_date)
-        window.raw_sessions = sessions
-
-        return window
-
-    async def _fetch_sessions_from_traces_async(
-        self,
-        tenant_id: str,
-        user_id: str,
-        start_date: date,
-        end_date: date,
-    ) -> List[Dict[str, Any]]:
-        """
-        Query TraceStore for sessions in date range via Qdrant filter.
+        Queries Qdrant by tenant/user, filters by date range, and
+        reconstructs Trace objects with turns loaded from CortexFS
+        when available.
 
         Args:
             tenant_id: Tenant identifier
@@ -82,7 +44,7 @@ class InsightsCollector:
             end_date: End date (inclusive)
 
         Returns:
-            List of trace records
+            List of Trace objects
         """
         filter_expr = {
             "op": "and",
@@ -91,164 +53,105 @@ class InsightsCollector:
                 {"field": "user_id", "op": "=", "value": user_id},
             ],
         }
-        all_traces = await self._trace_store._storage.filter(
+        all_records = await self._trace_store._storage.filter(
             self._trace_store._collection, filter_expr, limit=1000,
         )
 
         start_dt = datetime.combine(start_date, datetime.min.time())
         end_dt = datetime.combine(end_date, datetime.max.time())
 
-        filtered = []
-        for trace in all_traces:
-            created_at_str = trace.get("created_at", "")
+        traces: List[Trace] = []
+        for record in all_records:
+            created_at_str = record.get("created_at", "")
             try:
                 created_at = datetime.fromisoformat(created_at_str)
-                if start_dt <= created_at <= end_dt:
-                    filtered.append(trace)
+                # Normalize to naive for comparison if timezone-aware
+                if created_at.tzinfo is not None:
+                    created_at = created_at.replace(tzinfo=None)
+                if not (start_dt <= created_at <= end_dt):
+                    continue
             except (ValueError, TypeError):
                 continue
 
-        return filtered
+            trace = self._record_to_trace(record)
 
-    def _deduplicate_sessions(
-        self, sessions: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
-        """
-        Remove duplicates by session_id, keeping the one with more user messages.
+            # Try to load turns from CortexFS if trace_store has a filesystem
+            if not trace.turns and hasattr(self._trace_store, "_fs") and self._trace_store._fs:
+                turns = await self._load_turns_from_fs(trace)
+                if turns:
+                    trace.turns = turns
 
-        Args:
-            sessions: List of trace records
+            traces.append(trace)
 
-        Returns:
-            Deduplicated list of trace records
-        """
-        session_map: Dict[str, Dict[str, Any]] = {}
+        return traces
 
-        for session in sessions:
-            session_id = session.get("session_id")
-            if not session_id:
-                continue
+    def _record_to_trace(self, record: Dict[str, Any]) -> Trace:
+        """Convert a Qdrant record dict to a Trace object."""
+        # Parse outcome
+        outcome = None
+        outcome_str = record.get("outcome", "")
+        if outcome_str:
+            try:
+                outcome = TraceOutcome(outcome_str)
+            except ValueError:
+                pass
 
-            if session_id not in session_map:
-                session_map[session_id] = session
-            else:
-                # Keep the one with more user messages
-                existing_count = session_map[session_id].get("user_message_count", 0)
-                new_count = session.get("user_message_count", 0)
-                if new_count > existing_count:
-                    session_map[session_id] = session
+        # Parse turns if stored inline
+        turns: List[Turn] = []
+        raw_turns = record.get("turns", [])
+        if isinstance(raw_turns, list):
+            for rt in raw_turns:
+                if isinstance(rt, dict):
+                    turns.append(self._dict_to_turn(rt))
 
-        return list(session_map.values())
-
-    def _enrich_with_memory_data(
-        self,
-        sessions: List[Dict[str, Any]],
-        tenant_id: str,
-        user_id: str,
-    ) -> List[Dict[str, Any]]:
-        """
-        Add memory stats and feedback scores to sessions.
-
-        Args:
-            sessions: List of trace records
-            tenant_id: Tenant identifier
-            user_id: User identifier
-
-        Returns:
-            Enriched list of trace records
-        """
-        enriched = []
-
-        for session in sessions:
-            session_copy = session.copy()
-
-            # Get memory stats for the user
-            memories = self._orchestrator.memories.copy()
-            user_memories = [
-                m
-                for m in memories.values()
-                if m.get("tenant_id") == tenant_id and m.get("user_id") == user_id
-            ]
-
-            # Calculate average feedback score
-            total_score = sum(m.get("reward_score", 0) for m in user_memories)
-            avg_score = total_score / len(user_memories) if user_memories else 0
-
-            session_copy["memory_feedback_score"] = avg_score
-            session_copy["memories_created"] = len(user_memories)
-
-            enriched.append(session_copy)
-
-        return enriched
-
-    def _aggregate_window(
-        self,
-        sessions: List[Dict[str, Any]],
-        start_date: date,
-        end_date: date,
-    ) -> UserActivityWindow:
-        """
-        Build UserActivityWindow from list of sessions.
-
-        Args:
-            sessions: List of session records
-            start_date: Start date of the window
-            end_date: End date of the window
-
-        Returns:
-            UserActivityWindow with aggregated data
-        """
-        window = UserActivityWindow(
-            start_date=start_date,
-            end_date=end_date,
-            sessions=len(sessions),
-            total_messages=sum(s.get("message_count", 0) for s in sessions),
-            total_tokens=sum(s.get("token_count", 0) for s in sessions)
-            or len(sessions) * 100,
-            unique_projects=1,  # Placeholder, would count unique project_ids
-            tool_usage={},
-            memory_feedback_score=sum(
-                s.get("memory_feedback_score", 0) for s in sessions
-            )
-            / len(sessions)
-            if sessions
-            else 0,
+        return Trace(
+            trace_id=record.get("trace_id", record.get("id", "")),
+            session_id=record.get("session_id", ""),
+            tenant_id=record.get("tenant_id", ""),
+            user_id=record.get("user_id", ""),
+            source=record.get("source", ""),
+            turns=turns,
+            created_at=record.get("created_at", ""),
+            source_version=record.get("source_version") or None,
+            task_type=record.get("task_type") or None,
+            outcome=outcome,
+            error_code=record.get("error_code") or None,
+            abstract=record.get("abstract") or None,
+            overview=record.get("overview") or None,
         )
 
-        return window
-
-    def _trace_to_session_record(self, trace: Dict[str, Any]) -> SessionRecord:
-        """
-        Convert a trace record to SessionRecord.
-
-        Args:
-            trace: Trace record from TraceStore
-
-        Returns:
-            SessionRecord instance
-        """
-        created_at = trace.get("created_at", datetime.utcnow().isoformat())
+    def _dict_to_turn(self, d: Dict[str, Any]) -> Turn:
+        """Convert a dict to a Turn object."""
+        status_str = d.get("turn_status", "complete")
         try:
-            started_at = datetime.fromisoformat(created_at)
-        except (ValueError, TypeError):
-            started_at = datetime.utcnow()
+            status = TurnStatus(status_str)
+        except ValueError:
+            status = TurnStatus.COMPLETE
 
-        # Assume 1 minute duration for simplicity
-        ended_at = started_at + timedelta(minutes=1)
-
-        return SessionRecord(
-            session_id=trace.get("session_id", ""),
-            tenant_id=trace.get("tenant_id", ""),
-            user_id=trace.get("user_id", ""),
-            project_id="",  # Would be extracted from context
-            started_at=started_at,
-            ended_at=ended_at,
-            message_count=trace.get("message_count", 0),
-            user_message_count=trace.get("user_message_count", 0),
-            tool_calls=len(trace.get("turns", [])),
-            memories_created=trace.get("memories_created", 0),
-            memories_referenced=trace.get("memories_referenced", 0),
-            feedback_given=0,  # Would be tracked separately
-            session_type="unknown",  # Would be classified from content
-            outcome=trace.get("outcome"),
+        return Turn(
+            turn_id=d.get("turn_id", ""),
+            prompt_text=d.get("prompt_text"),
+            thought_text=d.get("thought_text"),
+            tool_calls=d.get("tool_calls", []),
+            final_text=d.get("final_text"),
+            turn_status=status,
+            latency_ms=d.get("latency_ms"),
+            token_count=d.get("token_count"),
         )
+
+    async def _load_turns_from_fs(self, trace: Trace) -> List[Turn]:
+        """Load turns from CortexFS L2 content."""
+        uri = (
+            f"opencortex://{trace.tenant_id}/{trace.user_id}"
+            f"/trace/{trace.trace_id}"
+        )
+        try:
+            content = await self._trace_store._fs.read(uri)
+            if not content:
+                return []
+            raw = orjson.loads(content)
+            if isinstance(raw, list):
+                return [self._dict_to_turn(d) for d in raw if isinstance(d, dict)]
+        except Exception as e:
+            logger.debug(f"Could not load turns for {trace.trace_id}: {e}")
+        return []

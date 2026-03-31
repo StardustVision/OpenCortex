@@ -1,357 +1,501 @@
-"""Tests for InsightsAgent - LLM-powered analysis pipeline."""
+"""Tests for InsightsAgent - CC-equivalent 8-phase pipeline."""
 
 import asyncio
 import json
 import unittest
-from datetime import datetime, timedelta, date
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-from opencortex.insights.types import SessionFacet, InsightsReport
-from opencortex.insights.agent import InsightsAgent
+from opencortex.alpha.types import Trace, Turn, TurnStatus
+from opencortex.insights.agent import (
+    InsightsAgent,
+    aggregate_data,
+    build_data_context,
+    deduplicate_sessions,
+    filter_substantive,
+    filter_warmup_only,
+)
+from opencortex.insights.types import (
+    AggregatedData,
+    InsightsReport,
+    SessionFacet,
+    SessionMeta,
+)
 
+
+# ---------------------------------------------------------------------------
+# Mock LLM: returns prompt-specific JSON based on keywords
+# ---------------------------------------------------------------------------
 
 class MockLLM:
-    """Mock LLM for testing."""
-
-    def generate(self, prompt: str, **kwargs) -> str:
-        """Generate mock LLM response based on prompt content."""
-        prompt_lower = prompt.lower()
-
-        if "facet_extraction" in prompt or "analyze" in prompt_lower:
-            return json.dumps(
-                {
-                    "underlying_goal": "Fix authentication bug",
-                    "brief_summary": "Debugging auth system",
-                    "goal_categories": ["debugging", "bug-fix"],
-                    "outcome": "fully_achieved",
-                    "user_satisfaction_counts": {"satisfied": 2, "neutral": 1},
-                    "claude_helpfulness": 0.85,
-                    "session_type": "debugging",
-                    "friction_counts": {"config_issues": 1},
-                    "friction_detail": [
-                        {"type": "config_issues", "description": "Token expiry"}
-                    ],
-                    "primary_success": "Fixed expired token issue",
-                }
-            )
-        elif "chunk_summary" in prompt or "summarize" in prompt_lower:
-            return (
-                "Session involved debugging authentication. Fixed token expiry issue."
-            )
-        elif "project_areas" in prompt or "project" in prompt_lower:
-            return json.dumps(
-                {
-                    "areas": ["API Development", "Authentication"],
-                    "focus_distribution": {
-                        "API Development": 0.6,
-                        "Authentication": 0.4,
-                    },
-                    "cross_cutting_concerns": ["Testing", "Documentation"],
-                }
-            )
-        elif "what_works" in prompt or (
-            "what" in prompt_lower and "works" in prompt_lower
-        ):
-            return json.dumps(
-                {
-                    "successful_patterns": ["Incremental debugging"],
-                    "effective_tools": ["LLM-assisted debugging"],
-                    "workflow_strengths": ["Clear problem isolation"],
-                    "repeated_successes": ["Breaking down complex issues"],
-                }
-            )
-        elif "friction" in prompt or "friction_analysis" in prompt:
-            return json.dumps(
-                {
-                    "blockers": ["Missing API documentation"],
-                    "repeated_issues": ["Configuration complexity"],
-                    "inefficient_processes": ["Manual token refresh"],
-                    "debugging_friction": ["Unclear error messages"],
-                    "tool_friction": ["SDK version conflicts"],
-                }
-            )
-        elif "suggestions" in prompt or "improvement" in prompt_lower:
-            return json.dumps(
-                {
-                    "quick_wins": ["Document token expiry handling"],
-                    "process_improvements": ["Automate configuration"],
-                    "tool_recommendations": ["Use newer SDK version"],
-                    "learning_areas": ["OAuth 2.0 flows"],
-                    "automation_opportunities": ["Token refresh"],
-                }
-            )
-        elif "at_a_glance" in prompt or ("glance" in prompt_lower):
-            return json.dumps(
-                {
-                    "headline": "Strong progress on authentication system",
-                    "main_activities": [
-                        "Fixed token expiry",
-                        "Improved error handling",
-                    ],
-                    "key_challenges": ["Config complexity"],
-                    "momentum": "Strong - auth system stabilizing",
-                    "next_focus": "API documentation",
-                }
-            )
-        elif "horizon" in prompt or "on_the_horizon" in prompt:
-            return json.dumps(
-                {
-                    "emerging_patterns": ["OAuth 2.0 adoption"],
-                    "upcoming_features": ["Multi-tenant support"],
-                    "skill_development_areas": ["Advanced auth patterns"],
-                    "architectural_evolution": ["Event-driven auth"],
-                    "new_problem_domains": ["Mobile auth flows"],
-                }
-            )
-        else:
-            return json.dumps(
-                {
-                    "successful_patterns": ["Incremental debugging"],
-                    "quick_wins": ["Document issues"],
-                }
-            )
-
-
-class MockCollector:
-    """Mock InsightsCollector for testing."""
+    """Mock LLM that returns structured JSON based on prompt keywords."""
 
     def __init__(self):
-        self.sessions: List[Dict[str, Any]] = []
+        self.call_count = 0
 
-    async def collect_user_sessions_async(
-        self,
-        tenant_id: str,
-        user_id: str,
-        start_date: date,
-        end_date: date,
-        min_user_messages: int = 1,
-    ) -> "UserActivityWindow":
-        """Return mock user activity window."""
-        from opencortex.insights.types import UserActivityWindow
-        return UserActivityWindow(
-            start_date=start_date,
-            end_date=end_date,
-            sessions=len(self.sessions),
-            total_messages=50,
-            total_tokens=5000,
-            unique_projects=2,
-            tool_usage={"search": 10, "store": 5},
-            memory_feedback_score=0.8,
-            raw_sessions=self.sessions,
-        )
+    def generate(self, prompt: str, **kwargs) -> str:
+        self.call_count += 1
+        p = prompt.lower()
+
+        # AT_A_GLANCE must be checked first -- its prompt contains other
+        # section keywords like "Project Areas", "Friction", etc.
+        if "at a glance" in p and "## project areas" in p:
+            return json.dumps({
+                "whats_working": "Strong iterative debugging workflow.",
+                "whats_hindering": "Config path confusion.",
+                "quick_wins": "Try memory feedback to refine recall.",
+                "ambitious_workflows": "Explore parallel agent execution.",
+            })
+
+        if "analyze this claude code session" in p or "extract structured facets" in p:
+            return json.dumps({
+                "underlying_goal": "Fix authentication bug",
+                "goal_categories": {"debug_investigate": 1, "fix_bug": 1},
+                "outcome": "fully_achieved",
+                "user_satisfaction_counts": {"satisfied": 2},
+                "claude_helpfulness": "very_helpful",
+                "session_type": "single_task",
+                "friction_counts": {"misunderstood_request": 1},
+                "friction_detail": "Misread config path once",
+                "primary_success": "correct_code_edits",
+                "brief_summary": "Fixed auth token expiry by updating config",
+                "user_instructions_to_claude": ["be concise"],
+            })
+
+        if "summarize this portion" in p:
+            return "Session involved debugging auth. Token expiry fixed."
+
+        if "identify project areas" in p:
+            return json.dumps({
+                "areas": [
+                    {"name": "Authentication", "session_count": 3,
+                     "description": "Auth module improvements."},
+                ]
+            })
+
+        if "interaction style" in p or "describe the user" in p:
+            return json.dumps({
+                "narrative": "You iterate quickly with short prompts.",
+                "key_pattern": "Rapid iteration with minimal context",
+            })
+
+        if "what's working well" in p or "identify what" in p:
+            return json.dumps({
+                "intro": "Strong debugging workflows.",
+                "impressive_workflows": [
+                    {"title": "Quick Debugging", "description": "Fast isolation."},
+                ],
+            })
+
+        if "identify friction points" in p:
+            return json.dumps({
+                "intro": "Minor friction around config.",
+                "categories": [
+                    {"category": "Config Issues", "description": "Misread paths.",
+                     "examples": ["wrong config path"]},
+                ],
+            })
+
+        if "suggest improvements" in p or "oc features reference" in p:
+            return json.dumps({
+                "features_to_try": [
+                    {"feature": "Memory Feedback", "one_liner": "Reinforce useful memories",
+                     "why_for_you": "Improve recall", "example_code": "feedback(uri, +1)"},
+                ],
+                "usage_patterns": [
+                    {"title": "Batch Import", "suggestion": "Import docs",
+                     "detail": "Speed up onboarding", "copyable_prompt": "batch_store(...)"},
+                ],
+            })
+
+        if "future opportunities" in p or "identify future" in p:
+            return json.dumps({
+                "intro": "AI workflows evolving.",
+                "opportunities": [
+                    {"title": "Parallel Agents", "whats_possible": "Run multiple tasks.",
+                     "how_to_try": "Use Agent tool.", "copyable_prompt": "try parallel agents"},
+                ],
+            })
+
+        if "memorable moment" in p or "find a memorable" in p:
+            return json.dumps({
+                "headline": "That time you fixed the bug in 30 seconds",
+                "detail": "Fastest debug ever on Tuesday",
+            })
+
+        # Fallback
+        return json.dumps({"result": "ok"})
 
 
-class TestInsightsAgent(unittest.TestCase):
-    """Test suite for InsightsAgent."""
+# ---------------------------------------------------------------------------
+# Mock Collector: returns pre-configured traces
+# ---------------------------------------------------------------------------
+
+class MockCollector:
+    """Mock InsightsCollector that returns configured traces."""
+
+    def __init__(self, traces: Optional[List[Trace]] = None):
+        self.traces = traces or []
+
+    async def fetch_traces(
+        self, tenant_id: str, user_id: str, start_date: date, end_date: date,
+    ) -> List[Trace]:
+        return self.traces
+
+
+# ---------------------------------------------------------------------------
+# Mock Cache
+# ---------------------------------------------------------------------------
+
+class MockCache:
+    """Mock InsightsCache with get/put tracking."""
+
+    def __init__(self):
+        self._meta: Dict[str, SessionMeta] = {}
+        self._facet: Dict[str, SessionFacet] = {}
+        self.meta_hits = 0
+        self.facet_hits = 0
+
+    async def get_meta(self, tid, uid, session_id) -> Optional[SessionMeta]:
+        key = f"{tid}/{uid}/{session_id}"
+        if key in self._meta:
+            self.meta_hits += 1
+            return self._meta[key]
+        return None
+
+    async def put_meta(self, tid, uid, session_id, meta):
+        key = f"{tid}/{uid}/{session_id}"
+        self._meta[key] = meta
+
+    async def get_facet(self, tid, uid, session_id) -> Optional[SessionFacet]:
+        key = f"{tid}/{uid}/{session_id}"
+        if key in self._facet:
+            self.facet_hits += 1
+            return self._facet[key]
+        return None
+
+    async def put_facet(self, tid, uid, session_id, facet):
+        key = f"{tid}/{uid}/{session_id}"
+        self._facet[key] = facet
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def make_trace(
+    session_id: str = "sess-1",
+    user_messages: int = 5,
+    tenant_id: str = "t1",
+    user_id: str = "u1",
+    created_at: Optional[str] = None,
+) -> Trace:
+    """Build a Trace with the specified number of user/assistant turn pairs."""
+    turns = []
+    now_str = created_at or datetime.now(timezone.utc).isoformat()
+    for i in range(user_messages):
+        turns.append(Turn(
+            turn_id=f"turn-{i*2}",
+            prompt_text=f"User message {i}",
+            tool_calls=[{"name": "Edit", "input_params": {"file_path": "/src/main.py"}}]
+            if i == 0 else [],
+        ))
+        turns.append(Turn(
+            turn_id=f"turn-{i*2+1}",
+            final_text=f"Assistant response {i}",
+        ))
+    return Trace(
+        trace_id=f"trace-{session_id}",
+        session_id=session_id,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        source="claude_code",
+        turns=turns,
+        created_at=now_str,
+    )
+
+
+def make_meta(session_id: str = "sess-1", user_msgs: int = 5, duration: float = 10.0) -> SessionMeta:
+    return SessionMeta(
+        session_id=session_id,
+        tenant_id="t1",
+        user_id="u1",
+        project_path="/project",
+        start_time=datetime.now(timezone.utc).isoformat(),
+        duration_minutes=duration,
+        user_message_count=user_msgs,
+        assistant_message_count=user_msgs,
+        tool_counts={"Edit": 2},
+        languages={"Python": 3},
+        git_commits=1,
+        git_pushes=0,
+        input_tokens=1000,
+        output_tokens=800,
+        first_prompt="Fix the auth bug",
+    )
+
+
+def make_facet(session_id: str = "sess-1", goals: Optional[Dict[str, int]] = None) -> SessionFacet:
+    return SessionFacet(
+        session_id=session_id,
+        underlying_goal="Fix bug",
+        goal_categories=goals or {"fix_bug": 1},
+        outcome="fully_achieved",
+        user_satisfaction_counts={"satisfied": 1},
+        claude_helpfulness="very_helpful",
+        session_type="single_task",
+        brief_summary="Fixed the bug",
+    )
+
+
+# ===========================================================================
+# Tests
+# ===========================================================================
+
+class TestDeduplicateSessions(unittest.TestCase):
+
+    def test_keeps_highest_message_count(self):
+        t1, m1 = make_trace("s1"), make_meta("s1", user_msgs=3)
+        t2, m2 = make_trace("s1"), make_meta("s1", user_msgs=10)
+        result = deduplicate_sessions([(t1, m1), (t2, m2)])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0][1].user_message_count, 10)
+
+    def test_tiebreak_by_duration(self):
+        t1, m1 = make_trace("s1"), make_meta("s1", user_msgs=5, duration=2.0)
+        t2, m2 = make_trace("s1"), make_meta("s1", user_msgs=5, duration=20.0)
+        result = deduplicate_sessions([(t1, m1), (t2, m2)])
+        self.assertEqual(len(result), 1)
+        self.assertAlmostEqual(result[0][1].duration_minutes, 20.0)
+
+    def test_different_sessions_kept(self):
+        entries = [
+            (make_trace("s1"), make_meta("s1")),
+            (make_trace("s2"), make_meta("s2")),
+        ]
+        result = deduplicate_sessions(entries)
+        self.assertEqual(len(result), 2)
+
+
+class TestFilterSubstantive(unittest.TestCase):
+
+    def test_filters_low_message_count(self):
+        entries = [
+            (make_trace("s1"), make_meta("s1", user_msgs=1, duration=10.0)),
+            (make_trace("s2"), make_meta("s2", user_msgs=5, duration=10.0)),
+        ]
+        result = filter_substantive(entries)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0][1].session_id, "s2")
+
+    def test_filters_short_duration(self):
+        entries = [
+            (make_trace("s1"), make_meta("s1", user_msgs=5, duration=0.5)),
+            (make_trace("s2"), make_meta("s2", user_msgs=5, duration=10.0)),
+        ]
+        result = filter_substantive(entries)
+        self.assertEqual(len(result), 1)
+
+
+class TestFilterWarmupOnly(unittest.TestCase):
+
+    def test_removes_warmup_only(self):
+        entries = [
+            (make_trace("s1"), make_meta("s1")),
+            (make_trace("s2"), make_meta("s2")),
+        ]
+        facets = {
+            "s1": make_facet("s1", goals={"warmup_minimal": 1}),
+            "s2": make_facet("s2", goals={"fix_bug": 1}),
+        }
+        result = filter_warmup_only(entries, facets)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0][1].session_id, "s2")
+
+    def test_keeps_mixed_goals_with_warmup(self):
+        entries = [(make_trace("s1"), make_meta("s1"))]
+        facets = {
+            "s1": make_facet("s1", goals={"warmup_minimal": 1, "fix_bug": 1}),
+        }
+        result = filter_warmup_only(entries, facets)
+        self.assertEqual(len(result), 1)
+
+    def test_keeps_sessions_without_facet(self):
+        entries = [(make_trace("s1"), make_meta("s1"))]
+        result = filter_warmup_only(entries, {})
+        self.assertEqual(len(result), 1)
+
+
+class TestAggregateData(unittest.TestCase):
+
+    def test_computes_totals(self):
+        metas = [make_meta("s1"), make_meta("s2")]
+        facets = {
+            "s1": make_facet("s1"),
+            "s2": make_facet("s2"),
+        }
+        agg = aggregate_data(metas, facets, date.today() - timedelta(days=7), date.today(), 10)
+        self.assertIsInstance(agg, AggregatedData)
+        self.assertEqual(agg.total_sessions, 2)
+        self.assertEqual(agg.total_sessions_scanned, 10)
+        self.assertEqual(agg.sessions_with_facets, 2)
+        self.assertGreater(agg.total_messages, 0)
+
+    def test_merges_tool_counts(self):
+        m1 = make_meta("s1")
+        m1.tool_counts = {"Edit": 3, "Read": 1}
+        m2 = make_meta("s2")
+        m2.tool_counts = {"Edit": 2, "Write": 4}
+        agg = aggregate_data([m1, m2], {}, date.today(), date.today(), 2)
+        self.assertEqual(agg.tool_counts["Edit"], 5)
+        self.assertEqual(agg.tool_counts["Read"], 1)
+        self.assertEqual(agg.tool_counts["Write"], 4)
+
+    def test_computes_response_time_stats(self):
+        m1 = make_meta("s1")
+        m1.user_response_times = [10.0, 20.0, 30.0]
+        agg = aggregate_data([m1], {}, date.today(), date.today(), 1)
+        self.assertAlmostEqual(agg.median_response_time, 20.0)
+        self.assertAlmostEqual(agg.avg_response_time, 20.0)
+
+    def test_counts_days_active(self):
+        m1 = make_meta("s1")
+        m1.start_time = "2026-03-25T10:00:00+00:00"
+        m2 = make_meta("s2")
+        m2.start_time = "2026-03-26T14:00:00+00:00"
+        m3 = make_meta("s3")
+        m3.start_time = "2026-03-25T16:00:00+00:00"  # same day as m1
+        agg = aggregate_data([m1, m2, m3], {}, date(2026, 3, 25), date(2026, 3, 26), 3)
+        self.assertEqual(agg.days_active, 2)
+
+
+class TestInsightsAgentPipeline(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
-        """Set up test fixtures."""
         self.llm = MockLLM()
-        self.collector = MockCollector()
-        self.agent = InsightsAgent(llm=self.llm, collector=self.collector)
-        self.tenant_id = "test-tenant"
-        self.user_id = "test-user"
-        self.today = date.today()
-        self.week_ago = self.today - timedelta(days=7)
+        self.tenant_id = "t1"
+        self.user_id = "u1"
+        self.start_date = date.today() - timedelta(days=7)
+        self.end_date = date.today()
 
-    def test_analyze_returns_insights_report(self):
-        """Test that analyze() returns a complete InsightsReport."""
-        self._setup_mock_sessions()
+    async def test_full_pipeline_returns_report(self):
+        """Full pipeline with 2 traces produces a complete report."""
+        traces = [
+            make_trace("sess-1", user_messages=5),
+            make_trace("sess-2", user_messages=3),
+        ]
+        collector = MockCollector(traces)
+        cache = MockCache()
+        agent = InsightsAgent(llm=self.llm, collector=collector, cache=cache)
 
-        report = self.agent.analyze(
-            tenant_id=self.tenant_id,
-            user_id=self.user_id,
-            start_date=self.week_ago,
-            end_date=self.today,
+        report = await agent.analyze_async(
+            self.tenant_id, self.user_id, self.start_date, self.end_date,
         )
 
         self.assertIsInstance(report, InsightsReport)
         self.assertEqual(report.tenant_id, self.tenant_id)
         self.assertEqual(report.user_id, self.user_id)
         self.assertGreater(report.total_sessions, 0)
+        self.assertGreater(report.llm_calls, 0)
+        # Sections populated
+        self.assertIsNotNone(report.project_areas)
+        self.assertIsNotNone(report.interaction_style)
+        self.assertIsNotNone(report.fun_ending)
 
-    def test_analyze_async_returns_insights_report(self):
-        """Test that analyze_async() returns a complete InsightsReport."""
-        self._setup_mock_sessions()
+    async def test_at_a_glance_is_dict(self):
+        """at_a_glance should be a dict with expected keys."""
+        traces = [make_trace("sess-1", user_messages=5)]
+        collector = MockCollector(traces)
+        agent = InsightsAgent(llm=self.llm, collector=collector)
 
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            report = loop.run_until_complete(
-                self.agent.analyze_async(
-                    tenant_id=self.tenant_id,
-                    user_id=self.user_id,
-                    start_date=self.week_ago,
-                    end_date=self.today,
-                )
-            )
-        finally:
-            loop.close()
+        report = await agent.analyze_async(
+            self.tenant_id, self.user_id, self.start_date, self.end_date,
+        )
+
+        self.assertIsInstance(report.at_a_glance, dict)
+        self.assertIn("whats_working", report.at_a_glance)
+
+    async def test_empty_traces(self):
+        """Empty trace list returns empty report with zero sessions."""
+        collector = MockCollector([])
+        agent = InsightsAgent(llm=self.llm, collector=collector)
+
+        report = await agent.analyze_async(
+            self.tenant_id, self.user_id, self.start_date, self.end_date,
+        )
 
         self.assertIsInstance(report, InsightsReport)
-        self.assertEqual(report.tenant_id, self.tenant_id)
+        self.assertEqual(report.total_sessions, 0)
+        self.assertEqual(report.total_messages, 0)
+        self.assertEqual(report.llm_calls, 0)
 
-    def test_extract_session_facets(self):
-        """Test _extract_session_facets() extracts facets from sessions."""
-        sessions = self._setup_mock_sessions()
+    async def test_cache_used_for_meta(self):
+        """Cache should be hit on second run for meta extraction."""
+        traces = [make_trace("sess-1", user_messages=5)]
+        collector = MockCollector(traces)
+        cache = MockCache()
+        agent = InsightsAgent(llm=self.llm, collector=collector, cache=cache)
 
-        facets = self.agent._extract_session_facets(sessions)
-
-        self.assertIsInstance(facets, list)
-        for facet in facets:
-            self.assertIsInstance(facet, SessionFacet)
-            self.assertIsNotNone(facet.underlying_goal)
-            self.assertIsNotNone(facet.session_type)
-
-    def test_filter_warmup_sessions_removes_short_sessions(self):
-        """Test _filter_warmup_sessions() removes warmup-only sessions."""
-        sessions = [
-            self._create_mock_session(message_count=2),
-            self._create_mock_session(message_count=10),
-        ]
-        facets = [
-            SessionFacet(
-                session_id=s.get("session_id", "s1"),
-                underlying_goal="Test",
-                brief_summary="Quick test",
-                goal_categories=["testing"],
-                outcome="partially_achieved",
-                user_satisfaction_counts={},
-                claude_helpfulness=0.5,
-                session_type="unknown",
-            )
-            for s in sessions
-        ]
-
-        filtered = self.agent._filter_warmup_sessions(sessions, facets)
-
-        self.assertLess(len(filtered), len(sessions))
-
-    def test_aggregate_facets_builds_metrics(self):
-        """Test _aggregate_facets() builds aggregated metrics."""
-        facets = [
-            self._create_mock_facet(goal="Fix bug 1"),
-            self._create_mock_facet(goal="Fix bug 2"),
-        ]
-
-        aggregated = self.agent._aggregate_facets(facets)
-
-        self.assertIn("total_sessions", aggregated)
-        self.assertIn("avg_helpfulness", aggregated)
-        self.assertGreater(aggregated.get("total_sessions", 0), 0)
-
-    def test_chunk_summarize_handles_long_transcripts(self):
-        """Test _chunk_summarize() handles long transcripts."""
-        long_transcript = "Message. " * 1000  # Create a long transcript
-
-        summary = self.agent._chunk_summarize(long_transcript)
-
-        self.assertIsInstance(summary, str)
-        self.assertGreater(len(summary), 0)
-        self.assertLess(len(summary), len(long_transcript))
-
-    def test_generate_project_areas(self):
-        """Test _generate_project_areas() generates project analysis."""
-        sessions_summary = "Worked on API development and frontend components"
-
-        areas = self.agent._generate_project_areas(sessions_summary)
-
-        self.assertIsInstance(areas, dict)
-        self.assertIn("areas", areas)
-
-    def test_generate_what_works(self):
-        """Test _generate_what_works() identifies successful patterns."""
-        session_data = "Fixed bug quickly using incremental debugging"
-
-        what_works = self.agent._generate_what_works(session_data)
-
-        self.assertIsInstance(what_works, dict)
-
-    def test_generate_friction_analysis(self):
-        """Test _generate_friction_analysis() identifies friction points."""
-        session_data = "Struggled with configuration complexity"
-
-        friction = self.agent._generate_friction_analysis(session_data)
-
-        self.assertIsInstance(friction, dict)
-
-    def test_generate_suggestions(self):
-        """Test _generate_suggestions() creates actionable improvements."""
-        findings = {
-            "what_works": ["Incremental debugging"],
-            "friction": ["Config complexity"],
-        }
-
-        suggestions = self.agent._generate_suggestions(findings)
-
-        self.assertIsInstance(suggestions, list)
-
-    def test_generate_at_a_glance(self):
-        """Test _generate_at_a_glance() creates summary."""
-        insights_data = {
-            "total_sessions": 5,
-            "total_messages": 50,
-            "what_works": ["Pattern 1"],
-            "friction": {"issue1": 2},
-        }
-
-        summary = self.agent._generate_at_a_glance(insights_data)
-
-        self.assertIsInstance(summary, str)
-        self.assertGreater(len(summary), 0)
-
-    # ============ Helper Methods ============
-
-    def _setup_mock_sessions(self) -> List[Dict[str, Any]]:
-        """Create mock session data."""
-        sessions = [
-            self._create_mock_session(
-                session_id="s1", message_count=10, transcript="Debugging auth system..."
-            ),
-            self._create_mock_session(
-                session_id="s2",
-                message_count=8,
-                transcript="Implementing new feature...",
-            ),
-        ]
-        self.collector.sessions = sessions
-        return sessions
-
-    def _create_mock_session(
-        self,
-        session_id: str = "s1",
-        message_count: int = 5,
-        transcript: str = "Session transcript",
-    ) -> Dict[str, Any]:
-        """Create a mock session record."""
-        return {
-            "session_id": session_id,
-            "tenant_id": self.tenant_id,
-            "user_id": self.user_id,
-            "started_at": datetime.now() - timedelta(hours=1),
-            "ended_at": datetime.now(),
-            "message_count": message_count,
-            "user_message_count": message_count // 2,
-            "transcript": transcript,
-        }
-
-    def _create_mock_facet(
-        self,
-        session_id: str = "s1",
-        goal: str = "Fix bug",
-    ) -> SessionFacet:
-        """Create a mock session facet."""
-        return SessionFacet(
-            session_id=session_id,
-            underlying_goal=goal,
-            brief_summary=f"Session: {goal}",
-            goal_categories=["debugging"],
-            outcome="fully_achieved",
-            user_satisfaction_counts={"satisfied": 1},
-            claude_helpfulness=0.8,
-            session_type="debugging",
+        # First run: cache miss, stores meta
+        await agent.analyze_async(
+            self.tenant_id, self.user_id, self.start_date, self.end_date,
         )
+        self.assertEqual(cache.meta_hits, 0)
+
+        # Second run: cache hit
+        report = await agent.analyze_async(
+            self.tenant_id, self.user_id, self.start_date, self.end_date,
+        )
+        self.assertGreater(cache.meta_hits, 0)
+        self.assertGreater(report.cache_hits, 0)
+
+    async def test_cache_used_for_facets(self):
+        """Cache should be hit on second run for facet extraction."""
+        traces = [make_trace("sess-1", user_messages=5)]
+        collector = MockCollector(traces)
+        cache = MockCache()
+        agent = InsightsAgent(llm=self.llm, collector=collector, cache=cache)
+
+        # First run: stores facets
+        await agent.analyze_async(
+            self.tenant_id, self.user_id, self.start_date, self.end_date,
+        )
+        first_llm_calls = self.llm.call_count
+
+        # Second run: facet cache hit
+        self.llm.call_count = 0
+        report = await agent.analyze_async(
+            self.tenant_id, self.user_id, self.start_date, self.end_date,
+        )
+        self.assertGreater(cache.facet_hits, 0)
+
+    async def test_aggregated_data_in_report(self):
+        """Report should have aggregated data dict with expected keys."""
+        traces = [make_trace("sess-1", user_messages=5)]
+        collector = MockCollector(traces)
+        agent = InsightsAgent(llm=self.llm, collector=collector)
+
+        report = await agent.analyze_async(
+            self.tenant_id, self.user_id, self.start_date, self.end_date,
+        )
+
+        self.assertIsNotNone(report.aggregated)
+        self.assertIn("total_sessions", report.aggregated)
+        self.assertIn("tool_counts", report.aggregated)
+        self.assertIn("multi_clauding", report.aggregated)
+
+    async def test_all_traces_below_threshold_returns_empty(self):
+        """If all traces have < MIN_USER_MESSAGES, return empty report."""
+        traces = [make_trace("sess-1", user_messages=1)]
+        collector = MockCollector(traces)
+        agent = InsightsAgent(llm=self.llm, collector=collector)
+
+        report = await agent.analyze_async(
+            self.tenant_id, self.user_id, self.start_date, self.end_date,
+        )
+
+        self.assertEqual(report.total_sessions, 0)
 
 
 if __name__ == "__main__":
