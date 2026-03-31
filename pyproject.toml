@@ -28,6 +28,10 @@ parsers = [
     "pdfplumber>=0.10",
     "ebooklib>=0.18",
 ]
+insights = [
+    "apscheduler>=3.10.0",
+    "jinja2>=3.0.0",
+]
 
 [project.scripts]
 opencortex-mcp = "opencortex.mcp_server:main"
