@@ -8,9 +8,10 @@ Provides endpoints for:
 - Report history
 """
 
+import json
 import logging
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -18,6 +19,18 @@ from pydantic import BaseModel, Field
 from opencortex.http.request_context import get_effective_identity
 
 logger = logging.getLogger(__name__)
+def _parse_report_period(period_str: str) -> Tuple[date, date]:
+    """Parse stored report_period strings with either separator."""
+    fallback = date.today()
+    for sep in (" - ", " to "):
+        if sep in period_str:
+            parts = period_str.split(sep)
+            if len(parts) >= 2:
+                try:
+                    return date.fromisoformat(parts[0]), date.fromisoformat(parts[1])
+                except ValueError:
+                    break
+    return fallback, fallback
 
 
 # =========================================================================
@@ -178,22 +191,18 @@ def create_insights_router(
                     "message": "No reports generated yet",
                 }
 
+            period_start, period_end = _parse_report_period(
+                report.get("report_period", "")
+            )
+
             return {
                 "report": {
                     "report_uri": report.get("json_uri", ""),
                     "generated_at": datetime.fromisoformat(
                         report.get("generated_at", "")
                     ),
-                    "period_start": date.fromisoformat(
-                        report.get("report_period", "").split(" - ")[0]
-                    )
-                    if " - " in report.get("report_period", "")
-                    else date.today(),
-                    "period_end": date.fromisoformat(
-                        report.get("report_period", "").split(" - ")[1]
-                    )
-                    if " - " in report.get("report_period", "")
-                    else date.today(),
+                    "period_start": period_start,
+                    "period_end": period_end,
                     "total_sessions": report.get("total_sessions", 0),
                     "total_messages": report.get("total_messages", 0),
                 },
@@ -241,18 +250,9 @@ def create_insights_router(
 
             report_list = []
             for report in reports:
-                try:
-                    period_str = report.get("report_period", " - ")
-                    parts = period_str.split(" - ")
-                    period_start = (
-                        date.fromisoformat(parts[0]) if len(parts) > 0 else date.today()
-                    )
-                    period_end = (
-                        date.fromisoformat(parts[1]) if len(parts) > 1 else date.today()
-                    )
-                except (ValueError, IndexError):
-                    period_start = date.today()
-                    period_end = date.today()
+                period_start, period_end = _parse_report_period(
+                    report.get("report_period", "")
+                )
 
                 report_list.append(
                     {
@@ -316,8 +316,6 @@ def create_insights_router(
             content = await report_manager._cortex_fs.read(report_uri)
             if not content:
                 raise HTTPException(status_code=404, detail="Report not found")
-
-            import json
 
             return json.loads(content)
 
