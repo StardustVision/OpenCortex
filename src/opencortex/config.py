@@ -93,6 +93,7 @@ class CortexConfig:
     llm_model: str = ""           # LLM model name for intent analysis
     llm_api_key: str = ""         # LLM API key (defaults to embedding_api_key if empty)
     llm_api_base: str = ""        # LLM API base URL
+    llm_api_format: str = "openai"  # "openai" | "anthropic"
     # Rerank
     rerank_provider: str = "local"  # "jina" | "cohere" | "local" | "llm"
     rerank_model: str = ""          # Rerank model name
