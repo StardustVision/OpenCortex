@@ -8,12 +8,22 @@ import {
 export class APIRequestError extends Error {
   status: number;
   payload: unknown;
+  method: string;
+  path: string;
 
-  constructor(status: number, payload: unknown, message?: string) {
-    super(message ?? `API error: ${status}`);
+  constructor(
+    status: number,
+    payload: unknown,
+    method: string,
+    path: string,
+    message?: string
+  ) {
+    super(message ?? `API error: ${status} ${method} ${path}`);
     Object.setPrototypeOf(this, APIRequestError.prototype);
     this.status = status;
     this.payload = payload;
+    this.method = method;
+    this.path = path;
   }
 }
 
@@ -54,7 +64,7 @@ export class OpenCortexClient {
         return { error: 'feature disabled' } as T;
       }
 
-      throw new APIRequestError(res.status, parsedBody);
+      throw new APIRequestError(res.status, parsedBody, method, path);
     }
 
     return parsedBody as T;
