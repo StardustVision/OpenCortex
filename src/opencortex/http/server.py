@@ -230,7 +230,7 @@ async def _lifespan(app: FastAPI):
                 finally:
                     loop.close()
 
-        collector = InsightsCollector(_orchestrator._storage)
+        collector = InsightsCollector(_orchestrator._trace_store, _orchestrator)
         llm = LLMWrapper(llm_callable)
         agent = InsightsAgent(llm=llm, collector=collector)
         report_manager = ReportManager(_orchestrator._fs)
