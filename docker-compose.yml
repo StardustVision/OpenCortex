@@ -19,9 +19,9 @@ services:
       # - OPENCORTEX_EMBEDDING_MODEL=text-embedding-3-large
       # - OPENCORTEX_EMBEDDING_API_KEY=your-api-key
       # - OPENCORTEX_EMBEDDING_API_BASE=https://api.openai.com/v1
-      # ---- LLM (for intent analysis) ----
-      # - OPENCORTEX_LLM_MODEL=
-      # - OPENCORTEX_LLM_API_KEY=
+      # ---- LLM (required for insights generation) ----
+      # - OPENCORTEX_LLM_MODEL=<your-model>
+      # - OPENCORTEX_LLM_API_KEY=<your-key>
       # - OPENCORTEX_LLM_API_BASE=
       # ---- Rerank ----
       # - OPENCORTEX_RERANK_PROVIDER=
@@ -30,7 +30,15 @@ services:
       # - OPENCORTEX_RERANK_API_BASE=
       # - OPENCORTEX_RERANK_THRESHOLD=0.0
       # - OPENCORTEX_RERANK_FUSION_BETA=0.7
-      # ---- Cortex Alpha (knowledge extraction) ----
-      # Requires LLM config above. JSON string, merged with defaults.
+      # ---- Cortex Alpha (required for insights routes) ----
       # - OPENCORTEX_CORTEX_ALPHA={"trace_splitter_enabled":true,"archivist_enabled":true,"archivist_trigger_threshold":5}
+    restart: unless-stopped
+
+  opencortex-web:
+    build: ./web
+    container_name: opencortex-web
+    ports:
+      - "8080:80"
+    depends_on:
+      - opencortex
     restart: unless-stopped
