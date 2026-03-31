@@ -209,7 +209,7 @@ async def _lifespan(app: FastAPI):
         from opencortex.insights.agent import InsightsAgent
         from opencortex.insights.collector import InsightsCollector
         from opencortex.insights.report import ReportManager
-        from opencortex.insights.scheduler import InsightsScheduler
+        from opencortex.insights.api import create_insights_router
         from opencortex.models.llm_factory import create_llm_completion
 
         llm_callable = create_llm_completion(_orchestrator._config)
@@ -234,43 +234,23 @@ async def _lifespan(app: FastAPI):
         llm = LLMWrapper(llm_callable)
         agent = InsightsAgent(llm=llm, collector=collector)
         report_manager = ReportManager(_orchestrator._fs)
-        scheduler = InsightsScheduler(agent=agent, report_manager=report_manager)
-        scheduler.start()
 
-        _orchestrator._insights_scheduler = scheduler
         _orchestrator._insights_report_manager = report_manager
-        logger.info("[HTTP] Insights components initialized")
+
+        insights_router = create_insights_router(
+            agent=agent,
+            report_manager=report_manager,
+            orchestrator=_orchestrator,
+        )
+        app.include_router(insights_router)
+        logger.info("[HTTP] Insights components initialized and routes registered")
     except Exception as e:
         logger.warning(f"[HTTP] Insights components not available: {e}")
-        _orchestrator._insights_scheduler = None
         _orchestrator._insights_report_manager = None
-
-    app.state.insights_scheduler = _orchestrator._insights_scheduler
-    app.state.insights_report_manager = _orchestrator._insights_report_manager
-
-    # Register insights routes after components are initialized
-    if _orchestrator._insights_scheduler and _orchestrator._insights_report_manager:
-        try:
-            from opencortex.insights.api import create_insights_router
-
-            insights_router = create_insights_router(
-                scheduler=_orchestrator._insights_scheduler,
-                report_manager=_orchestrator._insights_report_manager,
-                orchestrator=_orchestrator,
-            )
-            app.include_router(insights_router)
-            logger.info("[HTTP] Insights API routes registered")
-        except Exception as e:
-            logger.warning(f"[HTTP] Failed to register insights routes: {e}")
 
     try:
         yield
     finally:
-        if _orchestrator._insights_scheduler:
-            try:
-                _orchestrator._insights_scheduler.stop()
-            except Exception as e:
-                logger.warning(f"[HTTP] Failed to stop insights scheduler: {e}")
         await _orchestrator.close()
         _orchestrator = None
         logger.info("[HTTP] Orchestrator closed")
@@ -317,27 +297,6 @@ def create_app() -> FastAPI:
 
 def _register_routes(app: FastAPI) -> None:
     """Register all REST endpoints on *app*."""
-
-    # =====================================================================
-    # Core Memory
-    # =====================================================================
-    # Insights Routes (registered if components initialized)
-    # =====================================================================
-    scheduler = getattr(app.state, "insights_scheduler", None)
-    report_manager = getattr(app.state, "insights_report_manager", None)
-    if scheduler and report_manager:
-        try:
-            from opencortex.insights.api import create_insights_router
-
-            insights_router = create_insights_router(
-                scheduler=scheduler,
-                report_manager=report_manager,
-                orchestrator=None,
-            )
-            app.include_router(insights_router)
-            logger.info("[HTTP] Insights API routes registered")
-        except Exception as e:
-            logger.warning(f"[HTTP] Failed to register insights routes: {e}")
 
     # =====================================================================
     # Core Memory

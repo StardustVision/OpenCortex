@@ -2,7 +2,6 @@
 
 from opencortex.insights.agent import InsightsAgent
 from opencortex.insights.collector import InsightsCollector
-from opencortex.insights.scheduler import InsightsScheduler
 from opencortex.insights.report import ReportManager
 from opencortex.insights.types import (
     SessionRecord,
@@ -14,7 +13,6 @@ from opencortex.insights.types import (
 __all__ = [
     "InsightsAgent",
     "InsightsCollector",
-    "InsightsScheduler",
     "ReportManager",
     "SessionRecord",
     "SessionFacet",

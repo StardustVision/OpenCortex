@@ -6,7 +6,6 @@ Provides endpoints for:
 - On-demand insight generation
 - Latest report retrieval
 - Report history
-- Periodic scheduling
 """
 
 import logging
@@ -24,12 +23,6 @@ logger = logging.getLogger(__name__)
 # =========================================================================
 # Request/Response Models
 # =========================================================================
-
-
-class GenerateInsightsRequest(BaseModel):
-    """Request to generate insights on demand."""
-
-    days: int = Field(default=7, ge=1, le=90, description="Number of days to analyze")
 
 
 class GenerateInsightsResponse(BaseModel):
@@ -65,33 +58,13 @@ class ReportHistoryResponse(BaseModel):
     total: int = Field(..., description="Total number of reports available")
 
 
-class ScheduleInsightsRequest(BaseModel):
-    """Request to schedule periodic insights."""
-
-    cron_expression: str = Field(
-        default="0 0 * * 0",
-        description="Cron expression for scheduling (default: weekly Sunday 00:00)",
-    )
-    timezone: str = Field(default="UTC", description="Timezone for cron schedule")
-
-
-class ScheduleInsightsResponse(BaseModel):
-    """Response from schedule insights endpoint."""
-
-    job_id: str = Field(..., description="Unique identifier for the scheduled job")
-    cron_expression: str = Field(..., description="Cron expression for the job")
-    timezone: str = Field(..., description="Timezone for the schedule")
-    next_run: Optional[datetime] = Field(None, description="Timestamp of next run")
-    message: str = Field(..., description="Status message")
-
-
 # =========================================================================
 # Route Handlers
 # =========================================================================
 
 
 def create_insights_router(
-    scheduler: Any,
+    agent: Any,
     report_manager: Any,
     orchestrator: Any,
 ) -> APIRouter:
@@ -99,7 +72,7 @@ def create_insights_router(
     Create FastAPI router for insights endpoints.
 
     Args:
-        scheduler: InsightsScheduler instance
+        agent: InsightsAgent instance
         report_manager: ReportManager instance
         orchestrator: MemoryOrchestrator instance
 
@@ -132,12 +105,10 @@ def create_insights_router(
         - 500: Generation failed
         """
         try:
-            # Get current user from JWT context
             tid, uid = get_effective_identity()
             if not tid or not uid:
                 raise HTTPException(status_code=401, detail="Unauthorized")
 
-            # Calculate date range
             end_date = date.today()
             start_date = end_date - timedelta(days=days)
 
@@ -145,17 +116,16 @@ def create_insights_router(
                 f"Generating insights for {tid}/{uid} from {start_date} to {end_date}"
             )
 
-            # Generate insights via scheduler (which has agent and report_manager)
-            await scheduler.generate_now(
+            report = await agent.analyze_async(
                 tenant_id=tid,
                 user_id=uid,
                 start_date=start_date,
                 end_date=end_date,
             )
+            await report_manager.save_report(report)
 
-            # Get the report metadata
-            report = await report_manager.get_latest_report(tid, uid)
-            if not report:
+            meta = await report_manager.get_latest_report(tid, uid)
+            if not meta:
                 raise HTTPException(
                     status_code=500,
                     detail="Report generated but could not retrieve metadata",
@@ -163,8 +133,8 @@ def create_insights_router(
 
             return {
                 "report_uri": f"opencortex://{tid}/{uid}/insights/reports/{end_date.isoformat()}/weekly.json",
-                "summary": report.get("at_a_glance", "Report generated successfully"),
-                "generated_at": datetime.fromisoformat(report.get("generated_at", "")),
+                "summary": meta.get("at_a_glance", "Report generated successfully"),
+                "generated_at": datetime.fromisoformat(meta.get("generated_at", "")),
             }
 
         except HTTPException:
@@ -263,7 +233,6 @@ def create_insights_router(
                 tenant_id=tid, user_id=uid, limit=limit
             )
 
-            # Convert reports to response format
             report_list = []
             for report in reports:
                 try:
@@ -302,68 +271,5 @@ def create_insights_router(
         except Exception as e:
             logger.error(f"Error retrieving report history: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Retrieval failed: {str(e)}")
-
-    # =====================================================================
-    # POST /api/v1/insights/schedule
-    # =====================================================================
-
-    @router.post("/schedule", response_model=ScheduleInsightsResponse)
-    async def schedule_insights(req: ScheduleInsightsRequest) -> Dict[str, Any]:
-        """
-        Schedule periodic insights generation for the current user.
-
-        Request Body:
-        - cron_expression: Cron expression for schedule (default: "0 0 * * 0")
-        - timezone: Timezone for schedule (default: "UTC")
-
-        Returns:
-        - job_id: Unique identifier for the scheduled job
-        - cron_expression: The cron expression
-        - timezone: The timezone
-        - next_run: Estimated timestamp of next run
-        - message: Status message
-
-        Errors:
-        - 401: Unauthorized
-        - 400: Invalid cron expression
-        - 500: Scheduling failed
-        """
-        try:
-            tid, uid = get_effective_identity()
-            if not tid or not uid:
-                raise HTTPException(status_code=401, detail="Unauthorized")
-
-            # Validate cron expression (basic check)
-            parts = req.cron_expression.strip().split()
-            if len(parts) != 5:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Invalid cron expression: must have 5 parts (minute hour day month weekday)",
-                )
-
-            logger.info(
-                f"Scheduling insights for {tid}/{uid} with cron: {req.cron_expression}"
-            )
-
-            # Schedule the job
-            job_id = scheduler.schedule_user_insights(
-                tenant_id=tid,
-                user_id=uid,
-                cron_expression=req.cron_expression,
-            )
-
-            return {
-                "job_id": job_id,
-                "cron_expression": req.cron_expression,
-                "timezone": req.timezone,
-                "next_run": None,  # APScheduler doesn't easily expose next_run
-                "message": f"Insights scheduled with job ID: {job_id}",
-            }
-
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Error scheduling insights: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail=f"Scheduling failed: {str(e)}")
 
     return router
