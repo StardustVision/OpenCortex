@@ -58,6 +58,12 @@ class ReportHistoryResponse(BaseModel):
     total: int = Field(..., description="Total number of reports available")
 
 
+class ReportContentResponse(BaseModel):
+    """Full report content from CortexFS."""
+
+    pass  # Returns raw JSON, no fixed schema needed
+
+
 # =========================================================================
 # Route Handlers
 # =========================================================================
@@ -271,5 +277,54 @@ def create_insights_router(
         except Exception as e:
             logger.error(f"Error retrieving report history: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Retrieval failed: {str(e)}")
+
+    # =====================================================================
+    # GET /api/v1/insights/report
+    # =====================================================================
+
+    @router.get("/report")
+    async def get_report_content(
+        report_uri: str = Query(..., description="Report URI from /history or /latest"),
+    ) -> Dict[str, Any]:
+        """
+        Get full report content by URI.
+
+        Query Parameters:
+        - report_uri: opencortex:// URI of the report
+
+        Returns:
+        - Full InsightsReport JSON
+
+        Errors:
+        - 401: Unauthorized
+        - 403: URI does not belong to requesting user
+        - 404: Report not found
+        """
+        try:
+            tid, uid = get_effective_identity()
+            if not tid or not uid:
+                raise HTTPException(status_code=401, detail="Unauthorized")
+
+            # Security: verify URI belongs to requesting user
+            expected_prefix = f"opencortex://{tid}/{uid}/"
+            if not report_uri.startswith(expected_prefix):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Access denied: report does not belong to requesting user",
+                )
+
+            content = await report_manager._cortex_fs.read(report_uri)
+            if not content:
+                raise HTTPException(status_code=404, detail="Report not found")
+
+            import json
+
+            return json.loads(content)
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error reading report: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Read failed: {str(e)}")
 
     return router
