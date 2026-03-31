@@ -212,6 +212,9 @@ async def _lifespan(app: FastAPI):
         from opencortex.insights.api import create_insights_router
         from opencortex.models.llm_factory import create_llm_completion
 
+        if not _orchestrator._trace_store:
+            raise Exception("TraceStore not initialized; enable trace_splitter in cortex_alpha config")
+
         llm_callable = create_llm_completion(_orchestrator._config)
         if not llm_callable:
             raise Exception("LLM not configured; insights requires LLM API key")

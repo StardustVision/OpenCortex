@@ -93,9 +93,9 @@ class InsightsAgent:
             tenant_id, user_id, start_date, end_date
         )
 
-        sessions = activity_window.get("sessions", 0)
-        total_messages = activity_window.get("total_messages", 0)
-        total_tokens = activity_window.get("total_tokens", 0)
+        sessions = activity_window.sessions
+        total_messages = activity_window.total_messages
+        total_tokens = activity_window.total_tokens
         duration_hours = total_tokens / 750 if total_tokens else 0
 
         report = InsightsReport(
@@ -112,7 +112,7 @@ class InsightsAgent:
             logger.info(f"No sessions found for {user_id}")
             return report
 
-        session_list = getattr(self._collector, "sessions", [])
+        session_list = activity_window.raw_sessions
         if not session_list:
             return report
 

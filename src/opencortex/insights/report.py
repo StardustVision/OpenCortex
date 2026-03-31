@@ -46,13 +46,13 @@ class ReportManager:
         )
 
         json_content = self._serialize_report_to_json(report)
-        await self._cortex_fs.write(json_uri, json_content, layer="L2")
+        await self._cortex_fs.write(json_uri, json_content)
 
         html_content = self._render_html(report)
-        await self._cortex_fs.write(html_uri, html_content, layer="L2")
+        await self._cortex_fs.write(html_uri, html_content)
 
         meta_uri = f"opencortex://{report.tenant_id}/{report.user_id}/insights/meta/latest_report.json"
-        await self._cortex_fs.write(meta_uri, json_content, layer="L2")
+        await self._cortex_fs.write(meta_uri, json_content)
 
         logger.info(f"Saved report to {json_uri} and {html_uri}")
 
@@ -76,7 +76,7 @@ class ReportManager:
         )
 
         try:
-            content = await self._cortex_fs.read(meta_uri, layer="L2")
+            content = await self._cortex_fs.read(meta_uri)
             if content:
                 return json.loads(content)
         except Exception as e:
@@ -113,7 +113,7 @@ class ReportManager:
             )
 
             try:
-                content = await self._cortex_fs.read(json_uri, layer="L2")
+                content = await self._cortex_fs.read(json_uri)
                 if content:
                     report_data = json.loads(content)
                     history.append(report_data)

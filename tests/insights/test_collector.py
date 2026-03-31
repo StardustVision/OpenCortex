@@ -10,40 +10,41 @@ from opencortex.insights.collector import InsightsCollector
 from opencortex.alpha.types import Trace, TraceOutcome, Turn, TurnStatus
 
 
+class MockStorage:
+    """Mock Qdrant storage for testing."""
+
+    def __init__(self):
+        self.records: List[Dict[str, Any]] = []
+
+    async def filter(self, collection: str, filter_expr: dict, limit: int = 1000) -> List[Dict[str, Any]]:
+        """Filter records by tenant_id and user_id from filter_expr."""
+        conditions = filter_expr.get("conditions", [])
+        tid = uid = None
+        for c in conditions:
+            if c.get("field") == "tenant_id":
+                tid = c.get("value")
+            if c.get("field") == "user_id":
+                uid = c.get("value")
+
+        results = []
+        for r in self.records:
+            if tid and r.get("tenant_id") != tid:
+                continue
+            if uid and r.get("user_id") != uid:
+                continue
+            results.append(r)
+        return results[:limit]
+
+
 class MockTraceStore:
     """Mock TraceStore for testing."""
 
     def __init__(self):
-        self.traces: Dict[str, Dict[str, Any]] = {}
+        self._storage = MockStorage()
+        self._collection = "traces"
 
-    async def search(
-        self,
-        query: str,
-        tenant_id: str,
-        user_id: str,
-        limit: int = 100,
-    ) -> List[Dict[str, Any]]:
-        """Mock search method."""
-        results = [
-            t
-            for t in self.traces.values()
-            if t.get("tenant_id") == tenant_id and t.get("user_id") == user_id
-        ]
-        return results[:limit]
-
-    async def get(self, trace_id: str) -> Optional[Dict[str, Any]]:
-        """Mock get method."""
-        return self.traces.get(trace_id)
-
-    async def list_by_session(
-        self, session_id: str, tenant_id: str, user_id: str
-    ) -> List[Dict[str, Any]]:
-        """Mock list_by_session method."""
-        return [
-            t
-            for t in self.traces.values()
-            if t.get("session_id") == session_id and t.get("tenant_id") == tenant_id
-        ]
+    def add_trace(self, trace: Dict[str, Any]):
+        self._storage.records.append(trace)
 
 
 class MockOrchestrator:
@@ -59,7 +60,6 @@ class MockOrchestrator:
         category: Optional[str] = None,
         limit: int = 100,
     ) -> List[Dict[str, Any]]:
-        """Mock list_memories method."""
         results = [
             m
             for m in self.memories.values()
@@ -70,11 +70,9 @@ class MockOrchestrator:
         return results[:limit]
 
     async def feedback(self, uri: str, reward: float) -> None:
-        """Mock feedback method."""
         pass
 
     async def get_profile(self, uri: str) -> Optional[Dict[str, Any]]:
-        """Mock get_profile method."""
         return {
             "positive_feedback_count": 1,
             "reward_score": 0.5,
@@ -82,11 +80,10 @@ class MockOrchestrator:
         }
 
 
-class TestInsightsCollector(unittest.TestCase):
+class TestInsightsCollector(unittest.IsolatedAsyncioTestCase):
     """Test suite for InsightsCollector."""
 
-    def setUp(self):
-        """Set up test fixtures."""
+    async def asyncSetUp(self):
         self.trace_store = MockTraceStore()
         self.orchestrator = MockOrchestrator()
         self.collector = InsightsCollector(
@@ -95,7 +92,7 @@ class TestInsightsCollector(unittest.TestCase):
         )
         self.tenant_id = "test-tenant"
         self.user_id = "test-user"
-        self.now = datetime.utcnow()
+        self.now = datetime.now()
 
     def _create_mock_trace(
         self,
@@ -104,7 +101,6 @@ class TestInsightsCollector(unittest.TestCase):
         user_message_count: int = 2,
         outcome: Optional[TraceOutcome] = None,
     ) -> Dict[str, Any]:
-        """Helper to create a mock trace record."""
         turns = [
             {
                 "turn_id": f"turn_{i}",
@@ -129,9 +125,9 @@ class TestInsightsCollector(unittest.TestCase):
             "user_message_count": user_message_count,
         }
 
-    def test_collect_user_sessions_empty(self):
+    async def test_collect_user_sessions_empty(self):
         """Test collecting from empty trace store."""
-        window = self.collector.collect_user_sessions(
+        window = await self.collector.collect_user_sessions_async(
             self.tenant_id,
             self.user_id,
             start_date=date.today() - timedelta(days=7),
@@ -142,7 +138,7 @@ class TestInsightsCollector(unittest.TestCase):
         self.assertEqual(window.sessions, 0)
         self.assertEqual(window.total_messages, 0)
 
-    def test_collect_user_sessions_single_session(self):
+    async def test_collect_user_sessions_single_session(self):
         """Test collecting from a single session."""
         trace1 = self._create_mock_trace(
             trace_id="trace_001",
@@ -150,9 +146,9 @@ class TestInsightsCollector(unittest.TestCase):
             user_message_count=3,
             outcome=TraceOutcome.SUCCESS,
         )
-        self.trace_store.traces["trace_001"] = trace1
+        self.trace_store.add_trace(trace1)
 
-        window = self.collector.collect_user_sessions(
+        window = await self.collector.collect_user_sessions_async(
             self.tenant_id,
             self.user_id,
             start_date=date.today() - timedelta(days=7),
@@ -175,15 +171,12 @@ class TestInsightsCollector(unittest.TestCase):
             session_id="session_001",
             user_message_count=5,
         )
-        self.trace_store.traces["trace_001"] = trace1
-        self.trace_store.traces["trace_002"] = trace2
 
-        # After deduplication, should keep trace2 (5 > 2)
         deduplicated = self.collector._deduplicate_sessions([trace1, trace2])
         self.assertEqual(len(deduplicated), 1)
         self.assertEqual(deduplicated[0]["trace_id"], "trace_002")
 
-    def test_filtering_by_min_user_messages(self):
+    async def test_filtering_by_min_user_messages(self):
         """Test filtering sessions below minimum user message threshold."""
         trace1 = self._create_mock_trace(
             trace_id="trace_001",
@@ -195,11 +188,10 @@ class TestInsightsCollector(unittest.TestCase):
             session_id="session_002",
             user_message_count=5,
         )
-        self.trace_store.traces["trace_001"] = trace1
-        self.trace_store.traces["trace_002"] = trace2
+        self.trace_store.add_trace(trace1)
+        self.trace_store.add_trace(trace2)
 
-        # Only trace2 should pass the min_user_messages=3 filter
-        window = self.collector.collect_user_sessions(
+        window = await self.collector.collect_user_sessions_async(
             self.tenant_id,
             self.user_id,
             start_date=date.today() - timedelta(days=7),
@@ -269,74 +261,6 @@ class TestInsightsCollector(unittest.TestCase):
         self.assertEqual(record.tenant_id, self.tenant_id)
         self.assertEqual(record.user_id, self.user_id)
         self.assertEqual(record.user_message_count, 2)
-
-
-class TestInsightsCollectorAsync(unittest.IsolatedAsyncioTestCase):
-    """Async test suite for InsightsCollector."""
-
-    async def asyncSetUp(self):
-        """Set up async test fixtures."""
-        self.trace_store = MockTraceStore()
-        self.orchestrator = MockOrchestrator()
-        self.collector = InsightsCollector(
-            trace_store=self.trace_store,
-            orchestrator=self.orchestrator,
-        )
-        self.tenant_id = "test-tenant"
-        self.user_id = "test-user"
-        self.now = datetime.utcnow()
-
-    def _create_mock_trace(
-        self,
-        trace_id: str,
-        session_id: str,
-        user_message_count: int = 2,
-        outcome: Optional[TraceOutcome] = None,
-    ) -> Dict[str, Any]:
-        """Helper to create a mock trace record."""
-        turns = [
-            {
-                "turn_id": f"turn_{i}",
-                "turn_status": TurnStatus.COMPLETE.value,
-                "prompt_text": "user prompt" if i % 2 == 0 else None,
-                "final_text": "response" if i % 2 == 1 else None,
-            }
-            for i in range(user_message_count * 2)
-        ]
-        return {
-            "trace_id": trace_id,
-            "session_id": session_id,
-            "tenant_id": self.tenant_id,
-            "user_id": self.user_id,
-            "source": "claude_code",
-            "turns": turns,
-            "abstract": f"Abstract for {trace_id}",
-            "overview": f"Overview for {trace_id}",
-            "created_at": self.now.isoformat(),
-            "outcome": outcome.value if outcome else TraceOutcome.SUCCESS.value,
-            "message_count": user_message_count * 2,
-            "user_message_count": user_message_count,
-        }
-
-    async def test_collect_user_sessions_async(self):
-        """Test async collection from trace store."""
-        trace1 = self._create_mock_trace(
-            trace_id="trace_001",
-            session_id="session_001",
-            user_message_count=3,
-        )
-        self.trace_store.traces["trace_001"] = trace1
-
-        window = await self.collector.collect_user_sessions_async(
-            self.tenant_id,
-            self.user_id,
-            start_date=date.today() - timedelta(days=7),
-            end_date=date.today(),
-            min_user_messages=1,
-        )
-
-        self.assertIsInstance(window, UserActivityWindow)
-        self.assertEqual(window.sessions, 1)
 
 
 if __name__ == "__main__":

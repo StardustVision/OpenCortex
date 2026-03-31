@@ -23,47 +23,6 @@ class InsightsCollector:
         self._trace_store = trace_store
         self._orchestrator = orchestrator
 
-    def collect_user_sessions(
-        self,
-        tenant_id: str,
-        user_id: str,
-        start_date: date,
-        end_date: date,
-        min_user_messages: int = 1,
-    ) -> UserActivityWindow:
-        """
-        Main entry point - collect user sessions within a date window.
-
-        Args:
-            tenant_id: Tenant identifier
-            user_id: User identifier
-            start_date: Start date (inclusive)
-            end_date: End date (inclusive)
-            min_user_messages: Minimum user messages to include session
-
-        Returns:
-            UserActivityWindow with aggregated session data
-        """
-        sessions = self._fetch_sessions_from_traces(
-            tenant_id, user_id, start_date, end_date
-        )
-
-        # Deduplicate by session_id, keeping the one with more user messages
-        sessions = self._deduplicate_sessions(sessions)
-
-        # Filter by minimum user messages
-        sessions = [
-            s for s in sessions if s.get("user_message_count", 0) >= min_user_messages
-        ]
-
-        # Enrich with memory data
-        sessions = self._enrich_with_memory_data(sessions, tenant_id, user_id)
-
-        # Aggregate into window
-        window = self._aggregate_window(sessions, start_date, end_date)
-
-        return window
-
     async def collect_user_sessions_async(
         self,
         tenant_id: str,
@@ -102,54 +61,9 @@ class InsightsCollector:
 
         # Aggregate into window
         window = self._aggregate_window(sessions, start_date, end_date)
+        window.raw_sessions = sessions
 
         return window
-
-    def _fetch_sessions_from_traces(
-        self,
-        tenant_id: str,
-        user_id: str,
-        start_date: date,
-        end_date: date,
-    ) -> List[Dict[str, Any]]:
-        """
-        Query TraceStore for sessions in date range.
-
-        Args:
-            tenant_id: Tenant identifier
-            user_id: User identifier
-            start_date: Start date (inclusive)
-            end_date: End date (inclusive)
-
-        Returns:
-            List of trace records
-        """
-        # Convert dates to datetime range
-        start_dt = datetime.combine(start_date, datetime.min.time())
-        end_dt = datetime.combine(end_date, datetime.max.time())
-
-        # Query with a broad search to get all traces
-        # In production, TraceStore would support date range filtering
-        sessions = self._trace_store.traces.copy()
-
-        # Filter by date range and tenant/user
-        filtered = []
-        for trace in sessions.values():
-            if trace.get("tenant_id") != tenant_id:
-                continue
-            if trace.get("user_id") != user_id:
-                continue
-
-            created_at_str = trace.get("created_at", "")
-            try:
-                created_at = datetime.fromisoformat(created_at_str)
-                if start_dt <= created_at <= end_dt:
-                    filtered.append(trace)
-            except (ValueError, TypeError):
-                # Skip traces with invalid timestamps
-                continue
-
-        return filtered
 
     async def _fetch_sessions_from_traces_async(
         self,
@@ -159,7 +73,7 @@ class InsightsCollector:
         end_date: date,
     ) -> List[Dict[str, Any]]:
         """
-        Async version of _fetch_sessions_from_traces.
+        Query TraceStore for sessions in date range via Qdrant filter.
 
         Args:
             tenant_id: Tenant identifier
@@ -170,11 +84,31 @@ class InsightsCollector:
         Returns:
             List of trace records
         """
-        # For now, delegate to sync version in async context
-        # In production, this would use async trace store methods
-        return self._fetch_sessions_from_traces(
-            tenant_id, user_id, start_date, end_date
+        filter_expr = {
+            "op": "and",
+            "conditions": [
+                {"field": "tenant_id", "op": "=", "value": tenant_id},
+                {"field": "user_id", "op": "=", "value": user_id},
+            ],
+        }
+        all_traces = await self._trace_store._storage.filter(
+            self._trace_store._collection, filter_expr, limit=1000,
         )
+
+        start_dt = datetime.combine(start_date, datetime.min.time())
+        end_dt = datetime.combine(end_date, datetime.max.time())
+
+        filtered = []
+        for trace in all_traces:
+            created_at_str = trace.get("created_at", "")
+            try:
+                created_at = datetime.fromisoformat(created_at_str)
+                if start_dt <= created_at <= end_dt:
+                    filtered.append(trace)
+            except (ValueError, TypeError):
+                continue
+
+        return filtered
 
     def _deduplicate_sessions(
         self, sessions: List[Dict[str, Any]]

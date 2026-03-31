@@ -37,6 +37,7 @@ class UserActivityWindow:
     unique_projects: int
     tool_usage: Dict[str, int] = field(default_factory=dict)
     memory_feedback_score: float = 0.0
+    raw_sessions: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

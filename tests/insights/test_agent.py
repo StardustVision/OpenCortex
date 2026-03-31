@@ -126,18 +126,20 @@ class MockCollector:
         start_date: date,
         end_date: date,
         min_user_messages: int = 1,
-    ) -> Dict[str, Any]:
+    ) -> "UserActivityWindow":
         """Return mock user activity window."""
-        return {
-            "start_date": start_date,
-            "end_date": end_date,
-            "sessions": len(self.sessions),
-            "total_messages": 50,
-            "total_tokens": 5000,
-            "unique_projects": 2,
-            "tool_usage": {"search": 10, "store": 5},
-            "memory_feedback_score": 0.8,
-        }
+        from opencortex.insights.types import UserActivityWindow
+        return UserActivityWindow(
+            start_date=start_date,
+            end_date=end_date,
+            sessions=len(self.sessions),
+            total_messages=50,
+            total_tokens=5000,
+            unique_projects=2,
+            tool_usage={"search": 10, "store": 5},
+            memory_feedback_score=0.8,
+            raw_sessions=self.sessions,
+        )
 
 
 class TestInsightsAgent(unittest.TestCase):
