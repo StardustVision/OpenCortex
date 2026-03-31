@@ -86,26 +86,31 @@ def _check_store_warnings(abstract: str) -> list:
     warnings = []
     stripped = abstract.strip()
     if len(stripped) < 10:
-        warnings.append({
-            "key": "abstract_too_short",
-            "message": "Memory abstract should be at least 10 characters for useful retrieval",
-        })
+        warnings.append(
+            {
+                "key": "abstract_too_short",
+                "message": "Memory abstract should be at least 10 characters for useful retrieval",
+            }
+        )
         return warnings
 
     lines = [ln for ln in stripped.splitlines() if ln.strip()]
     if len(lines) >= 2:
         code_lines = sum(1 for ln in lines if _CODE_PATTERN.match(ln))
         if code_lines / len(lines) > 0.8:
-            warnings.append({
-                "key": "code_snippet_detected",
-                "message": "Consider storing a description of the code pattern rather than raw code",
-            })
+            warnings.append(
+                {
+                    "key": "code_snippet_detected",
+                    "message": "Consider storing a description of the code pattern rather than raw code",
+                }
+            )
     return warnings
 
 
 # ---------------------------------------------------------------------------
 # Request Context Middleware
 # ---------------------------------------------------------------------------
+
 
 class RequestContextMiddleware(BaseHTTPMiddleware):
     """Authenticate requests via JWT Bearer token and set per-request identity.
@@ -172,6 +177,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
 # Lifespan
 # ---------------------------------------------------------------------------
 
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     """Initialize and teardown the MemoryOrchestrator."""
@@ -189,15 +195,82 @@ async def _lifespan(app: FastAPI):
         logger.info("[HTTP] Admin token (existing): %s", admin_rec["token"])
     else:
         admin_token = generate_admin_token(_jwt_secret)
-        save_token_record(config.data_root, admin_token, "_system", "_admin", role="admin")
+        save_token_record(
+            config.data_root, admin_token, "_system", "_admin", role="admin"
+        )
         logger.info("[HTTP] Admin token (new): %s", admin_token)
 
     from opencortex.http.admin_routes import register_admin_routes
+
     register_admin_routes(_orchestrator, _jwt_secret)
+
+    # Initialize insights components (optional feature)
+    try:
+        from opencortex.insights.agent import InsightsAgent
+        from opencortex.insights.collector import InsightsCollector
+        from opencortex.insights.report import ReportManager
+        from opencortex.insights.scheduler import InsightsScheduler
+        from opencortex.models.llm_factory import create_llm_completion
+
+        llm_callable = create_llm_completion(_orchestrator._config)
+        if not llm_callable:
+            raise Exception("LLM not configured; insights requires LLM API key")
+
+        class LLMWrapper:
+            def __init__(self, callable_):
+                self._callable = callable_
+
+            def generate(self, prompt: str, **kwargs) -> str:
+                import asyncio
+
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    return loop.run_until_complete(self._callable(prompt))
+                finally:
+                    loop.close()
+
+        collector = InsightsCollector(_orchestrator._storage)
+        llm = LLMWrapper(llm_callable)
+        agent = InsightsAgent(llm=llm, collector=collector)
+        report_manager = ReportManager(_orchestrator._fs)
+        scheduler = InsightsScheduler(agent=agent, report_manager=report_manager)
+        scheduler.start()
+
+        _orchestrator._insights_scheduler = scheduler
+        _orchestrator._insights_report_manager = report_manager
+        logger.info("[HTTP] Insights components initialized")
+    except Exception as e:
+        logger.warning(f"[HTTP] Insights components not available: {e}")
+        _orchestrator._insights_scheduler = None
+        _orchestrator._insights_report_manager = None
+
+    app.state.insights_scheduler = _orchestrator._insights_scheduler
+    app.state.insights_report_manager = _orchestrator._insights_report_manager
+
+    # Register insights routes after components are initialized
+    if _orchestrator._insights_scheduler and _orchestrator._insights_report_manager:
+        try:
+            from opencortex.insights.api import create_insights_router
+
+            insights_router = create_insights_router(
+                scheduler=_orchestrator._insights_scheduler,
+                report_manager=_orchestrator._insights_report_manager,
+                orchestrator=_orchestrator,
+            )
+            app.include_router(insights_router)
+            logger.info("[HTTP] Insights API routes registered")
+        except Exception as e:
+            logger.warning(f"[HTTP] Failed to register insights routes: {e}")
 
     try:
         yield
     finally:
+        if _orchestrator._insights_scheduler:
+            try:
+                _orchestrator._insights_scheduler.stop()
+            except Exception as e:
+                logger.warning(f"[HTTP] Failed to stop insights scheduler: {e}")
         await _orchestrator.close()
         _orchestrator = None
         logger.info("[HTTP] Orchestrator closed")
@@ -213,6 +286,7 @@ def create_app() -> FastAPI:
     )
     app.add_middleware(RequestContextMiddleware)
     from opencortex.http.admin_routes import router as admin_router
+
     app.include_router(admin_router)
     _register_routes(app)
 
@@ -220,11 +294,17 @@ def create_app() -> FastAPI:
     # Console UI (static files)
     # =====================================================================
     import os
+
     _web_dist = os.path.join(os.path.dirname(__file__), "..", "..", "..", "web", "dist")
     _web_dist = os.path.normpath(_web_dist)
-    if os.path.isdir(_web_dist) and os.path.isfile(os.path.join(_web_dist, "index.html")):
+    if os.path.isdir(_web_dist) and os.path.isfile(
+        os.path.join(_web_dist, "index.html")
+    ):
         from starlette.staticfiles import StaticFiles
-        app.mount("/console", StaticFiles(directory=_web_dist, html=True), name="console")
+
+        app.mount(
+            "/console", StaticFiles(directory=_web_dist, html=True), name="console"
+        )
         logger.info("[HTTP] Console UI mounted at /console (serving %s)", _web_dist)
 
     return app
@@ -234,8 +314,30 @@ def create_app() -> FastAPI:
 # Route registration
 # ---------------------------------------------------------------------------
 
+
 def _register_routes(app: FastAPI) -> None:
     """Register all REST endpoints on *app*."""
+
+    # =====================================================================
+    # Core Memory
+    # =====================================================================
+    # Insights Routes (registered if components initialized)
+    # =====================================================================
+    scheduler = getattr(app.state, "insights_scheduler", None)
+    report_manager = getattr(app.state, "insights_report_manager", None)
+    if scheduler and report_manager:
+        try:
+            from opencortex.insights.api import create_insights_router
+
+            insights_router = create_insights_router(
+                scheduler=scheduler,
+                report_manager=report_manager,
+                orchestrator=None,
+            )
+            app.include_router(insights_router)
+            logger.info("[HTTP] Insights API routes registered")
+        except Exception as e:
+            logger.warning(f"[HTTP] Failed to register insights routes: {e}")
 
     # =====================================================================
     # Core Memory
@@ -287,11 +389,17 @@ def _register_routes(app: FastAPI) -> None:
         )
 
     @app.post("/api/v1/memory/search")
-    async def memory_search(req: MemorySearchRequest, request: Request) -> Dict[str, Any]:
+    async def memory_search(
+        req: MemorySearchRequest, request: Request
+    ) -> Dict[str, Any]:
         ct = ContextType(req.context_type) if req.context_type else None
         metadata_filter = None
         if req.category:
-            metadata_filter = {"op": "must", "field": "category", "conds": [req.category]}
+            metadata_filter = {
+                "op": "must",
+                "field": "category",
+                "conds": [req.category],
+            }
 
         result = await _orchestrator.search(
             query=req.query,
@@ -327,11 +435,21 @@ def _register_routes(app: FastAPI) -> None:
             }
         # v0.6: explain query param support
         explain_mode = request.query_params.get("explain")
-        if explain_mode and hasattr(result, 'explain_summary') and result.explain_summary:
+        if (
+            explain_mode
+            and hasattr(result, "explain_summary")
+            and result.explain_summary
+        ):
             from dataclasses import asdict
+
             resp["explain_summary"] = asdict(result.explain_summary)
-        if explain_mode == "detail" and hasattr(result, 'query_results') and result.query_results:
+        if (
+            explain_mode == "detail"
+            and hasattr(result, "query_results")
+            and result.query_results
+        ):
             from dataclasses import asdict
+
             resp["explain_detail"] = [
                 asdict(qr.explain) for qr in result.query_results if qr.explain
             ]
@@ -443,6 +561,7 @@ def _register_routes(app: FastAPI) -> None:
         """Batch message recording (Observer debounce buffer)."""
         if _orchestrator._observer:
             from opencortex.http.request_context import get_effective_identity
+
             tid, uid = get_effective_identity()
             _orchestrator._observer.record_batch(
                 session_id=req.session_id,
@@ -457,7 +576,9 @@ def _register_routes(app: FastAPI) -> None:
         if not _orchestrator._config.cortex_alpha.archivist_enabled:
             return {"error": "feature disabled"}
         return await _orchestrator.knowledge_search(
-            query=req.query, types=req.types, limit=req.limit,
+            query=req.query,
+            types=req.types,
+            limit=req.limit,
         )
 
     @app.post("/api/v1/knowledge/approve")
@@ -498,6 +619,7 @@ def _register_routes(app: FastAPI) -> None:
     async def context_handler(req: ContextRequest) -> Dict[str, Any]:
         """Unified memory_context lifecycle: prepare / commit / end."""
         from opencortex.http.request_context import get_effective_identity
+
         tid, uid = get_effective_identity()
         return await _orchestrator._context_manager.handle(
             session_id=req.session_id,
@@ -508,7 +630,9 @@ def _register_routes(app: FastAPI) -> None:
             messages=[m.model_dump() for m in req.messages] if req.messages else None,
             cited_uris=req.cited_uris,
             config=req.config.model_dump() if req.config else None,
-            tool_calls=[t.model_dump() for t in req.tool_calls] if req.tool_calls else None,
+            tool_calls=[t.model_dump() for t in req.tool_calls]
+            if req.tool_calls
+            else None,
         )
 
     # =====================================================================
@@ -537,12 +661,15 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.get("/api/v1/content/read")
     async def content_read(
-        uri: str, offset: int = 0, limit: int = -1,
+        uri: str,
+        offset: int = 0,
+        limit: int = -1,
     ) -> Dict[str, Any]:
         """Read L2 content from CortexFS."""
         raw = await _orchestrator._fs.read(
-            uri + "/content.md", offset=offset, size=limit,
+            uri + "/content.md",
+            offset=offset,
+            size=limit,
         )
         text = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
         return {"status": "ok", "result": text}
-
