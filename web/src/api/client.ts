@@ -5,10 +5,17 @@ import {
   GenerateInsightsResponse, LatestReportResponse, ReportHistoryResponse, InsightsReport,
 } from './types';
 
-type OpenCortexApiError = Error & {
+export class APIRequestError extends Error {
   status: number;
   payload: unknown;
-};
+
+  constructor(status: number, payload: unknown, message?: string) {
+    super(message ?? `API error: ${status}`);
+    Object.setPrototypeOf(this, APIRequestError.prototype);
+    this.status = status;
+    this.payload = payload;
+  }
+}
 
 export class OpenCortexClient {
   private baseUrl: string;
@@ -28,20 +35,29 @@ export class OpenCortexClient {
       },
       body: body ? JSON.stringify(body) : undefined,
     });
-    
+    let parsedBody: unknown = undefined;
+    try {
+      parsedBody = await res.json();
+    } catch (parseError) {
+      if (res.ok) {
+        throw parseError;
+      }
+    }
+
     if (!res.ok) {
-      const errorData = await res.json().catch(() => ({}));
-      if ((errorData as { error?: string }).error === 'feature disabled') {
+      const parsedError =
+        parsedBody && typeof parsedBody === 'object'
+          ? (parsedBody as { error?: string })
+          : undefined;
+
+      if (parsedError?.error === 'feature disabled') {
         return { error: 'feature disabled' } as T;
       }
 
-      const error = new Error(`API error: ${res.status}`) as OpenCortexApiError;
-      error.status = res.status;
-      error.payload = errorData;
-      throw error;
+      throw new APIRequestError(res.status, parsedBody);
     }
-    
-    return res.json();
+
+    return parsedBody as T;
   }
 
   // System
