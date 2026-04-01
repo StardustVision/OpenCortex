@@ -33,6 +33,46 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Helper: flatten LLM section output to List[str] for legacy fields
+# ---------------------------------------------------------------------------
+
+def _flatten_to_strings(items: Any) -> List[str]:
+    """Convert mixed list (strings, dicts) into a flat list of strings.
+
+    LLM sections may return ``[{"title": "...", "detail": "..."}]`` or
+    plain ``["..."]``.  Legacy report fields expect ``List[str]``, so we
+    flatten dicts into their first string value.
+    """
+    if isinstance(items, str):
+        return [items]
+    if isinstance(items, dict):
+        return [str(v) for v in items.values() if v]
+    result: List[str] = []
+    if not isinstance(items, list):
+        return result
+    for item in items:
+        if isinstance(item, str):
+            result.append(item)
+        elif isinstance(item, dict):
+            # Pick the most descriptive string value from the dict
+            for key in ("title", "description", "detail", "name", "summary"):
+                if key in item and isinstance(item[key], str):
+                    result.append(item[key])
+                    break
+            else:
+                # Fallback: first non-empty string value
+                for v in item.values():
+                    if isinstance(v, str) and v:
+                        result.append(v)
+                        break
+                else:
+                    result.append(str(item))
+        else:
+            result.append(str(item))
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Helper: deduplicate sessions
 # ---------------------------------------------------------------------------
 
@@ -87,9 +127,14 @@ def filter_substantive(
 def filter_warmup_only(
     entries: List[Tuple[Trace, SessionMeta]],
     facets: Dict[str, SessionFacet],
-) -> List[Tuple[Trace, SessionMeta]]:
-    """Remove sessions whose only goal category is warmup_minimal."""
+) -> Tuple[List[Tuple[Trace, SessionMeta]], Dict[str, SessionFacet]]:
+    """Remove sessions whose only goal category is warmup_minimal.
+
+    Returns filtered entries AND a cleaned facets dict with warmup-only
+    sessions removed, so they don't participate in aggregation.
+    """
     result = []
+    removed_sids: set = set()
     for trace, meta in entries:
         facet = facets.get(meta.session_id)
         if facet is None:
@@ -103,9 +148,15 @@ def filter_warmup_only(
         else:
             keys = set()
         if keys and keys == {"warmup_minimal"}:
+            removed_sids.add(meta.session_id)
             continue
         result.append((trace, meta))
-    return result
+
+    # Sync facets: remove warmup-only sessions
+    cleaned_facets = {
+        sid: f for sid, f in facets.items() if sid not in removed_sids
+    }
+    return result, cleaned_facets
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +213,7 @@ async def format_transcript_with_summarization(
     for chunk in chunks:
         prompt = prompts.CHUNK_SUMMARY_PROMPT.format(chunk=chunk)
         try:
-            resp = llm.generate(prompt)
+            resp = await asyncio.to_thread(llm.generate, prompt)
             summaries.append(resp)
         except Exception as e:
             logger.warning(f"Chunk summarization failed: {e}")
@@ -490,7 +541,7 @@ async def generate_parallel_insights(
     async def _gen(name: str, template: str) -> Tuple[str, Any]:
         prompt = template.format(data_context=data_context)
         try:
-            response = llm.generate(prompt)
+            response = await asyncio.to_thread(llm.generate, prompt)
             return (name, json.loads(response))
         except (json.JSONDecodeError, Exception) as e:
             logger.warning(f"Section {name} generation failed: {e}")
@@ -545,8 +596,10 @@ class InsightsAgent:
         traces = await self._collector.fetch_traces(
             tenant_id, user_id, start_date, end_date
         )
-        traces = traces[:MAX_SESSIONS_TO_LOAD]
+        # Sort by created_at descending so truncation keeps the most recent
+        traces.sort(key=lambda t: t.created_at or "", reverse=True)
         total_scanned = len(traces)
+        traces = traces[:MAX_SESSIONS_TO_LOAD]
 
         if not traces:
             return self._empty_report(tenant_id, user_id, start_date, end_date)
@@ -645,10 +698,14 @@ class InsightsAgent:
                 facets[sid] = facet
 
         # ---- Phase 5: Filter warmup-only ----
-        entries = filter_warmup_only(entries, facets)
+        entries, facets = filter_warmup_only(entries, facets)
 
         if not entries:
             return self._empty_report(tenant_id, user_id, start_date, end_date)
+
+        # Sync facets to only include surviving entries
+        surviving_sids = {m.session_id for _, m in entries}
+        facets = {sid: f for sid, f in facets.items() if sid in surviving_sids}
 
         # ---- Phase 6: Aggregate ----
         metas = [m for _, m in entries]
@@ -664,6 +721,28 @@ class InsightsAgent:
         llm_calls += 1
 
         # ---- Assemble report ----
+        # Extract legacy-compatible flat values from enriched section dicts.
+        # LLM sections return dicts/list-of-dicts; legacy fields expect
+        # List[str] / Dict[str, int] so we flatten here.
+        raw_what_works = sections.get("what_works", {})
+        what_works_list = _flatten_to_strings(
+            raw_what_works.get("impressive_workflows", [])
+            if isinstance(raw_what_works, dict) else raw_what_works
+        )
+
+        raw_suggestions = sections.get("suggestions", {})
+        suggestions_list = _flatten_to_strings(
+            raw_suggestions.get("features_to_try", [])
+            + raw_suggestions.get("usage_patterns", [])
+            if isinstance(raw_suggestions, dict) else raw_suggestions
+        )
+
+        raw_horizon = sections.get("on_the_horizon", {})
+        horizon_list = _flatten_to_strings(
+            raw_horizon.get("emerging_capabilities", [])
+            if isinstance(raw_horizon, dict) else raw_horizon
+        )
+
         return InsightsReport(
             tenant_id=tenant_id,
             user_id=user_id,
@@ -674,10 +753,10 @@ class InsightsAgent:
             total_duration_hours=agg.total_duration_hours,
             session_facets=list(facets.values()),
             project_areas=sections.get("project_areas", {}),
-            what_works=sections.get("what_works", {}).get("impressive_workflows", []),
+            what_works=what_works_list,
             friction_analysis=agg.friction,
-            suggestions=sections.get("suggestions", {}),
-            on_the_horizon=sections.get("on_the_horizon", {}),
+            suggestions=suggestions_list,
+            on_the_horizon=horizon_list,
             at_a_glance=at_a_glance,
             interaction_style=sections.get("interaction_style"),
             what_works_detail=sections.get("what_works"),

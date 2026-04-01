@@ -150,9 +150,18 @@ def create_insights_router(
                     detail="Report generated but could not retrieve metadata",
                 )
 
+            # at_a_glance may be a Dict[str, str] or a string
+            glance = meta.get("at_a_glance", "Report generated successfully")
+            if isinstance(glance, dict):
+                summary = glance.get("headline") or "; ".join(
+                    v for v in glance.values() if v
+                ) or "Report generated successfully"
+            else:
+                summary = str(glance) if glance else "Report generated successfully"
+
             return {
-                "report_uri": f"opencortex://{tid}/{uid}/insights/reports/{end_date.isoformat()}/weekly.json",
-                "summary": meta.get("at_a_glance", "Report generated successfully"),
+                "report_uri": meta.get("json_uri", f"opencortex://{tid}/{uid}/insights/reports/{end_date.isoformat()}/weekly.json"),
+                "summary": summary,
                 "generated_at": datetime.fromisoformat(meta.get("generated_at", "")),
             }
 

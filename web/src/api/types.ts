@@ -164,12 +164,13 @@ export interface SessionFacet {
   session_id: string;
   underlying_goal: string;
   brief_summary: string;
-  goal_categories: string[];
+  goal_categories: Record<string, number>;
   outcome: string;
   user_satisfaction_counts: Record<string, number>;
-  claude_helpfulness: number;
+  claude_helpfulness: string;
   session_type: string;
   friction_counts: Record<string, number>;
+  friction_detail: string;
   primary_success: string | null;
 }
 
@@ -181,7 +182,7 @@ export interface InsightsReport {
   total_sessions: number;
   total_messages: number;
   total_duration_hours: number;
-  at_a_glance: string;
+  at_a_glance: Record<string, string>;
   cache_hits: number;
   llm_calls: number;
   project_areas: Record<string, number>;
@@ -190,4 +191,12 @@ export interface InsightsReport {
   suggestions: string[];
   on_the_horizon: string[];
   session_facets: SessionFacet[];
+  // Enriched fields from CC-equivalent pipeline
+  interaction_style?: Record<string, string> | null;
+  what_works_detail?: Record<string, unknown> | null;
+  friction_detail?: Record<string, unknown> | null;
+  suggestions_detail?: Record<string, unknown> | null;
+  on_the_horizon_detail?: Record<string, unknown> | null;
+  fun_ending?: Record<string, string> | null;
+  aggregated?: Record<string, unknown> | null;
 }

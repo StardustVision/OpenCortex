@@ -285,9 +285,11 @@ export const Insights: React.FC = () => {
                 <p className="text-xs font-semibold uppercase tracking-wide text-indigo-600">
                   At a Glance
                 </p>
-                <p className="mt-3 text-sm leading-7 text-indigo-950">
-                  {selectedReport.at_a_glance}
-                </p>
+                <div className="mt-3 space-y-2 text-sm leading-7 text-indigo-950">
+                  {Object.entries(selectedReport.at_a_glance).map(([key, value]) => (
+                    <p key={key}>{value}</p>
+                  ))}
+                </div>
               </Card>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -305,8 +307,8 @@ export const Insights: React.FC = () => {
                   <p className="mt-4 text-sm text-gray-500">No strengths captured in this report.</p>
                 ) : (
                   <ul className="mt-4 space-y-2 text-sm text-gray-700 list-disc list-inside">
-                    {selectedReport.what_works.map((item) => (
-                      <li key={item}>{item}</li>
+                    {selectedReport.what_works.map((item, i) => (
+                      <li key={i}>{item}</li>
                     ))}
                   </ul>
                 )}
@@ -343,8 +345,8 @@ export const Insights: React.FC = () => {
                   <p className="mt-4 text-sm text-gray-500">No suggestions were generated.</p>
                 ) : (
                   <ul className="mt-4 space-y-2 text-sm text-gray-700 list-disc list-inside">
-                    {selectedReport.suggestions.map((item) => (
-                      <li key={item}>{item}</li>
+                    {selectedReport.suggestions.map((item, i) => (
+                      <li key={i}>{item}</li>
                     ))}
                   </ul>
                 )}
@@ -359,8 +361,8 @@ export const Insights: React.FC = () => {
                   <p className="mt-4 text-sm text-gray-500">No forward-looking ideas were generated.</p>
                 ) : (
                   <ul className="mt-4 space-y-2 text-sm text-gray-700 list-disc list-inside">
-                    {selectedReport.on_the_horizon.map((item) => (
-                      <li key={item}>{item}</li>
+                    {selectedReport.on_the_horizon.map((item, i) => (
+                      <li key={i}>{item}</li>
                     ))}
                   </ul>
                 )}
@@ -403,7 +405,7 @@ export const Insights: React.FC = () => {
                                 </Badge>
                                 <Badge color="blue">{facet.session_type}</Badge>
                                 <Badge color="gray">
-                                  helpfulness {Math.round(facet.claude_helpfulness * 100)}%
+                                  {facet.claude_helpfulness.replace(/_/g, ' ')}
                                 </Badge>
                               </div>
 
@@ -421,13 +423,13 @@ export const Insights: React.FC = () => {
                                   Goal Categories
                                 </p>
                                 <div className="mt-2 flex flex-wrap gap-2">
-                                  {facet.goal_categories.map((category) => (
-                                    <Badge key={category} color="indigo">{category}</Badge>
+                                  {Object.entries(facet.goal_categories).map(([category, count]) => (
+                                    <Badge key={category} color="indigo">{category} ({count})</Badge>
                                   ))}
                                 </div>
                               </div>
 
-                              {facet.primary_success && (
+                              {facet.primary_success && facet.primary_success !== 'none' && (
                                 <div>
                                   <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
                                     Primary Success

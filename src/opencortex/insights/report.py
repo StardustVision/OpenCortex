@@ -3,7 +3,7 @@
 import json
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from opencortex.insights.types import InsightsReport
 from opencortex.utils.uri import CortexURI
@@ -45,7 +45,7 @@ class ReportManager:
             f"insights/reports/{date_str}/weekly.html"
         )
 
-        json_content = self._serialize_report_to_json(report)
+        json_content = self._serialize_report_to_json(report, json_uri=json_uri)
         await self._cortex_fs.write(json_uri, json_content)
 
         html_content = self._render_html(report)
@@ -172,9 +172,18 @@ class ReportManager:
 
         html_parts.append(f"    <h1>Weekly Insights Report</h1>")
         html_parts.append(f"    <p><strong>Period:</strong> {report.report_period}</p>")
-        html_parts.append(
-            f"    <p><strong>At a Glance:</strong> {report.at_a_glance}</p>"
-        )
+        # at_a_glance is Dict[str, str] — render each entry
+        if isinstance(report.at_a_glance, dict) and report.at_a_glance:
+            glance_parts = "; ".join(
+                f"{k}: {v}" for k, v in report.at_a_glance.items() if v
+            )
+            html_parts.append(
+                f"    <p><strong>At a Glance:</strong> {self._escape_html(glance_parts)}</p>"
+            )
+        elif report.at_a_glance:
+            html_parts.append(
+                f"    <p><strong>At a Glance:</strong> {self._escape_html(report.at_a_glance)}</p>"
+            )
 
         html_parts.append("    <h2>Summary</h2>")
         html_parts.append("    <div class='summary'>")
@@ -252,17 +261,21 @@ class ReportManager:
 
         return "\n".join(html_parts)
 
-    def _serialize_report_to_json(self, report: InsightsReport) -> str:
+    def _serialize_report_to_json(
+        self, report: InsightsReport, json_uri: str = "",
+    ) -> str:
         """
         Serialize report to JSON string.
 
         Args:
             report: InsightsReport instance
+            json_uri: The CortexFS URI where this JSON will be stored
 
         Returns:
             JSON string
         """
         data = {
+            "json_uri": json_uri,
             "tenant_id": report.tenant_id,
             "user_id": report.user_id,
             "report_period": report.report_period,
@@ -297,6 +310,7 @@ class ReportManager:
                     "claude_helpfulness": f.claude_helpfulness,
                     "session_type": f.session_type,
                     "friction_counts": f.friction_counts,
+                    "friction_detail": f.friction_detail,
                     "primary_success": f.primary_success,
                 }
                 for f in report.session_facets
@@ -305,16 +319,20 @@ class ReportManager:
         return json.dumps(data, indent=2, default=str)
 
     @staticmethod
-    def _escape_html(text: str) -> str:
+    def _escape_html(text: Any) -> str:
         """
         Escape HTML special characters.
 
+        Accepts any type — non-strings are converted via ``str()`` first.
+
         Args:
-            text: Text to escape
+            text: Text (or object) to escape
 
         Returns:
             HTML-escaped text
         """
+        if not isinstance(text, str):
+            text = str(text)
         replacements = {
             "&": "&amp;",
             "<": "&lt;",

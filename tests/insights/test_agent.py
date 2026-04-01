@@ -309,21 +309,25 @@ class TestFilterWarmupOnly(unittest.TestCase):
             "s1": make_facet("s1", goals={"warmup_minimal": 1}),
             "s2": make_facet("s2", goals={"fix_bug": 1}),
         }
-        result = filter_warmup_only(entries, facets)
+        result, cleaned_facets = filter_warmup_only(entries, facets)
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0][1].session_id, "s2")
+        # Warmup-only session s1 should be removed from facets
+        self.assertNotIn("s1", cleaned_facets)
+        self.assertIn("s2", cleaned_facets)
 
     def test_keeps_mixed_goals_with_warmup(self):
         entries = [(make_trace("s1"), make_meta("s1"))]
         facets = {
             "s1": make_facet("s1", goals={"warmup_minimal": 1, "fix_bug": 1}),
         }
-        result = filter_warmup_only(entries, facets)
+        result, cleaned_facets = filter_warmup_only(entries, facets)
         self.assertEqual(len(result), 1)
+        self.assertIn("s1", cleaned_facets)
 
     def test_keeps_sessions_without_facet(self):
         entries = [(make_trace("s1"), make_meta("s1"))]
-        result = filter_warmup_only(entries, {})
+        result, cleaned_facets = filter_warmup_only(entries, {})
         self.assertEqual(len(result), 1)
 
 
