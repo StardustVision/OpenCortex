@@ -210,22 +210,37 @@ export class OpenCortexClient {
     return this.request('GET', `/api/v1/admin/memories?${query.toString()}`);
   }
 
-  // Insights
-  generateInsights(days: number = 7): Promise<GenerateInsightsResponse> {
+  // Insights (admin may supply tenant_id/user_id to operate on another user)
+  generateInsights(
+    days: number = 7, tenantId?: string, userId?: string,
+  ): Promise<GenerateInsightsResponse> {
     return this.request(
       'POST',
-      this.withQuery('/api/v1/insights/generate', { days }),
+      this.withQuery('/api/v1/insights/generate', {
+        days, tenant_id: tenantId, user_id: userId,
+      }),
     );
   }
 
-  getLatestInsights(): Promise<LatestReportResponse> {
-    return this.request('GET', '/api/v1/insights/latest');
-  }
-
-  getInsightsHistory(limit: number = 10): Promise<ReportHistoryResponse> {
+  getLatestInsights(
+    tenantId?: string, userId?: string,
+  ): Promise<LatestReportResponse> {
     return this.request(
       'GET',
-      this.withQuery('/api/v1/insights/history', { limit }),
+      this.withQuery('/api/v1/insights/latest', {
+        tenant_id: tenantId, user_id: userId,
+      }),
+    );
+  }
+
+  getInsightsHistory(
+    limit: number = 10, tenantId?: string, userId?: string,
+  ): Promise<ReportHistoryResponse> {
+    return this.request(
+      'GET',
+      this.withQuery('/api/v1/insights/history', {
+        limit, tenant_id: tenantId, user_id: userId,
+      }),
     );
   }
 

@@ -44,7 +44,7 @@ const getOutcomeColor = (outcome: string) => {
 const getOutcomeLabel = (outcome: string) => outcome.replace(/_/g, ' ');
 
 export const Insights: React.FC = () => {
-  const { client } = useApi();
+  const { client, role } = useApi();
   const [reports, setReports] = useState<ReportMetadata[]>([]);
   const [selectedReportUri, setSelectedReportUri] = useState<string | null>(null);
   const [selectedReport, setSelectedReport] = useState<InsightsReport | null>(null);
@@ -53,6 +53,33 @@ export const Insights: React.FC = () => {
   const [isReportLoading, setIsReportLoading] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isFeatureDisabled, setIsFeatureDisabled] = useState(false);
+
+  // Admin: user selection
+  const [adminFilters, setAdminFilters] = useState({ tenant_id: '', user_id: '' });
+  const [users, setUsers] = useState<{ tenant_id: string; user_id: string }[]>([]);
+
+  const adminTid = adminFilters.tenant_id || undefined;
+  const adminUid = adminFilters.user_id || undefined;
+
+  useEffect(() => {
+    if (role === 'admin' && client) {
+      client.listTokens().then(res => {
+        setUsers(res.tokens
+          .filter((t: { role?: string }) => t.role !== 'admin')
+          .map((t: { tenant_id: string; user_id: string }) => ({
+            tenant_id: t.tenant_id, user_id: t.user_id,
+          }))
+        );
+      }).catch(() => {});
+    }
+  }, [role, client]);
+
+  // Reset selection when admin switches user
+  useEffect(() => {
+    setSelectedReportUri(null);
+    setSelectedReport(null);
+    setReports([]);
+  }, [adminFilters.tenant_id, adminFilters.user_id]);
 
   const handleApiFailure = useCallback((error: unknown) => {
     if ((error as ApiError).status === 404) {
@@ -68,7 +95,7 @@ export const Insights: React.FC = () => {
 
     setIsHistoryLoading(true);
     try {
-      const response = await client.getInsightsHistory(10) as HistoryResult;
+      const response = await client.getInsightsHistory(10, adminTid, adminUid) as HistoryResult;
       if ('error' in response && response.error === 'feature disabled') {
         setIsFeatureDisabled(true);
         return;
@@ -99,7 +126,7 @@ export const Insights: React.FC = () => {
     } finally {
       setIsHistoryLoading(false);
     }
-  }, [client, handleApiFailure]);
+  }, [client, handleApiFailure, adminTid, adminUid]);
 
   const loadReport = useCallback(async (reportUri: string) => {
     if (!client) return;
@@ -134,7 +161,7 @@ export const Insights: React.FC = () => {
 
     setIsGenerating(true);
     try {
-      const response = await client.generateInsights(7);
+      const response = await client.generateInsights(7, adminTid, adminUid);
       await loadHistory(response.report_uri);
     } catch (error) {
       handleApiFailure(error);
@@ -181,17 +208,44 @@ export const Insights: React.FC = () => {
     >
       <div className="flex h-[calc(100vh-160px)] gap-6 overflow-hidden">
         <div className="w-[40%] flex flex-col gap-4 overflow-hidden">
-          <Card className="flex items-center justify-between">
-            <div>
-              <h2 className="text-lg font-bold text-gray-900">Reports</h2>
-              <p className="text-sm text-gray-500">
-                Weekly LLM-generated activity summaries for this workspace.
-              </p>
+          <Card className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-bold text-gray-900">Reports</h2>
+                <p className="text-sm text-gray-500">
+                  Weekly LLM-generated activity summaries.
+                </p>
+              </div>
+              <Button onClick={() => { void handleGenerate(); }} loading={isGenerating}>
+                <Sparkles size={16} className="mr-2" />
+                Generate
+              </Button>
             </div>
-            <Button onClick={() => { void handleGenerate(); }} loading={isGenerating}>
-              <Sparkles size={16} className="mr-2" />
-              Generate
-            </Button>
+            {role === 'admin' && (
+              <div className="flex gap-2">
+                <select
+                  className="flex-1 text-sm border border-indigo-200 rounded-md p-2 bg-indigo-50 outline-none focus:ring-2 focus:ring-indigo-500"
+                  value={adminFilters.tenant_id}
+                  onChange={(e) => setAdminFilters(f => ({ ...f, tenant_id: e.target.value, user_id: '' }))}
+                >
+                  <option value="">All Tenants</option>
+                  {[...new Set(users.map(u => u.tenant_id))].map(tid => (
+                    <option key={tid} value={tid}>{tid}</option>
+                  ))}
+                </select>
+                <select
+                  className="flex-1 text-sm border border-indigo-200 rounded-md p-2 bg-indigo-50 outline-none focus:ring-2 focus:ring-indigo-500"
+                  value={adminFilters.user_id}
+                  onChange={(e) => setAdminFilters(f => ({ ...f, user_id: e.target.value }))}
+                >
+                  <option value="">All Users</option>
+                  {users
+                    .filter(u => !adminFilters.tenant_id || u.tenant_id === adminFilters.tenant_id)
+                    .map(u => <option key={u.user_id} value={u.user_id}>{u.user_id}</option>)
+                  }
+                </select>
+              </div>
+            )}
           </Card>
 
           <div className="flex-1 overflow-y-auto pr-2">

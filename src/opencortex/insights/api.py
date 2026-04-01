@@ -16,9 +16,31 @@ from typing import Any, Dict, Optional, Tuple
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from opencortex.http.request_context import get_effective_identity
+from opencortex.http.request_context import get_effective_identity, is_admin
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_identity(
+    tenant_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> Tuple[str, str]:
+    """Resolve effective identity with optional admin override.
+
+    When both ``tenant_id`` and ``user_id`` are provided, the caller must
+    be an admin — otherwise 403 is raised.  When neither is provided, the
+    identity is taken from the JWT token as usual.
+    """
+    if tenant_id and user_id:
+        if not is_admin():
+            raise HTTPException(status_code=403, detail="Admin access required")
+        return tenant_id, user_id
+    tid, uid = get_effective_identity()
+    if not tid or not uid:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return tid, uid
+
+
 def _parse_report_period(period_str: str) -> Tuple[date, date]:
     """Parse stored report_period strings with either separator."""
     fallback = date.today()
@@ -107,12 +129,20 @@ def create_insights_router(
     @router.post("/generate", response_model=GenerateInsightsResponse)
     async def generate_insights(
         days: int = Query(default=7, ge=1, le=90, description="Days to analyze"),
+        tenant_id: Optional[str] = Query(default=None, description="Target tenant (admin only)"),
+        user_id: Optional[str] = Query(default=None, description="Target user (admin only)"),
     ) -> Dict[str, Any]:
         """
-        Generate insights on demand for the current user.
+        Generate insights on demand.
+
+        Admins may supply ``tenant_id`` and ``user_id`` to generate a
+        report for another user.  Non-admin callers that supply these
+        params receive 403.
 
         Query Parameters:
         - days: Number of days to analyze (default: 7, max: 90)
+        - tenant_id: Target tenant (admin only, optional)
+        - user_id: Target user (admin only, optional)
 
         Returns:
         - report_uri: URI of the generated report
@@ -121,12 +151,11 @@ def create_insights_router(
 
         Errors:
         - 401: Unauthorized (no valid JWT)
+        - 403: Non-admin tried to specify tenant_id/user_id
         - 500: Generation failed
         """
         try:
-            tid, uid = get_effective_identity()
-            if not tid or not uid:
-                raise HTTPException(status_code=401, detail="Unauthorized")
+            tid, uid = _resolve_identity(tenant_id, user_id)
 
             end_date = date.today()
             start_date = end_date - timedelta(days=days)
@@ -176,22 +205,23 @@ def create_insights_router(
     # =====================================================================
 
     @router.get("/latest", response_model=LatestReportResponse)
-    async def get_latest_insights() -> Dict[str, Any]:
+    async def get_latest_insights(
+        tenant_id: Optional[str] = Query(default=None, description="Target tenant (admin only)"),
+        user_id: Optional[str] = Query(default=None, description="Target user (admin only)"),
+    ) -> Dict[str, Any]:
         """
-        Get latest insights report metadata for the current user.
+        Get latest insights report metadata.
 
-        Returns:
-        - report: ReportMetadata or null if no reports exist
-        - message: Status message
+        Admins may supply ``tenant_id``/``user_id`` to view another
+        user's latest report.
 
         Errors:
         - 401: Unauthorized
+        - 403: Non-admin tried to specify tenant_id/user_id
         - 500: Retrieval failed
         """
         try:
-            tid, uid = get_effective_identity()
-            if not tid or not uid:
-                raise HTTPException(status_code=401, detail="Unauthorized")
+            tid, uid = _resolve_identity(tenant_id, user_id)
 
             report = await report_manager.get_latest_report(tid, uid)
             if not report:
@@ -233,25 +263,22 @@ def create_insights_router(
         limit: int = Query(
             default=10, ge=1, le=100, description="Max reports to return"
         ),
+        tenant_id: Optional[str] = Query(default=None, description="Target tenant (admin only)"),
+        user_id: Optional[str] = Query(default=None, description="Target user (admin only)"),
     ) -> Dict[str, Any]:
         """
-        Get report history for the current user.
+        Get report history.
 
-        Query Parameters:
-        - limit: Maximum number of reports to return (default: 10, max: 100)
-
-        Returns:
-        - reports: List of ReportMetadata
-        - total: Total number of reports available
+        Admins may supply ``tenant_id``/``user_id`` to view another
+        user's report history.
 
         Errors:
         - 401: Unauthorized
+        - 403: Non-admin tried to specify tenant_id/user_id
         - 500: Retrieval failed
         """
         try:
-            tid, uid = get_effective_identity()
-            if not tid or not uid:
-                raise HTTPException(status_code=401, detail="Unauthorized")
+            tid, uid = _resolve_identity(tenant_id, user_id)
 
             reports = await report_manager.get_report_history(
                 tenant_id=tid, user_id=uid, limit=limit
@@ -298,15 +325,12 @@ def create_insights_router(
         """
         Get full report content by URI.
 
-        Query Parameters:
-        - report_uri: opencortex:// URI of the report
-
-        Returns:
-        - Full InsightsReport JSON
+        Admins can read any user's report.  Non-admin callers may only
+        read their own reports (URI prefix check).
 
         Errors:
         - 401: Unauthorized
-        - 403: URI does not belong to requesting user
+        - 403: URI does not belong to requesting user (non-admin)
         - 404: Report not found
         """
         try:
@@ -314,13 +338,14 @@ def create_insights_router(
             if not tid or not uid:
                 raise HTTPException(status_code=401, detail="Unauthorized")
 
-            # Security: verify URI belongs to requesting user
-            expected_prefix = f"opencortex://{tid}/{uid}/"
-            if not report_uri.startswith(expected_prefix):
-                raise HTTPException(
-                    status_code=403,
-                    detail="Access denied: report does not belong to requesting user",
-                )
+            # Security: admin can read any report; non-admin must own it
+            if not is_admin():
+                expected_prefix = f"opencortex://{tid}/{uid}/"
+                if not report_uri.startswith(expected_prefix):
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Access denied: report does not belong to requesting user",
+                    )
 
             content = await report_manager._cortex_fs.read(report_uri)
             if not content:
