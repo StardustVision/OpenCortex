@@ -2402,7 +2402,6 @@ class MemoryOrchestrator:
         self._ensure_init()
 
         alpha_traces_count = 0
-        archivist_stats: Dict[str, int] = {"knowledge_candidates": 0, "knowledge_active": 0}
         if self._observer:
             tid, uid = get_effective_identity()
             transcript = self._observer.flush(session_id)
@@ -2423,11 +2422,11 @@ class MemoryOrchestrator:
                         alpha_traces_count,
                     )
 
-                    # Check Archivist trigger
+                    # Check Archivist trigger (background — non-blocking)
                     if self._archivist and self._trace_store:
                         count = await self._trace_store.count_new_traces(tid)
                         if self._archivist.should_trigger(count):
-                            archivist_stats = await self._run_archivist(tid, uid)
+                            asyncio.create_task(self._run_archivist(tid, uid))
                 except Exception as exc:
                     logger.warning("[Alpha] Trace splitting failed: %s", exc)
 
@@ -2435,7 +2434,6 @@ class MemoryOrchestrator:
             "session_id": session_id,
             "quality_score": quality_score,
             "alpha_traces": alpha_traces_count,
-            **archivist_stats,
         }
 
     async def _run_archivist(self, tenant_id: str, user_id: str) -> Dict[str, int]:
@@ -2450,6 +2448,12 @@ class MemoryOrchestrator:
             traces = await self._trace_store.list_unprocessed(tenant_id)
             if not traces:
                 return stats
+
+            # Claim traces immediately to prevent duplicate extraction on retry
+            trace_ids = [t.get("trace_id", t.get("id", "")) for t in traces]
+            trace_ids = [tid for tid in trace_ids if tid]
+            if trace_ids:
+                await self._trace_store.mark_processed(trace_ids)
 
             knowledge_items = await self._archivist.run(
                 traces, tenant_id, user_id, KnowledgeScope.USER,
@@ -2494,12 +2498,6 @@ class MemoryOrchestrator:
                     stats["knowledge_active"] += 1
                 else:
                     stats["knowledge_candidates"] += 1
-
-            # Idempotency: mark traces as processed
-            trace_ids = [t.get("trace_id", t.get("id", "")) for t in traces]
-            trace_ids = [tid for tid in trace_ids if tid]
-            if trace_ids:
-                await self._trace_store.mark_processed(trace_ids)
 
             logger.info(
                 "[Alpha] Archivist: %d candidates, %d active from %d traces",
