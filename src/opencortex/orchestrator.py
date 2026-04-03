@@ -324,6 +324,7 @@ class MemoryOrchestrator:
             return
         try:
             from opencortex.skill_engine.adapters.storage_adapter import SkillStorageAdapter
+            from opencortex.skill_engine.adapters.llm_adapter import LLMCompletionAdapter
             from opencortex.skill_engine.store import SkillStore
             from opencortex.skill_engine.skill_manager import SkillManager
             from opencortex.skill_engine.http_routes import set_skill_manager
@@ -334,18 +335,30 @@ class MemoryOrchestrator:
                 embedding_dim=self._config.embedding_dimension,
             )
             await storage_adapter.initialize()
-
             store = SkillStore(storage_adapter)
 
+            analyzer = None
             evolver = None
+            llm_adapter = None
+
             if self._llm_completion:
-                from opencortex.skill_engine.adapters.llm_adapter import LLMCompletionAdapter
-                from opencortex.skill_engine.evolver import SkillEvolver
                 llm_adapter = LLMCompletionAdapter(self._llm_completion)
+
+                from opencortex.skill_engine.evolver import SkillEvolver
                 evolver = SkillEvolver(llm=llm_adapter, store=store)
 
+                # SourceAdapter + Analyzer (for extraction pipeline)
+                from opencortex.skill_engine.adapters.source_adapter import QdrantSourceAdapter
+                from opencortex.skill_engine.analyzer import SkillAnalyzer
+                source_adapter = QdrantSourceAdapter(
+                    storage=self._storage, embedder=self._embedder,
+                )
+                analyzer = SkillAnalyzer(
+                    source=source_adapter, llm=llm_adapter, store=store,
+                )
+
             self._skill_manager = SkillManager(
-                store=store, analyzer=None, evolver=evolver,
+                store=store, analyzer=analyzer, evolver=evolver,
             )
             set_skill_manager(self._skill_manager)
 
