@@ -131,6 +131,9 @@ class MemoryOrchestrator:
         # v0.6: Query classifier (lazy — initialized after embedder is ready)
         self._query_classifier = None
 
+        # Skill Engine
+        self._skill_manager = None
+
     # =========================================================================
     # Collection Routing
     # =========================================================================
@@ -240,6 +243,9 @@ class MemoryOrchestrator:
         # 8. Cortex Alpha components
         await self._init_alpha()
 
+        # 9. Skill Engine
+        await self._init_skill_engine()
+
         self._initialized = True
         logger.info(
             "[MemoryOrchestrator] Initialized (data_root=%s)", self._config.data_root
@@ -311,6 +317,31 @@ class MemoryOrchestrator:
         await self._context_manager.start()
 
         logger.info("[MemoryOrchestrator] Cortex Alpha initialized")
+
+    async def _init_skill_engine(self) -> None:
+        """Initialize Skill Engine if storage and embedder are available."""
+        if not self._storage or not self._embedder:
+            return
+        try:
+            from opencortex.skill_engine.adapters.storage_adapter import SkillStorageAdapter
+            from opencortex.skill_engine.store import SkillStore
+            from opencortex.skill_engine.skill_manager import SkillManager
+            from opencortex.skill_engine.http_routes import set_skill_manager
+
+            storage_adapter = SkillStorageAdapter(
+                storage=self._storage,
+                embedder=self._embedder,
+                embedding_dim=self._config.embedding_dimension,
+            )
+            await storage_adapter.initialize()
+
+            store = SkillStore(storage_adapter)
+            self._skill_manager = SkillManager(store=store)
+            set_skill_manager(self._skill_manager)
+
+            logger.info("[MemoryOrchestrator] Skill Engine initialized")
+        except Exception as exc:
+            logger.info("[MemoryOrchestrator] Skill Engine not available: %s", exc)
 
     def _create_default_embedder(self) -> Optional[EmbedderBase]:
         """
@@ -1720,6 +1751,27 @@ class MemoryOrchestrator:
                     qr.explain and qr.explain.rerank_ms > 0 for qr in query_results
                 ),
             )
+
+        # Skill Engine: search active skills and merge into FindResult.skills
+        if self._skill_manager:
+            try:
+                from opencortex.retrieve.types import MatchedContext, ContextType
+                skill_results = await self._skill_manager.search(
+                    query, tid, uid, top_k=3,
+                )
+                for sr in skill_results:
+                    result.skills.append(MatchedContext(
+                        uri=sr.uri,
+                        context_type=ContextType.SKILL,
+                        is_leaf=True,
+                        abstract=sr.abstract,
+                        overview=sr.overview,
+                        content=sr.content,
+                        category=sr.category.value,
+                        score=0.0,
+                    ))
+            except Exception as exc:
+                logger.debug("[search] Skill search failed: %s", exc)
 
         return result
 
