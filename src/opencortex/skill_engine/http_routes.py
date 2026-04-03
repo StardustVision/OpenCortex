@@ -34,7 +34,12 @@ async def list_skills(status: Optional[str] = None):
     mgr = _get_manager()
     tid, uid = get_effective_identity()
     from opencortex.skill_engine.types import SkillStatus
-    s = SkillStatus(status) if status else None
+    s = None
+    if status:
+        try:
+            s = SkillStatus(status)
+        except ValueError:
+            raise HTTPException(status_code=422, detail=f"Invalid status: {status}. Valid: candidate, active, deprecated")
     results = await mgr.list_skills(tid, uid, status=s)
     return {"skills": [r.to_dict() for r in results], "count": len(results)}
 

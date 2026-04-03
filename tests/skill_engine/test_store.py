@@ -45,17 +45,15 @@ class TestSkillStore(unittest.IsolatedAsyncioTestCase):
             "sk-001", SkillStatus.DEPRECATED,
         )
 
-    async def test_evolve_skill_saves_new_and_deprecates_parents(self):
-        new = self._make_record(skill_id="sk-002")
-        new.lineage = SkillLineage(
-            origin=SkillOrigin.FIXED,
-            parent_skill_ids=["sk-001"],
-        )
-        await self.store.evolve_skill(new, parent_ids=["sk-001"])
-        self.storage_adapter.save.assert_called_once_with(new)
-        self.storage_adapter.update_status.assert_called_once_with(
-            "sk-001", SkillStatus.DEPRECATED,
-        )
+    async def test_approve_evolution_activates_new_deprecates_parents(self):
+        """approve_evolution: activate new skill, deprecate parent."""
+        await self.store.approve_evolution("sk-002", parent_ids=["sk-001"])
+        calls = self.storage_adapter.update_status.call_args_list
+        self.assertEqual(len(calls), 2)
+        # First call: activate new
+        self.assertEqual(calls[0][0], ("sk-002", SkillStatus.ACTIVE))
+        # Second call: deprecate parent
+        self.assertEqual(calls[1][0], ("sk-001", SkillStatus.DEPRECATED))
 
     async def test_search_delegates(self):
         self.storage_adapter.search = AsyncMock(return_value=[])

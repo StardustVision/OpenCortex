@@ -38,11 +38,16 @@ class SkillStore:
     async def deprecate(self, skill_id: str) -> None:
         await self.update_status(skill_id, SkillStatus.DEPRECATED)
 
-    async def evolve_skill(self, new: SkillRecord, parent_ids: List[str]) -> None:
-        """Save new skill version and deprecate parents (for FIX evolution)."""
-        await self._storage.save(new)
+    async def approve_evolution(self, new_skill_id: str, parent_ids: List[str]) -> None:
+        """Approve an evolved skill: activate new, deprecate parents.
+
+        Call this ONLY during human approval, NOT during evolution.
+        Per spec §4.7, FIX creates a CANDIDATE; parent stays ACTIVE
+        until the candidate is explicitly approved here.
+        """
+        await self.update_status(new_skill_id, SkillStatus.ACTIVE)
         for pid in parent_ids:
-            await self._storage.update_status(pid, SkillStatus.DEPRECATED)
+            await self.update_status(pid, SkillStatus.DEPRECATED)
 
     async def record_selection(self, skill_id: str) -> None:
         await self._storage.update_metrics(skill_id, total_selections=1)

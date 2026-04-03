@@ -1,5 +1,6 @@
 """Storage adapter — writes to independent skills Qdrant collection."""
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -32,7 +33,11 @@ class SkillStorageAdapter:
     async def save(self, record: SkillRecord) -> None:
         """Upsert a skill record with embedding."""
         embed_text = f"{record.name} {record.description} {record.abstract}"
-        embed_result = self._embedder.embed(embed_text)
+        loop = asyncio.get_running_loop()
+        embed_result = await asyncio.wait_for(
+            loop.run_in_executor(None, self._embedder.embed, embed_text),
+            timeout=2.0,
+        )
 
         payload = record.to_dict()
         payload["id"] = record.skill_id
@@ -81,7 +86,11 @@ class SkillStorageAdapter:
                      top_k: int = 5,
                      status: Optional[SkillStatus] = None) -> List[SkillRecord]:
         """Vector search with visibility + status filter."""
-        embed_result = self._embedder.embed(query)
+        loop = asyncio.get_running_loop()
+        embed_result = await asyncio.wait_for(
+            loop.run_in_executor(None, self._embedder.embed, query),
+            timeout=2.0,
+        )
         conds = [self._visibility_filter(tenant_id, user_id)]
         if status:
             conds.append({"op": "must", "field": "status", "conds": [status.value]})
