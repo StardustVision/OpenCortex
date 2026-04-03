@@ -2402,6 +2402,7 @@ class MemoryOrchestrator:
         self._ensure_init()
 
         alpha_traces_count = 0
+        archivist_stats: Dict[str, int] = {"knowledge_candidates": 0, "knowledge_active": 0}
         if self._observer:
             tid, uid = get_effective_identity()
             transcript = self._observer.flush(session_id)
@@ -2426,7 +2427,7 @@ class MemoryOrchestrator:
                     if self._archivist and self._trace_store:
                         count = await self._trace_store.count_new_traces(tid)
                         if self._archivist.should_trigger(count):
-                            asyncio.create_task(self._run_archivist(tid, uid))
+                            archivist_stats = await self._run_archivist(tid, uid)
                 except Exception as exc:
                     logger.warning("[Alpha] Trace splitting failed: %s", exc)
 
@@ -2434,6 +2435,7 @@ class MemoryOrchestrator:
             "session_id": session_id,
             "quality_score": quality_score,
             "alpha_traces": alpha_traces_count,
+            **archivist_stats,
         }
 
     async def _run_archivist(self, tenant_id: str, user_id: str) -> Dict[str, int]:
