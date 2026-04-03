@@ -185,6 +185,10 @@ class CollectionSchemas:
                 {"FieldName": "project_id", "FieldType": "string"},
                 {"FieldName": "uri", "FieldType": "string"},
                 {"FieldName": "source_fingerprint", "FieldType": "string"},
+                {"FieldName": "rating_rank", "FieldType": "string"},
+                {"FieldName": "tdd_passed", "FieldType": "bool"},
+                {"FieldName": "quality_score", "FieldType": "int64"},
+                {"FieldName": "reward_score", "FieldType": "float"},
                 {"FieldName": "vector", "FieldType": "vector", "Dim": vector_dim},
                 {"FieldName": "abstract", "FieldType": "string"},
                 {"FieldName": "overview", "FieldType": "string"},
@@ -194,6 +198,7 @@ class CollectionSchemas:
             "ScalarIndex": [
                 "skill_id", "name", "category", "status", "visibility",
                 "tenant_id", "user_id", "project_id", "uri", "source_fingerprint",
+                "rating_rank", "tdd_passed", "quality_score", "reward_score",
                 "created_at", "updated_at",
             ],
         }
