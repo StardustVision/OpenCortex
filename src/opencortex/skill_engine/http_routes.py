@@ -48,6 +48,18 @@ async def search_skills(q: str, top_k: int = 5):
     return {"skills": [r.to_dict() for r in results], "count": len(results)}
 
 
+@router.post("/extract")
+async def extract_skills(context_types: Optional[str] = None,
+                         categories: Optional[str] = None):
+    """Trigger skill extraction from memories."""
+    mgr = _get_manager()
+    tid, uid = get_effective_identity()
+    ct = context_types.split(",") if context_types else None
+    cats = categories.split(",") if categories else None
+    results = await mgr.extract(tid, uid, context_types=ct, categories=cats)
+    return {"extracted": [r.to_dict() for r in results], "count": len(results)}
+
+
 @router.get("/{skill_id}")
 async def get_skill(skill_id: str):
     """Get skill detail + lineage."""
@@ -84,3 +96,25 @@ async def deprecate_skill(skill_id: str):
     tid, uid = get_effective_identity()
     await mgr.deprecate(skill_id, tid, uid)
     return {"status": "deprecated", "skill_id": skill_id}
+
+
+@router.post("/{skill_id}/fix")
+async def fix_skill(skill_id: str, direction: str = ""):
+    """Trigger FIX evolution → new CANDIDATE."""
+    mgr = _get_manager()
+    tid, uid = get_effective_identity()
+    r = await mgr.fix_skill(skill_id, tid, uid, direction)
+    if not r:
+        raise HTTPException(status_code=400, detail="Fix evolution failed")
+    return r.to_dict()
+
+
+@router.post("/{skill_id}/derive")
+async def derive_skill(skill_id: str, direction: str = ""):
+    """Trigger DERIVED evolution → new CANDIDATE."""
+    mgr = _get_manager()
+    tid, uid = get_effective_identity()
+    r = await mgr.derive_skill(skill_id, tid, uid, direction)
+    if not r:
+        raise HTTPException(status_code=400, detail="Derive evolution failed")
+    return r.to_dict()

@@ -336,7 +336,15 @@ class MemoryOrchestrator:
             await storage_adapter.initialize()
 
             store = SkillStore(storage_adapter)
-            self._skill_manager = SkillManager(store=store)
+
+            evolver = None
+            if self._llm_completion:
+                from opencortex.skill_engine.evolver import SkillEvolver
+                evolver = SkillEvolver(llm=self._llm_completion, store=store)
+
+            self._skill_manager = SkillManager(
+                store=store, analyzer=None, evolver=evolver,
+            )
             set_skill_manager(self._skill_manager)
 
             logger.info("[MemoryOrchestrator] Skill Engine initialized")
