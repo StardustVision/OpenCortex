@@ -2439,10 +2439,12 @@ class MemoryOrchestrator:
     async def _run_archivist(self, tenant_id: str, user_id: str) -> Dict[str, int]:
         """Run Archivist in background to extract knowledge from traces.
 
-        Idempotency: mark_processed runs AFTER all knowledge is saved.
-        Per-knowledge errors are isolated — one failure doesn't block others.
-        If the entire batch fails (e.g. Archivist LLM error), traces stay
-        unprocessed and will be retried on next trigger.
+        Safety invariants:
+        - Only traces whose derived knowledge ALL saved successfully
+          are marked processed. Failed traces remain unprocessed for retry.
+        - If archivist.run() returns [] (e.g. concurrent run already active),
+          no traces are marked processed.
+        - Per-knowledge errors are isolated — one failure doesn't block others.
         """
         stats: Dict[str, int] = {"knowledge_candidates": 0, "knowledge_active": 0}
         if not self._archivist or not self._trace_store or not self._knowledge_store:
@@ -2459,12 +2461,18 @@ class MemoryOrchestrator:
                 traces, tenant_id, user_id, KnowledgeScope.USER,
             )
 
+            # Guard: if archivist returned nothing (concurrent run or no
+            # patterns found), do NOT mark traces — leave for retry.
+            if not knowledge_items:
+                return stats
+
             alpha_cfg = self._config.cortex_alpha
+            succeeded_trace_ids: set = set()
+            failed_trace_ids: set = set()
 
             for k in knowledge_items:
+                source_ids = set(k.source_trace_ids) if k.source_trace_ids else set()
                 try:
-                    # Collect evidence traces (traces is List[Dict])
-                    source_ids = set(k.source_trace_ids) if k.source_trace_ids else set()
                     evidence_traces = [
                         t for t in traces
                         if t.get("trace_id", t.get("id", "")) in source_ids
@@ -2494,28 +2502,30 @@ class MemoryOrchestrator:
                         k.status = status_map.get(eval_result.status, KnowledgeStatus.CANDIDATE)
 
                     await self._knowledge_store.save(k)
+                    succeeded_trace_ids.update(source_ids)
 
                     if k.status == KnowledgeStatus.ACTIVE:
                         stats["knowledge_active"] += 1
                     else:
                         stats["knowledge_candidates"] += 1
                 except Exception as exc:
+                    failed_trace_ids.update(source_ids)
                     logger.warning(
                         "[Alpha] Sandbox/save failed for knowledge %s: %s",
                         k.knowledge_id, exc,
                     )
 
-            # Mark traces as processed AFTER all knowledge is saved.
-            # If archivist.run() or the loop above fails entirely,
-            # traces stay unprocessed and will be retried next trigger.
-            trace_ids = [t.get("trace_id", t.get("id", "")) for t in traces]
-            trace_ids = [tid for tid in trace_ids if tid]
-            if trace_ids:
-                await self._trace_store.mark_processed(trace_ids)
+            # Only mark traces whose knowledge all saved successfully.
+            # Traces linked to failed knowledge stay unprocessed for retry.
+            safe_ids = succeeded_trace_ids - failed_trace_ids
+            if safe_ids:
+                await self._trace_store.mark_processed(list(safe_ids))
 
             logger.info(
-                "[Alpha] Archivist: %d candidates, %d active from %d traces",
-                stats["knowledge_candidates"], stats["knowledge_active"], len(traces),
+                "[Alpha] Archivist: %d candidates, %d active from %d traces "
+                "(%d traces marked processed, %d retained for retry)",
+                stats["knowledge_candidates"], stats["knowledge_active"],
+                len(traces), len(safe_ids), len(failed_trace_ids),
             )
         except Exception as exc:
             logger.warning("[Alpha] Archivist failed: %s", exc)
@@ -2574,8 +2584,8 @@ class MemoryOrchestrator:
         self._ensure_init()
         if not self._knowledge_store:
             return {"candidates": [], "error": "Knowledge store not initialized"}
-        tid, _ = get_effective_identity()
-        candidates = await self._knowledge_store.list_candidates(tid)
+        tid, uid = get_effective_identity()
+        candidates = await self._knowledge_store.list_candidates(tid, uid)
         return {"candidates": candidates, "count": len(candidates)}
 
     async def archivist_trigger(self) -> Dict[str, Any]:

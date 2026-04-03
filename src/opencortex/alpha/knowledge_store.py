@@ -151,13 +151,33 @@ class KnowledgeStore:
         await self._storage.upsert(self._collection, existing)
         return True
 
-    async def list_candidates(self, tenant_id: str) -> List[Dict[str, Any]]:
-        """List knowledge items pending approval."""
-        filter_expr = {"op": "and", "conds": [
+    async def list_candidates(
+        self, tenant_id: str, user_id: str,
+    ) -> List[Dict[str, Any]]:
+        """List knowledge items pending approval.
+
+        Scope visibility same as search(): user-scope candidates only
+        visible to the owning user_id.
+        """
+        must_conds = [
             {"op": "must", "field": "tenant_id", "conds": [tenant_id]},
             {"op": "must", "field": "status", "conds": [
                 KnowledgeStatus.CANDIDATE.value,
                 KnowledgeStatus.VERIFIED.value,
             ]},
+        ]
+        # Scope isolation: user-scope only visible to owner
+        scope_filter = {"op": "or", "conds": [
+            {"op": "must", "field": "scope", "conds": [
+                KnowledgeScope.TENANT.value,
+                KnowledgeScope.GLOBAL.value,
+            ]},
+            {"op": "and", "conds": [
+                {"op": "must", "field": "scope",
+                 "conds": [KnowledgeScope.USER.value]},
+                {"op": "must", "field": "user_id", "conds": [user_id]},
+            ]},
         ]}
+        must_conds.append(scope_filter)
+        filter_expr = {"op": "and", "conds": must_conds}
         return await self._storage.filter(self._collection, filter_expr)

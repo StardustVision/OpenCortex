@@ -91,7 +91,7 @@ class TestKnowledgeStore(unittest.IsolatedAsyncioTestCase):
         self.storage.filter = AsyncMock(return_value=[
             {"knowledge_id": "k1", "status": "candidate"},
         ])
-        result = await self.store.list_candidates("team")
+        result = await self.store.list_candidates("team", "hugo")
         self.storage.filter.assert_called_once()
         self.assertEqual(len(result), 1)
 
