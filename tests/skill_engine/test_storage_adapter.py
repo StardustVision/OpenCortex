@@ -64,7 +64,8 @@ class TestSkillStorageAdapter(unittest.IsolatedAsyncioTestCase):
         self.storage.search = AsyncMock(return_value=[])
         await self.adapter.search("deploy", "team1", "hugo", top_k=5)
         call_args = self.storage.search.call_args
-        filter_expr = call_args[0][2]
+        # filter is now passed as keyword arg
+        filter_expr = call_args[1].get("filter") or call_args[0][2] if len(call_args[0]) > 2 else call_args[1]["filter"]
         self.assertEqual(filter_expr["op"], "and")
         self.assertTrue(len(filter_expr["conds"]) >= 2)
 

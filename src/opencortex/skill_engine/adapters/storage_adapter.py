@@ -89,7 +89,10 @@ class SkillStorageAdapter:
             conds.append({"op": "must", "field": "status", "conds": [SkillStatus.ACTIVE.value]})
         filter_expr = {"op": "and", "conds": conds}
         results = await self._storage.search(
-            self._collection, embed_result.dense_vector, filter_expr, limit=top_k,
+            self._collection,
+            query_vector=embed_result.dense_vector,
+            filter=filter_expr,
+            limit=top_k,
         )
         return [self._dict_to_record(r) for r in results]
 

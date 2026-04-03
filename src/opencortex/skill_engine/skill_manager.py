@@ -110,10 +110,14 @@ class SkillManager:
         """Trigger FIX evolution → new CANDIDATE linked to parent."""
         if not self._evolver:
             return None
+        # Authorize: must be able to see the parent skill
+        parent = await self.get_skill(skill_id, tenant_id, user_id)
+        if not parent:
+            raise ValueError(f"Skill {skill_id} not found or not authorized")
         suggestion = EvolutionSuggestion(
             evolution_type=SkillOrigin.FIXED,
             target_skill_ids=[skill_id],
-            category=SkillCategory.WORKFLOW,
+            category=parent.category,
             direction=direction,
         )
         result = await self._evolver.evolve(suggestion, tenant_id, user_id)
@@ -126,10 +130,14 @@ class SkillManager:
         """Trigger DERIVED evolution → new CANDIDATE."""
         if not self._evolver:
             return None
+        # Authorize: must be able to see the parent skill
+        parent = await self.get_skill(skill_id, tenant_id, user_id)
+        if not parent:
+            raise ValueError(f"Skill {skill_id} not found or not authorized")
         suggestion = EvolutionSuggestion(
             evolution_type=SkillOrigin.DERIVED,
             target_skill_ids=[skill_id],
-            category=SkillCategory.WORKFLOW,
+            category=parent.category,
             direction=direction,
         )
         result = await self._evolver.evolve(suggestion, tenant_id, user_id)

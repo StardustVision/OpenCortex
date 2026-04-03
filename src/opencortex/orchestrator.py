@@ -339,8 +339,10 @@ class MemoryOrchestrator:
 
             evolver = None
             if self._llm_completion:
+                from opencortex.skill_engine.adapters.llm_adapter import LLMCompletionAdapter
                 from opencortex.skill_engine.evolver import SkillEvolver
-                evolver = SkillEvolver(llm=self._llm_completion, store=store)
+                llm_adapter = LLMCompletionAdapter(self._llm_completion)
+                evolver = SkillEvolver(llm=llm_adapter, store=store)
 
             self._skill_manager = SkillManager(
                 store=store, analyzer=None, evolver=evolver,
