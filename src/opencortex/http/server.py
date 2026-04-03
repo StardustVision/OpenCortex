@@ -251,6 +251,14 @@ async def _lifespan(app: FastAPI):
         logger.warning(f"[HTTP] Insights components not available: {e}")
         _orchestrator._insights_report_manager = None
 
+    # Skill Engine routes
+    try:
+        from opencortex.skill_engine.http_routes import router as skill_router
+        app.include_router(skill_router)
+        logger.info("[HTTP] Skill Engine routes registered")
+    except Exception as e:
+        logger.info("[HTTP] Skill Engine routes not available: %s", e)
+
     try:
         yield
     finally:
