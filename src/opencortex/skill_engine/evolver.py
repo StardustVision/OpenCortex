@@ -68,7 +68,9 @@ class SkillEvolver:
         if not content:
             return None
 
-        skill_id = f"sk-{uuid.uuid4().hex[:12]}"
+        # Deterministic skill_id from fingerprint — ensures upsert idempotency
+        fp = make_source_fingerprint(s.source_memory_ids)
+        skill_id = f"sk-{fp}"
         name = s.direction or "unnamed-skill"
         return SkillRecord(
             skill_id=skill_id, name=name,
@@ -84,7 +86,7 @@ class SkillEvolver:
             tenant_id=tid, user_id=uid,
             uri=make_skill_uri(tid, uid, skill_id, visibility="private", category=s.category.value),
             abstract=name,
-            source_fingerprint=make_source_fingerprint(s.source_memory_ids),
+            source_fingerprint=fp,
         )
 
     async def _evolve_derived(self, s, tid, uid) -> Optional[SkillRecord]:

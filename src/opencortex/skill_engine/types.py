@@ -74,6 +74,7 @@ class SkillRecord:
     tags: List[str] = field(default_factory=list)
     tenant_id: str = ""
     user_id: str = ""
+    project_id: str = "public"
     uri: str = ""
     total_selections: int = 0
     total_applied: int = 0
@@ -102,6 +103,7 @@ class SkillRecord:
             "tags": self.tags,
             "tenant_id": self.tenant_id,
             "user_id": self.user_id,
+            "project_id": self.project_id,
             "uri": self.uri,
             "total_selections": self.total_selections,
             "total_applied": self.total_applied,

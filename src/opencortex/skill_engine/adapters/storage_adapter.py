@@ -127,9 +127,10 @@ class SkillStorageAdapter:
         """Delete a skill by ID."""
         await self._storage.delete(self._collection, [skill_id])
 
-    def _visibility_filter(self, tenant_id: str, user_id: str) -> Dict[str, Any]:
-        """Build scope filter: SHARED visible to tenant, PRIVATE to owner only."""
-        return {"op": "or", "conds": [
+    def _visibility_filter(self, tenant_id: str, user_id: str,
+                           project_id: str = "") -> Dict[str, Any]:
+        """Build scope filter: tenant + project + visibility."""
+        base = {"op": "or", "conds": [
             {"op": "and", "conds": [
                 {"op": "must", "field": "tenant_id", "conds": [tenant_id]},
                 {"op": "must", "field": "visibility", "conds": [SkillVisibility.SHARED.value]},
@@ -140,6 +141,12 @@ class SkillStorageAdapter:
                 {"op": "must", "field": "user_id", "conds": [user_id]},
             ]},
         ]}
+        if project_id and project_id != "public":
+            return {"op": "and", "conds": [
+                base,
+                {"op": "must", "field": "project_id", "conds": [project_id, "public"]},
+            ]}
+        return base
 
     def _dict_to_record(self, d: Dict[str, Any]) -> SkillRecord:
         """Convert Qdrant payload dict to SkillRecord."""
@@ -169,6 +176,7 @@ class SkillStorageAdapter:
             tags=d.get("tags", []),
             tenant_id=d.get("tenant_id", ""),
             user_id=d.get("user_id", ""),
+            project_id=d.get("project_id", "public"),
             uri=d.get("uri", ""),
             total_selections=d.get("total_selections", 0),
             total_applied=d.get("total_applied", 0),

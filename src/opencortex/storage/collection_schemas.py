@@ -182,6 +182,7 @@ class CollectionSchemas:
                 {"FieldName": "visibility", "FieldType": "string"},
                 {"FieldName": "tenant_id", "FieldType": "string"},
                 {"FieldName": "user_id", "FieldType": "string"},
+                {"FieldName": "project_id", "FieldType": "string"},
                 {"FieldName": "uri", "FieldType": "string"},
                 {"FieldName": "source_fingerprint", "FieldType": "string"},
                 {"FieldName": "vector", "FieldType": "vector", "Dim": vector_dim},
@@ -192,7 +193,7 @@ class CollectionSchemas:
             ],
             "ScalarIndex": [
                 "skill_id", "name", "category", "status", "visibility",
-                "tenant_id", "user_id", "uri", "source_fingerprint",
+                "tenant_id", "user_id", "project_id", "uri", "source_fingerprint",
                 "created_at", "updated_at",
             ],
         }

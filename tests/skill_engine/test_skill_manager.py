@@ -61,15 +61,15 @@ class TestSkillManager(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await self.manager.approve("sk-001", "team1", "hugo")
 
-    async def test_approve_allows_shared_skill_for_any_tenant_user(self):
-        """approve() allows shared skills for any user in same tenant."""
+    async def test_approve_rejects_shared_skill_non_owner(self):
+        """approve() rejects non-owner even for shared skills (write requires ownership)."""
         self.store.load_record = AsyncMock(
             return_value=self._make_record(
                 user_id="alice", visibility=SkillVisibility.SHARED,
             )
         )
-        await self.manager.approve("sk-001", "team1", "hugo")
-        self.store.update_status.assert_called_once()
+        with self.assertRaises(ValueError):
+            await self.manager.approve("sk-001", "team1", "hugo")
 
     async def test_get_skill_returns_none_for_wrong_tenant(self):
         """get_skill() returns None when skill is in different tenant."""

@@ -83,14 +83,25 @@ class SkillManager:
         # PRIVATE: only visible to owner
         return record.user_id == user_id
 
+    def _is_owner(self, record: SkillRecord, user_id: str) -> bool:
+        """Check if user is the skill owner (required for write operations)."""
+        return record.user_id == user_id
+
     async def _authorized_status_change(
         self, skill_id: str, tenant_id: str, user_id: str,
         new_status: SkillStatus,
     ) -> None:
-        """Load skill with visibility check, then change status."""
+        """Load skill with visibility + owner check, then change status.
+
+        Write operations (approve/reject/deprecate) require ownership,
+        not just read visibility. This prevents non-owners from mutating
+        shared skills they can see but don't control.
+        """
         record = await self.get_skill(skill_id, tenant_id, user_id)
         if not record:
             raise ValueError(f"Skill {skill_id} not found or not authorized")
+        if not self._is_owner(record, user_id):
+            raise ValueError(f"Only the skill owner can change its status")
         await self._store.update_status(skill_id, new_status)
 
     # --- Extraction pipeline ---
