@@ -359,8 +359,24 @@ class MemoryOrchestrator:
                     source=source_adapter, llm=llm_adapter, store=store,
                 )
 
+            # Quality Gate (Phase A)
+            quality_gate = None
+            if llm_adapter:
+                from opencortex.skill_engine.quality_gate import QualityGate
+                quality_gate = QualityGate(llm=llm_adapter)
+
+            # Sandbox TDD (Phase B — default OFF)
+            sandbox_tdd = None
+            if self._config.cortex_alpha.sandbox_tdd_enabled and llm_adapter:
+                from opencortex.skill_engine.sandbox_tdd import SandboxTDD
+                sandbox_tdd = SandboxTDD(
+                    llm=llm_adapter,
+                    max_llm_calls=self._config.cortex_alpha.sandbox_tdd_max_llm_calls,
+                )
+
             self._skill_manager = SkillManager(
                 store=store, analyzer=analyzer, evolver=evolver,
+                quality_gate=quality_gate, sandbox_tdd=sandbox_tdd,
             )
             set_skill_manager(self._skill_manager)
 
