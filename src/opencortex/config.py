@@ -37,7 +37,22 @@ _MCP_ONLY_FIELDS = {"mcp_transport", "mcp_port", "mcp_mode"}
 
 @dataclass
 class CortexAlphaConfig:
-    """Cortex Alpha sub-configuration (Design doc §11)."""
+    """Cortex Alpha sub-configuration (Design doc §11).
+
+    To enable the full knowledge lifecycle pipeline, set in server.json::
+
+        {
+          "cortex_alpha": {
+            "trace_splitter_enabled": true,
+            "archivist_enabled": true,
+            "knowledge_recall_enabled": true
+          }
+        }
+
+    Or via environment variable::
+
+        OPENCORTEX_CORTEX_ALPHA='{"trace_splitter_enabled":true,"archivist_enabled":true,"knowledge_recall_enabled":true}'
+    """
     # Observer
     observer_enabled: bool = True
     # Trace Splitter
