@@ -15,10 +15,12 @@ logger = logging.getLogger(__name__)
 
 
 class SkillManager:
-    def __init__(self, store, analyzer=None, evolver=None):
+    def __init__(self, store, analyzer=None, evolver=None, quality_gate=None, sandbox_tdd=None):
         self._store = store
         self._analyzer = analyzer
         self._evolver = evolver
+        self._quality_gate = quality_gate
+        self._sandbox_tdd = sandbox_tdd
 
     async def search(self, query: str, tenant_id: str, user_id: str,
                      top_k: int = 5) -> List[SkillRecord]:
@@ -129,8 +131,9 @@ class SkillManager:
 
         saved = []
         for c in candidates:
-            await self._store.save_record(c)
-            saved.append(c)
+            result = await self._validate_and_save(c)
+            if result:
+                saved.append(result)
 
         return saved
 
@@ -154,9 +157,7 @@ class SkillManager:
         result = await self._evolver.evolve(
             suggestion, tenant_id, user_id, project_id=parent.project_id,
         )
-        if result:
-            await self._store.save_record(result)
-        return result
+        return await self._validate_and_save(result)
 
     async def derive_skill(self, skill_id: str, tenant_id: str, user_id: str,
                            direction: str) -> Optional[SkillRecord]:
@@ -176,6 +177,27 @@ class SkillManager:
         result = await self._evolver.evolve(
             suggestion, tenant_id, user_id, project_id=parent.project_id,
         )
-        if result:
-            await self._store.save_record(result)
-        return result
+        return await self._validate_and_save(result)
+
+    async def _validate_and_save(self, candidate: Optional[SkillRecord]) -> Optional[SkillRecord]:
+        """Shared save path: Quality Gate + optional TDD before persisting."""
+        if not candidate:
+            return None
+
+        if self._quality_gate:
+            report = await self._quality_gate.evaluate(candidate)
+            candidate.quality_score = report.score
+            if report.score < 60:
+                logger.info("[SkillManager] %s failed quality gate (score=%d)",
+                            candidate.name, report.score)
+                return None
+
+        if self._sandbox_tdd:
+            tdd_result = await self._sandbox_tdd.evaluate(candidate)
+            candidate.tdd_passed = tdd_result.passed
+            if not tdd_result.passed:
+                logger.info("[SkillManager] %s failed sandbox TDD", candidate.name)
+                return None
+
+        await self._store.save_record(candidate)
+        return candidate

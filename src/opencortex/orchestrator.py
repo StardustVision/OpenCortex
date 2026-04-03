@@ -133,6 +133,8 @@ class MemoryOrchestrator:
 
         # Skill Engine
         self._skill_manager = None
+        self._skill_event_store = None
+        self._skill_evaluator = None
 
     # =========================================================================
     # Collection Routing
@@ -357,10 +359,45 @@ class MemoryOrchestrator:
                     source=source_adapter, llm=llm_adapter, store=store,
                 )
 
+            # Quality Gate (Phase A)
+            quality_gate = None
+            if llm_adapter:
+                from opencortex.skill_engine.quality_gate import QualityGate
+                quality_gate = QualityGate(llm=llm_adapter)
+
+            # Sandbox TDD (Phase B — default OFF)
+            sandbox_tdd = None
+            if self._config.cortex_alpha.sandbox_tdd_enabled and llm_adapter:
+                from opencortex.skill_engine.sandbox_tdd import SandboxTDD
+                sandbox_tdd = SandboxTDD(
+                    llm=llm_adapter,
+                    max_llm_calls=self._config.cortex_alpha.sandbox_tdd_max_llm_calls,
+                )
+
             self._skill_manager = SkillManager(
                 store=store, analyzer=analyzer, evolver=evolver,
+                quality_gate=quality_gate, sandbox_tdd=sandbox_tdd,
             )
             set_skill_manager(self._skill_manager)
+
+            # SkillEventStore + Evaluator (Phase C)
+            from opencortex.skill_engine.event_store import SkillEventStore
+            from opencortex.skill_engine.evaluator import SkillEvaluator
+
+            self._skill_event_store = SkillEventStore(storage=self._storage)
+            await self._skill_event_store.init()
+
+            self._skill_evaluator = SkillEvaluator(
+                event_store=self._skill_event_store,
+                skill_store=store,
+                trace_store=self._trace_store,
+                skill_storage=storage_adapter,
+                llm=llm_adapter,
+            )
+
+            # Startup sweeper for crash recovery (fire-and-forget, all tenants)
+            if self._skill_evaluator:
+                asyncio.create_task(self._skill_evaluator.sweep_unevaluated())
 
             logger.info("[MemoryOrchestrator] Skill Engine initialized")
         except Exception as exc:
@@ -2502,8 +2539,15 @@ class MemoryOrchestrator:
                         count = await self._trace_store.count_new_traces(tid)
                         if self._archivist.should_trigger(count):
                             asyncio.create_task(self._run_archivist(tid, uid))
+
                 except Exception as exc:
                     logger.warning("[Alpha] Trace splitting failed: %s", exc)
+
+            # Skill evaluator trigger — runs independently of trace splitting
+            if self._skill_evaluator:
+                asyncio.create_task(
+                    self._skill_evaluator.evaluate_session(tid, uid, session_id)
+                )
 
         return {
             "session_id": session_id,

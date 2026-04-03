@@ -169,6 +169,32 @@ class CollectionSchemas:
         }
 
     @staticmethod
+    def skill_events_collection(name: str) -> Dict[str, Any]:
+        """Skill events collection — no vectors, pure metadata."""
+        return {
+            "CollectionName": name,
+            "Fields": [
+                {"FieldName": "id", "FieldType": "string", "IsPrimaryKey": True},
+                {"FieldName": "event_id", "FieldType": "string"},
+                {"FieldName": "session_id", "FieldType": "string"},
+                {"FieldName": "turn_id", "FieldType": "string"},
+                {"FieldName": "skill_id", "FieldType": "string"},
+                {"FieldName": "skill_uri", "FieldType": "string"},
+                {"FieldName": "tenant_id", "FieldType": "string"},
+                {"FieldName": "user_id", "FieldType": "string"},
+                {"FieldName": "event_type", "FieldType": "string"},
+                {"FieldName": "outcome", "FieldType": "string"},
+                {"FieldName": "evaluated", "FieldType": "bool"},
+                {"FieldName": "timestamp", "FieldType": "date_time"},
+            ],
+            "ScalarIndex": [
+                "event_id", "session_id", "turn_id", "skill_id",
+                "tenant_id", "user_id", "event_type", "outcome",
+                "evaluated", "timestamp",
+            ],
+        }
+
+    @staticmethod
     def skills_collection(name: str, vector_dim: int) -> Dict[str, Any]:
         """Skills collection schema — independent from memory collections."""
         return {
@@ -185,6 +211,10 @@ class CollectionSchemas:
                 {"FieldName": "project_id", "FieldType": "string"},
                 {"FieldName": "uri", "FieldType": "string"},
                 {"FieldName": "source_fingerprint", "FieldType": "string"},
+                {"FieldName": "rating_rank", "FieldType": "string"},
+                {"FieldName": "tdd_passed", "FieldType": "bool"},
+                {"FieldName": "quality_score", "FieldType": "int64"},
+                {"FieldName": "reward_score", "FieldType": "float"},
                 {"FieldName": "vector", "FieldType": "vector", "Dim": vector_dim},
                 {"FieldName": "abstract", "FieldType": "string"},
                 {"FieldName": "overview", "FieldType": "string"},
@@ -194,6 +224,7 @@ class CollectionSchemas:
             "ScalarIndex": [
                 "skill_id", "name", "category", "status", "visibility",
                 "tenant_id", "user_id", "project_id", "uri", "source_fingerprint",
+                "rating_rank", "tdd_passed", "quality_score", "reward_score",
                 "created_at", "updated_at",
             ],
         }
@@ -220,6 +251,14 @@ async def init_skills_collection(
 ) -> bool:
     """Initialize the skills collection with proper schema."""
     schema = CollectionSchemas.skills_collection(name, vector_dim)
+    return await storage.create_collection(name, schema)
+
+
+async def init_skill_events_collection(
+    storage: StorageInterface, name: str,
+) -> bool:
+    """Initialize the skill events collection."""
+    schema = CollectionSchemas.skill_events_collection(name)
     return await storage.create_collection(name, schema)
 
 

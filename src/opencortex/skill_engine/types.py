@@ -89,6 +89,11 @@ class SkillRecord:
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
     source_fingerprint: str = ""
+    # ReAct feedback loop fields
+    rating: "SkillRating" = field(default_factory=lambda: SkillRating())
+    tdd_passed: bool = False
+    quality_score: int = 0
+    reward_score: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -114,6 +119,10 @@ class SkillRecord:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "source_fingerprint": self.source_fingerprint,
+            "rating": self.rating.to_dict(),
+            "tdd_passed": self.tdd_passed,
+            "quality_score": self.quality_score,
+            "reward_score": self.reward_score,
         }
 
 
@@ -125,6 +134,97 @@ class EvolutionSuggestion:
     direction: str = ""
     confidence: float = 0.0
     source_memory_ids: List[str] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# ReAct Feedback Loop Types
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SkillEvent:
+    """Durable skill usage event — stored in independent skill_events collection."""
+    event_id: str
+    session_id: str
+    turn_id: str
+    skill_id: str
+    skill_uri: str
+    tenant_id: str
+    user_id: str
+    event_type: str      # "selected" | "cited"
+    outcome: str = ""    # "" | "success" | "failure"
+    timestamp: str = ""
+    evaluated: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "event_id": self.event_id,
+            "session_id": self.session_id,
+            "turn_id": self.turn_id,
+            "skill_id": self.skill_id,
+            "skill_uri": self.skill_uri,
+            "tenant_id": self.tenant_id,
+            "user_id": self.user_id,
+            "event_type": self.event_type,
+            "outcome": self.outcome,
+            "timestamp": self.timestamp,
+            "evaluated": self.evaluated,
+        }
+
+
+@dataclass
+class QualityCheck:
+    name: str
+    severity: str    # "ERROR" | "WARNING" | "INFO"
+    passed: bool
+    message: str
+    fix_suggestion: str = ""
+
+
+@dataclass
+class QualityReport:
+    score: int       # 0-100
+    checks: List[QualityCheck] = field(default_factory=list)
+    errors: int = 0
+    warnings: int = 0
+
+
+@dataclass
+class TDDResult:
+    passed: bool
+    scenarios_total: int = 0
+    scenarios_improved: int = 0
+    scenarios_same: int = 0
+    scenarios_worse: int = 0
+    sections_cited: List[str] = field(default_factory=list)
+    rationalizations: List[str] = field(default_factory=list)
+    quality_delta: float = 0.0
+    llm_calls_used: int = 0
+
+
+@dataclass
+class SkillRating:
+    practicality: float = 0.0
+    clarity: float = 0.0
+    automation: float = 0.0
+    quality: float = 0.0
+    impact: float = 0.0
+    overall: float = 0.0
+    rank: str = "C"
+
+    def compute_overall(self) -> None:
+        self.overall = (self.practicality + self.clarity + self.automation
+                        + self.quality + self.impact) / 5
+        if self.overall >= 9.0: self.rank = "S"
+        elif self.overall >= 7.0: self.rank = "A"
+        elif self.overall >= 5.0: self.rank = "B"
+        else: self.rank = "C"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "practicality": self.practicality, "clarity": self.clarity,
+            "automation": self.automation, "quality": self.quality,
+            "impact": self.impact, "overall": self.overall, "rank": self.rank,
+        }
 
 
 def make_skill_uri(

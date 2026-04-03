@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from opencortex.skill_engine.types import (
     SkillRecord, SkillStatus, SkillVisibility, SkillLineage, SkillOrigin,
-    SkillCategory,
+    SkillCategory, SkillRating,
 )
 
 logger = logging.getLogger(__name__)
@@ -92,6 +92,17 @@ class SkillStorageAdapter:
         if updates:
             await self._storage.update(self._collection, skill_id, updates)
 
+    async def update_reward(self, skill_id: str, reward: float) -> None:
+        """Accumulate reward score for a skill."""
+        existing = await self.load(skill_id)
+        if not existing:
+            return
+        new_reward = existing.reward_score + reward
+        await self._storage.update(self._collection, skill_id, {
+            "reward_score": new_reward,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+
     async def search(self, query: str, tenant_id: str, user_id: str,
                      top_k: int = 5,
                      status: Optional[SkillStatus] = None) -> List[SkillRecord]:
@@ -164,6 +175,19 @@ class SkillStorageAdapter:
             created_by=lineage_data.get("created_by", ""),
             created_at=lineage_data.get("created_at", ""),
         )
+        rating_data = d.get("rating", {})
+        if isinstance(rating_data, dict):
+            rating = SkillRating(
+                practicality=rating_data.get("practicality", 0.0),
+                clarity=rating_data.get("clarity", 0.0),
+                automation=rating_data.get("automation", 0.0),
+                quality=rating_data.get("quality", 0.0),
+                impact=rating_data.get("impact", 0.0),
+                overall=rating_data.get("overall", 0.0),
+                rank=rating_data.get("rank", "C"),
+            )
+        else:
+            rating = SkillRating()
         return SkillRecord(
             skill_id=d.get("skill_id", d.get("id", "")),
             name=d.get("name", ""),
@@ -187,4 +211,8 @@ class SkillStorageAdapter:
             created_at=d.get("created_at", ""),
             updated_at=d.get("updated_at", ""),
             source_fingerprint=d.get("source_fingerprint", ""),
+            rating=rating,
+            tdd_passed=d.get("tdd_passed", False),
+            quality_score=d.get("quality_score", 0),
+            reward_score=d.get("reward_score", 0.0),
         )
