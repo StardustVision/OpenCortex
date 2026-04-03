@@ -168,6 +168,35 @@ class CollectionSchemas:
             ],
         }
 
+    @staticmethod
+    def skills_collection(name: str, vector_dim: int) -> Dict[str, Any]:
+        """Skills collection schema — independent from memory collections."""
+        return {
+            "CollectionName": name,
+            "Fields": [
+                {"FieldName": "skill_id", "FieldType": "string"},
+                {"FieldName": "name", "FieldType": "string"},
+                {"FieldName": "description", "FieldType": "string"},
+                {"FieldName": "category", "FieldType": "string"},
+                {"FieldName": "status", "FieldType": "string"},
+                {"FieldName": "visibility", "FieldType": "string"},
+                {"FieldName": "tenant_id", "FieldType": "string"},
+                {"FieldName": "user_id", "FieldType": "string"},
+                {"FieldName": "uri", "FieldType": "string"},
+                {"FieldName": "source_fingerprint", "FieldType": "string"},
+                {"FieldName": "vector", "FieldType": "vector", "Dim": vector_dim},
+                {"FieldName": "abstract", "FieldType": "string"},
+                {"FieldName": "overview", "FieldType": "string"},
+                {"FieldName": "created_at", "FieldType": "date_time"},
+                {"FieldName": "updated_at", "FieldType": "date_time"},
+            ],
+            "ScalarIndex": [
+                "skill_id", "name", "category", "status", "visibility",
+                "tenant_id", "user_id", "uri", "source_fingerprint",
+                "created_at", "updated_at",
+            ],
+        }
+
 
 async def init_trace_collection(
     storage: StorageInterface, name: str, vector_dim: int,
@@ -182,6 +211,14 @@ async def init_knowledge_collection(
 ) -> bool:
     """Initialize the knowledge collection with proper schema."""
     schema = CollectionSchemas.knowledge_collection(name, vector_dim)
+    return await storage.create_collection(name, schema)
+
+
+async def init_skills_collection(
+    storage: StorageInterface, name: str, vector_dim: int,
+) -> bool:
+    """Initialize the skills collection with proper schema."""
+    schema = CollectionSchemas.skills_collection(name, vector_dim)
     return await storage.create_collection(name, schema)
 
 
