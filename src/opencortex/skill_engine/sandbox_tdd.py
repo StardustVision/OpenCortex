@@ -19,28 +19,28 @@ class SandboxTDD:
     def __init__(self, llm, max_llm_calls: int = 20):
         self._llm = llm
         self._max_calls = max_llm_calls
-        self._calls_used = 0
 
     async def evaluate(self, skill: SkillRecord) -> TDDResult:
         """Run RED-GREEN-REFACTOR cycle on a skill."""
-        self._calls_used = 0
+        # Thread-safe: calls_used is local to each evaluate() invocation
+        ctx = {"calls_used": 0}
 
-        scenarios = await self._generate_scenarios(skill)
+        scenarios = await self._generate_scenarios(skill, ctx)
         if not scenarios:
-            return TDDResult(passed=False, llm_calls_used=self._calls_used)
+            return TDDResult(passed=False, llm_calls_used=ctx["calls_used"])
 
         baseline = {}
         for s in scenarios:
-            if self._calls_used >= self._max_calls:
+            if ctx["calls_used"] >= self._max_calls:
                 break
-            baseline[s["scenario"]] = await self._run_baseline(s["scenario"])
+            baseline[s["scenario"]] = await self._run_baseline(s["scenario"], ctx)
 
         with_skill = {}
         for s in scenarios:
-            if self._calls_used >= self._max_calls:
+            if ctx["calls_used"] >= self._max_calls:
                 break
             with_skill[s["scenario"]] = await self._run_with_skill(
-                s["scenario"], skill.content
+                s["scenario"], skill.content, ctx
             )
 
         improved = same = worse = 0
@@ -78,16 +78,16 @@ class SandboxTDD:
             sections_cited=sections_cited,
             rationalizations=rationalizations,
             quality_delta=delta,
-            llm_calls_used=self._calls_used,
+            llm_calls_used=ctx["calls_used"],
         )
 
-    async def _llm_call(self, prompt: str) -> str:
-        self._calls_used += 1
+    async def _llm_call(self, prompt: str, ctx: dict) -> str:
+        ctx["calls_used"] += 1
         if hasattr(self._llm, 'complete'):
             return await self._llm.complete([{"role": "user", "content": prompt}])
         return await self._llm([{"role": "user", "content": prompt}])
 
-    async def _generate_scenarios(self, skill: SkillRecord) -> List[dict]:
+    async def _generate_scenarios(self, skill: SkillRecord, ctx: dict) -> List[dict]:
         prompt = (
             f"Given this skill about {skill.name}:\n{skill.content[:2000]}\n\n"
             "Generate 2-3 realistic scenarios that test whether an agent would follow "
@@ -99,22 +99,24 @@ class SandboxTDD:
             'Return JSON array: [{"scenario": "...", "correct": "A"}]'
         )
         try:
-            return orjson.loads(await self._llm_call(prompt))
+            return orjson.loads(await self._llm_call(prompt, ctx))
+
         except Exception:
             return []
 
-    async def _run_baseline(self, scenario: str) -> dict:
+    async def _run_baseline(self, scenario: str, ctx: dict) -> dict:
         prompt = (
             f"You are an AI assistant. A user asks:\n{scenario}\n"
             "Choose an option and explain your reasoning.\n"
             'Return JSON: {"choice": "A/B/C", "reasoning": "..."}'
         )
         try:
-            return orjson.loads(await self._llm_call(prompt))
+            return orjson.loads(await self._llm_call(prompt, ctx))
+
         except Exception:
             return {}
 
-    async def _run_with_skill(self, scenario: str, skill_content: str) -> dict:
+    async def _run_with_skill(self, scenario: str, skill_content: str, ctx: dict) -> dict:
         prompt = (
             f"You are an AI assistant with this operational skill:\n"
             f"{skill_content[:2000]}\n\n"
@@ -125,6 +127,7 @@ class SandboxTDD:
             '"sections_cited": ["..."]}'
         )
         try:
-            return orjson.loads(await self._llm_call(prompt))
+            return orjson.loads(await self._llm_call(prompt, ctx))
+
         except Exception:
             return {}

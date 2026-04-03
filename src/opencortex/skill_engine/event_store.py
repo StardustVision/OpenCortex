@@ -52,10 +52,10 @@ class SkillEventStore:
         self, tenant_id: str, limit: int = 100,
     ) -> List[SkillEvent]:
         """List unevaluated events for crash recovery sweeper."""
-        filter_expr = {"op": "and", "conds": [
-            {"op": "must", "field": "tenant_id", "conds": [tenant_id]},
-            {"op": "must", "field": "evaluated", "conds": [False]},
-        ]}
+        conds = [{"op": "must", "field": "evaluated", "conds": [False]}]
+        if tenant_id:
+            conds.append({"op": "must", "field": "tenant_id", "conds": [tenant_id]})
+        filter_expr = {"op": "and", "conds": conds} if len(conds) > 1 else conds[0]
         results = await self._storage.filter(self._collection, filter_expr, limit=limit)
         return [self._dict_to_event(r) for r in results]
 

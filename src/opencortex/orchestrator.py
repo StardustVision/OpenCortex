@@ -395,9 +395,9 @@ class MemoryOrchestrator:
                 llm=llm_adapter,
             )
 
-            # Startup sweeper for crash recovery (fire-and-forget)
+            # Startup sweeper for crash recovery (fire-and-forget, all tenants)
             if self._skill_evaluator:
-                asyncio.create_task(self._skill_evaluator.sweep_unevaluated(""))
+                asyncio.create_task(self._skill_evaluator.sweep_unevaluated())
 
             logger.info("[MemoryOrchestrator] Skill Engine initialized")
         except Exception as exc:

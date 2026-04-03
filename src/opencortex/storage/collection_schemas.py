@@ -174,6 +174,7 @@ class CollectionSchemas:
         return {
             "CollectionName": name,
             "Fields": [
+                {"FieldName": "id", "FieldType": "string", "IsPrimaryKey": True},
                 {"FieldName": "event_id", "FieldType": "string"},
                 {"FieldName": "session_id", "FieldType": "string"},
                 {"FieldName": "turn_id", "FieldType": "string"},

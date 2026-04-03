@@ -92,8 +92,11 @@ class SkillEvaluator:
             session_id, len(unevaluated), len(skill_events), session_outcome,
         )
 
-    async def sweep_unevaluated(self, tenant_id: str) -> int:
-        """Startup sweeper — process backlog from crash/restart."""
+    async def sweep_unevaluated(self, tenant_id: str = "") -> int:
+        """Startup sweeper — process backlog from crash/restart.
+
+        If tenant_id is empty, sweeps ALL unevaluated events across tenants.
+        """
         try:
             backlog = await self._event_store.list_unevaluated(tenant_id, limit=200)
             if not backlog:
