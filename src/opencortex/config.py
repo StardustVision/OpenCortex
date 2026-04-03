@@ -62,6 +62,8 @@ class CortexAlphaConfig:
     trace_collection_name: str = "traces"
     # User scope auto-approval
     user_auto_approve_confidence: float = 0.95
+    # Knowledge recall in prepare()
+    knowledge_recall_enabled: bool = False  # Server-side default for include_knowledge
 
 
 @dataclass
