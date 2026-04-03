@@ -38,6 +38,18 @@ class TestAlphaConfig(unittest.TestCase):
         cfg = CortexAlphaConfig()
         self.assertEqual(cfg.trace_splitter_max_context_tokens, 128000)
 
+    def test_knowledge_recall_enabled_default(self):
+        """knowledge_recall_enabled defaults to False."""
+        from opencortex.config import CortexAlphaConfig
+        cfg = CortexAlphaConfig()
+        self.assertFalse(cfg.knowledge_recall_enabled)
+
+    def test_knowledge_recall_enabled_set(self):
+        """knowledge_recall_enabled can be set to True."""
+        from opencortex.config import CortexAlphaConfig
+        cfg = CortexAlphaConfig(knowledge_recall_enabled=True)
+        self.assertTrue(cfg.knowledge_recall_enabled)
+
 
 if __name__ == "__main__":
     unittest.main()

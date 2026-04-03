@@ -173,7 +173,11 @@ class ContextManager:
         recall_mode = config.get("recall_mode", "auto")
         category = config.get("category")
         context_type_filter = config.get("context_type")
-        include_knowledge = config.get("include_knowledge", False)
+        # Priority: client explicit > server config > default False
+        _server_default = False
+        if hasattr(self._orchestrator, '_config') and self._orchestrator._config:
+            _server_default = self._orchestrator._config.cortex_alpha.knowledge_recall_enabled
+        include_knowledge = config.get("include_knowledge", _server_default)
         sk = self._make_session_key(tenant_id, user_id, session_id)
         prepare_started = time.monotonic()
 

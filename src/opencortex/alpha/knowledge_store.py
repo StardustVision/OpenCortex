@@ -9,7 +9,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from opencortex.alpha.types import Knowledge, KnowledgeStatus, SEARCHABLE_STATUSES
+from opencortex.alpha.types import Knowledge, KnowledgeStatus, KnowledgeScope, SEARCHABLE_STATUSES
 
 logger = logging.getLogger(__name__)
 
@@ -75,22 +75,43 @@ class KnowledgeStore:
         types: Optional[List[str]] = None,
         limit: int = 10,
     ) -> List[Dict[str, Any]]:
-        """Vector search over knowledge — only active items returned."""
+        """Vector search over knowledge — only active items returned.
+
+        Scope visibility:
+        - USER scope: only visible to the owning user_id
+        - TENANT/GLOBAL scope: visible to all users in the tenant
+        """
         embed_result = self._embedder.embed_query(query)
 
-        conditions = [
-            {"field": "tenant_id", "op": "=", "value": tenant_id},
+        must_conds = [
+            {"op": "must", "field": "tenant_id", "conds": [tenant_id]},
+            {"op": "must", "field": "status",
+             "conds": [s.value for s in SEARCHABLE_STATUSES]},
         ]
-        # Only return active knowledge
-        for status in SEARCHABLE_STATUSES:
-            conditions.append({"field": "status", "op": "=", "value": status.value})
 
         if types:
-            conditions.append({"field": "knowledge_type", "op": "in", "value": types})
+            must_conds.append(
+                {"op": "must", "field": "knowledge_type", "conds": types}
+            )
 
-        filter_expr = {"op": "and", "conditions": conditions}
+        # Scope isolation: user-scope only visible to owner
+        scope_filter = {"op": "or", "conds": [
+            {"op": "must", "field": "scope", "conds": [
+                KnowledgeScope.TENANT.value,
+                KnowledgeScope.GLOBAL.value,
+            ]},
+            {"op": "and", "conds": [
+                {"op": "must", "field": "scope",
+                 "conds": [KnowledgeScope.USER.value]},
+                {"op": "must", "field": "user_id", "conds": [user_id]},
+            ]},
+        ]}
+        must_conds.append(scope_filter)
+
+        filter_expr = {"op": "and", "conds": must_conds}
         return await self._storage.search(
-            self._collection, embed_result.dense_vector, filter_expr, limit=limit
+            self._collection, embed_result.dense_vector, filter_expr,
+            limit=limit,
         )
 
     async def get(self, knowledge_id: str) -> Optional[Dict[str, Any]]:
@@ -132,14 +153,11 @@ class KnowledgeStore:
 
     async def list_candidates(self, tenant_id: str) -> List[Dict[str, Any]]:
         """List knowledge items pending approval."""
-        filter_expr = {
-            "op": "and",
-            "conditions": [
-                {"field": "tenant_id", "op": "=", "value": tenant_id},
-                {"field": "status", "op": "in", "value": [
-                    KnowledgeStatus.CANDIDATE.value,
-                    KnowledgeStatus.VERIFIED.value,
-                ]},
-            ],
-        }
+        filter_expr = {"op": "and", "conds": [
+            {"op": "must", "field": "tenant_id", "conds": [tenant_id]},
+            {"op": "must", "field": "status", "conds": [
+                KnowledgeStatus.CANDIDATE.value,
+                KnowledgeStatus.VERIFIED.value,
+            ]},
+        ]}
         return await self._storage.filter(self._collection, filter_expr)
