@@ -133,6 +133,8 @@ class MemoryOrchestrator:
 
         # Skill Engine
         self._skill_manager = None
+        self._skill_event_store = None
+        self._skill_evaluator = None
 
     # =========================================================================
     # Collection Routing
@@ -361,6 +363,21 @@ class MemoryOrchestrator:
                 store=store, analyzer=analyzer, evolver=evolver,
             )
             set_skill_manager(self._skill_manager)
+
+            # SkillEventStore + Evaluator (Phase C)
+            from opencortex.skill_engine.event_store import SkillEventStore
+            from opencortex.skill_engine.evaluator import SkillEvaluator
+
+            self._skill_event_store = SkillEventStore(storage=self._storage)
+            await self._skill_event_store.init()
+
+            self._skill_evaluator = SkillEvaluator(
+                event_store=self._skill_event_store,
+                skill_store=store,
+                trace_store=self._trace_store,
+                skill_storage=storage_adapter,
+                llm=llm_adapter,
+            )
 
             logger.info("[MemoryOrchestrator] Skill Engine initialized")
         except Exception as exc:
@@ -2502,6 +2519,12 @@ class MemoryOrchestrator:
                         count = await self._trace_store.count_new_traces(tid)
                         if self._archivist.should_trigger(count):
                             asyncio.create_task(self._run_archivist(tid, uid))
+
+                    # Skill evaluator trigger
+                    if self._skill_evaluator:
+                        asyncio.create_task(
+                            self._skill_evaluator.evaluate_session(tid, uid, session_id)
+                        )
                 except Exception as exc:
                     logger.warning("[Alpha] Trace splitting failed: %s", exc)
 
