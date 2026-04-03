@@ -45,12 +45,14 @@ class TestKnowledgeStore(unittest.IsolatedAsyncioTestCase):
             types=["belief", "sop"],
         )
         self.storage.search.assert_called_once()
-        # Check the filter includes type constraint
+        # Check the filter includes type constraint (new DSL: conds/op:must)
         call_args = self.storage.search.call_args
         filter_expr = call_args[0][2]
-        type_cond = [c for c in filter_expr["conditions"]
+        self.assertEqual(filter_expr["op"], "and")
+        type_cond = [c for c in filter_expr["conds"]
                      if c.get("field") == "knowledge_type"]
         self.assertEqual(len(type_cond), 1)
+        self.assertEqual(type_cond[0]["conds"], ["belief", "sop"])
 
     async def test_approve_moves_to_active(self):
         """approve() transitions to active."""

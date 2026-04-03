@@ -100,7 +100,7 @@ class TestSandboxEvaluate(unittest.TestCase):
                 user_auto_approve_confidence=0.95,
             )
             self.assertEqual(result.status, "active")
-        asyncio.get_event_loop().run_until_complete(_run())
+        asyncio.run(_run())
 
     def test_evaluate_needs_more_traces(self):
         """Insufficient traces -> needs_more_traces."""
@@ -111,7 +111,7 @@ class TestSandboxEvaluate(unittest.TestCase):
                 min_traces=3,
             )
             self.assertEqual(result.status, "needs_more_traces")
-        asyncio.get_event_loop().run_until_complete(_run())
+        asyncio.run(_run())
 
     def test_evaluate_needs_improvement_low_llm_pass_rate(self):
         """LLM says not improved -> needs_improvement."""
@@ -127,7 +127,7 @@ class TestSandboxEvaluate(unittest.TestCase):
                 llm_min_pass_rate=0.6,
             )
             self.assertEqual(result.status, "needs_improvement")
-        asyncio.get_event_loop().run_until_complete(_run())
+        asyncio.run(_run())
 
     def test_evaluate_verified_when_human_approval_required(self):
         """Passes gates but human approval required -> verified."""
@@ -146,7 +146,7 @@ class TestSandboxEvaluate(unittest.TestCase):
                 user_auto_approve_confidence=0.95,
             )
             self.assertEqual(result.status, "verified")
-        asyncio.get_event_loop().run_until_complete(_run())
+        asyncio.run(_run())
 
 
 if __name__ == "__main__":

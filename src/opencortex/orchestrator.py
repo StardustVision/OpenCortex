@@ -2437,7 +2437,13 @@ class MemoryOrchestrator:
         }
 
     async def _run_archivist(self, tenant_id: str, user_id: str) -> Dict[str, int]:
-        """Run Archivist in background to extract knowledge from traces."""
+        """Run Archivist in background to extract knowledge from traces.
+
+        Idempotency: mark_processed runs AFTER all knowledge is saved.
+        Per-knowledge errors are isolated — one failure doesn't block others.
+        If the entire batch fails (e.g. Archivist LLM error), traces stay
+        unprocessed and will be retried on next trigger.
+        """
         stats: Dict[str, int] = {"knowledge_candidates": 0, "knowledge_active": 0}
         if not self._archivist or not self._trace_store or not self._knowledge_store:
             return stats
@@ -2449,12 +2455,6 @@ class MemoryOrchestrator:
             if not traces:
                 return stats
 
-            # Claim traces immediately to prevent duplicate extraction on retry
-            trace_ids = [t.get("trace_id", t.get("id", "")) for t in traces]
-            trace_ids = [tid for tid in trace_ids if tid]
-            if trace_ids:
-                await self._trace_store.mark_processed(trace_ids)
-
             knowledge_items = await self._archivist.run(
                 traces, tenant_id, user_id, KnowledgeScope.USER,
             )
@@ -2462,42 +2462,56 @@ class MemoryOrchestrator:
             alpha_cfg = self._config.cortex_alpha
 
             for k in knowledge_items:
-                # Collect evidence traces (traces is List[Dict])
-                source_ids = set(k.source_trace_ids) if k.source_trace_ids else set()
-                evidence_traces = [
-                    t for t in traces
-                    if t.get("trace_id", t.get("id", "")) in source_ids
-                ]
+                try:
+                    # Collect evidence traces (traces is List[Dict])
+                    source_ids = set(k.source_trace_ids) if k.source_trace_ids else set()
+                    evidence_traces = [
+                        t for t in traces
+                        if t.get("trace_id", t.get("id", "")) in source_ids
+                    ]
 
-                # Run Sandbox evaluation
-                if evidence_traces and self._llm_completion:
-                    eval_result = await sandbox_evaluate(
-                        knowledge_dict=k.to_dict(),
-                        traces=evidence_traces,
-                        llm_fn=self._llm_completion,
-                        min_traces=alpha_cfg.sandbox_min_traces,
-                        min_success_rate=alpha_cfg.sandbox_min_success_rate,
-                        min_source_users=alpha_cfg.sandbox_min_source_users,
-                        min_source_users_private=alpha_cfg.sandbox_min_source_users_private,
-                        llm_sample_size=alpha_cfg.sandbox_llm_sample_size,
-                        llm_min_pass_rate=alpha_cfg.sandbox_llm_min_pass_rate,
-                        require_human_approval=alpha_cfg.sandbox_require_human_approval,
-                        user_auto_approve_confidence=alpha_cfg.user_auto_approve_confidence,
+                    # Run Sandbox evaluation
+                    if evidence_traces and self._llm_completion:
+                        eval_result = await sandbox_evaluate(
+                            knowledge_dict=k.to_dict(),
+                            traces=evidence_traces,
+                            llm_fn=self._llm_completion,
+                            min_traces=alpha_cfg.sandbox_min_traces,
+                            min_success_rate=alpha_cfg.sandbox_min_success_rate,
+                            min_source_users=alpha_cfg.sandbox_min_source_users,
+                            min_source_users_private=alpha_cfg.sandbox_min_source_users_private,
+                            llm_sample_size=alpha_cfg.sandbox_llm_sample_size,
+                            llm_min_pass_rate=alpha_cfg.sandbox_llm_min_pass_rate,
+                            require_human_approval=alpha_cfg.sandbox_require_human_approval,
+                            user_auto_approve_confidence=alpha_cfg.user_auto_approve_confidence,
+                        )
+                        status_map = {
+                            "needs_more_traces": KnowledgeStatus.CANDIDATE,
+                            "needs_improvement": KnowledgeStatus.CANDIDATE,
+                            "verified": KnowledgeStatus.VERIFIED,
+                            "active": KnowledgeStatus.ACTIVE,
+                        }
+                        k.status = status_map.get(eval_result.status, KnowledgeStatus.CANDIDATE)
+
+                    await self._knowledge_store.save(k)
+
+                    if k.status == KnowledgeStatus.ACTIVE:
+                        stats["knowledge_active"] += 1
+                    else:
+                        stats["knowledge_candidates"] += 1
+                except Exception as exc:
+                    logger.warning(
+                        "[Alpha] Sandbox/save failed for knowledge %s: %s",
+                        k.knowledge_id, exc,
                     )
-                    status_map = {
-                        "needs_more_traces": KnowledgeStatus.CANDIDATE,
-                        "needs_improvement": KnowledgeStatus.CANDIDATE,
-                        "verified": KnowledgeStatus.VERIFIED,
-                        "active": KnowledgeStatus.ACTIVE,
-                    }
-                    k.status = status_map.get(eval_result.status, KnowledgeStatus.CANDIDATE)
 
-                await self._knowledge_store.save(k)
-
-                if k.status == KnowledgeStatus.ACTIVE:
-                    stats["knowledge_active"] += 1
-                else:
-                    stats["knowledge_candidates"] += 1
+            # Mark traces as processed AFTER all knowledge is saved.
+            # If archivist.run() or the loop above fails entirely,
+            # traces stay unprocessed and will be retried next trigger.
+            trace_ids = [t.get("trace_id", t.get("id", "")) for t in traces]
+            trace_ids = [tid for tid in trace_ids if tid]
+            if trace_ids:
+                await self._trace_store.mark_processed(trace_ids)
 
             logger.info(
                 "[Alpha] Archivist: %d candidates, %d active from %d traces",

@@ -87,13 +87,10 @@ class TraceStore:
         self, session_id: str, tenant_id: str, user_id: str,
     ) -> List[Dict[str, Any]]:
         """List traces for a session."""
-        filter_expr = {
-            "op": "and",
-            "conditions": [
-                {"field": "session_id", "op": "=", "value": session_id},
-                {"field": "tenant_id", "op": "=", "value": tenant_id},
-            ],
-        }
+        filter_expr = {"op": "and", "conds": [
+            {"op": "must", "field": "session_id", "conds": [session_id]},
+            {"op": "must", "field": "tenant_id", "conds": [tenant_id]},
+        ]}
         return await self._storage.filter(self._collection, filter_expr)
 
     async def search(
@@ -102,25 +99,19 @@ class TraceStore:
     ) -> List[Dict[str, Any]]:
         """Vector search over traces."""
         embed_result = self._embedder.embed_query(query)
-        filter_expr = {
-            "op": "and",
-            "conditions": [
-                {"field": "tenant_id", "op": "=", "value": tenant_id},
-            ],
-        }
+        filter_expr = {"op": "and", "conds": [
+            {"op": "must", "field": "tenant_id", "conds": [tenant_id]},
+        ]}
         return await self._storage.search(
             self._collection, embed_result.dense_vector, filter_expr, limit=limit
         )
 
     async def count_new_traces(self, tenant_id: str) -> int:
         """Count traces not yet processed by Archivist (for trigger)."""
-        filter_expr = {
-            "op": "and",
-            "conditions": [
-                {"field": "tenant_id", "op": "=", "value": tenant_id},
-                {"field": "archivist_processed", "op": "=", "value": False},
-            ],
-        }
+        filter_expr = {"op": "and", "conds": [
+            {"op": "must", "field": "tenant_id", "conds": [tenant_id]},
+            {"op": "must", "field": "archivist_processed", "conds": [False]},
+        ]}
         results = await self._storage.filter(self._collection, filter_expr)
         return len(results)
 
@@ -128,13 +119,10 @@ class TraceStore:
         self, tenant_id: str, limit: int = 200,
     ) -> List[Dict[str, Any]]:
         """List traces not yet processed by Archivist."""
-        filter_expr = {
-            "op": "and",
-            "conditions": [
-                {"field": "tenant_id", "op": "=", "value": tenant_id},
-                {"field": "archivist_processed", "op": "=", "value": False},
-            ],
-        }
+        filter_expr = {"op": "and", "conds": [
+            {"op": "must", "field": "tenant_id", "conds": [tenant_id]},
+            {"op": "must", "field": "archivist_processed", "conds": [False]},
+        ]}
         return await self._storage.filter(
             self._collection, filter_expr, limit=limit,
         )
