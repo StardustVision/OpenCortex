@@ -3093,6 +3093,8 @@ class MemoryOrchestrator:
             return ContextType.CASE
         elif "/shared/patterns/" in uri:
             return ContextType.PATTERN
+        elif "/skills/" in uri:
+            return ContextType.SKILL
         return ContextType.RESOURCE
 
     async def _ensure_parent_records(self, parent_uri: str) -> None:

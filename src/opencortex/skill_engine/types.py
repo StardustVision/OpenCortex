@@ -125,9 +125,19 @@ class EvolutionSuggestion:
     source_memory_ids: List[str] = field(default_factory=list)
 
 
-def make_skill_uri(tenant_id: str, user_id: str, skill_id: str) -> str:
-    """Generate a stable skill URI for recall integration."""
-    return f"opencortex://{tenant_id}/{user_id}/skills/{skill_id}"
+def make_skill_uri(
+    tenant_id: str, user_id: str, skill_id: str,
+    visibility: str = "private", category: str = "general",
+) -> str:
+    """Generate a stable skill URI compatible with CortexURI routing.
+
+    Aligns with the existing URI scheme:
+      Shared: opencortex://{tid}/shared/skills/{category}/{skill_id}
+      Private: opencortex://{tid}/{uid}/skills/{category}/{skill_id}
+    """
+    if visibility == "shared":
+        return f"opencortex://{tenant_id}/shared/skills/{category}/{skill_id}"
+    return f"opencortex://{tenant_id}/{user_id}/skills/{category}/{skill_id}"
 
 
 def make_source_fingerprint(memory_ids: List[str]) -> str:

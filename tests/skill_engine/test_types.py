@@ -108,9 +108,17 @@ class TestEvolutionSuggestion(unittest.TestCase):
 
 class TestHelperFunctions(unittest.TestCase):
 
-    def test_make_skill_uri(self):
+    def test_make_skill_uri_private(self):
         uri = make_skill_uri("team1", "hugo", "sk-001")
-        self.assertEqual(uri, "opencortex://team1/hugo/skills/sk-001")
+        self.assertEqual(uri, "opencortex://team1/hugo/skills/general/sk-001")
+
+    def test_make_skill_uri_shared(self):
+        uri = make_skill_uri("team1", "hugo", "sk-001", visibility="shared", category="workflow")
+        self.assertEqual(uri, "opencortex://team1/shared/skills/workflow/sk-001")
+
+    def test_make_skill_uri_private_with_category(self):
+        uri = make_skill_uri("team1", "hugo", "sk-001", visibility="private", category="pattern")
+        self.assertEqual(uri, "opencortex://team1/hugo/skills/pattern/sk-001")
 
     def test_make_source_fingerprint(self):
         fp = make_source_fingerprint(["m3", "m1", "m2"])

@@ -53,6 +53,11 @@ async def extract_skills(context_types: Optional[str] = None,
                          categories: Optional[str] = None):
     """Trigger skill extraction from memories."""
     mgr = _get_manager()
+    if not mgr.extraction_available:
+        raise HTTPException(
+            status_code=503,
+            detail="Extraction pipeline not available: SourceAdapter not configured",
+        )
     tid, uid = get_effective_identity()
     ct = context_types.split(",") if context_types else None
     cats = categories.split(",") if categories else None

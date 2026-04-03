@@ -82,7 +82,7 @@ class SkillEvolver:
                 created_by="skill-evolver",
             ),
             tenant_id=tid, user_id=uid,
-            uri=make_skill_uri(tid, uid, skill_id),
+            uri=make_skill_uri(tid, uid, skill_id, visibility="private", category=s.category.value),
             abstract=name,
             source_fingerprint=make_source_fingerprint(s.source_memory_ids),
         )
@@ -117,7 +117,7 @@ class SkillEvolver:
                 created_by="skill-evolver",
             ),
             tenant_id=tid, user_id=uid,
-            uri=make_skill_uri(tid, uid, skill_id),
+            uri=make_skill_uri(tid, uid, skill_id, visibility="private", category=s.category.value),
             abstract=s.direction or "",
         )
 
@@ -151,7 +151,7 @@ class SkillEvolver:
                 change_summary=s.direction,
             ),
             tenant_id=tid, user_id=uid,
-            uri=make_skill_uri(tid, uid, skill_id),
+            uri=make_skill_uri(tid, uid, skill_id, visibility=parent.visibility.value, category=parent.category.value),
             abstract=parent.abstract,
             tags=parent.tags,
         )

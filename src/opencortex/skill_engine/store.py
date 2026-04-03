@@ -29,11 +29,14 @@ class SkillStore:
                               status: SkillStatus) -> List[SkillRecord]:
         return await self._storage.load_all(tenant_id, user_id, status=status)
 
+    async def update_status(self, skill_id: str, status: SkillStatus) -> None:
+        await self._storage.update_status(skill_id, status)
+
     async def activate(self, skill_id: str) -> None:
-        await self._storage.update_status(skill_id, SkillStatus.ACTIVE)
+        await self.update_status(skill_id, SkillStatus.ACTIVE)
 
     async def deprecate(self, skill_id: str) -> None:
-        await self._storage.update_status(skill_id, SkillStatus.DEPRECATED)
+        await self.update_status(skill_id, SkillStatus.DEPRECATED)
 
     async def evolve_skill(self, new: SkillRecord, parent_ids: List[str]) -> None:
         """Save new skill version and deprecate parents (for FIX evolution)."""
