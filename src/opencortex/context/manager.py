@@ -82,6 +82,8 @@ class ContextManager:
         self._pending_tasks: Set[asyncio.Task] = set()
         # Conversation buffers: per-session incremental chunking
         self._conversation_buffers: Dict[SessionKey, ConversationBuffer] = {}
+        # Skill selection tracking: session_key -> set of skill URIs selected in prepare
+        self._selected_skill_uris: Dict[SessionKey, Set[str]] = {}
 
         # Config
         self._prepare_cache_ttl = prepare_cache_ttl
@@ -253,7 +255,7 @@ class ContextManager:
         knowledge_ms = 0
 
         if should_recall:
-            async def _memory_search() -> Tuple[List[Dict[str, Any]], int]:
+            async def _memory_search() -> Tuple[List[Dict[str, Any]], int, List[str]]:
                 started = time.monotonic()
                 try:
                     search_kwargs: Dict[str, Any] = {
@@ -267,15 +269,16 @@ class ContextManager:
                     if category:
                         search_kwargs["metadata_filter"] = {"category": category}
                     find_result = await self._orchestrator.search(**search_kwargs)
+                    skill_uris = [mc.uri for mc in getattr(find_result, 'skills', []) or []]
                     return self._format_memories(find_result, detail_level), int(
                         (time.monotonic() - started) * 1000,
-                    )
+                    ), skill_uris
                 except Exception as exc:
                     logger.warning(
                         "[ContextManager] Memory search failed sid=%s turn=%s tenant=%s user=%s: %s",
                         session_id, turn_id, tenant_id, user_id, exc,
                     )
-                    return [], int((time.monotonic() - started) * 1000)
+                    return [], int((time.monotonic() - started) * 1000), []
 
             async def _knowledge_search() -> Tuple[List[Dict[str, Any]], int]:
                 started = time.monotonic()
@@ -299,9 +302,32 @@ class ContextManager:
                 coros.append(_knowledge_search())
 
             results = await asyncio.gather(*coros)
-            memory_items, memory_ms = results[0]
+            memory_items, memory_ms, _skill_uris = results[0]
             if include_knowledge and len(results) > 1:
                 knowledge_items, knowledge_ms = results[1]
+
+            # Track selected skills for citation validation in _commit()
+            if _skill_uris and hasattr(self._orchestrator, '_skill_event_store') and self._orchestrator._skill_event_store:
+                selected_uris = set(_skill_uris)
+                self._selected_skill_uris[sk] = selected_uris
+                for s_uri in _skill_uris:
+                    try:
+                        from opencortex.skill_engine.types import SkillEvent
+                        from uuid import uuid4
+                        from datetime import datetime, timezone
+                        await self._orchestrator._skill_event_store.append(SkillEvent(
+                            event_id=uuid4().hex,
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            skill_id=s_uri.split("/")[-1],
+                            skill_uri=s_uri,
+                            tenant_id=tenant_id,
+                            user_id=user_id,
+                            event_type="selected",
+                            timestamp=datetime.now(timezone.utc).isoformat(),
+                        ))
+                    except Exception:
+                        pass
 
         # 6. Build instructions
         instructions = self._build_instructions(intent, memory_items, knowledge_items)
@@ -393,6 +419,32 @@ class ContextManager:
                 task = asyncio.create_task(self._apply_cited_rewards(valid_uris))
                 self._pending_tasks.add(task)
                 task.add_done_callback(self._pending_tasks.discard)
+
+        # Skill citation tracking (validated against server-selected set)
+        if cited_uris and hasattr(self._orchestrator, '_skill_event_store') and self._orchestrator._skill_event_store:
+            skill_uris = [u for u in cited_uris if "/skills/" in u]
+            server_selected = self._selected_skill_uris.get(sk, set())
+            for uri in skill_uris:
+                if uri not in server_selected:
+                    logger.debug("[ContextManager] Dropped forged skill citation: %s", uri)
+                    continue
+                try:
+                    from opencortex.skill_engine.types import SkillEvent
+                    from uuid import uuid4
+                    from datetime import datetime, timezone
+                    await self._orchestrator._skill_event_store.append(SkillEvent(
+                        event_id=uuid4().hex,
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        skill_id=uri.split("/")[-1],
+                        skill_uri=uri,
+                        tenant_id=tenant_id,
+                        user_id=user_id,
+                        event_type="cited",
+                        timestamp=datetime.now(timezone.utc).isoformat(),
+                    ))
+                except Exception:
+                    pass
 
         # Build write items (don't mutate buffer yet)
         buffer = self._conversation_buffers.setdefault(sk, ConversationBuffer())
@@ -640,6 +692,7 @@ class ContextManager:
         self._committed_turns.pop(sk, None)
         self._session_activity.pop(sk, None)
         self._session_locks.pop(sk, None)
+        self._selected_skill_uris.pop(sk, None)
 
     # =========================================================================
     # Idle session auto-close
