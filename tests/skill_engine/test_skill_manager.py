@@ -102,5 +102,30 @@ class TestSkillManager(unittest.IsolatedAsyncioTestCase):
             await self.manager.extract("team1", "hugo")
 
 
+    async def test_promote_changes_visibility(self):
+        """promote() changes PRIVATE to SHARED."""
+        r = self._make_record(visibility=SkillVisibility.PRIVATE)
+        self.store.load_record = AsyncMock(return_value=r)
+        self.store.update_visibility = AsyncMock()
+        await self.manager.promote("sk-001", "team1", "hugo")
+        self.store.update_visibility.assert_called_once()
+        call_args = self.store.update_visibility.call_args
+        self.assertEqual(call_args[0][1].value, "shared")
+
+    async def test_promote_rejects_already_shared(self):
+        """promote() raises when skill is already shared."""
+        r = self._make_record(visibility=SkillVisibility.SHARED)
+        self.store.load_record = AsyncMock(return_value=r)
+        with self.assertRaises(ValueError):
+            await self.manager.promote("sk-001", "team1", "hugo")
+
+    async def test_promote_rejects_non_owner(self):
+        """promote() raises when caller is not the owner."""
+        r = self._make_record(user_id="alice")
+        self.store.load_record = AsyncMock(return_value=r)
+        with self.assertRaises(ValueError):
+            await self.manager.promote("sk-001", "team1", "hugo")
+
+
 if __name__ == "__main__":
     unittest.main()

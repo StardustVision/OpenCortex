@@ -32,6 +32,9 @@ class SkillStore:
     async def update_status(self, skill_id: str, status: SkillStatus) -> None:
         await self._storage.update_status(skill_id, status)
 
+    async def update_visibility(self, skill_id: str, visibility, new_uri: str = "") -> None:
+        await self._storage.update_visibility(skill_id, visibility, new_uri)
+
     async def activate(self, skill_id: str) -> None:
         await self.update_status(skill_id, SkillStatus.ACTIVE)
 

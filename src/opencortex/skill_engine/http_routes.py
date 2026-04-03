@@ -108,6 +108,18 @@ async def deprecate_skill(skill_id: str):
     return {"status": "deprecated", "skill_id": skill_id}
 
 
+@router.post("/{skill_id}/promote")
+async def promote_skill(skill_id: str):
+    """Promote skill from PRIVATE -> SHARED."""
+    mgr = _get_manager()
+    tid, uid = get_effective_identity()
+    try:
+        await mgr.promote(skill_id, tid, uid)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"visibility": "shared", "skill_id": skill_id}
+
+
 @router.post("/{skill_id}/fix")
 async def fix_skill(skill_id: str, direction: str = ""):
     """Trigger FIX evolution → new CANDIDATE."""

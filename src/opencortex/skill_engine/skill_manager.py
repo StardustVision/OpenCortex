@@ -33,6 +33,26 @@ class SkillManager:
     async def deprecate(self, skill_id: str, tenant_id: str, user_id: str) -> None:
         await self._authorized_status_change(skill_id, tenant_id, user_id, SkillStatus.DEPRECATED)
 
+    async def promote(self, skill_id: str, tenant_id: str, user_id: str) -> None:
+        """Promote skill from PRIVATE to SHARED visibility.
+
+        Only the owner can promote. Regenerates URI to shared format.
+        """
+        from opencortex.skill_engine.types import SkillVisibility, make_skill_uri
+        record = await self.get_skill(skill_id, tenant_id, user_id)
+        if not record:
+            raise ValueError(f"Skill {skill_id} not found or not authorized")
+        if record.visibility == SkillVisibility.SHARED:
+            raise ValueError(f"Skill {skill_id} is already shared")
+        if record.user_id != user_id:
+            raise ValueError(f"Only the owner can promote a skill")
+        # Regenerate URI from private to shared format
+        new_uri = make_skill_uri(
+            tenant_id, user_id, skill_id,
+            visibility="shared", category=record.category.value,
+        )
+        await self._store.update_visibility(skill_id, SkillVisibility.SHARED, new_uri)
+
     async def list_skills(self, tenant_id: str, user_id: str,
                           status: Optional[SkillStatus] = None) -> List[SkillRecord]:
         if status:

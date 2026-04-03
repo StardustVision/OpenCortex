@@ -70,6 +70,16 @@ class SkillStorageAdapter:
             {"status": status.value, "updated_at": now},
         )
 
+    async def update_visibility(self, skill_id: str, visibility: SkillVisibility,
+                                 new_uri: str = "") -> None:
+        """Update skill visibility and optionally regenerate URI."""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        updates = {"visibility": visibility.value, "updated_at": now}
+        if new_uri:
+            updates["uri"] = new_uri
+        await self._storage.update(self._collection, skill_id, updates)
+
     async def update_metrics(self, skill_id: str, **counters) -> None:
         """Increment quality counters."""
         existing = await self.load(skill_id)
