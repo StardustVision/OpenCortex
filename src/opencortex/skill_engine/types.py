@@ -242,6 +242,11 @@ def make_skill_uri(
     return f"opencortex://{tenant_id}/{user_id}/skills/{category}/{skill_id}"
 
 
+def extract_skill_id_from_uri(uri: str) -> str:
+    """Extract skill_id from a skill URI."""
+    return uri.split("/")[-1] if uri else ""
+
+
 def make_source_fingerprint(memory_ids: List[str]) -> str:
     """Deterministic fingerprint from source memory IDs for extraction idempotency."""
     key = "|".join(sorted(memory_ids))

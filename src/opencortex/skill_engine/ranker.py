@@ -11,6 +11,8 @@ import re
 from collections import Counter
 from typing import Dict, List, Optional, TYPE_CHECKING
 
+from opencortex.utils.similarity import cosine_similarity
+
 if TYPE_CHECKING:
     from opencortex.skill_engine.types import SkillRecord
 
@@ -84,7 +86,7 @@ class SkillRanker:
                     )
                     if hasattr(doc_vec, 'dense_vector'):
                         doc_vec = doc_vec.dense_vector
-                    embed_scores[i] = _cosine_similarity(query_vec, doc_vec)
+                    embed_scores[i] = cosine_similarity(query_vec, doc_vec)
             except Exception as exc:
                 logger.debug("[SkillRanker] Embedding scoring failed: %s", exc)
 
@@ -150,15 +152,3 @@ def _bm25_score(query_tokens: List[str], docs: List[List[str]]) -> List[float]:
     return scores
 
 
-def _cosine_similarity(a, b) -> float:
-    """Cosine similarity between two vectors."""
-    if not a or not b:
-        return 0.0
-    if len(a) != len(b):
-        return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = sum(x * x for x in a) ** 0.5
-    norm_b = sum(x * x for x in b) ** 0.5
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (norm_a * norm_b)

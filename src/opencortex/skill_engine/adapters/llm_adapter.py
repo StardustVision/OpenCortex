@@ -6,7 +6,14 @@ The skill engine expects complete(messages: List[Dict]) → str (chat-style).
 This adapter converts between the two.
 """
 
-from typing import Awaitable, Callable, Dict, List, Protocol
+from typing import Awaitable, Callable, Dict, List, Protocol, Union
+
+
+async def llm_complete(llm, prompt: str) -> str:
+    """Call LLM with adapter compatibility."""
+    if hasattr(llm, 'complete'):
+        return await llm.complete([{"role": "user", "content": prompt}])
+    return await llm([{"role": "user", "content": prompt}])
 
 
 class LLMAdapter(Protocol):

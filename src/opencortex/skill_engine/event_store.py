@@ -45,8 +45,13 @@ class SkillEventStore:
 
     async def mark_evaluated(self, event_ids: List[str]) -> None:
         """Mark events as evaluated (idempotency guard)."""
-        for eid in event_ids:
-            await self._storage.update(self._collection, eid, {"evaluated": True})
+        if not event_ids:
+            return
+        import asyncio
+        await asyncio.gather(*[
+            self._storage.update(self._collection, eid, {"evaluated": True})
+            for eid in event_ids
+        ])
 
     async def list_unevaluated(
         self, tenant_id: str, limit: int = 100,

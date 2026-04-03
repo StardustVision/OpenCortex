@@ -7,6 +7,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Protocol
 
+from opencortex.utils.similarity import cosine_similarity
+
 logger = logging.getLogger(__name__)
 
 CONTEXT_COLLECTION = "context"
@@ -182,7 +184,7 @@ class QdrantSourceAdapter:
                     continue
                 if not embeddings[j]:
                     continue
-                sim = _cosine_similarity(embeddings[i], embeddings[j])
+                sim = cosine_similarity(embeddings[i], embeddings[j])
                 if sim >= threshold:
                     cluster.append(records[j])
                     assigned[j] = True
@@ -210,15 +212,3 @@ class QdrantSourceAdapter:
             return result.dense_vector
         except Exception:
             return []
-
-
-def _cosine_similarity(a: List[float], b: List[float]) -> float:
-    """Compute cosine similarity between two vectors."""
-    if not a or not b or len(a) != len(b):
-        return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = sum(x * x for x in a) ** 0.5
-    norm_b = sum(x * x for x in b) ** 0.5
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (norm_a * norm_b)

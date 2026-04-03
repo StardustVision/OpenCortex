@@ -59,8 +59,11 @@ class SkillManager:
                           status: Optional[SkillStatus] = None) -> List[SkillRecord]:
         if status:
             return await self._store.load_by_status(tenant_id, user_id, status)
-        active = await self._store.load_by_status(tenant_id, user_id, SkillStatus.ACTIVE)
-        candidates = await self._store.load_by_status(tenant_id, user_id, SkillStatus.CANDIDATE)
+        import asyncio
+        active, candidates = await asyncio.gather(
+            self._store.load_by_status(tenant_id, user_id, SkillStatus.ACTIVE),
+            self._store.load_by_status(tenant_id, user_id, SkillStatus.CANDIDATE),
+        )
         return active + candidates
 
     async def get_skill(self, skill_id: str, tenant_id: str,

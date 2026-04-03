@@ -309,26 +309,13 @@ class ContextManager:
 
             # Track selected skills for citation validation in _commit()
             if _skill_uris and hasattr(self._orchestrator, '_skill_event_store') and self._orchestrator._skill_event_store:
-                selected_uris = set(_skill_uris)
-                self._selected_skill_uris[(sk, turn_id)] = selected_uris
+                self._selected_skill_uris[(sk, turn_id)] = set(_skill_uris)
                 for s_uri in _skill_uris:
-                    try:
-                        from opencortex.skill_engine.types import SkillEvent
-                        from uuid import uuid4
-                        from datetime import datetime, timezone
-                        await self._orchestrator._skill_event_store.append(SkillEvent(
-                            event_id=uuid4().hex,
-                            session_id=session_id,
-                            turn_id=turn_id,
-                            skill_id=s_uri.split("/")[-1],
-                            skill_uri=s_uri,
-                            tenant_id=tenant_id,
-                            user_id=user_id,
-                            event_type="selected",
-                            timestamp=datetime.now(timezone.utc).isoformat(),
-                        ))
-                    except Exception:
-                        pass
+                    task = asyncio.create_task(self._append_skill_event(
+                        session_id, turn_id, s_uri, tenant_id, user_id, "selected",
+                    ))
+                    self._pending_tasks.add(task)
+                    task.add_done_callback(self._pending_tasks.discard)
 
         # 6. Build instructions
         instructions = self._build_instructions(intent, memory_items, knowledge_items)
@@ -429,23 +416,9 @@ class ContextManager:
                 if uri not in server_selected:
                     logger.debug("[ContextManager] Dropped forged skill citation: %s", uri)
                     continue
-                try:
-                    from opencortex.skill_engine.types import SkillEvent
-                    from uuid import uuid4
-                    from datetime import datetime, timezone
-                    await self._orchestrator._skill_event_store.append(SkillEvent(
-                        event_id=uuid4().hex,
-                        session_id=session_id,
-                        turn_id=turn_id,
-                        skill_id=uri.split("/")[-1],
-                        skill_uri=uri,
-                        tenant_id=tenant_id,
-                        user_id=user_id,
-                        event_type="cited",
-                        timestamp=datetime.now(timezone.utc).isoformat(),
-                    ))
-                except Exception:
-                    pass
+                await self._append_skill_event(
+                    session_id, turn_id, uri, tenant_id, user_id, "cited",
+                )
 
         # Build write items (don't mutate buffer yet)
         buffer = self._conversation_buffers.setdefault(sk, ConversationBuffer())
@@ -845,6 +818,33 @@ class ContextManager:
             "recall_count": total_items,
             "guidance": guidance,
         }
+
+    # =========================================================================
+    # Skill event helpers
+    # =========================================================================
+
+    async def _append_skill_event(
+        self, session_id: str, turn_id: str, skill_uri: str,
+        tenant_id: str, user_id: str, event_type: str,
+    ) -> None:
+        """Append a single skill event to the event store (fire-and-forget safe)."""
+        try:
+            from opencortex.skill_engine.types import SkillEvent, extract_skill_id_from_uri
+            from uuid import uuid4
+            from datetime import datetime, timezone
+            await self._orchestrator._skill_event_store.append(SkillEvent(
+                event_id=uuid4().hex,
+                session_id=session_id,
+                turn_id=turn_id,
+                skill_id=extract_skill_id_from_uri(skill_uri),
+                skill_uri=skill_uri,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                event_type=event_type,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            ))
+        except Exception:
+            pass
 
     # =========================================================================
     # Fallback log

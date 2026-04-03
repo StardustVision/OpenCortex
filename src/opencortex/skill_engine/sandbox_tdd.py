@@ -10,6 +10,7 @@ from typing import List
 
 import orjson
 
+from opencortex.skill_engine.adapters.llm_adapter import llm_complete
 from opencortex.skill_engine.types import SkillRecord, TDDResult
 
 logger = logging.getLogger(__name__)
@@ -83,9 +84,7 @@ class SandboxTDD:
 
     async def _llm_call(self, prompt: str, ctx: dict) -> str:
         ctx["calls_used"] += 1
-        if hasattr(self._llm, 'complete'):
-            return await self._llm.complete([{"role": "user", "content": prompt}])
-        return await self._llm([{"role": "user", "content": prompt}])
+        return await llm_complete(self._llm, prompt)
 
     async def _generate_scenarios(self, skill: SkillRecord, ctx: dict) -> List[dict]:
         prompt = (

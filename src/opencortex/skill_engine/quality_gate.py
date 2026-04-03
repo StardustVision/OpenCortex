@@ -11,6 +11,9 @@ import logging
 import re
 from typing import List, Optional
 
+import orjson
+
+from opencortex.skill_engine.adapters.llm_adapter import llm_complete
 from opencortex.skill_engine.types import (
     SkillRecord, SkillCategory, QualityCheck, QualityReport,
 )
@@ -111,11 +114,7 @@ class QualityGate:
             '"specific": true/false, "duplicate": true/false}'
         )
 
-        import orjson
-        if hasattr(self._llm, 'complete'):
-            response = await self._llm.complete([{"role": "user", "content": prompt}])
-        else:
-            response = await self._llm([{"role": "user", "content": prompt}])
+        response = await llm_complete(self._llm, prompt)
         data = orjson.loads(response)
 
         checks = []

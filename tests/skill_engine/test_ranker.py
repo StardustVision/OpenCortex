@@ -2,8 +2,9 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock
 from opencortex.skill_engine.types import SkillRecord, SkillCategory, SkillStatus
 from opencortex.skill_engine.ranker import (
-    SkillRanker, _tokenize, _bm25_score, _cosine_similarity,
+    SkillRanker, _tokenize, _bm25_score,
 )
+from opencortex.utils.similarity import cosine_similarity
 
 
 class TestTokenize(unittest.TestCase):
@@ -54,13 +55,13 @@ class TestBM25(unittest.TestCase):
 class TestCosineSimularity(unittest.TestCase):
 
     def test_identical(self):
-        self.assertAlmostEqual(_cosine_similarity([1, 0], [1, 0]), 1.0)
+        self.assertAlmostEqual(cosine_similarity([1, 0], [1, 0]), 1.0)
 
     def test_orthogonal(self):
-        self.assertAlmostEqual(_cosine_similarity([1, 0], [0, 1]), 0.0)
+        self.assertAlmostEqual(cosine_similarity([1, 0], [0, 1]), 0.0)
 
     def test_empty(self):
-        self.assertEqual(_cosine_similarity([], []), 0.0)
+        self.assertEqual(cosine_similarity([], []), 0.0)
 
 
 class TestSkillRanker(unittest.IsolatedAsyncioTestCase):
