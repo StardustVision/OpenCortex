@@ -310,12 +310,11 @@ class ContextManager:
             # Track selected skills for citation validation in _commit()
             if _skill_uris and hasattr(self._orchestrator, '_skill_event_store') and self._orchestrator._skill_event_store:
                 self._selected_skill_uris[(sk, turn_id)] = set(_skill_uris)
+                # Await inline — must complete before session can be evaluated
                 for s_uri in _skill_uris:
-                    task = asyncio.create_task(self._append_skill_event(
+                    await self._append_skill_event(
                         session_id, turn_id, s_uri, tenant_id, user_id, "selected",
-                    ))
-                    self._pending_tasks.add(task)
-                    task.add_done_callback(self._pending_tasks.discard)
+                    )
 
         # 6. Build instructions
         instructions = self._build_instructions(intent, memory_items, knowledge_items)
