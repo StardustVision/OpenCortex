@@ -112,19 +112,19 @@ class SkillManager:
         return self._analyzer is not None and self._evolver is not None
 
     async def extract(self, tenant_id: str, user_id: str,
-                      **filters) -> List[SkillRecord]:
+                      project_id: str = "public", **filters) -> List[SkillRecord]:
         """Full pipeline: scan → analyze → evolve → save candidates."""
         if not self.extraction_available:
             raise RuntimeError("Extraction pipeline not available: SourceAdapter not configured")
 
         suggestions = await self._analyzer.extract_candidates(
-            tenant_id, user_id, **filters,
+            tenant_id, user_id, project_id=project_id, **filters,
         )
         if not suggestions:
             return []
 
         candidates = await self._evolver.process_suggestions(
-            suggestions, tenant_id, user_id,
+            suggestions, tenant_id, user_id, project_id=project_id,
         )
 
         saved = []
@@ -151,7 +151,9 @@ class SkillManager:
             category=parent.category,
             direction=direction,
         )
-        result = await self._evolver.evolve(suggestion, tenant_id, user_id)
+        result = await self._evolver.evolve(
+            suggestion, tenant_id, user_id, project_id=parent.project_id,
+        )
         if result:
             await self._store.save_record(result)
         return result
@@ -171,7 +173,9 @@ class SkillManager:
             category=parent.category,
             direction=direction,
         )
-        result = await self._evolver.evolve(suggestion, tenant_id, user_id)
+        result = await self._evolver.evolve(
+            suggestion, tenant_id, user_id, project_id=parent.project_id,
+        )
         if result:
             await self._store.save_record(result)
         return result

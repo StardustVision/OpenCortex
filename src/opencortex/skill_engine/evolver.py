@@ -36,29 +36,29 @@ class SkillEvolver:
 
     async def evolve(
         self, suggestion: EvolutionSuggestion,
-        tenant_id: str, user_id: str,
+        tenant_id: str, user_id: str, project_id: str = "public",
     ) -> Optional[SkillRecord]:
         """Route to appropriate evolution method."""
         async with self._semaphore:
             match suggestion.evolution_type:
                 case SkillOrigin.CAPTURED:
-                    return await self._evolve_captured(suggestion, tenant_id, user_id)
+                    return await self._evolve_captured(suggestion, tenant_id, user_id, project_id)
                 case SkillOrigin.DERIVED:
-                    return await self._evolve_derived(suggestion, tenant_id, user_id)
+                    return await self._evolve_derived(suggestion, tenant_id, user_id, project_id)
                 case SkillOrigin.FIXED:
-                    return await self._evolve_fix(suggestion, tenant_id, user_id)
+                    return await self._evolve_fix(suggestion, tenant_id, user_id, project_id)
             return None
 
     async def process_suggestions(
         self, suggestions: List[EvolutionSuggestion],
-        tenant_id: str, user_id: str,
+        tenant_id: str, user_id: str, project_id: str = "public",
     ) -> List[SkillRecord]:
         """Process all suggestions with concurrency control."""
-        tasks = [self.evolve(s, tenant_id, user_id) for s in suggestions]
+        tasks = [self.evolve(s, tenant_id, user_id, project_id) for s in suggestions]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         return [r for r in results if isinstance(r, SkillRecord)]
 
-    async def _evolve_captured(self, s, tid, uid) -> Optional[SkillRecord]:
+    async def _evolve_captured(self, s, tid, uid, pid="public") -> Optional[SkillRecord]:
         prompt = SKILL_EVOLVE_CAPTURED_PROMPT.format(
             direction=s.direction,
             category=s.category.value,
@@ -83,13 +83,13 @@ class SkillEvolver:
                 source_memory_ids=s.source_memory_ids,
                 created_by="skill-evolver",
             ),
-            tenant_id=tid, user_id=uid,
+            tenant_id=tid, user_id=uid, project_id=pid,
             uri=make_skill_uri(tid, uid, skill_id, visibility="private", category=s.category.value),
             abstract=name,
             source_fingerprint=fp,
         )
 
-    async def _evolve_derived(self, s, tid, uid) -> Optional[SkillRecord]:
+    async def _evolve_derived(self, s, tid, uid, pid="public") -> Optional[SkillRecord]:
         parent = None
         if s.target_skill_ids:
             parent = await self._store.load_record(s.target_skill_ids[0])
@@ -118,12 +118,12 @@ class SkillEvolver:
                 source_memory_ids=s.source_memory_ids,
                 created_by="skill-evolver",
             ),
-            tenant_id=tid, user_id=uid,
+            tenant_id=tid, user_id=uid, project_id=pid,
             uri=make_skill_uri(tid, uid, skill_id, visibility="private", category=s.category.value),
             abstract=s.direction or "",
         )
 
-    async def _evolve_fix(self, s, tid, uid) -> Optional[SkillRecord]:
+    async def _evolve_fix(self, s, tid, uid, pid="public") -> Optional[SkillRecord]:
         if not s.target_skill_ids:
             return None
         parent = await self._store.load_record(s.target_skill_ids[0])
@@ -144,7 +144,9 @@ class SkillEvolver:
             description=parent.description,
             content=content, category=parent.category,
             status=SkillStatus.CANDIDATE,
-            visibility=parent.visibility,
+            # FIX candidates are always PRIVATE — prevents non-owner from
+            # publishing shared replacements. Owner/admin can promote after approval.
+            visibility=SkillVisibility.PRIVATE,
             lineage=SkillLineage(
                 origin=SkillOrigin.FIXED,
                 generation=parent.lineage.generation + 1,
@@ -152,8 +154,8 @@ class SkillEvolver:
                 created_by="skill-evolver",
                 change_summary=s.direction,
             ),
-            tenant_id=tid, user_id=uid,
-            uri=make_skill_uri(tid, uid, skill_id, visibility=parent.visibility.value, category=parent.category.value),
+            tenant_id=tid, user_id=uid, project_id=pid,
+            uri=make_skill_uri(tid, uid, skill_id, visibility="private", category=parent.category.value),
             abstract=parent.abstract,
             tags=parent.tags,
         )

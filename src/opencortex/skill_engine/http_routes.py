@@ -64,9 +64,11 @@ async def extract_skills(context_types: Optional[str] = None,
             detail="Extraction pipeline not available: SourceAdapter not configured",
         )
     tid, uid = get_effective_identity()
+    from opencortex.http.request_context import get_effective_project_id
+    pid = get_effective_project_id()
     ct = context_types.split(",") if context_types else None
     cats = categories.split(",") if categories else None
-    results = await mgr.extract(tid, uid, context_types=ct, categories=cats)
+    results = await mgr.extract(tid, uid, project_id=pid, context_types=ct, categories=cats)
     return {"extracted": [r.to_dict() for r in results], "count": len(results)}
 
 

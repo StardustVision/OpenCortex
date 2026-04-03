@@ -31,12 +31,14 @@ class SkillAnalyzer:
         self, tenant_id: str, user_id: str,
         context_types: Optional[List[str]] = None,
         categories: Optional[List[str]] = None,
+        project_id: str = "public",
     ) -> List[EvolutionSuggestion]:
         """Full extraction pipeline: scan -> cluster -> analyze -> dedup."""
         clusters = await self._source.scan_memories(
             tenant_id, user_id,
             context_types=context_types,
             categories=categories,
+            project_id=project_id,
         )
 
         all_suggestions = []

@@ -63,6 +63,7 @@ class QdrantSourceAdapter:
         categories: Optional[List[str]] = None,
         min_count: int = 3,
         similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+        project_id: str = "public",
     ) -> List[MemoryCluster]:
         """Scan memories, cluster by embedding similarity, return clusters."""
         # Build tenant/user/scope filter (same pattern as orchestrator.py:1602-1665)
@@ -70,6 +71,9 @@ class QdrantSourceAdapter:
             {"op": "must", "field": "source_tenant_id", "conds": [tenant_id, ""]},
             {"op": "must", "field": "is_leaf", "conds": [True]},
         ]
+        # Project isolation (same as orchestrator search)
+        if project_id and project_id != "public":
+            conds.append({"op": "must", "field": "project_id", "conds": [project_id, "public"]})
         # Scope: shared + user's private
         scope_filter = {"op": "or", "conds": [
             {"op": "must", "field": "scope", "conds": ["shared", ""]},
