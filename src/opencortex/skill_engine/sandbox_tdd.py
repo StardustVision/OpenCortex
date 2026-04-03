@@ -83,6 +83,8 @@ class SandboxTDD:
 
     async def _llm_call(self, prompt: str) -> str:
         self._calls_used += 1
+        if hasattr(self._llm, 'complete'):
+            return await self._llm.complete([{"role": "user", "content": prompt}])
         return await self._llm([{"role": "user", "content": prompt}])
 
     async def _generate_scenarios(self, skill: SkillRecord) -> List[dict]:

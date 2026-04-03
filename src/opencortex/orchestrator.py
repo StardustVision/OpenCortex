@@ -395,6 +395,10 @@ class MemoryOrchestrator:
                 llm=llm_adapter,
             )
 
+            # Startup sweeper for crash recovery (fire-and-forget)
+            if self._skill_evaluator:
+                asyncio.create_task(self._skill_evaluator.sweep_unevaluated(""))
+
             logger.info("[MemoryOrchestrator] Skill Engine initialized")
         except Exception as exc:
             logger.info("[MemoryOrchestrator] Skill Engine not available: %s", exc)
@@ -2536,13 +2540,14 @@ class MemoryOrchestrator:
                         if self._archivist.should_trigger(count):
                             asyncio.create_task(self._run_archivist(tid, uid))
 
-                    # Skill evaluator trigger
-                    if self._skill_evaluator:
-                        asyncio.create_task(
-                            self._skill_evaluator.evaluate_session(tid, uid, session_id)
-                        )
                 except Exception as exc:
                     logger.warning("[Alpha] Trace splitting failed: %s", exc)
+
+            # Skill evaluator trigger — runs independently of trace splitting
+            if self._skill_evaluator:
+                asyncio.create_task(
+                    self._skill_evaluator.evaluate_session(tid, uid, session_id)
+                )
 
         return {
             "session_id": session_id,

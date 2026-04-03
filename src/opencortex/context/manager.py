@@ -82,8 +82,9 @@ class ContextManager:
         self._pending_tasks: Set[asyncio.Task] = set()
         # Conversation buffers: per-session incremental chunking
         self._conversation_buffers: Dict[SessionKey, ConversationBuffer] = {}
-        # Skill selection tracking: session_key -> set of skill URIs selected in prepare
-        self._selected_skill_uris: Dict[SessionKey, Set[str]] = {}
+        # Skill selection tracking: (session_key, turn_id) -> set of skill URIs
+        # Turn-scoped to prevent stale selections leaking across turns
+        self._selected_skill_uris: Dict[tuple, Set[str]] = {}
 
         # Config
         self._prepare_cache_ttl = prepare_cache_ttl
@@ -309,7 +310,7 @@ class ContextManager:
             # Track selected skills for citation validation in _commit()
             if _skill_uris and hasattr(self._orchestrator, '_skill_event_store') and self._orchestrator._skill_event_store:
                 selected_uris = set(_skill_uris)
-                self._selected_skill_uris[sk] = selected_uris
+                self._selected_skill_uris[(sk, turn_id)] = selected_uris
                 for s_uri in _skill_uris:
                     try:
                         from opencortex.skill_engine.types import SkillEvent
@@ -423,7 +424,7 @@ class ContextManager:
         # Skill citation tracking (validated against server-selected set)
         if cited_uris and hasattr(self._orchestrator, '_skill_event_store') and self._orchestrator._skill_event_store:
             skill_uris = [u for u in cited_uris if "/skills/" in u]
-            server_selected = self._selected_skill_uris.get(sk, set())
+            server_selected = self._selected_skill_uris.get((sk, turn_id), set())
             for uri in skill_uris:
                 if uri not in server_selected:
                     logger.debug("[ContextManager] Dropped forged skill citation: %s", uri)
@@ -692,7 +693,10 @@ class ContextManager:
         self._committed_turns.pop(sk, None)
         self._session_activity.pop(sk, None)
         self._session_locks.pop(sk, None)
-        self._selected_skill_uris.pop(sk, None)
+        # Clean up turn-scoped skill selections for this session
+        stale_keys = [k for k in self._selected_skill_uris if k[0] == sk]
+        for k in stale_keys:
+            del self._selected_skill_uris[k]
 
     # =========================================================================
     # Idle session auto-close

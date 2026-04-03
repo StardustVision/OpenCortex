@@ -112,7 +112,10 @@ class QualityGate:
         )
 
         import orjson
-        response = await self._llm([{"role": "user", "content": prompt}])
+        if hasattr(self._llm, 'complete'):
+            response = await self._llm.complete([{"role": "user", "content": prompt}])
+        else:
+            response = await self._llm([{"role": "user", "content": prompt}])
         data = orjson.loads(response)
 
         checks = []
