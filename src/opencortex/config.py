@@ -79,6 +79,9 @@ class CortexAlphaConfig:
     user_auto_approve_confidence: float = 0.95
     # Knowledge recall in prepare()
     knowledge_recall_enabled: bool = False  # Server-side default for include_knowledge
+    # Skill Engine
+    sandbox_tdd_enabled: bool = False          # Default OFF — LLM cost control
+    sandbox_tdd_max_llm_calls: int = 20        # Budget cap per extraction batch
 
 
 @dataclass
