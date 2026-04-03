@@ -15,10 +15,12 @@ logger = logging.getLogger(__name__)
 
 
 class SkillManager:
-    def __init__(self, store, analyzer=None, evolver=None):
+    def __init__(self, store, analyzer=None, evolver=None, quality_gate=None, sandbox_tdd=None):
         self._store = store
         self._analyzer = analyzer
         self._evolver = evolver
+        self._quality_gate = quality_gate
+        self._sandbox_tdd = sandbox_tdd
 
     async def search(self, query: str, tenant_id: str, user_id: str,
                      top_k: int = 5) -> List[SkillRecord]:
@@ -129,6 +131,23 @@ class SkillManager:
 
         saved = []
         for c in candidates:
+            # Phase A: Quality Gate
+            if self._quality_gate:
+                report = await self._quality_gate.evaluate(c)
+                c.quality_score = report.score
+                if report.score < 60:
+                    logger.info("[SkillManager] %s failed quality gate (score=%d)",
+                                c.name, report.score)
+                    continue
+
+            # Phase B: Sandbox TDD (if enabled)
+            if self._sandbox_tdd:
+                tdd_result = await self._sandbox_tdd.evaluate(c)
+                c.tdd_passed = tdd_result.passed
+                if not tdd_result.passed:
+                    logger.info("[SkillManager] %s failed sandbox TDD", c.name)
+                    continue
+
             await self._store.save_record(c)
             saved.append(c)
 
