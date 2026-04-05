@@ -10,6 +10,7 @@ class TestConeE2E(unittest.TestCase):
         idx.add("col", "m_strong", ["melanie"])
         idx.add("col", "m_weak", ["melanie"])
         idx.add("col", "m_noise", ["unrelated"])
+        idx._built.add("col")
         scorer = ConeScorer(idx)
         candidates = [
             {"id": "m_strong", "_score": 0.9},
@@ -22,6 +23,7 @@ class TestConeE2E(unittest.TestCase):
 
     def test_no_entity_graceful_degradation(self):
         idx = EntityIndex()
+        idx._built.add("col")
         scorer = ConeScorer(idx)
         candidates = [
             {"id": "m1", "_score": 0.8},
@@ -38,6 +40,7 @@ class TestConeE2E(unittest.TestCase):
         idx.add("col", "m_anchor", ["redis"])
         idx.add("col", "m2", ["redis"])
         # m1 has no entity links at all
+        idx._built.add("col")
         scorer = ConeScorer(idx)
         candidates = [
             {"id": "m_anchor", "_score": 0.95, "_final_score": 0.90},

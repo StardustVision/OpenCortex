@@ -52,9 +52,19 @@ class TestEntityIndex(unittest.TestCase):
             self.idx.add("col", f"m{i}", ["popular"])
         self.assertEqual(len(self.idx.get_memories_for_entity("col", "popular")), 100)
 
-    def test_is_ready(self):
+    def test_is_ready_after_add_is_false(self):
+        """Incremental add does NOT mark collection as fully built."""
         self.assertFalse(self.idx.is_ready("col"))
         self.idx.add("col", "m1", ["a"])
+        self.assertFalse(self.idx.is_ready("col"))  # Only build_for_collection marks ready
+
+    def test_is_ready_after_build(self):
+        """After successful build, collection is ready."""
+        import asyncio
+        from unittest.mock import AsyncMock
+        storage = AsyncMock()
+        storage.scroll = AsyncMock(return_value=([], None))
+        asyncio.run(self.idx.build_for_collection(storage, "col"))
         self.assertTrue(self.idx.is_ready("col"))
 
 

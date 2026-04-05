@@ -1583,9 +1583,11 @@ class MemoryOrchestrator:
         if getattr(self, '_entity_index', None):
             try:
                 collection = self._get_collection()
+                # Use prefix match to catch recursive descendants
+                # (remove_by_uri uses MatchText which is prefix-like)
                 affected = await self._storage.filter(
                     collection,
-                    {"op": "must", "field": "uri", "conds": [uri]},
+                    {"op": "prefix", "field": "uri", "prefix": uri},
                     limit=10000,
                 )
                 affected_ids_for_entity = [str(r["id"]) for r in affected]

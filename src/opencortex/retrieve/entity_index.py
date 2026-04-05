@@ -18,7 +18,8 @@ class EntityIndex:
     def __init__(self):
         self._forward: Dict[str, Dict[str, Set[str]]] = {}
         self._reverse: Dict[str, Dict[str, Set[str]]] = {}
-        self._ready: Set[str] = set()
+        self._built: Set[str] = set()       # Collections with completed full build
+        self._incremental: Set[str] = set()  # Collections with only incremental adds (not fully built)
 
     def _ensure_collection(self, collection: str) -> None:
         if collection not in self._forward:
@@ -26,7 +27,8 @@ class EntityIndex:
             self._reverse[collection] = defaultdict(set)
 
     def is_ready(self, collection: str) -> bool:
-        return collection in self._ready
+        """Only fully built collections are ready for cone scoring."""
+        return collection in self._built
 
     def add(self, collection: str, memory_id: str, entities: List[str]) -> None:
         self._ensure_collection(collection)
@@ -36,8 +38,8 @@ class EntityIndex:
                 continue
             self._forward[collection][entity].add(memory_id)
             self._reverse[collection][memory_id].add(entity)
-        if collection not in self._ready:
-            self._ready.add(collection)
+        # Incremental add does NOT mark collection as fully built
+        self._incremental.add(collection)
 
     def remove(self, collection: str, memory_id: str) -> None:
         if collection not in self._reverse:
@@ -74,6 +76,7 @@ class EntityIndex:
                 logger.warning("[EntityIndex] Scroll failed for %s: %s", collection, exc)
                 break
             if not records:
+                self._built.add(collection)  # Empty page = scan complete
                 break
             for r in records:
                 entities = r.get("entities", [])
@@ -83,7 +86,11 @@ class EntityIndex:
                         self.add(collection, rid, entities)
                         count += 1
             if not cursor:
+                # Completed scroll successfully (no more pages)
+                self._built.add(collection)
                 break
-        self._ready.add(collection)
-        logger.info("[EntityIndex] Built for %s: %d records with entities", collection, count)
+        if collection not in self._built:
+            logger.warning("[EntityIndex] Partial build for %s (%d records) — cone scoring disabled", collection, count)
+        else:
+            logger.info("[EntityIndex] Built for %s: %d records with entities", collection, count)
         return count

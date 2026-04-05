@@ -12,6 +12,7 @@ class TestConeScorer(unittest.TestCase):
         self.idx.add("col", "m2", ["melanie", "caroline"])
         self.idx.add("col", "m3", ["caroline"])
         self.idx.add("col", "m4", ["redis"])
+        self.idx._built.add("col")  # Mark as fully built for testing
         self.scorer = ConeScorer(self.idx)
 
     def test_direct_hit_no_entity(self):

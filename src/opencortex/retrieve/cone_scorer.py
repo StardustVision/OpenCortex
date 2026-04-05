@@ -40,8 +40,13 @@ class ConeScorer:
     async def expand_candidates(
         self, candidates: List[Dict], query_entities: Set[str],
         collection: str, storage,
+        tenant_id: str = "", user_id: str = "", scope_filter: str = "",
     ) -> List[Dict]:
-        """Stage 1: Pull related memories from entity index into candidate set."""
+        """Stage 1: Pull related memories from entity index, filtered by access control.
+
+        SECURITY: Expanded records are filtered by tenant/user/scope to prevent
+        cross-tenant leakage. Only records visible to the current user are added.
+        """
         existing_ids = {str(c.get("id", "")) for c in candidates}
         expansion_ids: Set[str] = set()
 
@@ -65,6 +70,14 @@ class ConeScorer:
             try:
                 expanded_records = await storage.get(collection, expansion_list)
                 for r in expanded_records:
+                    # Access control: filter out records not visible to current user
+                    r_tenant = r.get("source_tenant_id", "")
+                    r_scope = r.get("scope", "")
+                    r_user = r.get("source_user_id", "")
+                    if tenant_id and r_tenant and r_tenant != tenant_id and r_tenant != "":
+                        continue  # Wrong tenant
+                    if r_scope == "private" and r_user != user_id:
+                        continue  # Private record, wrong user
                     r["_score"] = 0.0
                     r["_expanded"] = True
                     candidates.append(r)

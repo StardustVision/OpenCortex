@@ -340,13 +340,15 @@ class HierarchicalRetriever:
             # Apply cone scoring (before converting to MatchedContext)
             if self._cone_scorer and self._cone_weight > 0 and results:
                 try:
-                    from opencortex.http.request_context import get_collection_name
+                    from opencortex.http.request_context import get_collection_name, get_effective_identity
                     _cone_col = get_collection_name() or "context"
+                    _cone_tid, _cone_uid = get_effective_identity()
                     query_entities = self._cone_scorer.extract_query_entities(
                         query.query, results, _cone_col,
                     )
                     results = await self._cone_scorer.expand_candidates(
                         results, query_entities, _cone_col, self.storage,
+                        tenant_id=_cone_tid, user_id=_cone_uid,
                     )
                     results = self._cone_scorer.compute_cone_scores(
                         results, query_entities, _cone_col,
@@ -555,13 +557,15 @@ class HierarchicalRetriever:
         # Step 5b: Apply cone scoring (before converting to MatchedContext)
         if self._cone_scorer and self._cone_weight > 0 and candidates:
             try:
-                from opencortex.http.request_context import get_collection_name
+                from opencortex.http.request_context import get_collection_name, get_effective_identity
                 _cone_col = get_collection_name() or "context"
+                _cone_tid, _cone_uid = get_effective_identity()
                 query_entities = self._cone_scorer.extract_query_entities(
                     query.query, candidates, _cone_col,
                 )
                 candidates = await self._cone_scorer.expand_candidates(
                     candidates, query_entities, _cone_col, self.storage,
+                    tenant_id=_cone_tid, user_id=_cone_uid,
                 )
                 candidates = self._cone_scorer.compute_cone_scores(
                     candidates, query_entities, _cone_col,
