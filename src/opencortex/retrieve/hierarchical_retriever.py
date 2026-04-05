@@ -74,6 +74,8 @@ class HierarchicalRetriever:
         embed_timeout: float = 2.0,
         flat_rerank_multiplier: int = 5,
         force_flat_search: bool = False,
+        cone_scorer=None,
+        cone_weight: float = 0.0,
     ):
         """Initialize hierarchical retriever with rerank_config.
 
@@ -98,6 +100,8 @@ class HierarchicalRetriever:
         self._embed_timeout = embed_timeout
         self._flat_rerank_multiplier = flat_rerank_multiplier
         self._force_flat_search = force_flat_search
+        self._cone_scorer = cone_scorer
+        self._cone_weight = cone_weight
 
         # Initialize rerank client only if config is available
         if rerank_config and rerank_config.is_available():
@@ -333,6 +337,26 @@ class HierarchicalRetriever:
                 if self._hot_weight:
                     r["_score"] = r.get("_score", 0.0) + self._hot_weight * self._compute_hotness(r)
             results.sort(key=lambda r: r.get("_score", 0.0), reverse=True)
+            # Apply cone scoring (before converting to MatchedContext)
+            if self._cone_scorer and self._cone_weight > 0 and results:
+                try:
+                    from opencortex.http.request_context import get_collection_name
+                    _cone_col = get_collection_name() or "context"
+                    query_entities = self._cone_scorer.extract_query_entities(
+                        query.query, results, _cone_col,
+                    )
+                    results = await self._cone_scorer.expand_candidates(
+                        results, query_entities, _cone_col, self.storage,
+                    )
+                    results = self._cone_scorer.compute_cone_scores(
+                        results, query_entities, _cone_col,
+                    )
+                    for r in results:
+                        bonus = r.get("_cone_bonus", 0.0)
+                        r["_final_score"] = r.get("_final_score", r.get("_score", 0.0)) + self._cone_weight * bonus
+                    results.sort(key=lambda r: r.get("_final_score", 0), reverse=True)
+                except Exception as exc:
+                    logger.debug("[HierarchicalRetriever] Cone scoring failed: %s", exc)
             t_search = time.perf_counter()
             t_rerank = t_search
             matched = await self._convert_to_matched_contexts(
@@ -527,6 +551,27 @@ class HierarchicalRetriever:
             _candidates_before_rerank = len(candidates)
             t_search = time.perf_counter()
             t_rerank = t_search
+
+        # Step 5b: Apply cone scoring (before converting to MatchedContext)
+        if self._cone_scorer and self._cone_weight > 0 and candidates:
+            try:
+                from opencortex.http.request_context import get_collection_name
+                _cone_col = get_collection_name() or "context"
+                query_entities = self._cone_scorer.extract_query_entities(
+                    query.query, candidates, _cone_col,
+                )
+                candidates = await self._cone_scorer.expand_candidates(
+                    candidates, query_entities, _cone_col, self.storage,
+                )
+                candidates = self._cone_scorer.compute_cone_scores(
+                    candidates, query_entities, _cone_col,
+                )
+                for r in candidates:
+                    bonus = r.get("_cone_bonus", 0.0)
+                    r["_final_score"] = r.get("_final_score", r.get("_score", 0.0)) + self._cone_weight * bonus
+                candidates.sort(key=lambda r: r.get("_final_score", 0), reverse=True)
+            except Exception as exc:
+                logger.debug("[HierarchicalRetriever] Cone scoring failed: %s", exc)
 
         # Step 6: Convert results
         matched = await self._convert_to_matched_contexts(
