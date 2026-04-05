@@ -165,6 +165,14 @@ class CortexConfig:
     explain_enabled: bool = True
     onnx_intra_op_threads: int = 0
 
+    # Cone Retrieval
+    cone_retrieval_enabled: bool = True
+    cone_weight: float = 0.1
+    cone_direct_hit_penalty: float = 0.3
+    cone_hop_cost: float = 0.05
+    cone_edge_miss_cost: float = 0.9
+    cone_entity_degree_cap: int = 50
+
     def to_dict(self) -> dict:
         return asdict(self)
 

@@ -188,13 +188,15 @@ Return a JSON object with exactly these fields:
 {{
   "abstract": "1-2 sentence standalone summary, max 200 chars",
   "overview": "3-8 sentence overview covering key facts, decisions, and actionable details",
-  "keywords": ["term1", "term2", "..."]
+  "keywords": ["term1", "term2", "..."],
+  "entities": ["entity1", "entity2", "..."]
 }}
 
 Rules:
 - abstract: A concise, self-contained summary. If user description is provided above, use it as-is.
 - overview: Covers the main points, decisions, and context. Do NOT repeat the abstract verbatim.
 - keywords: 3-15 key terms (names, tools, technologies, concepts) that aid search. No generic words.
+- entities: Named entities only — people, systems, tools, organizations, places. NOT generic concepts. Max 10.
 - Return ONLY the JSON object, no other text."""
 
 
