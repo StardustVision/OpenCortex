@@ -136,6 +136,10 @@ class MemoryOrchestrator:
         self._skill_event_store = None
         self._skill_evaluator = None
 
+        # Cone Retrieval
+        self._entity_index = None
+        self._cone_scorer = None
+
     # =========================================================================
     # Collection Routing
     # =========================================================================
@@ -237,6 +241,8 @@ class MemoryOrchestrator:
             llm_completion=self._llm_completion,
             flat_rerank_multiplier=self._config.rerank_flat_pool_multiplier,
             force_flat_search=self._config.force_flat_search,
+            cone_scorer=self._cone_scorer,
+            cone_weight=self._config.cone_weight if self._config.cone_retrieval_enabled else 0.0,
         )
 
         # 7. Background maintenance: text indexes, migrations, re-embed
@@ -247,6 +253,17 @@ class MemoryOrchestrator:
 
         # 9. Skill Engine
         await self._init_skill_engine()
+
+        # 10. Cone Retrieval: entity index + scorer
+        if self._config.cone_retrieval_enabled:
+            from opencortex.retrieve.entity_index import EntityIndex
+            from opencortex.retrieve.cone_scorer import ConeScorer
+            self._entity_index = EntityIndex()
+            self._cone_scorer = ConeScorer(self._entity_index)
+            # Non-blocking background build
+            asyncio.create_task(self._entity_index.build_for_collection(
+                self._storage, self._get_collection()
+            ))
 
         self._initialized = True
         logger.info(
@@ -956,6 +973,7 @@ class MemoryOrchestrator:
                 "abstract": user_abstract,
                 "overview": user_overview,
                 "keywords": "",
+                "entities": [],
             }
 
         if self._llm_completion:
@@ -975,10 +993,16 @@ class MemoryOrchestrator:
                         keywords = ", ".join(str(k) for k in keywords_list if k)
                     else:
                         keywords = str(keywords_list)
+                    entities_list = result.get("entities", [])
+                    if isinstance(entities_list, list):
+                        entities = [str(e).strip().lower() for e in entities_list if e][:20]
+                    else:
+                        entities = []
                     return {
                         "abstract": user_abstract or result.get("abstract", ""),
                         "overview": user_overview or result.get("overview", ""),
                         "keywords": keywords,
+                        "entities": entities,
                     }
                 except Exception as e:
                     logger.warning(
@@ -996,10 +1020,16 @@ class MemoryOrchestrator:
                         keywords = ", ".join(str(k) for k in keywords_list if k)
                     else:
                         keywords = str(keywords_list)
+                    entities_list = data.get("entities", [])
+                    if isinstance(entities_list, list):
+                        entities = [str(e).strip().lower() for e in entities_list if e][:20]
+                    else:
+                        entities = []
                     return {
                         "abstract": user_abstract or llm_abstract,
                         "overview": user_overview or llm_overview,
                         "keywords": keywords,
+                        "entities": entities,
                     }
             except Exception as e:
                 logger.warning("[Orchestrator] _derive_layers LLM failed: %s", e)
@@ -1013,7 +1043,7 @@ class MemoryOrchestrator:
             logger.warning(
                 "[Orchestrator] No LLM configured — abstract uses raw content"
             )
-        return {"abstract": abstract, "overview": overview, "keywords": ""}
+        return {"abstract": abstract, "overview": overview, "keywords": "", "entities": []}
 
     def _ensure_init(self) -> None:
         """Raise if not initialized."""
@@ -1158,6 +1188,9 @@ class MemoryOrchestrator:
             if not overview:
                 overview = layers["overview"]
             keywords = layers["keywords"]
+            entities = layers.get("entities", [])
+        else:
+            entities = []
 
         # Build effective user identity (per-request or config default)
         tid, uid = get_effective_identity()
@@ -1284,6 +1317,7 @@ class MemoryOrchestrator:
         record["project_id"] = get_effective_project_id()
         record["source_tenant_id"] = tid
         record["keywords"] = keywords
+        record["entities"] = entities
 
         # v0.6: Flatten doc/conversation enrichment fields to top-level payload
         record["source_doc_id"] = (meta or {}).get("source_doc_id", "")
@@ -1310,6 +1344,11 @@ class MemoryOrchestrator:
         upsert_started = asyncio.get_running_loop().time()
         await self._storage.upsert(self._get_collection(), record)
         upsert_ms = int((asyncio.get_running_loop().time() - upsert_started) * 1000)
+
+        # Sync EntityIndex (if available)
+        _entity_idx = getattr(self, '_entity_index', None)
+        if _entity_idx and entities:
+            _entity_idx.add(self._get_collection(), str(record["id"]), entities)
 
         # CortexFS write — fire-and-forget (Qdrant upsert is the synchronous path)
         def _on_fs_done(t: asyncio.Task) -> None:
@@ -1539,8 +1578,28 @@ class MemoryOrchestrator:
         """
         self._ensure_init()
 
+        # Pre-delete: get affected record IDs for entity index sync
+        affected_ids_for_entity = []
+        if getattr(self, '_entity_index', None):
+            try:
+                collection = self._get_collection()
+                # Use prefix match to catch recursive descendants
+                # (remove_by_uri uses MatchText which is prefix-like)
+                affected = await self._storage.filter(
+                    collection,
+                    {"op": "prefix", "field": "uri", "prefix": uri},
+                    limit=10000,
+                )
+                affected_ids_for_entity = [str(r["id"]) for r in affected]
+            except Exception:
+                pass
+
         # Remove from vector DB
         count = await self._storage.remove_by_uri(self._get_collection(), uri)
+
+        # Post-delete: sync entity index
+        if getattr(self, '_entity_index', None) and affected_ids_for_entity:
+            self._entity_index.remove_batch(self._get_collection(), affected_ids_for_entity)
 
         # Remove from filesystem
         try:
