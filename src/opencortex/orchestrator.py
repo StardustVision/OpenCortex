@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 from uuid import uuid4
 
+from opencortex.cognition import RecallPlanner
 from opencortex.config import CortexConfig, get_config
 from opencortex.prompts import (
     build_doc_summarization_prompt,
@@ -67,6 +68,7 @@ from opencortex.retrieve.types import (
     MatchedContext,
     MERGEABLE_CATEGORIES,
     QueryResult,
+    RecallPlan,
     SearchIntent,
     TypedQuery,
 )
@@ -139,6 +141,9 @@ class MemoryOrchestrator:
         # Cone Retrieval
         self._entity_index = None
         self._cone_scorer = None
+        self._recall_planner = RecallPlanner(
+            cone_enabled=self._config.cone_retrieval_enabled
+        )
 
     # =========================================================================
     # Collection Routing
@@ -1633,6 +1638,47 @@ class MemoryOrchestrator:
     # Search / Retrieve
     # =========================================================================
 
+    async def plan_recall(
+        self,
+        query: str,
+        max_items: int,
+        recall_mode: str,
+        include_knowledge: bool,
+        detail_level_override: Optional[str],
+        context_type: Optional[ContextType],
+        session_context: Optional[Dict[str, Any]],
+        search_intent: Optional[SearchIntent],
+    ) -> tuple[SearchIntent, RecallPlan]:
+        """Resolve recall intent and produce an explicit recall plan."""
+        intent = search_intent
+
+        if recall_mode == "never":
+            if intent is None:
+                intent = SearchIntent(
+                    intent_type="quick_lookup",
+                    detail_level=DetailLevel(detail_level_override or "l1"),
+                    should_recall=False,
+                )
+        elif intent is None:
+            router = IntentRouter(llm_completion=self._llm_completion)
+            intent = await router.route(
+                query,
+                context_type=context_type,
+                session_context=session_context,
+            )
+
+        plan = self._recall_planner.plan(
+            query=query,
+            intent=intent,
+            max_items=max_items,
+            recall_mode=recall_mode,
+            include_knowledge=include_knowledge,
+            detail_level_override=detail_level_override,
+        )
+        intent.should_recall = plan.should_recall
+        intent.recall_plan = plan
+        return intent, plan
+
     async def search(
         self,
         query: str,
@@ -1683,18 +1729,28 @@ class MemoryOrchestrator:
                     query, target_doc_id=target_doc_id, session_context=session_context
                 )
 
-        # Allow callers that already performed routing to reuse the intent
-        # and avoid paying the LLM/classification cost twice.
-        intent = search_intent
-        intent_ms = 0
-        if intent is None:
-            intent_started = asyncio.get_running_loop().time()
-            router = IntentRouter(llm_completion=self._llm_completion)
-            intent = await router.route(query, context_type)
-            intent_ms = int((asyncio.get_running_loop().time() - intent_started) * 1000)
+        detail_level_value = (
+            detail_level.value if isinstance(detail_level, DetailLevel) else detail_level
+        )
+        detail_level_override = (
+            detail_level_value if detail_level_value != DetailLevel.L1.value else None
+        )
+
+        intent_started = asyncio.get_running_loop().time()
+        intent, recall_plan = await self.plan_recall(
+            query=query,
+            max_items=limit,
+            recall_mode="auto",
+            include_knowledge=False,
+            detail_level_override=detail_level_override,
+            context_type=context_type,
+            session_context=session_context,
+            search_intent=search_intent,
+        )
+        intent_ms = int((asyncio.get_running_loop().time() - intent_started) * 1000)
 
         # Gate: skip retrieval if intent says no recall needed
-        if not intent.should_recall:
+        if not recall_plan.should_recall:
             total_ms = int((asyncio.get_running_loop().time() - search_started) * 1000)
             logger.debug(
                 "[search] should_recall=False tenant=%s user=%s total_ms=%d",
@@ -1709,10 +1765,13 @@ class MemoryOrchestrator:
                 search_intent=intent,
             )
 
-        # Use intent to determine effective limit
-        effective_limit = max(limit, intent.top_k)
+        # Planner controls the Phase 1 memory search budget.
+        effective_limit = recall_plan.memory_limit
+        detail_level = recall_plan.detail_level.value
 
         typed_queries = intent.queries
+        for tq in typed_queries:
+            tq.detail_level = recall_plan.detail_level
 
         # Fallback: if router produced no queries, build them manually
         if not typed_queries:
