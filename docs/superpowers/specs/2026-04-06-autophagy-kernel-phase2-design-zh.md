@@ -83,6 +83,13 @@
 - 为什么处于该状态
 - 接下来允许什么动作
 
+实现约束：
+
+- `cognitive_state` 在逻辑上是独立状态集合，不与内容 payload 混存
+- Phase 2 物理上仍复用现有 `StorageInterface`
+- 在当前默认 backend 为 `Qdrant` 时，`cognitive_state` 以 payload-only point 形式存储，向量使用占位零向量
+- 后续若引入更适合状态对象的 KV / SQL backend，上层接口不变
+
 ### 5.3 候选面
 
 新增短生命周期候选对象：
@@ -153,6 +160,12 @@
 - `accepted / rejected` 只描述巩固结果，不直接判定 memory 生死
 - `activation_score` 必须存在上限与回落机制，避免富者愈富
 
+### 6.6 术语定义
+
+- `risk_score`：对象当前带来错误召回、陈旧误导、冲突扩散的综合风险
+- `evidence_residual_score`：现有证据中仍未被稳定解释或仍存在冲突残差的程度
+- `guarded`：对象仍可参与 recall，但受到保护和限幅；它不是隐藏态，也不是 suppress 态
+
 ## 7. 内核模块划分
 
 ### 7.1 AutophagyKernel
@@ -166,6 +179,15 @@
 - 持久化 `cognitive_state`
 - 提供按 `owner_id / tenant / project / state axis` 查询
 - 提供乐观并发更新
+
+Phase 2 并发模型：
+
+- 当前 backend 不提供原生 CAS，禁止假设数据库级 optimistic lock
+- 进程内采用 `per-owner async lock`，保证同一 `owner_id` 的 mutation 与 metabolism 不并发落盘
+- 状态对象保留 `version` 字段，写入时执行 `read -> compute -> verify version -> write`
+- 若 version 在计算窗口内变化，则放弃本次结果并做有限次重试
+- Phase 2 不采用 last-write-wins 作为正式语义
+- 多副本跨进程并发协调不在 Phase 2 范围内，后续若需要需引入外部分布式锁或支持条件写的状态后端
 
 ### 7.3 CognitiveStateManager
 
@@ -245,6 +267,32 @@
 
 该模块不直接写库。
 
+### 8.4 批量持久化语义
+
+一次 recall mutation 产生的：
+
+- `state_updates`
+- `generated_candidates`
+- `quarantine_events`
+- `contestation_events`
+
+必须按一个逻辑批次提交。
+
+Phase 2 不假设底层存在跨 collection 事务，因此采用：
+
+- `mutation_batch_id`
+- 幂等 `persist_batch(...)`
+- 批次提交状态：`pending | committed | failed`
+
+执行规则：
+
+- 先登记批次
+- 再幂等写入 state updates 与 candidates
+- 全部成功后标记 `committed`
+- 若中途中断，由后台 reconciliation 任务修复未完成批次
+
+`Knowledge Governance` 只能消费 `committed` candidate。
+
 ## 9. Consolidation Gate 设计
 
 ### 9.1 输入
@@ -290,7 +338,24 @@
 - `expires_at`
 - `dedupe_fingerprint`
 
-### 9.4 状态机
+### 9.4 去重、冷却与重试
+
+`dedupe_fingerprint` 由以下字段归一化后计算：
+
+- `candidate_kind`
+- 归一化 `statement / abstract`
+- 排序后的 `supporting_memory_ids`
+- 排序后的 `supporting_trace_ids`
+
+规则：
+
+- 相同 fingerprint 在冷却窗口内不得重复提交
+- Phase 2 默认冷却窗口为 `24h`
+- `candidate -> expired` 后允许重新进入 `candidate`
+- 重新候选必须满足“显著新证据”条件：支持对象集合变化、稳定性提升越过阈值、或冲突摘要发生实质变化
+- 不满足显著变化时，禁止无限重试
+
+### 9.5 状态机
 
 状态迁移：
 
@@ -299,15 +364,23 @@
 - `submitted -> accepted`
 - `submitted -> rejected`
 - `candidate|submitted -> expired`
+- `rejected -> none`：仅在冷却窗口后且出现显著新证据时允许
+- `expired -> none`
 
-### 9.5 治理回流
+### 9.6 治理回流
 
 `GovernanceFeedback` 回流后执行以下映射：
 
 - `accepted`：提升稳定性，必要时进入 `guarded`
+- `accepted` 对已 `compressed` 对象不强制自动恢复到 `active`，仅在后续 recall 成功复用或明确恢复策略命中时再激活
 - `rejected`：降低巩固优先级，保留对象本体
 - `contested`：进入 `exposure=contested`
 - `deprecated`：撤销旧保护与旧加权
+
+补充规则：
+
+- `rejected` 不是永久终态；认知对象积累新证据后可重新回到 `none`
+- `deprecated` 若作用于已被知识层确认的源对象，可撤销 `guarded` 或降低保护等级
 
 ## 10. 认知代谢设计
 
@@ -357,6 +430,28 @@
 - `diminishing returns`
 - `recency rebalance`
 - `dominance penalty`
+
+其中 `dominance penalty` 指：
+
+- 若同一对象在窗口 `W` 内对同类 intent cluster 的胜出次数超过阈值 `N`
+- 且该对象并未持续带来更高使用成功率
+- 则施加轻量降温或上限钳制，防止单一对象长期垄断 recall
+
+### 10.5 触发与频率
+
+`CognitiveMetabolismController` 采用三段触发：
+
+- `post-recall light tick`：每次 recall 后仅处理本次触达对象
+- `session-end tick`：会话结束时处理本 session 热对象
+- `periodic full sweep`：后台定时分页扫描，按 tenant / project / 热度桶分批执行
+
+Phase 2 默认建议：
+
+- light tick：同步或准同步执行，仅处理小批量 touched owners
+- periodic full sweep：每 `15` 分钟一次
+- startup sweep：服务启动后补扫上次未完成批次和过期待处理对象
+
+full sweep 不允许单次全表扫描到底，必须分页分桶执行。
 
 ## 11. 完整数据流
 
@@ -417,6 +512,12 @@
 - 兼容层字段
 
 认知真相源以 `cognitive_state` 为准。
+
+兼容字段的移除条件：
+
+- 当 recall 打分、mutation、context prepare 全部切换到 `cognitive_state` 驱动
+- 且外部 API 不再依赖 `reward_score / protected / active_count / accessed_at`
+- 方可将这些字段降级为只读兼容或彻底删除
 
 ### 12.4 alpha 模块接缝
 
@@ -486,34 +587,74 @@
 - `timestamp`
 - `version`
 
-## 15. 性能测试面
+## 15. 三轴状态转移图
+
+以下图只描述合法主路径，不枚举全部组合态。
+
+### 15.1 Lifecycle
+
+```text
+active <-> compressed <-> archived -> forgotten
+```
+
+说明：
+
+- `compressed -> active` 允许由强复用或明确恢复策略触发
+- `archived -> compressed` 允许由显式恢复触发
+
+### 15.2 Exposure
+
+```text
+open <-> guarded
+open -> contested
+guarded -> contested
+open -> quarantined
+guarded -> quarantined
+contested -> open
+contested -> quarantined
+quarantined -> guarded
+quarantined -> open
+```
+
+### 15.3 Consolidation
+
+```text
+none -> candidate -> submitted -> accepted
+                           -> rejected -> none
+candidate -> expired -> none
+submitted -> expired -> none
+```
+
+`accepted` 在知识项未废弃前视为稳定终态；若收到 `deprecated` 反馈，再回退到普通认知治理路径。
+
+## 16. 性能测试面
 
 后续全量性能测试至少覆盖：
 
-### 15.1 写入链路
+### 16.1 写入链路
 
 - ingest 吞吐
 - `cognitive_state` 初始化写放大
 
-### 15.2 Recall 链路
+### 16.2 Recall 链路
 
 - recall + mutation 总延迟
 - cone 扩展后的 `P50 / P95 / P99`
 - 命中规模上升时的退化曲线
 
-### 15.3 Metabolism 链路
+### 16.3 Metabolism 链路
 
 - full sweep 总耗时
 - 批量扫描成本
 - 状态转移吞吐
 
-### 15.4 Candidate / Feedback 链路
+### 16.4 Candidate / Feedback 链路
 
 - candidate 生成速率
 - dedupe 开销
 - feedback 回写延迟
 
-### 15.5 数据规模
+### 16.5 数据规模
 
 至少测以下数量级：
 
@@ -528,7 +669,7 @@
 - `PythonBaseline`
 - `RustAccelerated`（若已实现）
 
-## 16. 设计结果
+## 17. 设计结果
 
 本阶段完成后，OpenCortex 将具备以下结构性变化：
 
