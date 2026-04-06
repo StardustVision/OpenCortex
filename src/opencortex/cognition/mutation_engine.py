@@ -203,9 +203,10 @@ class RecallMutationEngine:
         for signal in conflict_signals:
             if not isinstance(signal, Mapping):
                 continue
-            signal_owner_id = signal.get("owner_id")
-            signal_owner_type = signal.get("owner_type", "memory")
-            if signal_owner_id == owner_id and signal_owner_type == owner_type:
+            signal_keys = RecallMutationEngine._extract_state_keys(
+                [signal], default_owner_type="memory"
+            )
+            if (owner_type, owner_id) in signal_keys:
                 reason = signal.get("reason")
                 if isinstance(reason, str) and reason:
                     return reason

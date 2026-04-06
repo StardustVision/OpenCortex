@@ -131,6 +131,35 @@ class TestRecallMutationEngine(unittest.TestCase):
         self.assertEqual(result.explanations[0]["owner_id"], "mem-conflict")
         self.assertEqual(result.explanations[0]["reason"], "answer conflict")
 
+    def test_conflict_signal_with_state_id_only_preserves_reason(self):
+        target = self._state("mem-conflict", activation=0.3)
+        engine = RecallMutationEngine()
+
+        recall_outcome = {
+            "conflict_signals": [
+                {
+                    "state_id": "memory:mem-conflict",
+                    "reason": "state-id conflict reason",
+                }
+            ]
+        }
+        result = engine.apply(
+            query="conflict by state id",
+            states=[target],
+            recall_outcome=recall_outcome,
+        )
+
+        update = self._find_update(result, "mem-conflict")
+        self.assertEqual(update["fields"]["exposure_state"], ExposureState.CONTESTED.value)
+        self.assertEqual(len(result.contestation_events), 1)
+        self.assertEqual(
+            result.contestation_events[0]["reason"], "state-id conflict reason"
+        )
+        self.assertEqual(len(result.explanations), 1)
+        self.assertEqual(result.explanations[0]["kind"], "contest")
+        self.assertEqual(result.explanations[0]["owner_id"], "mem-conflict")
+        self.assertEqual(result.explanations[0]["reason"], "state-id conflict reason")
+
     def test_same_owner_id_for_memory_and_trace_produces_distinct_updates(self):
         memory_state = self._state("shared", activation=0.5, owner_type=OwnerType.MEMORY)
         trace_state = self._state("shared", activation=0.2, owner_type=OwnerType.TRACE)
