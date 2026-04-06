@@ -318,6 +318,49 @@ class CollectionSchemas:
             ],
         }
 
+    @staticmethod
+    def consolidation_candidate_collection(name: str) -> Dict[str, Any]:
+        """Schema for consolidation candidates (payload-only, no vectors)."""
+        return {
+            "CollectionName": name,
+            "Description": "Governance consolidation candidates",
+            "Fields": [
+                {"FieldName": "id", "FieldType": "string", "IsPrimaryKey": True},
+                {"FieldName": "candidate_id", "FieldType": "string"},
+                {"FieldName": "source_owner_type", "FieldType": "string"},
+                {"FieldName": "source_owner_id", "FieldType": "string"},
+                {"FieldName": "tenant_id", "FieldType": "string"},
+                {"FieldName": "user_id", "FieldType": "string"},
+                {"FieldName": "project_id", "FieldType": "string"},
+                {"FieldName": "candidate_kind", "FieldType": "string"},
+                {"FieldName": "statement", "FieldType": "string"},
+                {"FieldName": "abstract", "FieldType": "string"},
+                {"FieldName": "overview", "FieldType": "string"},
+                {"FieldName": "supporting_memory_ids", "FieldType": "string"},
+                {"FieldName": "supporting_trace_ids", "FieldType": "string"},
+                {"FieldName": "confidence_estimate", "FieldType": "float"},
+                {"FieldName": "stability_score", "FieldType": "float"},
+                {"FieldName": "risk_score", "FieldType": "float"},
+                {"FieldName": "conflict_summary", "FieldType": "string"},
+                {"FieldName": "submission_reason", "FieldType": "string"},
+                {"FieldName": "dedupe_fingerprint", "FieldType": "string"},
+                {"FieldName": "created_at", "FieldType": "date_time"},
+                {"FieldName": "updated_at", "FieldType": "date_time"},
+            ],
+            "ScalarIndex": [
+                "candidate_id",
+                "source_owner_type",
+                "source_owner_id",
+                "tenant_id",
+                "user_id",
+                "project_id",
+                "candidate_kind",
+                "dedupe_fingerprint",
+                "created_at",
+                "updated_at",
+            ],
+        }
+
 
 async def init_trace_collection(
     storage: StorageInterface, name: str, vector_dim: int,
@@ -384,4 +427,12 @@ async def init_cognitive_mutation_batch_collection(
 ) -> bool:
     """Initialize the cognitive mutation batch collection."""
     schema = CollectionSchemas.cognitive_mutation_batch_collection(name)
+    return await storage.create_collection(name, schema)
+
+
+async def init_consolidation_candidate_collection(
+    storage: StorageInterface, name: str,
+) -> bool:
+    """Initialize the consolidation candidate collection."""
+    schema = CollectionSchemas.consolidation_candidate_collection(name)
     return await storage.create_collection(name, schema)

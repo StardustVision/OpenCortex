@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from enum import Enum
 import json
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 
 def _utc_now_iso() -> str:
@@ -44,6 +45,120 @@ class MutationBatchStatus(str, Enum):
     PENDING = "pending"
     COMMITTED = "committed"
     FAILED = "failed"
+
+
+class GovernanceFeedbackKind(str, Enum):
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    CONTESTED = "contested"
+    DEPRECATED = "deprecated"
+
+
+@dataclass
+class ConsolidationCandidate:
+    candidate_id: str
+    source_owner_type: str
+    source_owner_id: str
+    tenant_id: str
+    user_id: str
+    project_id: str
+    candidate_kind: str
+    statement: str
+    abstract: str
+    overview: str
+    supporting_memory_ids: List[str] = field(default_factory=list)
+    supporting_trace_ids: List[str] = field(default_factory=list)
+    confidence_estimate: float = 0.0
+    stability_score: float = 0.0
+    risk_score: float = 0.0
+    conflict_summary: str = ""
+    submission_reason: str = ""
+    dedupe_fingerprint: str = ""
+
+    @property
+    def id(self) -> str:
+        return self.candidate_id
+
+    @staticmethod
+    def new_id() -> str:
+        return str(uuid4())
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "candidate_id": self.candidate_id,
+            "source_owner_type": self.source_owner_type,
+            "source_owner_id": self.source_owner_id,
+            "tenant_id": self.tenant_id,
+            "user_id": self.user_id,
+            "project_id": self.project_id,
+            "candidate_kind": self.candidate_kind,
+            "statement": self.statement,
+            "abstract": self.abstract,
+            "overview": self.overview,
+            "supporting_memory_ids": json.dumps(self.supporting_memory_ids, separators=(",", ":")),
+            "supporting_trace_ids": json.dumps(self.supporting_trace_ids, separators=(",", ":")),
+            "confidence_estimate": float(self.confidence_estimate),
+            "stability_score": float(self.stability_score),
+            "risk_score": float(self.risk_score),
+            "conflict_summary": self.conflict_summary,
+            "submission_reason": self.submission_reason,
+            "dedupe_fingerprint": self.dedupe_fingerprint,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ConsolidationCandidate":
+        mem_ids_raw = data.get("supporting_memory_ids", [])
+        if isinstance(mem_ids_raw, str):
+            try:
+                mem_ids = json.loads(mem_ids_raw) if mem_ids_raw else []
+            except json.JSONDecodeError:
+                mem_ids = []
+        elif isinstance(mem_ids_raw, list):
+            mem_ids = mem_ids_raw
+        else:
+            mem_ids = []
+
+        trace_ids_raw = data.get("supporting_trace_ids", [])
+        if isinstance(trace_ids_raw, str):
+            try:
+                trace_ids = json.loads(trace_ids_raw) if trace_ids_raw else []
+            except json.JSONDecodeError:
+                trace_ids = []
+        elif isinstance(trace_ids_raw, list):
+            trace_ids = trace_ids_raw
+        else:
+            trace_ids = []
+
+        return cls(
+            candidate_id=data.get("candidate_id") or data.get("id") or "",
+            source_owner_type=str(data.get("source_owner_type") or ""),
+            source_owner_id=str(data.get("source_owner_id") or ""),
+            tenant_id=str(data.get("tenant_id") or ""),
+            user_id=str(data.get("user_id") or ""),
+            project_id=str(data.get("project_id") or ""),
+            candidate_kind=str(data.get("candidate_kind") or ""),
+            statement=str(data.get("statement") or ""),
+            abstract=str(data.get("abstract") or ""),
+            overview=str(data.get("overview") or ""),
+            supporting_memory_ids=list(mem_ids),
+            supporting_trace_ids=list(trace_ids),
+            confidence_estimate=float(data.get("confidence_estimate", 0.0)),
+            stability_score=float(data.get("stability_score", 0.0)),
+            risk_score=float(data.get("risk_score", 0.0)),
+            conflict_summary=str(data.get("conflict_summary") or ""),
+            submission_reason=str(data.get("submission_reason") or ""),
+            dedupe_fingerprint=str(data.get("dedupe_fingerprint") or ""),
+        )
+
+
+@dataclass
+class GovernanceFeedback:
+    candidate_id: str
+    owner_type: "OwnerType"
+    owner_id: str
+    kind: GovernanceFeedbackKind
+    has_material_new_evidence: bool = False
 
 
 @dataclass
