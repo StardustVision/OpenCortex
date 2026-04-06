@@ -1,0 +1,171 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Durable store for cognitive states and mutation batches."""
+
+import asyncio
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Mapping, Sequence
+
+from opencortex.cognition.state_types import (
+    CognitiveState,
+    ConsolidationState,
+    ExposureState,
+    LifecycleState,
+    MutationBatch,
+    MutationBatchStatus,
+    OwnerType,
+)
+from opencortex.storage.collection_schemas import (
+    init_cognitive_mutation_batch_collection,
+    init_cognitive_state_collection,
+)
+from opencortex.storage.storage_interface import StorageInterface
+
+
+DEFAULT_COGNITIVE_STATE_COLLECTION = "cognitive_state"
+DEFAULT_COGNITIVE_MUTATION_BATCH_COLLECTION = "cognitive_mutation_batch"
+
+
+class StaleStateVersionError(ValueError):
+    """Raised when expected_version does not match the current state version."""
+
+
+class CognitiveStateStore:
+    def __init__(
+        self,
+        storage: StorageInterface,
+        state_collection: str = DEFAULT_COGNITIVE_STATE_COLLECTION,
+        mutation_batch_collection: str = DEFAULT_COGNITIVE_MUTATION_BATCH_COLLECTION,
+    ) -> None:
+        self._storage = storage
+        self._state_collection = state_collection
+        self._mutation_batch_collection = mutation_batch_collection
+        self._owner_locks: Dict[str, asyncio.Lock] = {}
+        self._owner_locks_guard = asyncio.Lock()
+
+    async def init(self) -> None:
+        await init_cognitive_state_collection(self._storage, self._state_collection)
+        await init_cognitive_mutation_batch_collection(
+            self._storage, self._mutation_batch_collection
+        )
+
+    async def save_state(self, state: CognitiveState) -> CognitiveState:
+        async with await self._get_owner_lock(state.owner_type, state.owner_id):
+            now = _utc_now_iso()
+            if not state.created_at:
+                state.created_at = now
+            state.updated_at = now
+            await self._storage.upsert(self._state_collection, state.to_dict())
+            return state
+
+    async def get_by_owner(
+        self, owner_type: OwnerType, owner_id: str
+    ) -> CognitiveState | None:
+        rows = await self._storage.get(
+            self._state_collection, [self._owner_state_id(owner_type, owner_id)]
+        )
+        if not rows:
+            return None
+        return CognitiveState.from_dict(rows[0])
+
+    async def get_states_for_owners(self, owner_ids: Sequence[str]) -> List[CognitiveState]:
+        ids = [oid for oid in owner_ids if oid]
+        if not ids:
+            return []
+        rows = await self._storage.filter(
+            self._state_collection,
+            {"op": "must", "field": "owner_id", "conds": ids},
+            limit=max(1, len(ids) * 10),
+        )
+        return [CognitiveState.from_dict(row) for row in rows]
+
+    async def update_state(
+        self,
+        owner_type: OwnerType,
+        owner_id: str,
+        expected_version: int,
+        fields: Mapping[str, Any],
+    ) -> CognitiveState:
+        async with await self._get_owner_lock(owner_type, owner_id):
+            existing = await self.get_by_owner(owner_type, owner_id)
+            if existing is None:
+                raise KeyError(f"state not found for {owner_type.value}:{owner_id}")
+            if existing.version != expected_version:
+                raise StaleStateVersionError(
+                    f"stale version for {owner_type.value}:{owner_id}: "
+                    f"expected={expected_version}, actual={existing.version}"
+                )
+
+            self._apply_state_fields(existing, fields)
+            existing.version += 1
+            existing.updated_at = _utc_now_iso()
+            await self._storage.upsert(self._state_collection, existing.to_dict())
+            return existing
+
+    async def persist_batch(
+        self,
+        batch: MutationBatch,
+        state_updates: Sequence[Mapping[str, Any]],
+    ) -> bool:
+        batch.status = MutationBatchStatus.PENDING
+        batch.error = ""
+        batch.updated_at = _utc_now_iso()
+        await self._storage.upsert(self._mutation_batch_collection, batch.to_dict())
+
+        try:
+            for update in state_updates:
+                await self.update_state(
+                    owner_type=_coerce_owner_type(update["owner_type"]),
+                    owner_id=str(update["owner_id"]),
+                    expected_version=int(update["expected_version"]),
+                    fields=dict(update.get("fields", {})),
+                )
+        except StaleStateVersionError as exc:
+            batch.status = MutationBatchStatus.FAILED
+            batch.error = str(exc)
+            batch.updated_at = _utc_now_iso()
+            await self._storage.upsert(self._mutation_batch_collection, batch.to_dict())
+            return False
+
+        now = _utc_now_iso()
+        batch.status = MutationBatchStatus.COMMITTED
+        batch.updated_at = now
+        batch.committed_at = now
+        await self._storage.upsert(self._mutation_batch_collection, batch.to_dict())
+        return True
+
+    async def _get_owner_lock(self, owner_type: OwnerType, owner_id: str) -> asyncio.Lock:
+        key = self._owner_state_id(owner_type, owner_id)
+        async with self._owner_locks_guard:
+            lock = self._owner_locks.get(key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._owner_locks[key] = lock
+            return lock
+
+    @staticmethod
+    def _apply_state_fields(state: CognitiveState, fields: Mapping[str, Any]) -> None:
+        for key, value in fields.items():
+            if key == "owner_type":
+                state.owner_type = _coerce_owner_type(value)
+            elif key == "lifecycle_state":
+                state.lifecycle_state = LifecycleState(value)
+            elif key == "exposure_state":
+                state.exposure_state = ExposureState(value)
+            elif key == "consolidation_state":
+                state.consolidation_state = ConsolidationState(value)
+            elif hasattr(state, key):
+                setattr(state, key, value)
+
+    @staticmethod
+    def _owner_state_id(owner_type: OwnerType, owner_id: str) -> str:
+        return f"{owner_type.value}:{owner_id}"
+
+
+def _coerce_owner_type(value: OwnerType | str) -> OwnerType:
+    if isinstance(value, OwnerType):
+        return value
+    return OwnerType(value)
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()

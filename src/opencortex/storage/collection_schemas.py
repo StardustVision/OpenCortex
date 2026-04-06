@@ -229,6 +229,61 @@ class CollectionSchemas:
             ],
         }
 
+    @staticmethod
+    def cognitive_state_collection(name: str) -> Dict[str, Any]:
+        """Schema for durable cognitive state (payload-only, no vectors)."""
+        return {
+            "CollectionName": name,
+            "Description": "Cognitive owner state",
+            "Fields": [
+                {"FieldName": "id", "FieldType": "string", "IsPrimaryKey": True},
+                {"FieldName": "owner_type", "FieldType": "string"},
+                {"FieldName": "owner_id", "FieldType": "string"},
+                {"FieldName": "lifecycle_state", "FieldType": "string"},
+                {"FieldName": "exposure_state", "FieldType": "string"},
+                {"FieldName": "consolidation_state", "FieldType": "string"},
+                {"FieldName": "version", "FieldType": "int64"},
+                {"FieldName": "payload", "FieldType": "string"},
+                {"FieldName": "created_at", "FieldType": "date_time"},
+                {"FieldName": "updated_at", "FieldType": "date_time"},
+            ],
+            "ScalarIndex": [
+                "owner_type",
+                "owner_id",
+                "lifecycle_state",
+                "exposure_state",
+                "consolidation_state",
+                "version",
+                "created_at",
+                "updated_at",
+            ],
+        }
+
+    @staticmethod
+    def cognitive_mutation_batch_collection(name: str) -> Dict[str, Any]:
+        """Schema for cognitive mutation ledger (explicit payload-only schema)."""
+        return {
+            "CollectionName": name,
+            "Description": "Cognitive mutation batch ledger",
+            "Fields": [
+                {"FieldName": "id", "FieldType": "string", "IsPrimaryKey": True},
+                {"FieldName": "batch_id", "FieldType": "string"},
+                {"FieldName": "status", "FieldType": "string"},
+                {"FieldName": "error", "FieldType": "string"},
+                {"FieldName": "metadata", "FieldType": "string"},
+                {"FieldName": "created_at", "FieldType": "date_time"},
+                {"FieldName": "updated_at", "FieldType": "date_time"},
+                {"FieldName": "committed_at", "FieldType": "date_time"},
+            ],
+            "ScalarIndex": [
+                "batch_id",
+                "status",
+                "created_at",
+                "updated_at",
+                "committed_at",
+            ],
+        }
+
 
 async def init_trace_collection(
     storage: StorageInterface, name: str, vector_dim: int,
@@ -281,4 +336,19 @@ async def init_context_collection(
     schema = CollectionSchemas.context_collection(name, vector_dim)
     return await storage.create_collection(name, schema)
 
+
+async def init_cognitive_state_collection(
+    storage: StorageInterface, name: str,
+) -> bool:
+    """Initialize the cognitive state collection."""
+    schema = CollectionSchemas.cognitive_state_collection(name)
+    return await storage.create_collection(name, schema)
+
+
+async def init_cognitive_mutation_batch_collection(
+    storage: StorageInterface, name: str,
+) -> bool:
+    """Initialize the cognitive mutation batch collection."""
+    schema = CollectionSchemas.cognitive_mutation_batch_collection(name)
+    return await storage.create_collection(name, schema)
 
