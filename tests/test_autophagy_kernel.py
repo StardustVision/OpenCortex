@@ -40,6 +40,15 @@ class _StateStoreSpy:
 
     async def persist_batch(self, batch: MutationBatch, state_updates):
         self.persist_batch_calls.append((batch, list(state_updates)))
+        for update in state_updates:
+            key = (update["owner_type"], update["owner_id"])
+            current = self.states_by_owner.get(key)
+            if current is None:
+                continue
+            record = current.to_dict()
+            record.update(update.get("fields", {}))
+            record["version"] = int(update["expected_version"]) + 1
+            self.states_by_owner[key] = CognitiveState.from_dict(record)
         return True
 
 
@@ -67,6 +76,29 @@ class _ConsolidationGateSpy:
     async def evaluate(self, states):
         self.calls.append(list(states))
         return self.result
+
+
+class _FreshVersionConsolidationGate:
+    def __init__(self) -> None:
+        self.calls = []
+
+    async def evaluate(self, states):
+        captured = list(states)
+        self.calls.append(captured)
+        state = captured[0]
+        return ConsolidationGateResult(
+            candidates=[],
+            state_updates=[
+                {
+                    "owner_type": state.owner_type,
+                    "owner_id": state.owner_id,
+                    "expected_version": state.version,
+                    "fields": {
+                        "consolidation_state": ConsolidationState.SUBMITTED.value,
+                    },
+                }
+            ],
+        )
 
 
 class _CandidateStoreSpy:
@@ -220,7 +252,10 @@ class TestAutophagyKernel(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mutation_engine.calls[0]["query"], "what do we know")
         self.assertIn("mem-1", mutation_engine.calls[0]["states"])
         self.assertEqual(len(consolidation_gate.calls), 1)
-        self.assertEqual(consolidation_gate.calls[0], [state])
+        self.assertEqual(len(consolidation_gate.calls[0]), 1)
+        self.assertEqual(consolidation_gate.calls[0][0].owner_id, "mem-1")
+        self.assertEqual(consolidation_gate.calls[0][0].version, 5)
+        self.assertEqual(consolidation_gate.calls[0][0].activation_score, 0.9)
         self.assertEqual(candidate_store.calls, [[candidate]])
         self.assertEqual(len(state_store.persist_batch_calls), 2)
         first_batch, first_updates = state_store.persist_batch_calls[0]
@@ -230,6 +265,42 @@ class TestAutophagyKernel(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(first_batch.batch_id, second_batch.batch_id)
         self.assertEqual(first_updates, mutation_result.state_updates)
         self.assertEqual(second_updates, gate_result.state_updates)
+
+    async def test_apply_recall_outcome_reloads_fresh_state_versions_before_consolidation(self) -> None:
+        state = self._state("mem-fresh", version=4)
+        state.consolidation_state = ConsolidationState.CANDIDATE
+        state_store = _StateStoreSpy()
+        state_store.states_by_owner[(OwnerType.MEMORY, "mem-fresh")] = state
+        mutation_result = RecallMutationResult(
+            state_updates=[
+                {
+                    "owner_type": OwnerType.MEMORY,
+                    "owner_id": "mem-fresh",
+                    "expected_version": 4,
+                    "fields": {"activation_score": 0.9},
+                }
+            ]
+        )
+        consolidation_gate = _FreshVersionConsolidationGate()
+        kernel = AutophagyKernel(
+            state_store=state_store,
+            mutation_engine=_MutationEngineSpy(mutation_result),
+            consolidation_gate=consolidation_gate,
+            candidate_store=_CandidateStoreSpy(),
+            metabolism_controller=_MetabolismControllerSpy(MetabolismResult()),
+        )
+
+        await kernel.apply_recall_outcome(
+            owner_ids=["mem-fresh"],
+            query="freshen state versions",
+            recall_outcome={"selected_results": ["mem-fresh"]},
+        )
+
+        self.assertEqual(len(consolidation_gate.calls), 1)
+        self.assertEqual(consolidation_gate.calls[0][0].version, 5)
+        self.assertEqual(len(state_store.persist_batch_calls), 2)
+        _, consolidation_updates = state_store.persist_batch_calls[1]
+        self.assertEqual(consolidation_updates[0]["expected_version"], 5)
 
     async def test_metabolize_states_persists_state_updates_and_returns_controller_result(self) -> None:
         state = self._state("mem-hot", version=6)

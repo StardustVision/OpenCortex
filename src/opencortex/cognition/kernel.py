@@ -97,7 +97,10 @@ class AutophagyKernel:
             recall_result.state_updates,
         )
 
-        consolidation_result = await self._consolidation_gate.evaluate(list(states.values()))
+        refreshed_states = await self._state_store.get_states_for_owners(owner_ids)
+        consolidation_result = await self._consolidation_gate.evaluate(
+            list(refreshed_states.values())
+        )
         persisted_candidate_ids = await self._candidate_store.save_many(
             consolidation_result.candidates
         )
@@ -116,7 +119,7 @@ class AutophagyKernel:
             )
 
         return RecallOutcomeApplicationResult(
-            states=states,
+            states=refreshed_states,
             recall_result=recall_result,
             recall_batch=recall_batch,
             recall_batch_committed=recall_batch_committed,
