@@ -2,6 +2,7 @@
 
 from .candidate_store import CandidateStore
 from .consolidation_gate import ConsolidationGate, ConsolidationGateResult
+from .kernel import AutophagyKernel, RecallOutcomeApplicationResult
 from .metabolism import CognitiveMetabolismController
 from .mutation_engine import RecallMutationEngine
 from .recall_planner import RecallPlanner
@@ -27,6 +28,8 @@ from .state_types import (
 __all__ = [
     "RecallPlanner",
     "RecallMutationEngine",
+    "AutophagyKernel",
+    "RecallOutcomeApplicationResult",
     "CandidateStore",
     "ConsolidationGate",
     "ConsolidationGateResult",

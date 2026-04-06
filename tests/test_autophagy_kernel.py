@@ -1,0 +1,274 @@
+import os
+import sys
+import unittest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+
+from opencortex.cognition import AutophagyKernel
+from opencortex.cognition.consolidation_gate import ConsolidationGateResult
+from opencortex.cognition.state_types import (
+    CognitiveState,
+    ConsolidationCandidate,
+    ConsolidationState,
+    MetabolismResult,
+    MutationBatch,
+    OwnerType,
+    RecallMutationResult,
+)
+
+
+class _StateStoreSpy:
+    def __init__(self) -> None:
+        self.states_by_owner = {}
+        self.saved_states = []
+        self.persist_batch_calls = []
+
+    async def get_by_owner(self, owner_type: OwnerType, owner_id: str):
+        return self.states_by_owner.get((owner_type, owner_id))
+
+    async def save_state(self, state: CognitiveState):
+        self.states_by_owner[(state.owner_type, state.owner_id)] = state
+        self.saved_states.append(state)
+        return state
+
+    async def get_states_for_owners(self, owner_ids):
+        return {
+            owner_id: state
+            for (owner_type, owner_id), state in self.states_by_owner.items()
+            if owner_id in owner_ids
+        }
+
+    async def persist_batch(self, batch: MutationBatch, state_updates):
+        self.persist_batch_calls.append((batch, list(state_updates)))
+        return True
+
+
+class _MutationEngineSpy:
+    def __init__(self, result: RecallMutationResult) -> None:
+        self.result = result
+        self.calls = []
+
+    def apply(self, query, states, recall_outcome):
+        self.calls.append(
+            {
+                "query": query,
+                "states": states,
+                "recall_outcome": recall_outcome,
+            }
+        )
+        return self.result
+
+
+class _ConsolidationGateSpy:
+    def __init__(self, result: ConsolidationGateResult) -> None:
+        self.result = result
+        self.calls = []
+
+    async def evaluate(self, states):
+        self.calls.append(list(states))
+        return self.result
+
+
+class _CandidateStoreSpy:
+    def __init__(self, saved_ids=None) -> None:
+        self.saved_ids = list(saved_ids or [])
+        self.calls = []
+
+    async def save_many(self, candidates):
+        self.calls.append(list(candidates))
+        return list(self.saved_ids)
+
+
+class _MetabolismControllerSpy:
+    def __init__(self, result: MetabolismResult) -> None:
+        self.result = result
+        self.calls = []
+
+    def tick(self, states, dominance_window=None):
+        self.calls.append(
+            {
+                "states": states,
+                "dominance_window": dominance_window,
+            }
+        )
+        return self.result
+
+
+class TestAutophagyKernel(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _state(owner_id: str, *, version: int = 1) -> CognitiveState:
+        return CognitiveState(
+            state_id=f"memory:{owner_id}",
+            owner_type=OwnerType.MEMORY,
+            owner_id=owner_id,
+            tenant_id="tenant-1",
+            user_id="user-1",
+            project_id="project-1",
+            version=version,
+        )
+
+    @staticmethod
+    def _candidate(owner_id: str) -> ConsolidationCandidate:
+        return ConsolidationCandidate(
+            candidate_id=f"cand-{owner_id}",
+            source_owner_type=OwnerType.MEMORY.value,
+            source_owner_id=owner_id,
+            tenant_id="tenant-1",
+            user_id="user-1",
+            project_id="project-1",
+            candidate_kind="state_consolidation",
+            statement=f"statement-{owner_id}",
+            abstract="abstract",
+            overview="overview",
+        )
+
+    async def test_initialize_owner_creates_missing_cognitive_state(self) -> None:
+        state_store = _StateStoreSpy()
+        kernel = AutophagyKernel(
+            state_store=state_store,
+            mutation_engine=_MutationEngineSpy(RecallMutationResult()),
+            consolidation_gate=_ConsolidationGateSpy(ConsolidationGateResult()),
+            candidate_store=_CandidateStoreSpy(),
+            metabolism_controller=_MetabolismControllerSpy(MetabolismResult()),
+        )
+
+        state = await kernel.initialize_owner(
+            owner_type=OwnerType.MEMORY,
+            owner_id="mem-new",
+            tenant_id="tenant-1",
+            user_id="user-1",
+            project_id="project-1",
+        )
+
+        self.assertEqual(len(state_store.saved_states), 1)
+        self.assertEqual(state.owner_type, OwnerType.MEMORY)
+        self.assertEqual(state.owner_id, "mem-new")
+        self.assertEqual(state.state_id, "memory:mem-new")
+
+    async def test_initialize_owner_skips_existing_state(self) -> None:
+        existing = self._state("mem-existing", version=3)
+        state_store = _StateStoreSpy()
+        state_store.states_by_owner[(OwnerType.MEMORY, "mem-existing")] = existing
+        kernel = AutophagyKernel(
+            state_store=state_store,
+            mutation_engine=_MutationEngineSpy(RecallMutationResult()),
+            consolidation_gate=_ConsolidationGateSpy(ConsolidationGateResult()),
+            candidate_store=_CandidateStoreSpy(),
+            metabolism_controller=_MetabolismControllerSpy(MetabolismResult()),
+        )
+
+        state = await kernel.initialize_owner(
+            owner_type=OwnerType.MEMORY,
+            owner_id="mem-existing",
+            tenant_id="tenant-1",
+            user_id="user-1",
+            project_id="project-1",
+        )
+
+        self.assertIs(state, existing)
+        self.assertEqual(state_store.saved_states, [])
+
+    async def test_apply_recall_outcome_persists_mutations_candidates_and_gate_updates(self) -> None:
+        state = self._state("mem-1", version=4)
+        state.consolidation_state = ConsolidationState.CANDIDATE
+        state_store = _StateStoreSpy()
+        state_store.states_by_owner[(OwnerType.MEMORY, "mem-1")] = state
+
+        mutation_result = RecallMutationResult(
+            state_updates=[
+                {
+                    "owner_type": OwnerType.MEMORY,
+                    "owner_id": "mem-1",
+                    "expected_version": 4,
+                    "fields": {"activation_score": 0.9},
+                }
+            ]
+        )
+        candidate = self._candidate("mem-1")
+        gate_result = ConsolidationGateResult(
+            candidates=[candidate],
+            state_updates=[
+                {
+                    "owner_type": OwnerType.MEMORY,
+                    "owner_id": "mem-1",
+                    "expected_version": 4,
+                    "fields": {"consolidation_state": ConsolidationState.SUBMITTED.value},
+                }
+            ],
+        )
+        mutation_engine = _MutationEngineSpy(mutation_result)
+        consolidation_gate = _ConsolidationGateSpy(gate_result)
+        candidate_store = _CandidateStoreSpy(saved_ids=["cand-1"])
+        kernel = AutophagyKernel(
+            state_store=state_store,
+            mutation_engine=mutation_engine,
+            consolidation_gate=consolidation_gate,
+            candidate_store=candidate_store,
+            metabolism_controller=_MetabolismControllerSpy(MetabolismResult()),
+        )
+
+        result = await kernel.apply_recall_outcome(
+            owner_ids=["mem-1"],
+            query="what do we know",
+            recall_outcome={"selected_results": ["mem-1"]},
+        )
+
+        self.assertIs(result.recall_result, mutation_result)
+        self.assertIs(result.consolidation_result, gate_result)
+        self.assertEqual(result.persisted_candidate_ids, ["cand-1"])
+        self.assertEqual(len(mutation_engine.calls), 1)
+        self.assertEqual(mutation_engine.calls[0]["query"], "what do we know")
+        self.assertIn("mem-1", mutation_engine.calls[0]["states"])
+        self.assertEqual(len(consolidation_gate.calls), 1)
+        self.assertEqual(consolidation_gate.calls[0], [state])
+        self.assertEqual(candidate_store.calls, [[candidate]])
+        self.assertEqual(len(state_store.persist_batch_calls), 2)
+        first_batch, first_updates = state_store.persist_batch_calls[0]
+        second_batch, second_updates = state_store.persist_batch_calls[1]
+        self.assertIsInstance(first_batch, MutationBatch)
+        self.assertIsInstance(second_batch, MutationBatch)
+        self.assertNotEqual(first_batch.batch_id, second_batch.batch_id)
+        self.assertEqual(first_updates, mutation_result.state_updates)
+        self.assertEqual(second_updates, gate_result.state_updates)
+
+    async def test_metabolize_states_persists_state_updates_and_returns_controller_result(self) -> None:
+        state = self._state("mem-hot", version=6)
+        state_store = _StateStoreSpy()
+        state_store.states_by_owner[(OwnerType.MEMORY, "mem-hot")] = state
+        metabolism_result = MetabolismResult(
+            state_updates=[
+                {
+                    "owner_type": OwnerType.MEMORY,
+                    "owner_id": "mem-hot",
+                    "expected_version": 6,
+                    "fields": {"activation_score": 0.75},
+                }
+            ],
+            review_events=[{"kind": "cool"}],
+        )
+        controller = _MetabolismControllerSpy(metabolism_result)
+        kernel = AutophagyKernel(
+            state_store=state_store,
+            mutation_engine=_MutationEngineSpy(RecallMutationResult()),
+            consolidation_gate=_ConsolidationGateSpy(ConsolidationGateResult()),
+            candidate_store=_CandidateStoreSpy(),
+            metabolism_controller=controller,
+        )
+
+        result = await kernel.metabolize_states(
+            owner_ids=["mem-hot"],
+            dominance_window={"mem-hot": {"wins": 3}},
+        )
+
+        self.assertIs(result, metabolism_result)
+        self.assertEqual(len(controller.calls), 1)
+        self.assertEqual(controller.calls[0]["states"], {"mem-hot": state})
+        self.assertEqual(controller.calls[0]["dominance_window"], {"mem-hot": {"wins": 3}})
+        self.assertEqual(len(state_store.persist_batch_calls), 1)
+        batch, updates = state_store.persist_batch_calls[0]
+        self.assertIsInstance(batch, MutationBatch)
+        self.assertEqual(updates, metabolism_result.state_updates)
+
+
+if __name__ == "__main__":
+    unittest.main()
