@@ -3,7 +3,7 @@
 
 import asyncio
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Mapping, Sequence
+from typing import Any, Dict, Mapping, Sequence
 
 from opencortex.cognition.state_types import (
     CognitiveState,
@@ -34,49 +34,63 @@ class CognitiveStateStore:
         self,
         storage: StorageInterface,
         state_collection: str = DEFAULT_COGNITIVE_STATE_COLLECTION,
-        mutation_batch_collection: str = DEFAULT_COGNITIVE_MUTATION_BATCH_COLLECTION,
+        batch_collection: str = DEFAULT_COGNITIVE_MUTATION_BATCH_COLLECTION,
     ) -> None:
         self._storage = storage
         self._state_collection = state_collection
-        self._mutation_batch_collection = mutation_batch_collection
+        self._batch_collection = batch_collection
+        self._mutation_batch_collection = batch_collection
         self._owner_locks: Dict[str, asyncio.Lock] = {}
         self._owner_locks_guard = asyncio.Lock()
 
     async def init(self) -> None:
         await init_cognitive_state_collection(self._storage, self._state_collection)
         await init_cognitive_mutation_batch_collection(
-            self._storage, self._mutation_batch_collection
+            self._storage, self._batch_collection
         )
 
     async def save_state(self, state: CognitiveState) -> CognitiveState:
         async with await self._get_owner_lock(state.owner_type, state.owner_id):
-            now = _utc_now_iso()
-            if not state.created_at:
-                state.created_at = now
-            state.updated_at = now
+            if not state.state_id:
+                state.state_id = self._owner_state_id(state.owner_type, state.owner_id)
             await self._storage.upsert(self._state_collection, state.to_dict())
             return state
 
     async def get_by_owner(
         self, owner_type: OwnerType, owner_id: str
     ) -> CognitiveState | None:
-        rows = await self._storage.get(
-            self._state_collection, [self._owner_state_id(owner_type, owner_id)]
+        rows = await self._storage.filter(
+            self._state_collection,
+            {
+                "op": "and",
+                "conds": [
+                    {"op": "must", "field": "owner_type", "conds": [owner_type.value]},
+                    {"op": "must", "field": "owner_id", "conds": [owner_id]},
+                ],
+            },
+            limit=100,
         )
         if not rows:
             return None
-        return CognitiveState.from_dict(rows[0])
+        best = max(rows, key=lambda row: int(row.get("version", 0)))
+        return CognitiveState.from_dict(best)
 
-    async def get_states_for_owners(self, owner_ids: Sequence[str]) -> List[CognitiveState]:
+    async def get_states_for_owners(self, owner_ids: Sequence[str]) -> Dict[str, CognitiveState]:
         ids = [oid for oid in owner_ids if oid]
         if not ids:
-            return []
+            return {}
         rows = await self._storage.filter(
             self._state_collection,
             {"op": "must", "field": "owner_id", "conds": ids},
             limit=max(1, len(ids) * 10),
         )
-        return [CognitiveState.from_dict(row) for row in rows]
+        states: Dict[str, CognitiveState] = {}
+        for row in rows:
+            state = CognitiveState.from_dict(row)
+            prior = states.get(state.owner_id)
+            if prior is None or state.version >= prior.version:
+                states[state.owner_id] = state
+        return states
 
     async def update_state(
         self,
@@ -98,7 +112,6 @@ class CognitiveStateStore:
             self._validate_mutable_fields(fields)
             self._apply_state_fields(existing, fields)
             existing.version += 1
-            existing.updated_at = _utc_now_iso()
             await self._storage.upsert(self._state_collection, existing.to_dict())
             return existing
 
@@ -110,7 +123,7 @@ class CognitiveStateStore:
         batch.status = MutationBatchStatus.PENDING
         batch.error = ""
         batch.updated_at = _utc_now_iso()
-        await self._storage.upsert(self._mutation_batch_collection, batch.to_dict())
+        await self._storage.upsert(self._batch_collection, batch.to_dict())
 
         normalized_updates = [
             {
@@ -121,6 +134,8 @@ class CognitiveStateStore:
             }
             for update in state_updates
         ]
+        if not batch.owner_ids:
+            batch.owner_ids = [update["owner_id"] for update in normalized_updates]
 
         lock_keys = sorted(
             {
@@ -153,7 +168,7 @@ class CognitiveStateStore:
                     next_state = CognitiveState.from_dict(current.to_dict())
                     self._apply_state_fields(next_state, fields)
                     next_state.version += 1
-                    next_state.updated_at = _utc_now_iso()
+                    next_state.last_mutation_at = _utc_now_iso()
                     staged[state_key] = next_state
 
                 for state_key in lock_keys:
@@ -164,14 +179,14 @@ class CognitiveStateStore:
             batch.status = MutationBatchStatus.FAILED
             batch.error = str(exc)
             batch.updated_at = _utc_now_iso()
-            await self._storage.upsert(self._mutation_batch_collection, batch.to_dict())
+            await self._storage.upsert(self._batch_collection, batch.to_dict())
             return False
 
         now = _utc_now_iso()
         batch.status = MutationBatchStatus.COMMITTED
         batch.updated_at = now
         batch.committed_at = now
-        await self._storage.upsert(self._mutation_batch_collection, batch.to_dict())
+        await self._storage.upsert(self._batch_collection, batch.to_dict())
         return True
 
     async def _get_owner_lock(self, owner_type: OwnerType, owner_id: str) -> asyncio.Lock:

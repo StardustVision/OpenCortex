@@ -4,7 +4,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 def _utc_now_iso() -> str:
@@ -12,26 +12,31 @@ def _utc_now_iso() -> str:
 
 
 class OwnerType(str, Enum):
-    USER = "user"
-    SESSION = "session"
-    TENANT = "tenant"
+    MEMORY = "memory"
+    TRACE = "trace"
 
 
 class LifecycleState(str, Enum):
     ACTIVE = "active"
+    COMPRESSED = "compressed"
     ARCHIVED = "archived"
-    DELETED = "deleted"
+    FORGOTTEN = "forgotten"
 
 
 class ExposureState(str, Enum):
-    PRIVATE = "private"
-    SHARED = "shared"
-    PUBLIC = "public"
+    OPEN = "open"
+    GUARDED = "guarded"
+    QUARANTINED = "quarantined"
+    CONTESTED = "contested"
 
 
 class ConsolidationState(str, Enum):
-    UNCONSOLIDATED = "unconsolidated"
-    CONSOLIDATED = "consolidated"
+    NONE = "none"
+    CANDIDATE = "candidate"
+    SUBMITTED = "submitted"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
 
 
 class MutationBatchStatus(str, Enum):
@@ -42,54 +47,104 @@ class MutationBatchStatus(str, Enum):
 
 @dataclass
 class CognitiveState:
+    state_id: str
     owner_type: OwnerType
     owner_id: str
+    tenant_id: str
+    user_id: str
+    project_id: str
     lifecycle_state: LifecycleState = LifecycleState.ACTIVE
-    exposure_state: ExposureState = ExposureState.PRIVATE
-    consolidation_state: ConsolidationState = ConsolidationState.UNCONSOLIDATED
+    exposure_state: ExposureState = ExposureState.OPEN
+    consolidation_state: ConsolidationState = ConsolidationState.NONE
+    activation_score: float = 0.0
+    stability_score: float = 0.0
+    risk_score: float = 0.0
+    novelty_score: float = 0.0
+    evidence_residual_score: float = 0.0
+    access_count: int = 0
+    retrieval_success_count: int = 0
+    retrieval_failure_count: int = 0
+    last_accessed_at: Optional[str] = None
+    last_reinforced_at: Optional[str] = None
+    last_penalized_at: Optional[str] = None
+    last_mutation_at: Optional[str] = None
+    last_mutation_reason: str = ""
+    last_mutation_source: str = ""
     version: int = 1
-    payload: Dict[str, Any] = field(default_factory=dict)
-    created_at: str = field(default_factory=_utc_now_iso)
-    updated_at: str = field(default_factory=_utc_now_iso)
-
-    @property
-    def id(self) -> str:
-        return f"{self.owner_type.value}:{self.owner_id}"
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
-            "id": self.id,
+        record: Dict[str, Any] = {
+            "id": self.state_id,
+            "state_id": self.state_id,
             "owner_type": self.owner_type.value,
             "owner_id": self.owner_id,
+            "tenant_id": self.tenant_id,
+            "user_id": self.user_id,
+            "project_id": self.project_id,
             "lifecycle_state": self.lifecycle_state.value,
             "exposure_state": self.exposure_state.value,
             "consolidation_state": self.consolidation_state.value,
+            "activation_score": self.activation_score,
+            "stability_score": self.stability_score,
+            "risk_score": self.risk_score,
+            "novelty_score": self.novelty_score,
+            "evidence_residual_score": self.evidence_residual_score,
+            "access_count": self.access_count,
+            "retrieval_success_count": self.retrieval_success_count,
+            "retrieval_failure_count": self.retrieval_failure_count,
+            "last_mutation_reason": self.last_mutation_reason,
+            "last_mutation_source": self.last_mutation_source,
             "version": self.version,
-            "payload": self.payload,
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
+            "metadata": self.metadata,
         }
+        if self.last_accessed_at:
+            record["last_accessed_at"] = self.last_accessed_at
+        if self.last_reinforced_at:
+            record["last_reinforced_at"] = self.last_reinforced_at
+        if self.last_penalized_at:
+            record["last_penalized_at"] = self.last_penalized_at
+        if self.last_mutation_at:
+            record["last_mutation_at"] = self.last_mutation_at
+        return record
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "CognitiveState":
         return cls(
+            state_id=data["state_id"],
             owner_type=OwnerType(data["owner_type"]),
             owner_id=data["owner_id"],
+            tenant_id=data.get("tenant_id", ""),
+            user_id=data.get("user_id", ""),
+            project_id=data.get("project_id", ""),
             lifecycle_state=LifecycleState(data.get("lifecycle_state", LifecycleState.ACTIVE.value)),
-            exposure_state=ExposureState(data.get("exposure_state", ExposureState.PRIVATE.value)),
+            exposure_state=ExposureState(data.get("exposure_state", ExposureState.OPEN.value)),
             consolidation_state=ConsolidationState(
-                data.get("consolidation_state", ConsolidationState.UNCONSOLIDATED.value)
+                data.get("consolidation_state", ConsolidationState.NONE.value)
             ),
+            activation_score=float(data.get("activation_score", 0.0)),
+            stability_score=float(data.get("stability_score", 0.0)),
+            risk_score=float(data.get("risk_score", 0.0)),
+            novelty_score=float(data.get("novelty_score", 0.0)),
+            evidence_residual_score=float(data.get("evidence_residual_score", 0.0)),
+            access_count=int(data.get("access_count", 0)),
+            retrieval_success_count=int(data.get("retrieval_success_count", 0)),
+            retrieval_failure_count=int(data.get("retrieval_failure_count", 0)),
+            last_accessed_at=data.get("last_accessed_at") or None,
+            last_reinforced_at=data.get("last_reinforced_at") or None,
+            last_penalized_at=data.get("last_penalized_at") or None,
+            last_mutation_at=data.get("last_mutation_at") or None,
+            last_mutation_reason=data.get("last_mutation_reason", ""),
+            last_mutation_source=data.get("last_mutation_source", ""),
             version=int(data.get("version", 1)),
-            payload=dict(data.get("payload", {})),
-            created_at=data.get("created_at") or _utc_now_iso(),
-            updated_at=data.get("updated_at") or _utc_now_iso(),
+            metadata=dict(data.get("metadata", {})),
         )
 
 
 @dataclass
 class MutationBatch:
     batch_id: str
+    owner_ids: List[str] = field(default_factory=list)
     status: MutationBatchStatus = MutationBatchStatus.PENDING
     error: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -105,6 +160,7 @@ class MutationBatch:
         record = {
             "id": self.id,
             "batch_id": self.batch_id,
+            "owner_ids": self.owner_ids,
             "status": self.status.value,
             "error": self.error,
             "metadata": self.metadata,
@@ -120,6 +176,7 @@ class MutationBatch:
         committed_at = data.get("committed_at") or None
         return cls(
             batch_id=data["batch_id"],
+            owner_ids=list(data.get("owner_ids", [])),
             status=MutationBatchStatus(data.get("status", MutationBatchStatus.PENDING.value)),
             error=data.get("error", ""),
             metadata=dict(data.get("metadata", {})),
