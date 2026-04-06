@@ -240,6 +240,30 @@ Autophagy 直接拥有：
 - 向知识层派发候选
 - 认知稳态控制
 
+### 8.2.1 内部子模块
+
+为避免 `Autophagy` 退化为 God object，内核在概念上必须继续拆分为一组一等子模块：
+
+- `Cognitive State Manager`
+  - 持有 memory/trace 的状态转移规则
+
+- `Recall Planner`
+  - 将 `RecallIntent` 转换为 `RecallPlan`
+
+- `Recall Mutation Engine`
+  - 在 recall 后执行 reinforcement / suppression / contestation 回写
+
+- `Consolidation Gate`
+  - 负责 candidate 准入判定
+
+- `Cognitive Homeostasis Controller`
+  - 负责 activation ceiling、暴露平衡、长尾压制、代谢节流
+
+- `Cognitive Audit Log`
+  - 负责输出解释性事件轨迹
+
+这些子模块可以在实现上被组合在一个 service 中，但在架构上必须显式存在。
+
 ### 8.3 边界
 
 Autophagy 不直接拥有：
@@ -316,6 +340,35 @@ Autophagy 不直接拥有：
 - `absorbed_into_knowledge_id`
 - `evidence_residual_score`
 
+其中：
+
+- `evidence_residual_score`
+  表示对象在核心结论已被 knowledge 吸收之后，作为原始证据残留仍有多大保留价值。  
+  例如某条 trace 已经被抽成 SOP，但其错误现场和修复过程仍可在审计、debug 或 lineage 分析中保留较高残余价值。
+
+### 9.6 强化抑制机制
+
+认知层必须内建反失控机制，避免“越常被召回的对象越无限变强”。
+
+因此，reinforcement 不能是无上限累加，而应满足：
+
+- `activation ceiling`
+  - activation_score 必须有上限，避免极少数对象垄断 recall 面
+
+- `diminishing returns`
+  - 同一对象在短时间窗口内的重复命中，边际强化收益递减
+
+- `recency rebalance`
+  - 新近、但证据强的对象应能在一段时间内挑战既有热门对象
+
+- `suppression recovery`
+  - 被压制对象不应永久失去竞争资格，应允许在新证据或新 query 模式下恢复
+
+- `homeostatic decay`
+  - 长期高激活但近期无有效引用的对象，应逐步回落到稳定区间
+
+这些机制由 `Cognitive Homeostasis Controller` 统一管理。
+
 ## 10. Knowledge Layer
 
 ### 10.1 定义
@@ -367,6 +420,26 @@ Knowledge 是介于认知层与技能层之间的稳定结论层。
 - scope filtering
 - lineage-aware filtering
 
+### 10.2.1 模块交互顺序
+
+Knowledge Layer 的标准流必须明确为：
+
+`Intake -> Validation -> Governance -> Recall Service`
+
+其中：
+
+- `Knowledge Intake`
+  决定对象是否进入知识层，以及进入哪个 canonical group 候选集合
+
+- `Knowledge Validation`
+  决定证据是否足够支撑治理决策
+
+- `Knowledge Governance`
+  决定对象的最终治理状态与 lineage 位置
+
+- `Knowledge Recall Service`
+  只暴露已完成治理的 knowledge，不参与治理决策
+
 ### 10.3 Knowledge 的治理状态体系
 
 Knowledge 应采用治理导向的三维状态体系：
@@ -396,6 +469,47 @@ Knowledge 应采用治理导向的三维状态体系：
 - `superseded`
 - `merged`
 - `split`
+
+### 10.3.1 Knowledge Intake 到 Governance 的显式状态流
+
+为避免 Intake/Validation/Governance 之间退化为 ad-hoc 逻辑，knowledge 进入层后的标准状态流应为：
+
+`intake_received -> validating -> governed`
+
+其中 `governed` 进一步分叉为：
+
+- `accepted`
+- `rejected`
+- `contested`
+
+再映射到正式治理状态：
+
+- `accepted`
+  -> `validated` 或 `canonical`
+
+- `rejected`
+  -> 不生成正式 knowledge record，保留 intake 审计记录
+
+- `contested`
+  -> 进入 `contested + suppressed/internal`，等待进一步证据或人工治理
+
+### 10.3.2 contested knowledge 的处理
+
+当 knowledge 进入 `contested` 时，治理层必须显式决定一条路径，而不能无限悬挂：
+
+- `human resolution`
+  - 进入人工确认
+
+- `evidence resolution`
+  - 等待更多 evidence 进入后重新验证
+
+- `supersession resolution`
+  - 若已有更强版本，则转入 `superseded`
+
+- `timeout archival`
+  - 长期未解决的 contested knowledge 进入 `archived`
+
+这里的“解决”属于 knowledge governance，不属于 Autophagy。
 
 ### 10.4 Knowledge 的最低字段集合
 
@@ -430,6 +544,12 @@ Knowledge 应采用治理导向的三维状态体系：
 - `applicability`
 - `constraints`
 - `deprecation_note`
+
+说明：
+
+- `abstract / overview / content`
+  在 knowledge 对象中保留这三层字段是有意为之，表示 knowledge 也采用与 CortexFS 一致的三层内容表达。
+  这不意味着 knowledge 重新进入认知状态机，而仅表示其内容载体与 recall 粒度仍采用统一的分层表示。
 
 ## 11. Skill Layer
 
@@ -560,6 +680,24 @@ Cone retrieval 是 memory / trace recall 的结构化增强器。
 
 `从少量锚点出发，沿实体共现邻域扩展，并通过路径成本信号提升 recall 质量。`
 
+### 12.5.1 实体图归属
+
+在终局架构中，cone retrieval 所需的实体索引与实体共现图不应归 Autophagy 私有持有，而应被定义为：
+
+`shared cognitive retrieval infrastructure`
+
+也就是：
+
+- 由写入与更新路径维护
+- 由 memory/trace recall 执行器读取
+- 由 Autophagy 在 recall planning 中决定是否启用
+
+这样可以避免：
+- 把实体图变成认知状态的一部分
+- 把 cone retrieval 与 Autophagy 硬耦死
+
+Autophagy 负责“何时用”，而不是“持有整张图”。
+
 ### 12.6 Recall Mutation
 
 Recall 完成后，Autophagy 必须回写认知对象状态：
@@ -571,6 +709,31 @@ Recall 完成后，Autophagy 必须回写认知对象状态：
 - 当更强对象持续胜出时，标记 superseded 候选
 
 Knowledge 不参与同样的认知变异循环；它只接收治理层面的 usage / citation 更新。
+
+### 12.7 Recall 全流程图
+
+```mermaid
+sequenceDiagram
+    participant I as Interface
+    participant R as IntentRouter
+    participant A as Autophagy Kernel
+    participant M as Memory/Trace Recall
+    participant K as Knowledge Recall
+    participant F as Fusion
+    participant G as Consolidation Gate
+
+    I->>R: query
+    R->>A: RecallIntent
+    A->>A: build RecallPlan
+    A->>M: execute memory/trace recall
+    A->>K: execute knowledge recall
+    M-->>A: cognitive candidates
+    K-->>A: governed knowledge candidates
+    A->>F: fuse multi-surface results
+    F-->>A: final recall set
+    A->>A: mutate memory/trace states
+    A->>G: check consolidation eligibility
+```
 
 ## 13. Consolidation Pipeline
 
@@ -629,6 +792,26 @@ Autophagy 再据此更新源 memory/trace 的状态。
 
 这样可以避免同一批材料反复无限地产生重复 candidate。
 
+具体规则应至少包括：
+
+- `accepted`
+  - 源对象 `consolidation_state -> absorbed` 或 `residual`
+  - 记录 `absorbed_into_knowledge_id`
+
+- `rejected`
+  - 源对象回到 `raw` 或 `clusterable`
+  - 写入 `candidate_rejection_reason`
+  - 在冷却窗口内禁止对同一簇立即重复提名
+
+- `merged`
+  - 源对象记录 `merged_into_knowledge_id`
+  - 提高压缩或归档倾向
+
+- `contested`
+  - 源对象提升 `contestation_score`
+  - 必要时进入 `quarantined` 候选
+  - 等待更多证据，而不是直接遗忘
+
 ## 14. 全链路事件闭环
 
 北极星系统闭环是：
@@ -644,6 +827,28 @@ Autophagy 再据此更新源 memory/trace 的状态。
 9. skill 结果回写 knowledge governance 指标
 
 这是一套从 cognition 到 knowledge 再到 skill 的分层闭环系统，而不是一个统一大仓库。
+
+## 14.1 Observability 与 Explainability
+
+“可解释”在本架构中不是抽象原则，而必须落成可观测产物。系统至少应提供：
+
+- `Cognitive Event Log`
+  - 记录 ingest、recall、mutation、consolidation dispatch 的关键事件
+
+- `Knowledge Governance Audit Log`
+  - 记录 validation、canonical、superseded、deprecated、invalid 等治理变更
+
+- `Recall Explain Trace`
+  - 记录 RecallIntent、RecallPlan、三表面执行结果、fusion 决策和 mutation 结果
+
+- `Debug / Audit Endpoint`
+  - 允许查看某个 memory、trace、knowledge、skill 的 lineage、状态和最近事件
+
+换句话说：
+
+- state change 必须可追踪
+- recall plan 必须可回放
+- governance decision 必须可审计
 
 ## 15. 现有代码的终局重映射
 
@@ -692,6 +897,17 @@ Autophagy 再据此更新源 memory/trace 的状态。
 - `Knowledge Governance`
 
 这些概念不一定必须一概念一文件，但它们必须在架构上显式存在。
+
+## 15.4 推荐拆解顺序（非绑定）
+
+虽然本文不定义 Phase 1 计划，但为了避免 spec 变成 shelfware，建议保留一条非绑定的拆解顺序作为迁移信号：
+
+1. 先把 recall 主权从 `orchestrator + retrieve` 中抽象成 `RecallIntent / RecallPlan`
+2. 再把 memory/trace 的认知状态回写统一收口
+3. 再把 `Archivist / Sandbox / KnowledgeStore` 明确拆成 knowledge intake / validation / governance
+4. 最后再建立完整的 Autophagy Kernel 外壳
+
+这不是实施计划，只是建议优先切出的架构 seam。
 
 ## 16. 设计风险
 

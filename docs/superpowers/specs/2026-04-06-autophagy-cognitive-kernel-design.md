@@ -240,6 +240,30 @@ Autophagy directly owns:
 - consolidation candidate dispatch to the knowledge layer
 - cognitive homeostasis
 
+### 8.2.1 Internal Subcomponents
+
+To prevent `Autophagy` from collapsing into a God object, the kernel must be decomposed conceptually into first-class subcomponents:
+
+- `Cognitive State Manager`
+  - owns state transition rules for memory/trace
+
+- `Recall Planner`
+  - transforms `RecallIntent` into `RecallPlan`
+
+- `Recall Mutation Engine`
+  - applies reinforcement / suppression / contestation after recall
+
+- `Consolidation Gate`
+  - decides candidate admission into the knowledge pipeline
+
+- `Cognitive Homeostasis Controller`
+  - enforces activation ceilings, exposure balancing, long-tail suppression, and metabolic throttling
+
+- `Cognitive Audit Log`
+  - emits explainable event traces
+
+These may be composed in one service at implementation time, but must exist explicitly in the architecture.
+
 ### 8.3 Boundaries
 
 Autophagy does not directly own:
@@ -316,6 +340,35 @@ Each memory or trace object should expose at least:
 - `absorbed_into_knowledge_id`
 - `evidence_residual_score`
 
+Where:
+
+- `evidence_residual_score`
+  measures how much residual evidentiary value remains in an object after its core conclusion has been absorbed into the knowledge layer.
+  For example, a trace may already be abstracted into an SOP while its detailed failure scene and repair path still retain value for audit or debugging.
+
+### 9.6 Reinforcement Damping
+
+The cognition layer must include anti-runaway mechanisms to avoid a pure “rich get richer” loop.
+
+Reinforcement therefore cannot be an unbounded additive process. It must satisfy:
+
+- `activation ceiling`
+  - activation_score must have an upper bound
+
+- `diminishing returns`
+  - repeated hits on the same object within a short window should yield lower marginal reinforcement
+
+- `recency rebalance`
+  - newer but high-evidence objects must retain a chance to challenge incumbent popular objects
+
+- `suppression recovery`
+  - suppressed objects must be able to recover when new evidence or new query patterns appear
+
+- `homeostatic decay`
+  - historically popular but no-longer-cited objects should drift back toward a stable baseline
+
+These mechanisms are governed by the `Cognitive Homeostasis Controller`.
+
 ## 10. Knowledge Layer
 
 ### 10.1 Definition
@@ -369,6 +422,26 @@ Provides stable recall over governed knowledge with filters such as:
 - scope
 - lineage awareness
 
+### 10.2.1 Module Interaction Order
+
+The standard flow inside the Knowledge Layer must be:
+
+`Intake -> Validation -> Governance -> Recall Service`
+
+Where:
+
+- `Knowledge Intake`
+  decides whether the object enters the layer and which candidate canonical group it belongs to
+
+- `Knowledge Validation`
+  decides whether evidence is sufficient for governance
+
+- `Knowledge Governance`
+  decides the final governance state and lineage position
+
+- `Knowledge Recall Service`
+  only exposes already-governed knowledge and does not participate in governance decisions
+
 ### 10.3 Knowledge Governance State Model
 
 Knowledge should use a governance-oriented three-dimensional model:
@@ -398,6 +471,47 @@ Knowledge should use a governance-oriented three-dimensional model:
 - `superseded`
 - `merged`
 - `split`
+
+### 10.3.1 Explicit Intake-to-Governance Flow
+
+To avoid ad-hoc transitions across Intake/Validation/Governance, the standard state flow into the knowledge layer should be:
+
+`intake_received -> validating -> governed`
+
+Where `governed` branches into:
+
+- `accepted`
+- `rejected`
+- `contested`
+
+And then maps into formal governance states:
+
+- `accepted`
+  -> `validated` or `canonical`
+
+- `rejected`
+  -> no formal knowledge record is published; intake audit remains
+
+- `contested`
+  -> enters `contested + suppressed/internal` until further evidence or governance resolution
+
+### 10.3.2 contested Knowledge Resolution
+
+When knowledge enters `contested`, the governance layer must choose an explicit path rather than leaving it unresolved indefinitely:
+
+- `human resolution`
+  - route to human review
+
+- `evidence resolution`
+  - wait for additional evidence and re-validate
+
+- `supersession resolution`
+  - if a stronger successor exists, transition toward `superseded`
+
+- `timeout archival`
+  - if unresolved for too long, archive it
+
+This is a knowledge-governance concern, not an Autophagy concern.
 
 ### 10.4 Required Knowledge Fields
 
@@ -432,6 +546,12 @@ Each knowledge object should expose at least:
 - `applicability`
 - `constraints`
 - `deprecation_note`
+
+Note:
+
+- `abstract / overview / content`
+  are intentionally retained for knowledge objects as well, meaning knowledge keeps the same layered content representation used elsewhere in OpenCortex.
+  This does not place knowledge back into the cognitive state machine; it only preserves a unified layered content substrate and recall granularity.
 
 ## 11. Skill Layer
 
@@ -562,6 +682,27 @@ Its role is:
 
 `start from a narrow set of anchors, expand through entity co-occurrence neighborhoods, and improve recall through propagated path-cost signals`
 
+### 12.5.1 Entity Graph Ownership
+
+In the north-star architecture, the entity index and co-occurrence graph required by cone retrieval should not be privately owned by Autophagy.
+
+They should be defined as:
+
+`shared cognitive retrieval infrastructure`
+
+That means:
+
+- maintained by write/update paths
+- read by memory/trace recall executors
+- enabled or disabled by Autophagy at recall-planning time
+
+This prevents:
+
+- conflating the entity graph with cognitive state itself
+- coupling cone retrieval too tightly to Autophagy internals
+
+Autophagy decides when to use the graph, not how the entire graph is owned as state.
+
 ### 12.6 Recall Mutation
 
 After recall, Autophagy must mutate cognitive objects:
@@ -573,6 +714,31 @@ After recall, Autophagy must mutate cognitive objects:
 - mark superseded candidates when stronger objects consistently win
 
 Knowledge objects do not undergo the same mutation cycle. They receive governance-level usage and citation updates instead.
+
+### 12.7 Recall Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant I as Interface
+    participant R as IntentRouter
+    participant A as Autophagy Kernel
+    participant M as Memory/Trace Recall
+    participant K as Knowledge Recall
+    participant F as Fusion
+    participant G as Consolidation Gate
+
+    I->>R: query
+    R->>A: RecallIntent
+    A->>A: build RecallPlan
+    A->>M: execute memory/trace recall
+    A->>K: execute knowledge recall
+    M-->>A: cognitive candidates
+    K-->>A: governed knowledge candidates
+    A->>F: fuse multi-surface results
+    F-->>A: final recall set
+    A->>A: mutate memory/trace states
+    A->>G: check consolidation eligibility
+```
 
 ## 13. Consolidation Pipeline
 
@@ -633,6 +799,26 @@ Autophagy then updates source memory/trace objects accordingly.
 
 This prevents infinite candidate re-emission and keeps cognition aware of what has already been absorbed downstream.
 
+At minimum:
+
+- `accepted`
+  - source objects move toward `absorbed` or `residual`
+  - record `absorbed_into_knowledge_id`
+
+- `rejected`
+  - source objects return to `raw` or `clusterable`
+  - record `candidate_rejection_reason`
+  - apply a cooldown window before the same cluster can be re-candidated
+
+- `merged`
+  - source objects record `merged_into_knowledge_id`
+  - increase compression or archival tendency
+
+- `contested`
+  - source objects increase `contestation_score`
+  - may enter `quarantined` candidacy where appropriate
+  - wait for more evidence rather than being forgotten immediately
+
 ## 14. Full Event Loop
 
 The north-star system loop is:
@@ -648,6 +834,28 @@ The north-star system loop is:
 9. skill outcomes feed governance metrics back to the knowledge layer
 
 This is a layered cognition-to-knowledge-to-skill system, not a monolithic store.
+
+## 14.1 Observability and Explainability
+
+“Explainable” must be made concrete in the architecture. The system should provide at least:
+
+- `Cognitive Event Log`
+  - for ingest, recall, mutation, and consolidation-dispatch events
+
+- `Knowledge Governance Audit Log`
+  - for validation, canonicalization, supersession, deprecation, and invalidation decisions
+
+- `Recall Explain Trace`
+  - for RecallIntent, RecallPlan, per-surface results, fusion decisions, and mutation outputs
+
+- `Debug / Audit Endpoint`
+  - to inspect the lineage, states, and recent events of memory, trace, knowledge, or skill objects
+
+In short:
+
+- state changes must be traceable
+- recall plans must be replayable
+- governance decisions must be auditable
 
 ## 15. Current-Code Remapping
 
@@ -695,6 +903,17 @@ This is a layered cognition-to-knowledge-to-skill system, not a monolithic store
 - `Knowledge Governance`
 
 These do not necessarily need one-file-per-concept implementation, but they must exist as explicit architectural units.
+
+## 15.4 Recommended Decomposition Order (Non-Binding)
+
+Although this document does not define a Phase 1 plan, it should still signal an architectural seam-cutting order to avoid becoming shelfware:
+
+1. first extract recall authority from `orchestrator + retrieve` into explicit `RecallIntent / RecallPlan`
+2. then unify memory/trace cognitive mutation paths
+3. then split `Archivist / Sandbox / KnowledgeStore` into intake / validation / governance
+4. only after those seams exist should the full `Autophagy Kernel` shell be formalized
+
+This is not an implementation plan, only a recommended decomposition signal.
 
 ## 16. Design Risks
 
