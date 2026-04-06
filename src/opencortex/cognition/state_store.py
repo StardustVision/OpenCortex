@@ -95,6 +95,7 @@ class CognitiveStateStore:
                     f"expected={expected_version}, actual={existing.version}"
                 )
 
+            self._validate_mutable_fields(fields)
             self._apply_state_fields(existing, fields)
             existing.version += 1
             existing.updated_at = _utc_now_iso()
@@ -111,14 +112,54 @@ class CognitiveStateStore:
         batch.updated_at = _utc_now_iso()
         await self._storage.upsert(self._mutation_batch_collection, batch.to_dict())
 
+        normalized_updates = [
+            {
+                "owner_type": _coerce_owner_type(update["owner_type"]),
+                "owner_id": str(update["owner_id"]),
+                "expected_version": int(update["expected_version"]),
+                "fields": dict(update.get("fields", {})),
+            }
+            for update in state_updates
+        ]
+
+        lock_keys = sorted(
+            {
+                self._owner_state_id(update["owner_type"], update["owner_id"])
+                for update in normalized_updates
+            }
+        )
+
         try:
-            for update in state_updates:
-                await self.update_state(
-                    owner_type=_coerce_owner_type(update["owner_type"]),
-                    owner_id=str(update["owner_id"]),
-                    expected_version=int(update["expected_version"]),
-                    fields=dict(update.get("fields", {})),
-                )
+            async with _LockGroup([await self._get_lock_by_key(key) for key in lock_keys]):
+                staged: Dict[str, CognitiveState] = {}
+                for update in normalized_updates:
+                    owner_type = update["owner_type"]
+                    owner_id = update["owner_id"]
+                    state_key = self._owner_state_id(owner_type, owner_id)
+
+                    current = staged.get(state_key)
+                    if current is None:
+                        current = await self.get_by_owner(owner_type, owner_id)
+                    if current is None:
+                        raise KeyError(f"state not found for {state_key}")
+                    if current.version != update["expected_version"]:
+                        raise StaleStateVersionError(
+                            f"stale version for {state_key}: "
+                            f"expected={update['expected_version']}, actual={current.version}"
+                        )
+
+                    fields = update["fields"]
+                    self._validate_mutable_fields(fields)
+                    next_state = CognitiveState.from_dict(current.to_dict())
+                    self._apply_state_fields(next_state, fields)
+                    next_state.version += 1
+                    next_state.updated_at = _utc_now_iso()
+                    staged[state_key] = next_state
+
+                for state_key in lock_keys:
+                    state = staged.get(state_key)
+                    if state is not None:
+                        await self._storage.upsert(self._state_collection, state.to_dict())
         except StaleStateVersionError as exc:
             batch.status = MutationBatchStatus.FAILED
             batch.error = str(exc)
@@ -145,9 +186,7 @@ class CognitiveStateStore:
     @staticmethod
     def _apply_state_fields(state: CognitiveState, fields: Mapping[str, Any]) -> None:
         for key, value in fields.items():
-            if key == "owner_type":
-                state.owner_type = _coerce_owner_type(value)
-            elif key == "lifecycle_state":
+            if key == "lifecycle_state":
                 state.lifecycle_state = LifecycleState(value)
             elif key == "exposure_state":
                 state.exposure_state = ExposureState(value)
@@ -157,8 +196,31 @@ class CognitiveStateStore:
                 setattr(state, key, value)
 
     @staticmethod
+    def _validate_mutable_fields(fields: Mapping[str, Any]) -> None:
+        immutable_keys = {
+            "id",
+            "state_id",
+            "owner_id",
+            "owner_type",
+            "tenant_id",
+            "user_id",
+            "project_id",
+        }
+        for key in fields:
+            if key in immutable_keys:
+                raise ValueError(f"identity field mutation is not allowed: {key}")
+
+    @staticmethod
     def _owner_state_id(owner_type: OwnerType, owner_id: str) -> str:
         return f"{owner_type.value}:{owner_id}"
+
+    async def _get_lock_by_key(self, key: str) -> asyncio.Lock:
+        async with self._owner_locks_guard:
+            lock = self._owner_locks.get(key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._owner_locks[key] = lock
+            return lock
 
 
 def _coerce_owner_type(value: OwnerType | str) -> OwnerType:
@@ -169,3 +231,19 @@ def _coerce_owner_type(value: OwnerType | str) -> OwnerType:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+class _LockGroup:
+    """Acquire/release a precomputed list of locks in deterministic order."""
+
+    def __init__(self, locks: Sequence[asyncio.Lock]) -> None:
+        self._locks = list(locks)
+
+    async def __aenter__(self) -> "_LockGroup":
+        for lock in self._locks:
+            await lock.acquire()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        for lock in reversed(self._locks):
+            lock.release()

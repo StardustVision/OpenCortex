@@ -135,6 +135,61 @@ class TestCognitiveStateStore(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(state)
         self.assertEqual(state.version, 1)
 
+    async def test_persist_batch_failure_does_not_leave_partial_updates(self):
+        await self.store.save_state(
+            CognitiveState(owner_type=OwnerType.USER, owner_id="user-a")
+        )
+        await self.store.save_state(
+            CognitiveState(owner_type=OwnerType.USER, owner_id="user-b")
+        )
+        batch = MutationBatch(batch_id="batch-rollback")
+
+        committed = await self.store.persist_batch(
+            batch=batch,
+            state_updates=[
+                {
+                    "owner_type": OwnerType.USER,
+                    "owner_id": "user-a",
+                    "expected_version": 1,
+                    "fields": {"payload": {"topic": "written-first"}},
+                },
+                {
+                    "owner_type": OwnerType.USER,
+                    "owner_id": "user-b",
+                    "expected_version": 0,
+                    "fields": {"payload": {"topic": "stale-second"}},
+                },
+            ],
+        )
+        self.assertFalse(committed)
+
+        state_a = await self.store.get_by_owner(OwnerType.USER, "user-a")
+        state_b = await self.store.get_by_owner(OwnerType.USER, "user-b")
+        self.assertIsNotNone(state_a)
+        self.assertIsNotNone(state_b)
+        self.assertEqual(state_a.version, 1)
+        self.assertEqual(state_b.version, 1)
+        self.assertEqual(state_a.payload, {})
+        self.assertEqual(state_b.payload, {})
+
+    async def test_update_state_rejects_identity_field_mutation(self):
+        await self.store.save_state(
+            CognitiveState(owner_type=OwnerType.USER, owner_id="user-identity")
+        )
+
+        with self.assertRaises(ValueError):
+            await self.store.update_state(
+                owner_type=OwnerType.USER,
+                owner_id="user-identity",
+                expected_version=1,
+                fields={"owner_id": "other-user"},
+            )
+
+    def test_mutation_batch_to_dict_omits_unset_committed_at(self):
+        batch = MutationBatch(batch_id="batch-no-commit")
+        record = batch.to_dict()
+        self.assertNotIn("committed_at", record)
+
 
 if __name__ == "__main__":
     unittest.main()

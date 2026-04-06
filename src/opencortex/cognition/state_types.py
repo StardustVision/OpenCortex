@@ -102,7 +102,7 @@ class MutationBatch:
         return self.batch_id
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        record = {
             "id": self.id,
             "batch_id": self.batch_id,
             "status": self.status.value,
@@ -110,8 +110,10 @@ class MutationBatch:
             "metadata": self.metadata,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
-            "committed_at": self.committed_at or "",
         }
+        if self.committed_at:
+            record["committed_at"] = self.committed_at
+        return record
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MutationBatch":
