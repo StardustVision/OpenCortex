@@ -211,44 +211,41 @@ class CognitiveStateStore:
                         "state flush failed; rollback succeeded; "
                         f"flush_error={type(flush_exc).__name__}: {flush_exc}"
                     ) from flush_exc
+                try:
+                    now = _utc_now_iso()
+                    batch.status = MutationBatchStatus.COMMITTED
+                    batch.updated_at = now
+                    batch.committed_at = now
+                    await self._storage.upsert(self._batch_collection, batch.to_dict())
+                    return True
+                except Exception as commit_exc:
+                    rollback_exc = await self._rollback_states_from_snapshots(
+                        applied_state_keys, snapshots
+                    )
+                    batch.status = MutationBatchStatus.FAILED
+                    if rollback_exc is not None:
+                        batch.error = (
+                            "commit ledger upsert failed; rollback failed; "
+                            f"commit_error={type(commit_exc).__name__}: {commit_exc}; "
+                            f"rollback_error={type(rollback_exc).__name__}: {rollback_exc}"
+                        )
+                    else:
+                        batch.error = (
+                            "commit ledger upsert failed; rollback succeeded; "
+                            f"commit_error={type(commit_exc).__name__}: {commit_exc}"
+                        )
+                    batch.updated_at = _utc_now_iso()
+                    batch.committed_at = None
+                    try:
+                        await self._storage.upsert(self._batch_collection, batch.to_dict())
+                    except Exception:
+                        pass
+                    return False
         except Exception as exc:
             batch.status = MutationBatchStatus.FAILED
             batch.error = f"{type(exc).__name__}: {exc}"
             batch.updated_at = _utc_now_iso()
             await self._storage.upsert(self._batch_collection, batch.to_dict())
-            return False
-
-        try:
-            now = _utc_now_iso()
-            batch.status = MutationBatchStatus.COMMITTED
-            batch.updated_at = now
-            batch.committed_at = now
-            await self._storage.upsert(self._batch_collection, batch.to_dict())
-            return True
-        except Exception as exc:
-            rollback_exc = await self._rollback_with_locks(
-                lock_keys=lock_keys,
-                applied_state_keys=applied_state_keys,
-                snapshots=snapshots,
-            )
-            batch.status = MutationBatchStatus.FAILED
-            if rollback_exc is not None:
-                batch.error = (
-                    "commit ledger upsert failed; rollback failed; "
-                    f"commit_error={type(exc).__name__}: {exc}; "
-                    f"rollback_error={type(rollback_exc).__name__}: {rollback_exc}"
-                )
-            else:
-                batch.error = (
-                    "commit ledger upsert failed; rollback succeeded; "
-                    f"commit_error={type(exc).__name__}: {exc}"
-                )
-            batch.updated_at = _utc_now_iso()
-            batch.committed_at = None
-            try:
-                await self._storage.upsert(self._batch_collection, batch.to_dict())
-            except Exception:
-                pass
             return False
 
     async def _get_owner_lock(self, owner_type: OwnerType, owner_id: str) -> asyncio.Lock:
@@ -337,24 +334,6 @@ class CognitiveStateStore:
             return None
         except Exception as exc:
             return exc
-
-    async def _rollback_with_locks(
-        self,
-        lock_keys: Sequence[str],
-        applied_state_keys: Sequence[str],
-        snapshots: Mapping[str, CognitiveState],
-    ) -> Exception | None:
-        if not applied_state_keys:
-            return None
-        try:
-            async with _LockGroup([await self._get_lock_by_key(key) for key in lock_keys]):
-                return await self._rollback_states_from_snapshots(
-                    applied_state_keys=applied_state_keys,
-                    snapshots=snapshots,
-                )
-        except Exception as exc:
-            return exc
-
 
 def _coerce_owner_type(value: OwnerType | str) -> OwnerType:
     if isinstance(value, OwnerType):

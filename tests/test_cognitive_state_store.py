@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 import os
 import sys
@@ -26,6 +27,8 @@ class _LocalInMemoryStorage:
         self._records = {}
         self.upsert_calls = []
         self.fail_on_committed_batch_ids = set()
+        self.before_committed_failure_event = None
+        self.allow_committed_failure_event = None
         self._state_upsert_count = 0
         self.fail_on_state_upsert_number = None
 
@@ -46,6 +49,10 @@ class _LocalInMemoryStorage:
             and data.get("batch_id") in self.fail_on_committed_batch_ids
             and data.get("status") == "committed"
         ):
+            if self.before_committed_failure_event is not None:
+                self.before_committed_failure_event.set()
+            if self.allow_committed_failure_event is not None:
+                await self.allow_committed_failure_event.wait()
             raise RuntimeError("simulated committed upsert failure")
         if collection in self._records and collection.endswith("state"):
             self._state_upsert_count += 1
@@ -453,6 +460,59 @@ class TestCognitiveStateStore(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(state)
         self.assertEqual(state.version, 1)
         self.assertEqual(state.activation_score, 0.0)
+
+    async def test_persist_batch_holds_owner_lock_through_ledger_failure_recovery(self):
+        await self.store.save_state(self._make_state("mem-race"))
+
+        self.storage.fail_on_committed_batch_ids.add("batch-a")
+        self.storage.before_committed_failure_event = asyncio.Event()
+        self.storage.allow_committed_failure_event = asyncio.Event()
+
+        batch_a = MutationBatch(batch_id="batch-a")
+        batch_b = MutationBatch(batch_id="batch-b")
+
+        task_a = asyncio.create_task(
+            self.store.persist_batch(
+                batch=batch_a,
+                state_updates=[
+                    {
+                        "owner_type": OwnerType.MEMORY,
+                        "owner_id": "mem-race",
+                        "expected_version": 1,
+                        "fields": {"activation_score": 0.4},
+                    }
+                ],
+            )
+        )
+        await self.storage.before_committed_failure_event.wait()
+
+        task_b = asyncio.create_task(
+            self.store.persist_batch(
+                batch=batch_b,
+                state_updates=[
+                    {
+                        "owner_type": OwnerType.MEMORY,
+                        "owner_id": "mem-race",
+                        "expected_version": 1,
+                        "fields": {"activation_score": 0.9},
+                    }
+                ],
+            )
+        )
+        await asyncio.sleep(0)
+        self.assertFalse(task_b.done())
+
+        self.storage.allow_committed_failure_event.set()
+        committed_a = await task_a
+        committed_b = await task_b
+
+        self.assertFalse(committed_a)
+        self.assertTrue(committed_b)
+
+        state = await self.store.get_by_owner(OwnerType.MEMORY, "mem-race")
+        self.assertIsNotNone(state)
+        self.assertEqual(state.version, 2)
+        self.assertEqual(state.activation_score, 0.9)
 
 
 if __name__ == "__main__":
