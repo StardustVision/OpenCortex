@@ -40,7 +40,7 @@ class ConeScorer:
     async def expand_candidates(
         self, candidates: List[Dict], query_entities: Set[str],
         collection: str, storage,
-        tenant_id: str = "", user_id: str = "", scope_filter: str = "",
+        tenant_id: str = "", user_id: str = "", project_id: str = "",
     ) -> List[Dict]:
         """Stage 1: Pull related memories from entity index, filtered by access control.
 
@@ -78,6 +78,10 @@ class ConeScorer:
                         continue  # Wrong tenant
                     if r_scope == "private" and r_user != user_id:
                         continue  # Private record, wrong user
+                    # Project isolation
+                    r_project = r.get("project_id", "public")
+                    if project_id and project_id != "public" and r_project not in (project_id, "public", ""):
+                        continue  # Wrong project
                     r["_score"] = 0.0
                     r["_expanded"] = True
                     candidates.append(r)

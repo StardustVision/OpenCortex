@@ -232,7 +232,17 @@ class MemoryOrchestrator:
         if self._llm_completion:
             self._analyzer = IntentAnalyzer(llm_completion=self._llm_completion)
 
-        # 6. Retriever (with rerank config from CortexConfig + LLM fallback)
+        # 6. Cone Retrieval: entity index + scorer (BEFORE retriever, so retriever gets live reference)
+        if self._config.cone_retrieval_enabled:
+            from opencortex.retrieve.entity_index import EntityIndex
+            from opencortex.retrieve.cone_scorer import ConeScorer
+            self._entity_index = EntityIndex()
+            self._cone_scorer = ConeScorer(self._entity_index)
+            asyncio.create_task(self._entity_index.build_for_collection(
+                self._storage, self._get_collection()
+            ))
+
+        # 7. Retriever (with rerank config from CortexConfig + LLM fallback)
         rerank_cfg = self._build_rerank_config()
         self._retriever = HierarchicalRetriever(
             storage=self._storage,
@@ -245,25 +255,14 @@ class MemoryOrchestrator:
             cone_weight=self._config.cone_weight if self._config.cone_retrieval_enabled else 0.0,
         )
 
-        # 7. Background maintenance: text indexes, migrations, re-embed
+        # 8. Background maintenance: text indexes, migrations, re-embed
         asyncio.create_task(self._startup_maintenance())
 
-        # 8. Cortex Alpha components
+        # 9. Cortex Alpha components
         await self._init_alpha()
 
-        # 9. Skill Engine
+        # 10. Skill Engine
         await self._init_skill_engine()
-
-        # 10. Cone Retrieval: entity index + scorer
-        if self._config.cone_retrieval_enabled:
-            from opencortex.retrieve.entity_index import EntityIndex
-            from opencortex.retrieve.cone_scorer import ConeScorer
-            self._entity_index = EntityIndex()
-            self._cone_scorer = ConeScorer(self._entity_index)
-            # Non-blocking background build
-            asyncio.create_task(self._entity_index.build_for_collection(
-                self._storage, self._get_collection()
-            ))
 
         self._initialized = True
         logger.info(
@@ -1561,6 +1560,26 @@ class MemoryOrchestrator:
                 content=content or "",
                 abstract=abstract or "",
             )
+
+        # Sync entity index if content/abstract changed
+        if getattr(self, '_entity_index', None) and (abstract is not None or content is not None):
+            try:
+                text_for_entities = content or abstract or ""
+                if text_for_entities and self._llm_completion:
+                    derive_result = await self._derive_layers(
+                        user_abstract=abstract or record.get("abstract", ""),
+                        content=text_for_entities,
+                    )
+                    new_entities = derive_result.get("entities", [])
+                else:
+                    new_entities = []
+                self._entity_index.update(self._get_collection(), str(record_id), new_entities)
+                if new_entities:
+                    await self._storage.update(
+                        self._get_collection(), record_id, {"entities": new_entities}
+                    )
+            except Exception as exc:
+                logger.debug("[MemoryOrchestrator] Entity sync on update failed: %s", exc)
 
         logger.info("[MemoryOrchestrator] Updated context: %s", uri)
         return True
