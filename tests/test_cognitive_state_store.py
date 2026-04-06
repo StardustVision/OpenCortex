@@ -370,6 +370,13 @@ class TestCognitiveStateStore(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(states["mem-x"].owner_type, OwnerType.MEMORY)
         self.assertEqual(states["mem-y"].owner_type, OwnerType.TRACE)
 
+    async def test_get_states_for_owners_raises_on_owner_type_collision(self):
+        await self.store.save_state(self._make_state("shared"))
+        await self.store.save_state(self._make_state("shared", owner_type=OwnerType.TRACE))
+
+        with self.assertRaises(ValueError):
+            await self.store.get_states_for_owners(["shared"])
+
     async def test_init_accepts_batch_collection_parameter(self):
         store = CognitiveStateStore(self.storage, batch_collection="custom_batches")
         await store.init()
@@ -441,6 +448,11 @@ class TestCognitiveStateStore(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(ledger_rows), 1)
         self.assertEqual(ledger_rows[0]["status"], MutationBatchStatus.FAILED.value)
         self.assertIn("RuntimeError", ledger_rows[0]["error"])
+
+        state = await self.store.get_by_owner(OwnerType.MEMORY, "mem-commit-fail")
+        self.assertIsNotNone(state)
+        self.assertEqual(state.version, 1)
+        self.assertEqual(state.activation_score, 0.0)
 
 
 if __name__ == "__main__":

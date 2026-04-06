@@ -39,7 +39,6 @@ class CognitiveStateStore:
         self._storage = storage
         self._state_collection = state_collection
         self._batch_collection = batch_collection
-        self._mutation_batch_collection = batch_collection
         self._owner_locks: Dict[str, asyncio.Lock] = {}
         self._owner_locks_guard = asyncio.Lock()
 
@@ -94,6 +93,11 @@ class CognitiveStateStore:
         for row in rows:
             state = CognitiveState.from_dict(row)
             prior = states.get(state.owner_id)
+            if prior is not None and prior.owner_type != state.owner_type:
+                raise ValueError(
+                    "ambiguous owner_id collision across owner types for "
+                    f"owner_id={state.owner_id}: {prior.owner_type.value}, {state.owner_type.value}"
+                )
             if prior is None or state.version >= prior.version:
                 states[state.owner_id] = state
         return states
@@ -138,6 +142,9 @@ class CognitiveStateStore:
         batch.updated_at = _utc_now_iso()
         await self._storage.upsert(self._batch_collection, batch.to_dict())
 
+        lock_keys: list[str] = []
+        snapshots: Dict[str, CognitiveState] = {}
+        applied_state_keys: list[str] = []
         try:
             normalized_updates = [
                 {
@@ -158,7 +165,6 @@ class CognitiveStateStore:
 
             async with _LockGroup([await self._get_lock_by_key(key) for key in lock_keys]):
                 staged: Dict[str, CognitiveState] = {}
-                snapshots: Dict[str, CognitiveState] = {}
                 for update in normalized_updates:
                     owner_type = update["owner_type"]
                     owner_id = update["owner_id"]
@@ -185,7 +191,6 @@ class CognitiveStateStore:
                     next_state.last_mutation_at = _utc_now_iso()
                     staged[state_key] = next_state
 
-                applied_state_keys: list[str] = []
                 try:
                     for state_key in lock_keys:
                         state = staged.get(state_key)
@@ -221,8 +226,23 @@ class CognitiveStateStore:
             await self._storage.upsert(self._batch_collection, batch.to_dict())
             return True
         except Exception as exc:
+            rollback_exc = await self._rollback_with_locks(
+                lock_keys=lock_keys,
+                applied_state_keys=applied_state_keys,
+                snapshots=snapshots,
+            )
             batch.status = MutationBatchStatus.FAILED
-            batch.error = f"{type(exc).__name__}: {exc}"
+            if rollback_exc is not None:
+                batch.error = (
+                    "commit ledger upsert failed; rollback failed; "
+                    f"commit_error={type(exc).__name__}: {exc}; "
+                    f"rollback_error={type(rollback_exc).__name__}: {rollback_exc}"
+                )
+            else:
+                batch.error = (
+                    "commit ledger upsert failed; rollback succeeded; "
+                    f"commit_error={type(exc).__name__}: {exc}"
+                )
             batch.updated_at = _utc_now_iso()
             batch.committed_at = None
             try:
@@ -315,6 +335,23 @@ class CognitiveStateStore:
                 if snapshot is not None:
                     await self._storage.upsert(self._state_collection, snapshot.to_dict())
             return None
+        except Exception as exc:
+            return exc
+
+    async def _rollback_with_locks(
+        self,
+        lock_keys: Sequence[str],
+        applied_state_keys: Sequence[str],
+        snapshots: Mapping[str, CognitiveState],
+    ) -> Exception | None:
+        if not applied_state_keys:
+            return None
+        try:
+            async with _LockGroup([await self._get_lock_by_key(key) for key in lock_keys]):
+                return await self._rollback_states_from_snapshots(
+                    applied_state_keys=applied_state_keys,
+                    snapshots=snapshots,
+                )
         except Exception as exc:
             return exc
 
