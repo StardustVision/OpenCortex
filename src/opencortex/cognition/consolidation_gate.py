@@ -55,6 +55,7 @@ class ConsolidationGate:
         now = self._now_iso_fn()
         candidates: List[ConsolidationCandidate] = []
         state_updates: List[Dict[str, Any]] = []
+        seen_fingerprints: set[str] = set()
 
         for state in states:
             if not isinstance(state, CognitiveState):
@@ -66,7 +67,11 @@ class ConsolidationGate:
             if candidate is None:
                 continue
 
-            candidate.dedupe_fingerprint = self._candidate_store.build_fingerprint(candidate)
+            fingerprint = self._candidate_store.build_fingerprint(candidate)
+            if fingerprint in seen_fingerprints:
+                continue
+            seen_fingerprints.add(fingerprint)
+            candidate.dedupe_fingerprint = fingerprint
             is_dup = await self._candidate_store.is_duplicate_within_cooldown(
                 dedupe_fingerprint=candidate.dedupe_fingerprint,
                 tenant_id=candidate.tenant_id,
@@ -203,4 +208,3 @@ class ConsolidationGate:
             submission_reason=str(submission_reason),
             dedupe_fingerprint="",
         )
-

@@ -162,6 +162,15 @@ class TestConsolidationGate(unittest.IsolatedAsyncioTestCase):
         third = await self.gate.evaluate([state])
         self.assertEqual(len(third.candidates), 1)
 
+    async def test_gate_suppresses_duplicate_fingerprint_within_single_evaluate_call(self) -> None:
+        state_a = self._make_state("mem-2x", version=1)
+        state_b = self._make_state("mem-2x", version=1)
+
+        result = await self.gate.evaluate([state_a, state_b])
+
+        self.assertEqual(len(result.candidates), 1)
+        self.assertEqual(len(result.state_updates), 1)
+
     async def test_feedback_mapping_rejected_with_material_new_evidence_resets_to_none(self) -> None:
         state = self._make_state("mem-3", version=7)
         state.consolidation_state = ConsolidationState.REJECTED
