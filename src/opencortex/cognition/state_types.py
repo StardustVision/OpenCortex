@@ -217,3 +217,12 @@ class MutationBatch:
             updated_at=data.get("updated_at") or _utc_now_iso(),
             committed_at=committed_at,
         )
+
+
+@dataclass
+class RecallMutationResult:
+    state_updates: List[Dict[str, Any]] = field(default_factory=list)
+    generated_candidates: List[Dict[str, Any]] = field(default_factory=list)
+    quarantine_events: List[Dict[str, Any]] = field(default_factory=list)
+    contestation_events: List[Dict[str, Any]] = field(default_factory=list)
+    explanations: List[str] = field(default_factory=list)
