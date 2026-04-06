@@ -36,6 +36,41 @@ class DetailLevel(str, Enum):
     L2 = "l2"  # abstract + overview + full content
 
 
+class RecallSurface(str, Enum):
+    """Recall surfaces that define where to fetch context."""
+
+    MEMORY = "memory"
+    TRACE = "trace"
+    KNOWLEDGE = "knowledge"
+
+
+@dataclass
+class RecallPlan:
+    """Explicit recall plan emitted by Autophagy-level planners."""
+
+    should_recall: bool
+    surfaces: List[RecallSurface]
+    detail_level: DetailLevel
+    memory_limit: int
+    knowledge_limit: int
+    enable_cone: bool
+    fusion_policy: str
+    reasoning: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize the recall plan for observability and HTTP payloads."""
+        return {
+            "should_recall": self.should_recall,
+            "surfaces": [surface.value for surface in self.surfaces],
+            "detail_level": self.detail_level.value,
+            "memory_limit": self.memory_limit,
+            "knowledge_limit": self.knowledge_limit,
+            "enable_cone": self.enable_cone,
+            "fusion_policy": self.fusion_policy,
+            "reasoning": self.reasoning,
+        }
+
+
 class TraceEventType(str, Enum):
     """Types of trace events for retrieval process visualization."""
 
@@ -333,6 +368,7 @@ class SearchIntent:
     trigger_categories: List[str] = field(default_factory=list)
     queries: List[TypedQuery] = field(default_factory=list)
     lexical_boost: float = 0.3  # RRF weight for lexical path (0.55 for hard keywords)
+    recall_plan: Optional["RecallPlan"] = None
 
 
 @dataclass
@@ -432,16 +468,27 @@ class FindResult:
             }
 
         if self.search_intent:
+            recall_plan = self.search_intent.recall_plan
             result["search_intent"] = {
                 "intent_type": self.search_intent.intent_type,
                 "top_k": self.search_intent.top_k,
-                "detail_level": self.search_intent.detail_level.value,
+                "detail_level": (
+                    recall_plan.detail_level.value
+                    if recall_plan
+                    else self.search_intent.detail_level.value
+                ),
                 "time_scope": self.search_intent.time_scope,
                 "need_rerank": self.search_intent.need_rerank,
-                "should_recall": self.search_intent.should_recall,
+                "should_recall": (
+                    recall_plan.should_recall
+                    if recall_plan
+                    else self.search_intent.should_recall
+                ),
                 "trigger_categories": self.search_intent.trigger_categories,
                 "lexical_boost": self.search_intent.lexical_boost,
             }
+            if recall_plan:
+                result["recall_plan"] = recall_plan.to_dict()
 
         return result
 
