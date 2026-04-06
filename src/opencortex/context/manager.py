@@ -188,7 +188,7 @@ class ContextManager:
     def _safe_max_items(value: Any, *, default: int = 5, maximum: int = 20) -> int:
         """Coerce max_items without raising on invalid input."""
         try:
-            return min(int(value), maximum)
+            return min(max(int(value), 1), maximum)
         except (TypeError, ValueError):
             return default
 

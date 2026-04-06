@@ -33,11 +33,13 @@ class RecallPlanner:
         if recall_mode == "never":
             should_recall = False
 
-        detail_level = (
-            DetailLevel(detail_level_override)
-            if detail_level_override
-            else intent.detail_level
-        )
+        if detail_level_override:
+            try:
+                detail_level = DetailLevel(detail_level_override)
+            except (TypeError, ValueError):
+                detail_level = intent.detail_level
+        else:
+            detail_level = intent.detail_level
 
         if not should_recall:
             return RecallPlan(

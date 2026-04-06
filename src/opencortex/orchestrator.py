@@ -1676,6 +1676,7 @@ class MemoryOrchestrator:
             detail_level_override=detail_level_override,
         )
         intent.should_recall = plan.should_recall
+        intent.detail_level = plan.detail_level
         intent.recall_plan = plan
         return intent, plan
 

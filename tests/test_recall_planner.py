@@ -192,6 +192,24 @@ class TestRecallPlannerBehavior(unittest.TestCase):
 
         self.assertEqual(plan.detail_level, DetailLevel.L2)
 
+    def test_invalid_detail_override_falls_back_to_intent_detail(self):
+        planner = RecallPlanner(cone_enabled=False)
+        intent = SearchIntent(
+            detail_level=DetailLevel.L1,
+            should_recall=True,
+        )
+
+        plan = planner.plan(
+            query="bad override",
+            intent=intent,
+            max_items=4,
+            recall_mode="auto",
+            include_knowledge=False,
+            detail_level_override="l3",
+        )
+
+        self.assertEqual(plan.detail_level, DetailLevel.L1)
+
 
 class TestOrchestratorRecallPlanning(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -238,6 +256,7 @@ class TestOrchestratorRecallPlanning(unittest.IsolatedAsyncioTestCase):
         self.assertIs(returned_intent, intent)
         self.assertIs(returned_plan, plan)
         self.assertFalse(intent.should_recall)
+        self.assertEqual(intent.detail_level, DetailLevel.L2)
         self.assertIs(intent.recall_plan, plan)
         planner.plan.assert_called_once_with(
             query="what happened",

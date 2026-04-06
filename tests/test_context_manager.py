@@ -644,6 +644,22 @@ class TestContextManager(unittest.TestCase):
         self.assertEqual(result["intent"]["detail_level"], "l1")
         orch.plan_recall.assert_not_awaited()
 
+        result = self._run(cm.handle(
+            session_id="sess_invalid_cfg",
+            phase="prepare",
+            tenant_id="testteam",
+            user_id="alice",
+            turn_id="t2",
+            messages=[{"role": "user", "content": "ignore invalid config again"}],
+            config={
+                "recall_mode": "never",
+                "max_items": -8,
+            },
+        ))
+
+        self.assertEqual(result["memory"], [])
+        self.assertEqual(result["knowledge"], [])
+
         self._run(orch.close())
 
 
