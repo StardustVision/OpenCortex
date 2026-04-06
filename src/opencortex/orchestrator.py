@@ -1579,7 +1579,7 @@ class MemoryOrchestrator:
                         self._get_collection(), record_id, {"entities": new_entities}
                     )
             except Exception as exc:
-                logger.debug("[MemoryOrchestrator] Entity sync on update failed: %s", exc)
+                logger.warning("[MemoryOrchestrator] Entity sync on update failed: %s", exc)
 
         logger.info("[MemoryOrchestrator] Updated context: %s", uri)
         return True

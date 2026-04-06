@@ -123,6 +123,31 @@ class HierarchicalRetriever:
                 self.threshold,
             )
 
+    async def _apply_cone_scoring(self, candidates, query_text):
+        """Apply cone scoring to candidates. Thread-safe: uses only local variables."""
+        if not self._cone_scorer or self._cone_weight <= 0 or not candidates:
+            return candidates
+        try:
+            from opencortex.http.request_context import (
+                get_collection_name, get_effective_identity, get_effective_project_id,
+            )
+            col = get_collection_name() or "context"
+            tid, uid = get_effective_identity()
+            pid = get_effective_project_id()
+            qe = self._cone_scorer.extract_query_entities(query_text, candidates, col)
+            candidates = await self._cone_scorer.expand_candidates(
+                candidates, qe, col, self.storage,
+                tenant_id=tid, user_id=uid, project_id=pid,
+            )
+            candidates = self._cone_scorer.compute_cone_scores(candidates, qe, col)
+            for r in candidates:
+                bonus = r.get("_cone_bonus", 0.0)
+                r["_final_score"] = r.get("_final_score", r.get("_score", 0.0)) + self._cone_weight * bonus
+            candidates.sort(key=lambda r: r.get("_final_score", 0), reverse=True)
+        except Exception as exc:
+            logger.debug("[HierarchicalRetriever] Cone scoring failed: %s", exc)
+        return candidates
+
         # Score gap threshold for conditional rerank
         self._score_gap_threshold = (
             rerank_config.score_gap_threshold if rerank_config else 0.15
@@ -338,29 +363,7 @@ class HierarchicalRetriever:
                     r["_score"] = r.get("_score", 0.0) + self._hot_weight * self._compute_hotness(r)
             results.sort(key=lambda r: r.get("_score", 0.0), reverse=True)
             # Apply cone scoring (before converting to MatchedContext)
-            if self._cone_scorer and self._cone_weight > 0 and results:
-                try:
-                    from opencortex.http.request_context import get_collection_name, get_effective_identity, get_effective_project_id
-                    _cone_col = get_collection_name() or "context"
-                    _cone_tid, _cone_uid = get_effective_identity()
-                    self._cone_project_id = get_effective_project_id()
-                    query_entities = self._cone_scorer.extract_query_entities(
-                        query.query, results, _cone_col,
-                    )
-                    results = await self._cone_scorer.expand_candidates(
-                        results, query_entities, _cone_col, self.storage,
-                        tenant_id=_cone_tid, user_id=_cone_uid,
-                        project_id=getattr(self, '_cone_project_id', ''),
-                    )
-                    results = self._cone_scorer.compute_cone_scores(
-                        results, query_entities, _cone_col,
-                    )
-                    for r in results:
-                        bonus = r.get("_cone_bonus", 0.0)
-                        r["_final_score"] = r.get("_final_score", r.get("_score", 0.0)) + self._cone_weight * bonus
-                    results.sort(key=lambda r: r.get("_final_score", 0), reverse=True)
-                except Exception as exc:
-                    logger.debug("[HierarchicalRetriever] Cone scoring failed: %s", exc)
+            results = await self._apply_cone_scoring(results, query.query)
             t_search = time.perf_counter()
             t_rerank = t_search
             matched = await self._convert_to_matched_contexts(
@@ -557,27 +560,7 @@ class HierarchicalRetriever:
             t_rerank = t_search
 
         # Step 5b: Apply cone scoring (before converting to MatchedContext)
-        if self._cone_scorer and self._cone_weight > 0 and candidates:
-            try:
-                from opencortex.http.request_context import get_collection_name, get_effective_identity
-                _cone_col = get_collection_name() or "context"
-                _cone_tid, _cone_uid = get_effective_identity()
-                query_entities = self._cone_scorer.extract_query_entities(
-                    query.query, candidates, _cone_col,
-                )
-                candidates = await self._cone_scorer.expand_candidates(
-                    candidates, query_entities, _cone_col, self.storage,
-                    tenant_id=_cone_tid, user_id=_cone_uid,
-                )
-                candidates = self._cone_scorer.compute_cone_scores(
-                    candidates, query_entities, _cone_col,
-                )
-                for r in candidates:
-                    bonus = r.get("_cone_bonus", 0.0)
-                    r["_final_score"] = r.get("_final_score", r.get("_score", 0.0)) + self._cone_weight * bonus
-                candidates.sort(key=lambda r: r.get("_final_score", 0), reverse=True)
-            except Exception as exc:
-                logger.debug("[HierarchicalRetriever] Cone scoring failed: %s", exc)
+        candidates = await self._apply_cone_scoring(candidates, query.query)
 
         # Step 6: Convert results
         matched = await self._convert_to_matched_contexts(
