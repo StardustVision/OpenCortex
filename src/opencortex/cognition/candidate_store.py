@@ -117,3 +117,8 @@ class CandidateStore:
             record["updated_at"] = now
             records.append(record)
         return await self._storage.batch_upsert(self._collection, records)
+
+    async def delete_many(self, candidate_ids: Sequence[str]) -> int:
+        if not candidate_ids:
+            return 0
+        return await self._storage.delete(self._collection, list(candidate_ids))

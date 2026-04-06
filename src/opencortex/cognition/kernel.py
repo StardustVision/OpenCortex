@@ -96,6 +96,10 @@ class AutophagyKernel:
             recall_batch,
             recall_result.state_updates,
         )
+        if not recall_batch_committed:
+            raise RuntimeError(
+                f"failed to persist recall mutation batch: {recall_batch.batch_id}"
+            )
 
         refreshed_states = await self._state_store.get_states_for_owners(owner_ids)
         consolidation_result = await self._consolidation_gate.evaluate(
@@ -117,6 +121,15 @@ class AutophagyKernel:
                 consolidation_batch,
                 consolidation_result.state_updates,
             )
+            if not consolidation_batch_committed:
+                if persisted_candidate_ids:
+                    await self._candidate_store.delete_many(persisted_candidate_ids)
+                raise RuntimeError(
+                    "failed to persist consolidation mutation batch after saving candidates: "
+                    f"{consolidation_batch.batch_id}"
+                )
+
+            refreshed_states = await self._state_store.get_states_for_owners(owner_ids)
 
         return RecallOutcomeApplicationResult(
             states=refreshed_states,
@@ -144,5 +157,7 @@ class AutophagyKernel:
             owner_ids=list(owner_ids),
             metadata={"kind": "metabolism"},
         )
-        await self._state_store.persist_batch(batch, result.state_updates)
+        committed = await self._state_store.persist_batch(batch, result.state_updates)
+        if not committed:
+            raise RuntimeError(f"failed to persist metabolism batch: {batch.batch_id}")
         return result
