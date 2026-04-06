@@ -11,16 +11,19 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest.mock import AsyncMock, Mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+sys.path.insert(0, os.path.dirname(__file__))
 
 from opencortex.config import CortexConfig, init_config
 from opencortex.context.manager import ConversationBuffer
 from opencortex.http.request_context import set_request_identity, reset_request_identity
 from opencortex.orchestrator import MemoryOrchestrator
+from opencortex.retrieve.types import ContextType, DetailLevel, RecallPlan, RecallSurface, SearchIntent
 
 # Reuse MockEmbedder and InMemoryStorage from e2e tests
-from tests.test_e2e_phase1 import MockEmbedder, InMemoryStorage
+from test_e2e_phase1 import MockEmbedder, InMemoryStorage
 
 
 # =============================================================================
@@ -171,10 +174,11 @@ class TestContextManager(unittest.TestCase):
     # -----------------------------------------------------------------
 
     def test_04_recall_mode_never(self):
-        """prepare with recall_mode=never returns empty memory/knowledge."""
+        """prepare with recall_mode=never returns empty results without planner."""
         orch = self._make_orchestrator()
         self._run(orch.init())
         cm = orch._context_manager
+        orch.plan_recall = AsyncMock()
 
         result = self._run(cm.handle(
             session_id="sess_004",
@@ -188,6 +192,7 @@ class TestContextManager(unittest.TestCase):
         self.assertEqual(result["memory"], [])
         self.assertEqual(result["knowledge"], [])
         self.assertFalse(result["intent"]["should_recall"])
+        orch.plan_recall.assert_not_awaited()
 
         self._run(orch.close())
 
@@ -368,11 +373,11 @@ class TestContextManager(unittest.TestCase):
         self._run(orch.close())
 
     # -----------------------------------------------------------------
-    # 9. Prepare reuses routed intent inside search
+    # 9. Prepare routes once through planner
     # -----------------------------------------------------------------
 
     def test_09_prepare_routes_once(self):
-        """prepare should not invoke IntentRouter twice for the same query."""
+        """prepare should not invoke recall planning twice for the same query."""
         llm_calls = []
 
         async def fake_llm(_prompt: str) -> str:
@@ -442,6 +447,203 @@ class TestContextManager(unittest.TestCase):
 
         if original_ks:
             orch.knowledge_search = original_ks
+        self._run(orch.close())
+
+    # -----------------------------------------------------------------
+    # 11. Prepare uses planner-derived limits, detail, and surfaces
+    # -----------------------------------------------------------------
+
+    def test_11_prepare_uses_planner_limits_and_detail_level(self):
+        """prepare() should follow recall_plan for limits, detail, and surfaces."""
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        cm = orch._context_manager
+
+        class FakeFindResult(list):
+            def __init__(self, items, skills=None):
+                super().__init__(items)
+                self.skills = skills or []
+
+        matched_memory = Mock(
+            uri="opencortex://testteam/alice/memory/entities/pref",
+            abstract="pref",
+            score=0.91,
+            context_type=ContextType.MEMORY,
+            category="entities",
+            overview="likes concise answers",
+            content="full preference record",
+        )
+        intent = SearchIntent(
+            intent_type="recent_recall",
+            top_k=5,
+            detail_level=DetailLevel.L0,
+            should_recall=False,
+        )
+        with_knowledge = RecallPlan(
+            should_recall=True,
+            surfaces=[RecallSurface.MEMORY, RecallSurface.KNOWLEDGE],
+            detail_level=DetailLevel.L2,
+            memory_limit=7,
+            knowledge_limit=2,
+            enable_cone=True,
+            fusion_policy="memory_then_knowledge",
+            reasoning="planner selected both surfaces",
+        )
+        memory_only = RecallPlan(
+            should_recall=True,
+            surfaces=[RecallSurface.MEMORY],
+            detail_level=DetailLevel.L1,
+            memory_limit=4,
+            knowledge_limit=1,
+            enable_cone=True,
+            fusion_policy="memory_only",
+            reasoning="planner selected memory only",
+        )
+
+        memory_calls = []
+        knowledge_calls = []
+
+        async def fake_search(**kwargs):
+            memory_calls.append(kwargs)
+            return FakeFindResult(
+                [matched_memory],
+                skills=[Mock(uri="opencortex://testteam/alice/skills/valid"), object(), {"uri": "ignored"}],
+            )
+
+        async def fake_knowledge_search(**kwargs):
+            knowledge_calls.append(kwargs)
+            return {
+                "results": [
+                    {
+                        "knowledge_id": "k1",
+                        "knowledge_type": "doc",
+                        "abstract": "knowledge item",
+                        "confidence": 0.7,
+                    },
+                ],
+            }
+
+        orch.search = fake_search
+        orch.knowledge_search = fake_knowledge_search
+        orch.plan_recall = AsyncMock(side_effect=[
+            (intent, with_knowledge),
+            (intent, memory_only),
+        ])
+
+        result = self._run(cm.handle(
+            session_id="sess_plan",
+            phase="prepare",
+            tenant_id="testteam",
+            user_id="alice",
+            turn_id="t1",
+            messages=[{"role": "user", "content": "what do you remember about my preferences?"}],
+        ))
+
+        self.assertEqual(memory_calls[0]["limit"], 7)
+        self.assertEqual(memory_calls[0]["detail_level"], "l2")
+        self.assertIs(memory_calls[0]["search_intent"], intent)
+        self.assertEqual(knowledge_calls[0]["limit"], 2)
+        self.assertEqual(result["intent"]["detail_level"], "l2")
+        self.assertTrue(result["intent"]["should_recall"])
+        self.assertEqual(len(result["memory"]), 1)
+
+        memory_calls.clear()
+        knowledge_calls.clear()
+
+        result = self._run(cm.handle(
+            session_id="sess_plan",
+            phase="prepare",
+            tenant_id="testteam",
+            user_id="alice",
+            turn_id="t2",
+            messages=[{"role": "user", "content": "continue from memory only"}],
+        ))
+
+        self.assertEqual(memory_calls[0]["limit"], 4)
+        self.assertEqual(memory_calls[0]["detail_level"], "l1")
+        self.assertEqual(len(knowledge_calls), 0)
+        self.assertEqual(result["knowledge"], [])
+        self.assertEqual(result["intent"]["detail_level"], "l1")
+
+        self._run(orch.close())
+
+    # -----------------------------------------------------------------
+    # 12. Prepare payload includes serialized recall_plan
+    # -----------------------------------------------------------------
+
+    def test_12_prepare_returns_recall_plan_payload(self):
+        """prepare() should return the planner recall_plan in the intent payload."""
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        cm = orch._context_manager
+
+        intent = SearchIntent(
+            intent_type="personalized",
+            top_k=5,
+            detail_level=DetailLevel.L0,
+            should_recall=False,
+        )
+        recall_plan = RecallPlan(
+            should_recall=True,
+            surfaces=[RecallSurface.MEMORY],
+            detail_level=DetailLevel.L2,
+            memory_limit=6,
+            knowledge_limit=0,
+            enable_cone=True,
+            fusion_policy="memory_only",
+            reasoning="planner promoted detail",
+        )
+        orch.plan_recall = AsyncMock(return_value=(intent, recall_plan))
+        orch.search = AsyncMock(return_value=[])
+        orch.knowledge_search = AsyncMock(return_value={"results": []})
+
+        result = self._run(cm.handle(
+            session_id="sess_payload",
+            phase="prepare",
+            tenant_id="testteam",
+            user_id="alice",
+            turn_id="t1",
+            messages=[{"role": "user", "content": "personalize this reply"}],
+        ))
+
+        self.assertEqual(result["intent"]["should_recall"], True)
+        self.assertEqual(result["intent"]["detail_level"], "l2")
+        self.assertEqual(result["intent"]["recall_plan"], recall_plan.to_dict())
+
+        self._run(orch.close())
+
+    # -----------------------------------------------------------------
+    # 13. Invalid prepare config degrades safely
+    # -----------------------------------------------------------------
+
+    def test_13_prepare_invalid_context_type_and_detail_do_not_crash(self):
+        """prepare() should ignore invalid context_type/detail config safely."""
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        cm = orch._context_manager
+        orch.plan_recall = AsyncMock()
+
+        result = self._run(cm.handle(
+            session_id="sess_invalid_cfg",
+            phase="prepare",
+            tenant_id="testteam",
+            user_id="alice",
+            turn_id="t1",
+            messages=[{"role": "user", "content": "ignore invalid config"}],
+            config={
+                "recall_mode": "never",
+                "context_type": "not-a-context-type",
+                "detail_level": "not-a-detail-level",
+                "max_items": "not-a-number",
+            },
+        ))
+
+        self.assertEqual(result["memory"], [])
+        self.assertEqual(result["knowledge"], [])
+        self.assertFalse(result["intent"]["should_recall"])
+        self.assertEqual(result["intent"]["detail_level"], "l1")
+        orch.plan_recall.assert_not_awaited()
+
         self._run(orch.close())
 
 

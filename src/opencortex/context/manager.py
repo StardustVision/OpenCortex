@@ -23,8 +23,13 @@ from opencortex.http.request_context import (
     set_request_identity,
 )
 from opencortex.utils.text import smart_truncate
-from opencortex.retrieve.intent_router import IntentRouter
-from opencortex.retrieve.types import ContextType, DetailLevel, SearchIntent
+from opencortex.retrieve.types import (
+    ContextType,
+    DetailLevel,
+    RecallPlan,
+    RecallSurface,
+    SearchIntent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +166,77 @@ class ContextManager:
     # Phase: prepare
     # =========================================================================
 
+    @staticmethod
+    def _safe_detail_level(value: Optional[str]) -> DetailLevel:
+        """Coerce detail level strings without raising on invalid input."""
+        try:
+            return DetailLevel(value or "l1")
+        except (TypeError, ValueError):
+            return DetailLevel.L1
+
+    @staticmethod
+    def _safe_context_type(value: Optional[str]) -> Optional[ContextType]:
+        """Coerce context type strings without raising on invalid input."""
+        if not value:
+            return None
+        try:
+            return ContextType(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _safe_max_items(value: Any, *, default: int = 5, maximum: int = 20) -> int:
+        """Coerce max_items without raising on invalid input."""
+        try:
+            return min(int(value), maximum)
+        except (TypeError, ValueError):
+            return default
+
+    def _build_fallback_recall_plan(
+        self,
+        *,
+        recall_mode: str,
+        max_items: int,
+        include_knowledge: bool,
+        detail_level_override: Optional[str],
+    ) -> tuple[SearchIntent, RecallPlan]:
+        """Build a local fallback recall plan when planning is skipped or fails."""
+        detail_level = self._safe_detail_level(detail_level_override)
+        should_recall = recall_mode == "always"
+        surfaces: List[RecallSurface] = []
+        if should_recall:
+            surfaces.append(RecallSurface.MEMORY)
+            if include_knowledge:
+                surfaces.append(RecallSurface.KNOWLEDGE)
+        intent = SearchIntent(
+            intent_type="quick_lookup",
+            detail_level=detail_level,
+            should_recall=should_recall,
+        )
+        recall_plan = RecallPlan(
+            should_recall=should_recall,
+            surfaces=surfaces,
+            detail_level=detail_level,
+            memory_limit=max_items if RecallSurface.MEMORY in surfaces else 0,
+            knowledge_limit=min(3, max_items) if RecallSurface.KNOWLEDGE in surfaces else 0,
+            enable_cone=False,
+            fusion_policy="fallback",
+            reasoning="context_manager fallback plan",
+        )
+        return intent, recall_plan
+
+    @staticmethod
+    def _extract_skill_uris(skills: Any) -> List[str]:
+        """Best-effort skill URI extraction that ignores malformed items."""
+        skill_uris: List[str] = []
+        for skill in skills or []:
+            uri = getattr(skill, "uri", None)
+            if uri is None and isinstance(skill, dict):
+                uri = skill.get("uri")
+            if isinstance(uri, str) and uri:
+                skill_uris.append(uri)
+        return skill_uris
+
     async def _prepare(
         self,
         session_id: str,
@@ -171,11 +247,12 @@ class ContextManager:
         config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         config = config or {}
-        max_items = min(config.get("max_items", 5), 20)
+        max_items = self._safe_max_items(config.get("max_items", 5))
         detail_level_override = config.get("detail_level")  # None = let intent decide
         recall_mode = config.get("recall_mode", "auto")
         category = config.get("category")
         context_type_filter = config.get("context_type")
+        context_type = self._safe_context_type(context_type_filter)
         # Priority: client explicit > server config > default False
         _server_default = False
         if hasattr(self._orchestrator, '_config') and self._orchestrator._config:
@@ -209,51 +286,59 @@ class ContextManager:
             self._cache_prepare(cache_key, sk, result)
             return result
 
-        # 4. Intent analysis (2s timeout, degrade to default on failure)
-        intent = SearchIntent()
+        # 4. Recall planning (10s timeout, degrade to default on failure)
+        intent, recall_plan = self._build_fallback_recall_plan(
+            recall_mode=recall_mode,
+            max_items=max_items,
+            include_knowledge=include_knowledge,
+            detail_level_override=detail_level_override,
+        )
         intent_started = time.monotonic()
         if recall_mode != "never":
             try:
-                router = IntentRouter(
-                    llm_completion=self._orchestrator._llm_completion,
-                )
                 session_ctx = {
                     "session_id": session_id,
                     "tenant_id": tenant_id,
                     "user_id": user_id,
                 }
-                intent = await asyncio.wait_for(
-                    router.route(query, session_context=session_ctx), timeout=10.0,
+                intent, recall_plan = await asyncio.wait_for(
+                    self._orchestrator.plan_recall(
+                        query=query,
+                        max_items=max_items,
+                        recall_mode=recall_mode,
+                        include_knowledge=include_knowledge,
+                        detail_level_override=detail_level_override,
+                        context_type=context_type,
+                        session_context=session_ctx,
+                        search_intent=None,
+                    ),
+                    timeout=10.0,
                 )
             except asyncio.TimeoutError:
                 logger.warning(
-                    "[ContextManager] IntentRouter timeout sid=%s turn=%s tenant=%s user=%s",
+                    "[ContextManager] Recall planning timeout sid=%s turn=%s tenant=%s user=%s",
                     session_id, turn_id, tenant_id, user_id,
                 )
             except Exception as exc:
                 logger.warning(
-                    "[ContextManager] IntentRouter failed sid=%s turn=%s tenant=%s user=%s: %s",
+                    "[ContextManager] Recall planning failed sid=%s turn=%s tenant=%s user=%s: %s",
                     session_id, turn_id, tenant_id, user_id, exc,
                 )
         intent_ms = int((time.monotonic() - intent_started) * 1000)
 
-        should_recall = (
-            recall_mode == "always"
-            or (recall_mode == "auto" and intent.should_recall)
+        should_recall = recall_plan.should_recall
+        detail_level = recall_plan.detail_level.value
+        include_memory = (
+            RecallSurface.MEMORY in recall_plan.surfaces and recall_plan.memory_limit > 0
         )
-
-        # 5. Resolve detail_level: config override > intent > default "l1"
-        detail_level = (
-            detail_level_override
-            or (intent.detail_level.value if intent.detail_level else None)
-            or "l1"
-        )
+        include_knowledge = RecallSurface.KNOWLEDGE in recall_plan.surfaces
 
         # 6. Retrieval
         memory_items: List[Dict[str, Any]] = []
         knowledge_items: List[Dict[str, Any]] = []
         memory_ms = 0
         knowledge_ms = 0
+        _skill_uris: List[str] = []
 
         if should_recall:
             async def _memory_search() -> Tuple[List[Dict[str, Any]], int, List[str]]:
@@ -261,16 +346,18 @@ class ContextManager:
                 try:
                     search_kwargs: Dict[str, Any] = {
                         "query": query,
-                        "limit": max_items,
+                        "limit": recall_plan.memory_limit,
                         "detail_level": detail_level,
                         "search_intent": intent,
                     }
-                    if context_type_filter:
-                        search_kwargs["context_type"] = ContextType(context_type_filter)
+                    if context_type:
+                        search_kwargs["context_type"] = context_type
                     if category:
                         search_kwargs["metadata_filter"] = {"category": category}
                     find_result = await self._orchestrator.search(**search_kwargs)
-                    skill_uris = [mc.uri for mc in getattr(find_result, 'skills', []) or []]
+                    skill_uris = self._extract_skill_uris(
+                        getattr(find_result, 'skills', []) or [],
+                    )
                     return self._format_memories(find_result, detail_level), int(
                         (time.monotonic() - started) * 1000,
                     ), skill_uris
@@ -286,7 +373,7 @@ class ContextManager:
                 try:
                     k_result = await self._orchestrator.knowledge_search(
                         query=query,
-                        limit=min(3, max_items),
+                        limit=recall_plan.knowledge_limit,
                     )
                     return self._format_knowledge(k_result.get("results", [])), int(
                         (time.monotonic() - started) * 1000,
@@ -298,14 +385,19 @@ class ContextManager:
                     )
                     return [], int((time.monotonic() - started) * 1000)
 
-            coros = [_memory_search()]
-            if include_knowledge:
+            coros = []
+            if include_memory:
+                coros.append(_memory_search())
+            if include_knowledge and recall_plan.knowledge_limit > 0:
                 coros.append(_knowledge_search())
 
-            results = await asyncio.gather(*coros)
-            memory_items, memory_ms, _skill_uris = results[0]
-            if include_knowledge and len(results) > 1:
-                knowledge_items, knowledge_ms = results[1]
+            results = await asyncio.gather(*coros) if coros else []
+            result_idx = 0
+            if include_memory:
+                memory_items, memory_ms, _skill_uris = results[result_idx]
+                result_idx += 1
+            if include_knowledge and recall_plan.knowledge_limit > 0:
+                knowledge_items, knowledge_ms = results[result_idx]
 
             # Track selected skills for citation validation in _commit()
             if _skill_uris and hasattr(self._orchestrator, '_skill_event_store') and self._orchestrator._skill_event_store:
@@ -325,7 +417,8 @@ class ContextManager:
             "intent": {
                 "should_recall": should_recall,
                 "intent_type": intent.intent_type,
-                "detail_level": intent.detail_level.value if intent.detail_level else "l1",
+                "detail_level": detail_level,
+                "recall_plan": recall_plan.to_dict(),
             },
             "memory": memory_items,
             "knowledge": knowledge_items,
