@@ -147,11 +147,24 @@ class TestConsolidationGate(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(update["expected_version"], 3)
         self.assertEqual(update["fields"]["consolidation_state"], ConsolidationState.SUBMITTED.value)
 
+    async def test_evaluate_is_pure_does_not_persist_candidates(self) -> None:
+        async def _boom(_candidates):
+            raise AssertionError("evaluate() must not persist candidates")
+
+        # If evaluate() calls the store persistence hook, this test should fail.
+        self.store.save_many = _boom  # type: ignore[assignment]
+
+        state = self._make_state("mem-pure", version=1)
+        result = await self.gate.evaluate([state])
+        self.assertEqual(len(result.candidates), 1)
+
     async def test_gate_suppresses_duplicate_candidates_within_cooldown(self) -> None:
         state = self._make_state("mem-2", version=1)
 
         first = await self.gate.evaluate([state])
         self.assertEqual(len(first.candidates), 1)
+        # Caller owns persistence; without saving, cross-call cooldown dedupe cannot work.
+        await self.store.save_many(first.candidates)
 
         self.clock.advance(30)
         second = await self.gate.evaluate([state])
@@ -171,9 +184,19 @@ class TestConsolidationGate(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result.candidates), 1)
         self.assertEqual(len(result.state_updates), 1)
 
+    async def test_gate_dedupe_fingerprint_is_semantic_not_owner_identity(self) -> None:
+        state_a = self._make_state("mem-sem-a", version=1)
+        state_b = self._make_state("mem-sem-b", version=1)
+
+        result = await self.gate.evaluate([state_a, state_b])
+
+        self.assertEqual(len(result.candidates), 1)
+        self.assertEqual(len(result.state_updates), 1)
+
     async def test_feedback_mapping_rejected_with_material_new_evidence_resets_to_none(self) -> None:
         state = self._make_state("mem-3", version=7)
         state.consolidation_state = ConsolidationState.REJECTED
+        state.metadata["last_consolidation_candidate_id"] = "cand-1"
 
         feedback = GovernanceFeedback(
             candidate_id="cand-1",
@@ -194,6 +217,7 @@ class TestConsolidationGate(unittest.IsolatedAsyncioTestCase):
     async def test_feedback_mapping_accepted_sets_state_accepted(self) -> None:
         state = self._make_state("mem-4", version=2)
         state.consolidation_state = ConsolidationState.SUBMITTED
+        state.metadata["last_consolidation_candidate_id"] = "cand-2"
 
         feedback = GovernanceFeedback(
             candidate_id="cand-2",
@@ -205,6 +229,56 @@ class TestConsolidationGate(unittest.IsolatedAsyncioTestCase):
 
         updates = self.gate.map_governance_feedback([feedback], states=[state])
         self.assertEqual(len(updates), 1)
-        self.assertEqual(
-            updates[0]["fields"]["consolidation_state"], ConsolidationState.ACCEPTED.value
+        self.assertEqual(updates[0]["fields"]["consolidation_state"], ConsolidationState.ACCEPTED.value)
+        self.assertEqual(updates[0]["fields"]["exposure_state"], "guarded")
+
+    async def test_feedback_mapping_ignores_stale_candidate_id(self) -> None:
+        state = self._make_state("mem-stale", version=4)
+        state.metadata["last_consolidation_candidate_id"] = "cand-current"
+
+        feedback = GovernanceFeedback(
+            candidate_id="cand-stale",
+            owner_type=OwnerType.MEMORY,
+            owner_id="mem-stale",
+            kind=GovernanceFeedbackKind.ACCEPTED,
+            has_material_new_evidence=False,
         )
+
+        updates = self.gate.map_governance_feedback([feedback], states=[state])
+        self.assertEqual(updates, [])
+
+    async def test_feedback_mapping_contested_rejects_and_marks_exposure_contested(self) -> None:
+        state = self._make_state("mem-contested", version=5)
+        state.consolidation_state = ConsolidationState.SUBMITTED
+        state.metadata["last_consolidation_candidate_id"] = "cand-contested"
+
+        feedback = GovernanceFeedback(
+            candidate_id="cand-contested",
+            owner_type=OwnerType.MEMORY,
+            owner_id="mem-contested",
+            kind=GovernanceFeedbackKind.CONTESTED,
+            has_material_new_evidence=False,
+        )
+
+        updates = self.gate.map_governance_feedback([feedback], states=[state])
+        self.assertEqual(len(updates), 1)
+        self.assertEqual(updates[0]["fields"]["consolidation_state"], ConsolidationState.REJECTED.value)
+        self.assertEqual(updates[0]["fields"]["exposure_state"], "contested")
+
+    async def test_feedback_mapping_deprecated_reopens_exposure_only(self) -> None:
+        state = self._make_state("mem-deprecated", version=6)
+        state.consolidation_state = ConsolidationState.ACCEPTED
+        state.metadata["last_consolidation_candidate_id"] = "cand-dep"
+
+        feedback = GovernanceFeedback(
+            candidate_id="cand-dep",
+            owner_type=OwnerType.MEMORY,
+            owner_id="mem-deprecated",
+            kind=GovernanceFeedbackKind.DEPRECATED,
+            has_material_new_evidence=False,
+        )
+
+        updates = self.gate.map_governance_feedback([feedback], states=[state])
+        self.assertEqual(len(updates), 1)
+        self.assertEqual(updates[0]["fields"]["exposure_state"], "open")
+        self.assertNotIn("consolidation_state", updates[0]["fields"])

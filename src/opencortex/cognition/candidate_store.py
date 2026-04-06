@@ -57,8 +57,6 @@ class CandidateStore:
             "user_id": candidate.user_id,
             "project_id": candidate.project_id,
             "candidate_kind": candidate.candidate_kind,
-            "source_owner_type": candidate.source_owner_type,
-            "source_owner_id": candidate.source_owner_id,
             "statement": _normalize_text(candidate.statement),
             "abstract": _normalize_text(candidate.abstract),
             "overview": _normalize_text(candidate.overview),

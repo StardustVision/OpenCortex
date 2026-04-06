@@ -103,9 +103,6 @@ class ConsolidationGate:
                 }
             )
 
-        if candidates:
-            await self._candidate_store.save_many(candidates)
-
         return ConsolidationGateResult(candidates=candidates, state_updates=state_updates)
 
     def map_governance_feedback(
@@ -122,6 +119,9 @@ class ConsolidationGate:
             state = states_by_owner.get((item.owner_type, item.owner_id))
             if state is None:
                 continue
+            tracked_candidate_id = (state.metadata or {}).get("last_consolidation_candidate_id")
+            if not tracked_candidate_id or str(tracked_candidate_id) != item.candidate_id:
+                continue
 
             fields: Dict[str, Any] = {
                 "last_mutation_at": now,
@@ -137,16 +137,17 @@ class ConsolidationGate:
 
             if item.kind == GovernanceFeedbackKind.ACCEPTED:
                 fields["consolidation_state"] = ConsolidationState.ACCEPTED.value
+                fields["exposure_state"] = ExposureState.GUARDED.value
             elif item.kind == GovernanceFeedbackKind.REJECTED:
                 if item.has_material_new_evidence:
                     fields["consolidation_state"] = ConsolidationState.NONE.value
                 else:
                     fields["consolidation_state"] = ConsolidationState.REJECTED.value
             elif item.kind == GovernanceFeedbackKind.CONTESTED:
+                fields["consolidation_state"] = ConsolidationState.REJECTED.value
                 fields["exposure_state"] = ExposureState.CONTESTED.value
-                fields["consolidation_state"] = ConsolidationState.SUBMITTED.value
             elif item.kind == GovernanceFeedbackKind.DEPRECATED:
-                fields["consolidation_state"] = ConsolidationState.EXPIRED.value
+                fields["exposure_state"] = ExposureState.OPEN.value
 
             updates.append(
                 {
