@@ -174,7 +174,50 @@ class TestCognitiveMetabolismController(unittest.TestCase):
         update = self._find_update(result, OwnerType.MEMORY, "mapped-cold")
         self.assertEqual(update["expected_version"], 3)
 
+    def test_dominance_window_owner_id_stats_shape_triggers_cooling(self) -> None:
+        from opencortex.cognition.metabolism import CognitiveMetabolismController
+
+        controller = CognitiveMetabolismController(
+            hot_activation_threshold=0.8,
+            dominance_count_threshold=3,
+            cooling_decay=0.1,
+        )
+        hot = self._state("mem-dom", activation=0.95, stability=0.7, risk=0.1, version=2)
+
+        dominance_window = {
+            # Planned realistic shape: owner-id keyed stats objects.
+            "mem-dom": {"wins": 3, "success_rate": 0.55, "cluster": "auth"}
+        }
+        result = controller.tick([hot], dominance_window=dominance_window)
+
+        update = self._find_update(result, OwnerType.MEMORY, "mem-dom")
+        self.assertLess(update["fields"]["activation_score"], hot.activation_score)
+        self.assertEqual(update["fields"]["last_mutation_reason"], "metabolism_cool")
+
+    def test_archived_state_can_be_forgotten(self) -> None:
+        from opencortex.cognition.metabolism import CognitiveMetabolismController
+
+        controller = CognitiveMetabolismController(
+            forget_activation_threshold=0.02,
+            forget_value_threshold=0.0,
+        )
+        archived = self._state(
+            "mem-forget",
+            activation=0.0,
+            stability=0.05,
+            risk=0.6,
+            lifecycle=LifecycleState.ARCHIVED,
+            version=11,
+        )
+
+        result = controller.tick([archived])
+
+        update = self._find_update(result, OwnerType.MEMORY, "mem-forget")
+        self.assertEqual(update["fields"]["lifecycle_state"], LifecycleState.FORGOTTEN.value)
+        self.assertEqual(update["fields"]["last_mutation_reason"], "metabolism_forget")
+        self.assertEqual(len(result.review_events), 1)
+        self.assertEqual(result.review_events[0]["kind"], "forget")
+
 
 if __name__ == "__main__":
     unittest.main()
-

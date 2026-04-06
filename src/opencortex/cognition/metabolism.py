@@ -41,6 +41,9 @@ class CognitiveMetabolismController:
         # Archiving: already compressed + deeper cold/low-value -> archived.
         archive_activation_threshold: float = 0.02,
         archive_value_threshold: float = 0.0,
+        # Forgetting: already archived + deep-cold/low-value -> forgotten (logical terminal).
+        forget_activation_threshold: float = 0.005,
+        forget_value_threshold: float = 0.0,
     ) -> None:
         self._now_iso_fn = now_iso_fn
         self._source_label = str(source_label)
@@ -51,6 +54,8 @@ class CognitiveMetabolismController:
         self._compress_value_threshold = float(compress_value_threshold)
         self._archive_activation_threshold = float(archive_activation_threshold)
         self._archive_value_threshold = float(archive_value_threshold)
+        self._forget_activation_threshold = float(forget_activation_threshold)
+        self._forget_value_threshold = float(forget_value_threshold)
 
     def tick(
         self,
@@ -62,7 +67,7 @@ class CognitiveMetabolismController:
         review_events: list[Dict[str, Any]] = []
 
         for state in self._iter_states(states):
-            if state.lifecycle_state in (LifecycleState.ARCHIVED, LifecycleState.FORGOTTEN):
+            if state.lifecycle_state == LifecycleState.FORGOTTEN:
                 continue
 
             fields: MutableMapping[str, Any] = {}
@@ -71,6 +76,25 @@ class CognitiveMetabolismController:
             score = _value_score(state)
 
             if (
+                state.lifecycle_state == LifecycleState.ARCHIVED
+                and state.activation_score <= self._forget_activation_threshold
+                and score <= self._forget_value_threshold
+            ):
+                mutation_reason = "metabolism_forget"
+                fields["lifecycle_state"] = LifecycleState.FORGOTTEN.value
+                review_events.append(
+                    {
+                        "kind": "forget",
+                        "owner_type": state.owner_type.value,
+                        "owner_id": state.owner_id,
+                        "state_id": state.state_id,
+                        "lifecycle_before": state.lifecycle_state.value,
+                        "lifecycle_after": LifecycleState.FORGOTTEN.value,
+                        "reason": mutation_reason,
+                        "at": now,
+                    }
+                )
+            elif (
                 state.lifecycle_state == LifecycleState.COMPRESSED
                 and state.activation_score <= self._archive_activation_threshold
                 and score <= self._archive_value_threshold
@@ -172,7 +196,19 @@ class CognitiveMetabolismController:
                 else dominance_window.get(key_b)
                 if key_b in dominance_window
                 else dominance_window.get(key_c)
+                if key_c in dominance_window
+                else dominance_window.get(owner_id)
             )
+            if isinstance(raw, Mapping):
+                wins = raw.get("wins")
+                if wins is None:
+                    wins = raw.get("dominance_wins")
+                if wins is None:
+                    wins = raw.get("count")
+                try:
+                    return int(wins or 0)
+                except (TypeError, ValueError):
+                    return 0
             try:
                 return int(raw or 0)
             except (TypeError, ValueError):
@@ -192,4 +228,3 @@ class CognitiveMetabolismController:
                 if (ot == owner_type.value or ot == owner_type) and oid == owner_id:
                     count += 1
         return count
-
