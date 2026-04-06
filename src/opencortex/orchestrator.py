@@ -41,7 +41,15 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 from uuid import uuid4
 
-from opencortex.cognition import RecallPlanner
+from opencortex.cognition import (
+    AutophagyKernel,
+    CandidateStore,
+    ConsolidationGate,
+    CognitiveMetabolismController,
+    CognitiveStateStore,
+    RecallMutationEngine,
+    RecallPlanner,
+)
 from opencortex.config import CortexConfig, get_config
 from opencortex.prompts import (
     build_doc_summarization_prompt,
@@ -76,6 +84,7 @@ from opencortex.storage.collection_schemas import init_context_collection
 from opencortex.storage.cortex_fs import CortexFS, init_cortex_fs
 from opencortex.storage.storage_interface import StorageInterface
 from opencortex.utils.uri import CortexURI
+from opencortex.cognition.state_types import OwnerType
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +138,12 @@ class MemoryOrchestrator:
         self._archivist = None
         self._context_manager = None
         self._parser_registry = None
+        self._cognitive_state_store = None
+        self._candidate_store = None
+        self._recall_mutation_engine = None
+        self._consolidation_gate = None
+        self._cognitive_metabolism_controller = None
+        self._autophagy_kernel = None
 
         # v0.6: Query classifier (lazy — initialized after embedder is ready)
         self._query_classifier = None
@@ -263,10 +278,13 @@ class MemoryOrchestrator:
         # 8. Background maintenance: text indexes, migrations, re-embed
         asyncio.create_task(self._startup_maintenance())
 
-        # 9. Cortex Alpha components
+        # 9. Autophagy cognition components
+        await self._init_cognition()
+
+        # 10. Cortex Alpha components
         await self._init_alpha()
 
-        # 10. Skill Engine
+        # 11. Skill Engine
         await self._init_skill_engine()
 
         self._initialized = True
@@ -274,6 +292,30 @@ class MemoryOrchestrator:
             "[MemoryOrchestrator] Initialized (data_root=%s)", self._config.data_root
         )
         return self
+
+    async def _init_cognition(self) -> None:
+        """Initialize cognition-layer stores/controllers/kernel."""
+        if not self._storage:
+            return
+
+        self._cognitive_state_store = CognitiveStateStore(self._storage)
+        await self._cognitive_state_store.init()
+
+        self._candidate_store = CandidateStore(self._storage)
+        await self._candidate_store.init()
+
+        self._recall_mutation_engine = RecallMutationEngine()
+        self._consolidation_gate = ConsolidationGate(
+            candidate_store=self._candidate_store,
+        )
+        self._cognitive_metabolism_controller = CognitiveMetabolismController()
+        self._autophagy_kernel = AutophagyKernel(
+            state_store=self._cognitive_state_store,
+            mutation_engine=self._recall_mutation_engine,
+            consolidation_gate=self._consolidation_gate,
+            candidate_store=self._candidate_store,
+            metabolism_controller=self._cognitive_metabolism_controller,
+        )
 
     async def _init_alpha(self) -> None:
         """Initialize Cortex Alpha components if enabled."""
@@ -294,6 +336,7 @@ class MemoryOrchestrator:
                 cortex_fs=self._fs,
                 collection_name=alpha_cfg.trace_collection_name,
                 embedding_dim=self._config.embedding_dimension,
+                on_trace_saved=self._on_trace_saved if self._autophagy_kernel else None,
             )
             await self._trace_store.init()
 
@@ -1349,6 +1392,15 @@ class MemoryOrchestrator:
         await self._storage.upsert(self._get_collection(), record)
         upsert_ms = int((asyncio.get_running_loop().time() - upsert_started) * 1000)
 
+        if (context_type or ctx.context_type or "memory") == "memory":
+            await self._initialize_autophagy_owner_state(
+                owner_type=OwnerType.MEMORY,
+                owner_id=str(record["id"]),
+                tenant_id=tid,
+                user_id=uid,
+                project_id=record["project_id"],
+            )
+
         # Sync EntityIndex (if available)
         _entity_idx = getattr(self, '_entity_index', None)
         if _entity_idx and entities:
@@ -1907,6 +1959,23 @@ class MemoryOrchestrator:
         result.resources = [m for m in result.resources if m.is_leaf]
         result.skills = [m for m in result.skills if m.is_leaf]
 
+        recalled_owner_ids = await self._resolve_memory_owner_ids(result.memories)
+        if recalled_owner_ids and self._autophagy_kernel:
+            try:
+                await self._autophagy_kernel.apply_recall_outcome(
+                    owner_ids=recalled_owner_ids,
+                    query=query,
+                    recall_outcome={"selected_results": recalled_owner_ids},
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[search] Autophagy recall application failed tenant=%s user=%s owners=%d: %s",
+                    tid,
+                    uid,
+                    len(recalled_owner_ids),
+                    exc,
+                )
+
         # Fire-and-forget: resolve URIs → record IDs → update access stats
         all_matched = result.memories + result.resources + result.skills
         if all_matched:
@@ -1953,7 +2022,7 @@ class MemoryOrchestrator:
         # Skill Engine: search active skills and merge into FindResult.skills
         if self._skill_manager:
             try:
-                from opencortex.retrieve.types import MatchedContext, ContextType
+                from opencortex.retrieve.types import MatchedContext
                 skill_results = await self._skill_manager.search(
                     query, tid, uid, top_k=3,
                 )
@@ -1972,6 +2041,79 @@ class MemoryOrchestrator:
                 logger.debug("[search] Skill search failed: %s", exc)
 
         return result
+
+    async def _resolve_memory_owner_ids(self, matches: List[Any]) -> List[str]:
+        """Resolve memory owner ids from matched contexts using persisted record ids."""
+        if not matches or not self._storage:
+            return []
+
+        uris = []
+        for match in matches:
+            uri = getattr(match, "uri", "")
+            if isinstance(uri, str) and uri:
+                uris.append(uri)
+        if not uris:
+            return []
+
+        try:
+            records = await self._storage.filter(
+                self._get_collection(),
+                {"op": "must", "field": "uri", "conds": list(dict.fromkeys(uris))},
+                limit=max(len(uris), 1) * 4,
+            )
+        except Exception as exc:
+            logger.debug("[Orchestrator] Failed to resolve memory owner ids: %s", exc)
+            return []
+
+        ids_by_uri = {
+            record.get("uri", ""): str(record.get("id", ""))
+            for record in records
+            if record.get("uri") and record.get("id")
+        }
+        owner_ids: List[str] = []
+        for uri in uris:
+            owner_id = ids_by_uri.get(uri)
+            if owner_id and owner_id not in owner_ids:
+                owner_ids.append(owner_id)
+        return owner_ids
+
+    async def _initialize_autophagy_owner_state(
+        self,
+        *,
+        owner_type: OwnerType,
+        owner_id: str,
+        tenant_id: str,
+        user_id: str,
+        project_id: str,
+    ) -> None:
+        if not self._autophagy_kernel or not owner_id:
+            return
+        try:
+            await self._autophagy_kernel.initialize_owner(
+                owner_type=owner_type,
+                owner_id=owner_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                project_id=project_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[Orchestrator] Autophagy owner init failed type=%s owner=%s tenant=%s user=%s: %s",
+                owner_type.value,
+                owner_id,
+                tenant_id,
+                user_id,
+                exc,
+            )
+
+    async def _on_trace_saved(self, trace: Any) -> None:
+        await self._initialize_autophagy_owner_state(
+            owner_type=OwnerType.TRACE,
+            owner_id=str(getattr(trace, "trace_id", "")),
+            tenant_id=str(getattr(trace, "tenant_id", "")),
+            user_id=str(getattr(trace, "user_id", "")),
+            project_id=get_effective_project_id(),
+        )
 
     async def _resolve_and_update_access_stats(self, uris: list) -> None:
         """1 filter + N parallel updates. Old: N filter + N get + N update (serial)."""

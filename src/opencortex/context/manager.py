@@ -85,6 +85,8 @@ class ContextManager:
         self._session_locks: Dict[SessionKey, asyncio.Lock] = {}
         # Pending async tasks (cited_uris reward, etc.)
         self._pending_tasks: Set[asyncio.Task] = set()
+        # Session-scoped memory owner ids recalled during prepare().
+        self._session_memory_owner_ids: Dict[SessionKey, Set[str]] = {}
         # Conversation buffers: per-session incremental chunking
         self._conversation_buffers: Dict[SessionKey, ConversationBuffer] = {}
         # Skill selection tracking: (session_key, turn_id) -> set of skill URIs
@@ -341,7 +343,7 @@ class ContextManager:
         _skill_uris: List[str] = []
 
         if should_recall:
-            async def _memory_search() -> Tuple[List[Dict[str, Any]], int, List[str]]:
+            async def _memory_search() -> Tuple[List[Dict[str, Any]], int, List[str], List[str]]:
                 started = time.monotonic()
                 try:
                     search_kwargs: Dict[str, Any] = {
@@ -355,18 +357,21 @@ class ContextManager:
                     if category:
                         search_kwargs["metadata_filter"] = {"category": category}
                     find_result = await self._orchestrator.search(**search_kwargs)
+                    owner_ids = await self._orchestrator._resolve_memory_owner_ids(
+                        find_result.memories
+                    )
                     skill_uris = self._extract_skill_uris(
                         getattr(find_result, 'skills', []) or [],
                     )
                     return self._format_memories(find_result, detail_level), int(
                         (time.monotonic() - started) * 1000,
-                    ), skill_uris
+                    ), skill_uris, owner_ids
                 except Exception as exc:
                     logger.warning(
                         "[ContextManager] Memory search failed sid=%s turn=%s tenant=%s user=%s: %s",
                         session_id, turn_id, tenant_id, user_id, exc,
                     )
-                    return [], int((time.monotonic() - started) * 1000), []
+                    return [], int((time.monotonic() - started) * 1000), [], []
 
             async def _knowledge_search() -> Tuple[List[Dict[str, Any]], int]:
                 started = time.monotonic()
@@ -394,7 +399,11 @@ class ContextManager:
             results = await asyncio.gather(*coros) if coros else []
             result_idx = 0
             if include_memory:
-                memory_items, memory_ms, _skill_uris = results[result_idx]
+                memory_items, memory_ms, _skill_uris, memory_owner_ids = results[result_idx]
+                if memory_owner_ids:
+                    self._session_memory_owner_ids.setdefault(sk, set()).update(
+                        memory_owner_ids
+                    )
                 result_idx += 1
             if include_knowledge and recall_plan.knowledge_limit > 0:
                 knowledge_items, knowledge_ms = results[result_idx]
@@ -673,6 +682,7 @@ class ContextManager:
         status = "closed"
         traces = 0
         knowledge_candidates = 0
+        session_owner_ids = sorted(self._session_memory_owner_ids.get(sk, set()))
 
         try:
             result = await self._orchestrator.session_end(
@@ -687,6 +697,21 @@ class ContextManager:
                 session_id, tenant_id, user_id, exc,
             )
             status = "partial"
+
+        if (
+            session_owner_ids
+            and getattr(self._orchestrator, "_autophagy_kernel", None) is not None
+        ):
+            task = asyncio.create_task(
+                self._run_autophagy_metabolism(
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    owner_ids=session_owner_ids,
+                )
+            )
+            self._pending_tasks.add(task)
+            task.add_done_callback(self._pending_tasks.discard)
 
         duration_ms = int((time.monotonic() - start_time) * 1000)
 
@@ -758,10 +783,31 @@ class ContextManager:
         self._committed_turns.pop(sk, None)
         self._session_activity.pop(sk, None)
         self._session_locks.pop(sk, None)
+        self._session_memory_owner_ids.pop(sk, None)
         # Clean up turn-scoped skill selections for this session
         stale_keys = [k for k in self._selected_skill_uris if k[0] == sk]
         for k in stale_keys:
             del self._selected_skill_uris[k]
+
+    async def _run_autophagy_metabolism(
+        self,
+        *,
+        session_id: str,
+        tenant_id: str,
+        user_id: str,
+        owner_ids: List[str],
+    ) -> None:
+        try:
+            await self._orchestrator._autophagy_kernel.metabolize_states(owner_ids)
+        except Exception as exc:
+            logger.warning(
+                "[ContextManager] Autophagy metabolism failed sid=%s tenant=%s user=%s owners=%d: %s",
+                session_id,
+                tenant_id,
+                user_id,
+                len(owner_ids),
+                exc,
+            )
 
     # =========================================================================
     # Idle session auto-close

@@ -20,7 +20,15 @@ from opencortex.config import CortexConfig, init_config
 from opencortex.context.manager import ConversationBuffer
 from opencortex.http.request_context import set_request_identity, reset_request_identity
 from opencortex.orchestrator import MemoryOrchestrator
-from opencortex.retrieve.types import ContextType, DetailLevel, RecallPlan, RecallSurface, SearchIntent
+from opencortex.retrieve.types import (
+    ContextType,
+    DetailLevel,
+    FindResult,
+    MatchedContext,
+    RecallPlan,
+    RecallSurface,
+    SearchIntent,
+)
 
 # Reuse MockEmbedder and InMemoryStorage from e2e tests
 from test_e2e_phase1 import MockEmbedder, InMemoryStorage
@@ -319,7 +327,146 @@ class TestContextManager(unittest.TestCase):
             ))
         self.assertIn("Unknown phase", str(ctx.exception))
 
-        self._run(orch.close())
+
+class TestContextManagerAutophagyHooks(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp(prefix="opencortex_ctx_autophagy_")
+        self.config = CortexConfig(
+            data_root=self.temp_dir,
+            embedding_dimension=MockEmbedder.DIMENSION,
+            rerank_provider="disabled",
+            query_classifier_enabled=False,
+            hyde_enabled=False,
+            explain_enabled=False,
+        )
+        init_config(self.config)
+        self._identity_tokens = set_request_identity("testteam", "alice")
+        self.storage = InMemoryStorage()
+        self.embedder = MockEmbedder()
+
+    def tearDown(self):
+        reset_request_identity(self._identity_tokens)
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def _make_orchestrator(self):
+        return MemoryOrchestrator(
+            config=self.config,
+            storage=self.storage,
+            embedder=self.embedder,
+        )
+
+    async def test_prepare_tracks_recalled_memory_owner_ids_for_session(self):
+        orch = self._make_orchestrator()
+        await orch.init()
+        cm = orch._context_manager
+
+        recalled_uri = "opencortex://testteam/alice/memories/preferences/mem-1"
+        await self.storage.upsert(
+            "context",
+            {
+                "id": "mem-1",
+                "uri": recalled_uri,
+                "is_leaf": True,
+                "context_type": "memory",
+                "category": "preferences",
+                "source_tenant_id": "testteam",
+                "source_user_id": "alice",
+                "scope": "private",
+                "project_id": "public",
+            },
+        )
+        orch.plan_recall = AsyncMock(
+            return_value=(
+                SearchIntent(
+                    intent_type="quick_lookup",
+                    detail_level=DetailLevel.L1,
+                    should_recall=True,
+                ),
+                RecallPlan(
+                    should_recall=True,
+                    surfaces=[RecallSurface.MEMORY],
+                    detail_level=DetailLevel.L1,
+                    memory_limit=1,
+                    knowledge_limit=0,
+                    enable_cone=False,
+                    fusion_policy="memory_only",
+                    reasoning="test",
+                ),
+            )
+        )
+        orch.search = AsyncMock(
+            return_value=FindResult(
+                memories=[
+                    MatchedContext(
+                        uri=recalled_uri,
+                        context_type=ContextType.MEMORY,
+                        is_leaf=True,
+                        abstract="dark mode preference",
+                        score=0.9,
+                        category="preferences",
+                    )
+                ],
+                resources=[],
+                skills=[],
+            )
+        )
+
+        await cm.handle(
+            session_id="sess-autophagy",
+            phase="prepare",
+            tenant_id="testteam",
+            user_id="alice",
+            turn_id="t1",
+            messages=[{"role": "user", "content": "what theme do I prefer?"}],
+        )
+
+        session_key = ("testteam", "alice", "sess-autophagy")
+        self.assertEqual(cm._session_memory_owner_ids[session_key], {"mem-1"})
+
+        await orch.close()
+
+    async def test_end_schedules_non_blocking_metabolism_tick(self):
+        orch = self._make_orchestrator()
+        await orch.init()
+        cm = orch._context_manager
+        session_key = ("testteam", "alice", "sess-metabolism")
+        cm._committed_turns[session_key] = {"t1"}
+        cm._session_memory_owner_ids[session_key] = {"mem-2", "mem-1"}
+        orch.session_end = AsyncMock(
+            return_value={
+                "session_id": "sess-metabolism",
+                "alpha_traces": 0,
+                "knowledge_candidates": 0,
+            }
+        )
+
+        started = asyncio.Event()
+        release = asyncio.Event()
+        metabolize_calls = []
+
+        class _KernelStub:
+            async def metabolize_states(self, owner_ids):
+                metabolize_calls.append(list(owner_ids))
+                started.set()
+                await release.wait()
+
+        orch._autophagy_kernel = _KernelStub()
+
+        result = await cm._end("sess-metabolism", "testteam", "alice")
+
+        self.assertEqual(result["status"], "closed")
+        self.assertEqual(len(cm._pending_tasks), 1)
+
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        self.assertEqual(metabolize_calls, [["mem-1", "mem-2"]])
+
+        release.set()
+        await asyncio.gather(*list(cm._pending_tasks), return_exceptions=True)
+
+        await orch.close()
 
     # -----------------------------------------------------------------
     # 8. End cleans up all session state
@@ -462,6 +609,7 @@ class TestContextManager(unittest.TestCase):
         class FakeFindResult(list):
             def __init__(self, items, skills=None):
                 super().__init__(items)
+                self.memories = list(items)
                 self.skills = skills or []
 
         matched_memory = Mock(

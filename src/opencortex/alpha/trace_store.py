@@ -9,7 +9,8 @@ Traces are stored with three-layer CortexFS architecture:
 
 import orjson
 import logging
-from typing import Any, Dict, List, Optional
+import inspect
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from opencortex.alpha.types import Trace
 
@@ -24,12 +25,14 @@ class TraceStore:
         cortex_fs,     # CortexFS
         collection_name: str = "traces",
         embedding_dim: int = 1024,
+        on_trace_saved: Optional[Callable[[Trace], Awaitable[None] | None]] = None,
     ):
         self._storage = storage
         self._embedder = embedder
         self._fs = cortex_fs
         self._collection = collection_name
         self._dim = embedding_dim
+        self._on_trace_saved = on_trace_saved
 
     async def init(self) -> "TraceStore":
         """Ensure collection exists."""
@@ -75,6 +78,11 @@ class TraceStore:
                 abstract=trace.abstract or "",
                 overview=trace.overview or "",
             )
+
+        if self._on_trace_saved:
+            callback_result = self._on_trace_saved(trace)
+            if inspect.isawaitable(callback_result):
+                await callback_result
 
         return trace.trace_id
 
