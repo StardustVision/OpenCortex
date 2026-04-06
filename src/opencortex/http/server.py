@@ -395,14 +395,25 @@ def _register_routes(app: FastAPI) -> None:
             items.append(item)
         resp: Dict[str, Any] = {"results": items, "total": result.total}
         if result.search_intent:
+            recall_plan = result.search_intent.recall_plan
             resp["search_intent"] = {
                 "intent_type": result.search_intent.intent_type,
                 "top_k": result.search_intent.top_k,
-                "detail_level": result.search_intent.detail_level.value,
+                "detail_level": (
+                    recall_plan.detail_level.value
+                    if recall_plan
+                    else result.search_intent.detail_level.value
+                ),
                 "time_scope": result.search_intent.time_scope,
-                "should_recall": result.search_intent.should_recall,
+                "should_recall": (
+                    recall_plan.should_recall
+                    if recall_plan
+                    else result.search_intent.should_recall
+                ),
                 "lexical_boost": result.search_intent.lexical_boost,
             }
+            if recall_plan:
+                resp["recall_plan"] = recall_plan.to_dict()
         # v0.6: explain query param support
         explain_mode = request.query_params.get("explain")
         if (

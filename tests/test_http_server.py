@@ -450,7 +450,19 @@ class TestHTTPServer(unittest.TestCase):
                 self.assertEqual(resp.status_code, 200)
                 data = resp.json()
                 self.assertIn("results", data)
+                self.assertGreater(len(data["results"]), 0)
                 self.assertGreater(data["total"], 0)
+                self.assertIn("search_intent", data)
+                self.assertIn("recall_plan", data)
+                self.assertEqual(data["recall_plan"]["surfaces"], ["memory"])
+                self.assertEqual(
+                    data["search_intent"]["should_recall"],
+                    data["recall_plan"]["should_recall"],
+                )
+                self.assertEqual(
+                    data["search_intent"]["detail_level"],
+                    data["recall_plan"]["detail_level"],
+                )
 
         self._run(check())
 

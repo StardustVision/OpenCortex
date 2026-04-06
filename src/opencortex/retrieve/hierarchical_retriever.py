@@ -122,6 +122,10 @@ class HierarchicalRetriever:
                 "[HierarchicalRetriever] Rerank not configured, using vector search only with threshold=%s",
                 self.threshold,
             )
+        # Score gap threshold for conditional rerank
+        self._score_gap_threshold = (
+            rerank_config.score_gap_threshold if rerank_config else 0.15
+        )
 
     async def _apply_cone_scoring(self, candidates, query_text):
         """Apply cone scoring to candidates. Thread-safe: uses only local variables."""
@@ -147,11 +151,6 @@ class HierarchicalRetriever:
         except Exception as exc:
             logger.debug("[HierarchicalRetriever] Cone scoring failed: %s", exc)
         return candidates
-
-        # Score gap threshold for conditional rerank
-        self._score_gap_threshold = (
-            rerank_config.score_gap_threshold if rerank_config else 0.15
-        )
 
     # Half-life of 7 days: λ = ln(2)/7
     _HOTNESS_LAMBDA = math.log(2) / 7.0
