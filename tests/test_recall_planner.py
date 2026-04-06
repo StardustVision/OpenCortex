@@ -10,7 +10,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from opencortex.cognition import RecallPlanner
 from opencortex.config import CortexConfig
 from opencortex.cognition.state_types import OwnerType
-from opencortex.http.request_context import reset_request_identity, set_request_identity
+from opencortex.http.request_context import (
+    reset_request_identity,
+    reset_request_project_id,
+    set_request_identity,
+    set_request_project_id,
+)
 from opencortex.orchestrator import MemoryOrchestrator
 from opencortex.retrieve.types import (
     ContextType,
@@ -474,6 +479,32 @@ class TestOrchestratorAutophagyIntegration(unittest.IsolatedAsyncioTestCase):
             tenant_id="tenant-1",
             user_id="user-1",
             project_id="public",
+        )
+
+        await orch.close()
+
+    async def test_on_trace_saved_uses_trace_project_id_instead_of_ambient_project(self):
+        orch = self._make_orchestrator()
+        await orch.init()
+        orch._autophagy_kernel.initialize_owner = AsyncMock()
+        trace = Mock(
+            trace_id="trace-proj-1",
+            tenant_id="tenant-1",
+            user_id="user-1",
+            project_id="project-42",
+        )
+        public_project = set_request_project_id("public")
+        try:
+            await orch._on_trace_saved(trace)
+        finally:
+            reset_request_project_id(public_project)
+
+        orch._autophagy_kernel.initialize_owner.assert_awaited_once_with(
+            owner_type=OwnerType.TRACE,
+            owner_id="trace-proj-1",
+            tenant_id="tenant-1",
+            user_id="user-1",
+            project_id="project-42",
         )
 
         await orch.close()

@@ -19,8 +19,11 @@ from dataclasses import dataclass, field as dc_field
 
 from opencortex.http.request_context import (
     get_effective_identity,
+    get_effective_project_id,
     reset_request_identity,
+    reset_request_project_id,
     set_request_identity,
+    set_request_project_id,
 )
 from opencortex.utils.text import smart_truncate
 from opencortex.retrieve.types import (
@@ -83,6 +86,8 @@ class ContextManager:
         self._session_activity: Dict[SessionKey, float] = {}
         # Session-level locks: prevent concurrent begin_session
         self._session_locks: Dict[SessionKey, asyncio.Lock] = {}
+        # Session project id snapshot for explicit/idle/background end flows.
+        self._session_project_ids: Dict[SessionKey, str] = {}
         # Pending async tasks (cited_uris reward, etc.)
         self._pending_tasks: Set[asyncio.Task] = set()
         # Session-scoped memory owner ids recalled during prepare().
@@ -276,6 +281,7 @@ class ContextManager:
 
         # 2. Session auto-create (session-level lock prevents concurrent begin)
         self._touch_session(sk)
+        self._remember_session_project(sk)
         lock = self._session_locks.setdefault(sk, asyncio.Lock())
         async with lock:
             if session_id not in self._observer.active_sessions():
@@ -471,6 +477,7 @@ class ContextManager:
     ) -> Dict[str, Any]:
         sk = self._make_session_key(tenant_id, user_id, session_id)
         self._touch_session(sk)
+        self._remember_session_project(sk)
 
         # Idempotent: same turn_id already committed → duplicate
         if turn_id in self._committed_turns.get(sk, set()):
@@ -683,12 +690,17 @@ class ContextManager:
         traces = 0
         knowledge_candidates = 0
         session_owner_ids = sorted(self._session_memory_owner_ids.get(sk, set()))
+        session_project_id = self._session_project_ids.get(sk) or get_effective_project_id()
 
         try:
-            result = await self._orchestrator.session_end(
-                session_id=session_id,
-                quality_score=0.5,
-            )
+            project_token = set_request_project_id(session_project_id)
+            try:
+                result = await self._orchestrator.session_end(
+                    session_id=session_id,
+                    quality_score=0.5,
+                )
+            finally:
+                reset_request_project_id(project_token)
             traces = result.get("alpha_traces", 0)
             knowledge_candidates = result.get("knowledge_candidates", 0)
         except Exception as exc:
@@ -775,6 +787,9 @@ class ContextManager:
     def _touch_session(self, sk: SessionKey) -> None:
         self._session_activity[sk] = time.time()
 
+    def _remember_session_project(self, sk: SessionKey) -> None:
+        self._session_project_ids[sk] = get_effective_project_id()
+
     def _cleanup_session(self, sk: SessionKey) -> None:
         """Remove all session state including cache entries via reverse index."""
         cache_keys = self._session_cache_keys.pop(sk, set())
@@ -783,6 +798,7 @@ class ContextManager:
         self._committed_turns.pop(sk, None)
         self._session_activity.pop(sk, None)
         self._session_locks.pop(sk, None)
+        self._session_project_ids.pop(sk, None)
         self._session_memory_owner_ids.pop(sk, None)
         # Clean up turn-scoped skill selections for this session
         stale_keys = [k for k in self._selected_skill_uris if k[0] == sk]

@@ -57,6 +57,30 @@ class TestTraceStore(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved_id, "tr-callback")
         on_trace_saved.assert_awaited_once_with(trace)
 
+    async def test_save_trace_ignores_callback_failure_after_durable_save(self):
+        on_trace_saved = AsyncMock(side_effect=RuntimeError("callback failed"))
+        self.store = TraceStore(
+            storage=self.storage,
+            embedder=self.embedder,
+            cortex_fs=self.cortex_fs,
+            collection_name="traces",
+            embedding_dim=4,
+            on_trace_saved=on_trace_saved,
+        )
+        trace = Trace(
+            trace_id="tr-safe-callback", session_id="s1",
+            tenant_id="team", user_id="hugo",
+            source="claude_code",
+            turns=[Turn(turn_id="t1", prompt_text="fix bug", final_text="done")],
+            abstract="Safe callback trace",
+        )
+
+        saved_id = await self.store.save(trace)
+
+        self.assertEqual(saved_id, "tr-safe-callback")
+        self.storage.upsert.assert_called_once()
+        on_trace_saved.assert_awaited_once_with(trace)
+
     async def test_get_trace(self):
         self.storage.get = AsyncMock(return_value=[{
             "trace_id": "tr1", "session_id": "s1",

@@ -18,7 +18,13 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from opencortex.config import CortexConfig, init_config
 from opencortex.context.manager import ConversationBuffer
-from opencortex.http.request_context import set_request_identity, reset_request_identity
+from opencortex.http.request_context import (
+    get_effective_project_id,
+    reset_request_identity,
+    reset_request_project_id,
+    set_request_identity,
+    set_request_project_id,
+)
 from opencortex.orchestrator import MemoryOrchestrator
 from opencortex.retrieve.types import (
     ContextType,
@@ -465,6 +471,37 @@ class TestContextManagerAutophagyHooks(unittest.IsolatedAsyncioTestCase):
 
         release.set()
         await asyncio.gather(*list(cm._pending_tasks), return_exceptions=True)
+
+        await orch.close()
+
+    async def test_end_restores_session_project_id_for_session_end(self):
+        orch = self._make_orchestrator()
+        await orch.init()
+        cm = orch._context_manager
+        session_key = ("testteam", "alice", "sess-project")
+        cm._committed_turns[session_key] = {"t1"}
+        cm._session_project_ids[session_key] = "project-42"
+
+        seen_projects = []
+
+        async def fake_session_end(**kwargs):
+            seen_projects.append(get_effective_project_id())
+            return {
+                "session_id": kwargs["session_id"],
+                "alpha_traces": 0,
+                "knowledge_candidates": 0,
+            }
+
+        orch.session_end = fake_session_end
+
+        public_project = set_request_project_id("public")
+        try:
+            result = await cm._end("sess-project", "testteam", "alice")
+        finally:
+            reset_request_project_id(public_project)
+
+        self.assertEqual(result["status"], "closed")
+        self.assertEqual(seen_projects, ["project-42"])
 
         await orch.close()
 

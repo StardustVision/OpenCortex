@@ -2148,7 +2148,7 @@ class MemoryOrchestrator:
             owner_id=str(getattr(trace, "trace_id", "")),
             tenant_id=str(getattr(trace, "tenant_id", "")),
             user_id=str(getattr(trace, "user_id", "")),
-            project_id=get_effective_project_id(),
+            project_id=str(getattr(trace, "project_id", "")) or get_effective_project_id(),
         )
 
     async def _resolve_and_update_access_stats(self, uris: list) -> None:

@@ -13,6 +13,7 @@ import inspect
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from opencortex.alpha.types import Trace
+from opencortex.http.request_context import get_effective_project_id
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,8 @@ class TraceStore:
         embed_text = trace.abstract or trace.trace_id
         embed_result = self._embedder.embed(embed_text)
         vector = embed_result.dense_vector
+        project_id = getattr(trace, "project_id", "") or get_effective_project_id()
+        setattr(trace, "project_id", project_id)
 
         record = {
             "id": trace.trace_id,
@@ -61,6 +64,7 @@ class TraceStore:
             "archivist_processed": False,
             "abstract": trace.abstract or "",
             "overview": trace.overview or "",
+            "project_id": project_id,
             "vector": vector,
             "created_at": trace.created_at,
         }
@@ -80,9 +84,16 @@ class TraceStore:
             )
 
         if self._on_trace_saved:
-            callback_result = self._on_trace_saved(trace)
-            if inspect.isawaitable(callback_result):
-                await callback_result
+            try:
+                callback_result = self._on_trace_saved(trace)
+                if inspect.isawaitable(callback_result):
+                    await callback_result
+            except Exception as exc:
+                logger.warning(
+                    "[TraceStore] on_trace_saved callback failed for trace_id=%s: %s",
+                    trace.trace_id,
+                    exc,
+                )
 
         return trace.trace_id
 
