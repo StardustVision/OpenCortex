@@ -1298,8 +1298,23 @@ class MemoryOrchestrator:
             if dup:
                 existing_uri, existing_score = dup
                 total_ms = int((asyncio.get_running_loop().time() - add_started) * 1000)
+                existing_record = await self._get_record_by_uri(existing_uri)
+                persisted_owner_id = ""
+                persisted_project_id = get_effective_project_id()
+                if existing_record:
+                    persisted_owner_id = str(existing_record.get("id", ""))
+                    persisted_project_id = str(
+                        existing_record.get("project_id", persisted_project_id)
+                    )
                 if effective_category in MERGEABLE_CATEGORIES:
                     await self._merge_into(existing_uri, abstract, content)
+                    await self._initialize_autophagy_owner_state(
+                        owner_type=OwnerType.MEMORY,
+                        owner_id=persisted_owner_id,
+                        tenant_id=tid,
+                        user_id=uid,
+                        project_id=persisted_project_id,
+                    )
                     logger.info(
                         "[MemoryOrchestrator] add tenant=%s user=%s uri=%s "
                         "dedup_action=merged dedup_target=%s score=%.3f "
@@ -1321,6 +1336,13 @@ class MemoryOrchestrator:
                     ctx.meta["dedup_score"] = round(existing_score, 4)
                     return ctx
                 else:
+                    await self._initialize_autophagy_owner_state(
+                        owner_type=OwnerType.MEMORY,
+                        owner_id=persisted_owner_id,
+                        tenant_id=tid,
+                        user_id=uid,
+                        project_id=persisted_project_id,
+                    )
                     logger.info(
                         "[MemoryOrchestrator] add tenant=%s user=%s uri=%s "
                         "dedup_action=skipped dedup_target=%s score=%.3f "
@@ -2076,6 +2098,20 @@ class MemoryOrchestrator:
             if owner_id and owner_id not in owner_ids:
                 owner_ids.append(owner_id)
         return owner_ids
+
+    async def _get_record_by_uri(self, uri: str) -> Optional[Dict[str, Any]]:
+        if not uri or not self._storage:
+            return None
+        try:
+            records = await self._storage.filter(
+                self._get_collection(),
+                {"op": "must", "field": "uri", "conds": [uri]},
+                limit=1,
+            )
+        except Exception as exc:
+            logger.debug("[Orchestrator] Failed to load record for uri=%s: %s", uri, exc)
+            return None
+        return records[0] if records else None
 
     async def _initialize_autophagy_owner_state(
         self,

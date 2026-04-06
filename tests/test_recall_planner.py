@@ -392,6 +392,92 @@ class TestOrchestratorAutophagyIntegration(unittest.IsolatedAsyncioTestCase):
 
         await orch.close()
 
+    async def test_add_dedup_skipped_initializes_existing_memory_owner_state(self):
+        orch = self._make_orchestrator()
+        await orch.init()
+        existing_uri = "opencortex://tenant-1/user-1/memories/events/existing-skip"
+        await self.storage.upsert(
+            "context",
+            {
+                "id": "existing-skip-id",
+                "uri": existing_uri,
+                "is_leaf": True,
+                "abstract": "existing event",
+                "overview": "",
+                "context_type": "memory",
+                "category": "events",
+                "source_tenant_id": "tenant-1",
+                "source_user_id": "user-1",
+                "scope": "private",
+                "project_id": "public",
+            },
+        )
+        orch._autophagy_kernel.initialize_owner = AsyncMock()
+        orch._check_duplicate = AsyncMock(return_value=(existing_uri, 0.93))
+
+        ctx = await orch.add(
+            abstract="existing event",
+            category="events",
+            context_type="memory",
+            dedup=True,
+        )
+
+        self.assertEqual(ctx.meta["dedup_action"], "skipped")
+        self.assertEqual(ctx.uri, existing_uri)
+        orch._autophagy_kernel.initialize_owner.assert_awaited_once_with(
+            owner_type=OwnerType.MEMORY,
+            owner_id="existing-skip-id",
+            tenant_id="tenant-1",
+            user_id="user-1",
+            project_id="public",
+        )
+
+        await orch.close()
+
+    async def test_add_dedup_merged_initializes_existing_memory_owner_state(self):
+        orch = self._make_orchestrator()
+        await orch.init()
+        existing_uri = "opencortex://tenant-1/user-1/memories/preferences/existing-merge"
+        await self.storage.upsert(
+            "context",
+            {
+                "id": "existing-merge-id",
+                "uri": existing_uri,
+                "is_leaf": True,
+                "abstract": "dark mode",
+                "overview": "",
+                "context_type": "memory",
+                "category": "preferences",
+                "source_tenant_id": "tenant-1",
+                "source_user_id": "user-1",
+                "scope": "private",
+                "project_id": "public",
+            },
+        )
+        orch._autophagy_kernel.initialize_owner = AsyncMock()
+        orch._check_duplicate = AsyncMock(return_value=(existing_uri, 0.96))
+        orch._merge_into = AsyncMock()
+
+        ctx = await orch.add(
+            abstract="dark mode",
+            category="preferences",
+            context_type="memory",
+            dedup=True,
+        )
+
+        self.assertEqual(ctx.meta["dedup_action"], "merged")
+        self.assertEqual(ctx.uri, existing_uri)
+        orch._merge_into.assert_awaited_once_with(existing_uri, "dark mode", "")
+        orch._autophagy_kernel.initialize_owner.assert_awaited_once_with(
+            owner_type=OwnerType.MEMORY,
+            owner_id="existing-merge-id",
+            tenant_id="tenant-1",
+            user_id="user-1",
+            project_id="public",
+        )
+
+        await orch.close()
+
     async def test_search_applies_autophagy_recall_outcome_for_recalled_memory_ids(self):
         orch = self._make_orchestrator()
         await orch.init()
