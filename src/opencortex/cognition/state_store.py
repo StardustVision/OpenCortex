@@ -57,8 +57,7 @@ class CognitiveStateStore:
                     f"state already exists for {state.owner_type.value}:{state.owner_id}; "
                     "use update_state or persist_batch"
                 )
-            if not state.state_id:
-                state.state_id = self._owner_state_id(state.owner_type, state.owner_id)
+            state.state_id = self._owner_state_id(state.owner_type, state.owner_id)
             state.version = 1
             await self._storage.upsert(self._state_collection, state.to_dict())
             return state
@@ -159,6 +158,7 @@ class CognitiveStateStore:
 
             async with _LockGroup([await self._get_lock_by_key(key) for key in lock_keys]):
                 staged: Dict[str, CognitiveState] = {}
+                snapshots: Dict[str, CognitiveState] = {}
                 for update in normalized_updates:
                     owner_type = update["owner_type"]
                     owner_id = update["owner_id"]
@@ -167,6 +167,8 @@ class CognitiveStateStore:
                     current = staged.get(state_key)
                     if current is None:
                         current = await self.get_by_owner(owner_type, owner_id)
+                        if current is not None:
+                            snapshots[state_key] = CognitiveState.from_dict(current.to_dict())
                     if current is None:
                         raise KeyError(f"state not found for {state_key}")
                     if current.version != update["expected_version"]:
@@ -183,10 +185,27 @@ class CognitiveStateStore:
                     next_state.last_mutation_at = _utc_now_iso()
                     staged[state_key] = next_state
 
-                for state_key in lock_keys:
-                    state = staged.get(state_key)
-                    if state is not None:
-                        await self._storage.upsert(self._state_collection, state.to_dict())
+                applied_state_keys: list[str] = []
+                try:
+                    for state_key in lock_keys:
+                        state = staged.get(state_key)
+                        if state is not None:
+                            await self._storage.upsert(self._state_collection, state.to_dict())
+                            applied_state_keys.append(state_key)
+                except Exception as flush_exc:
+                    rollback_exc = await self._rollback_states_from_snapshots(
+                        applied_state_keys, snapshots
+                    )
+                    if rollback_exc is not None:
+                        raise RuntimeError(
+                            "state flush failed; rollback failed; "
+                            f"flush_error={type(flush_exc).__name__}: {flush_exc}; "
+                            f"rollback_error={type(rollback_exc).__name__}: {rollback_exc}"
+                        ) from flush_exc
+                    raise RuntimeError(
+                        "state flush failed; rollback succeeded; "
+                        f"flush_error={type(flush_exc).__name__}: {flush_exc}"
+                    ) from flush_exc
         except Exception as exc:
             batch.status = MutationBatchStatus.FAILED
             batch.error = f"{type(exc).__name__}: {exc}"
@@ -284,6 +303,20 @@ class CognitiveStateStore:
                 lock = asyncio.Lock()
                 self._owner_locks[key] = lock
             return lock
+
+    async def _rollback_states_from_snapshots(
+        self,
+        applied_state_keys: Sequence[str],
+        snapshots: Mapping[str, CognitiveState],
+    ) -> Exception | None:
+        try:
+            for state_key in applied_state_keys:
+                snapshot = snapshots.get(state_key)
+                if snapshot is not None:
+                    await self._storage.upsert(self._state_collection, snapshot.to_dict())
+            return None
+        except Exception as exc:
+            return exc
 
 
 def _coerce_owner_type(value: OwnerType | str) -> OwnerType:

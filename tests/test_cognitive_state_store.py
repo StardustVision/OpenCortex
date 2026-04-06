@@ -26,6 +26,8 @@ class _LocalInMemoryStorage:
         self._records = {}
         self.upsert_calls = []
         self.fail_on_committed_batch_ids = set()
+        self._state_upsert_count = 0
+        self.fail_on_state_upsert_number = None
 
     async def create_collection(self, name, schema):
         if name in self._collections:
@@ -45,6 +47,13 @@ class _LocalInMemoryStorage:
             and data.get("status") == "committed"
         ):
             raise RuntimeError("simulated committed upsert failure")
+        if collection in self._records and collection.endswith("state"):
+            self._state_upsert_count += 1
+            if (
+                self.fail_on_state_upsert_number is not None
+                and self._state_upsert_count == self.fail_on_state_upsert_number
+            ):
+                raise RuntimeError("simulated state upsert failure")
         record_id = data["id"]
         row = dict(data)
         self._records[collection][record_id] = row
@@ -131,6 +140,20 @@ class TestCognitiveStateStore(unittest.IsolatedAsyncioTestCase):
         await self.store.save_state(self._make_state("mem-dup"))
         with self.assertRaises(ValueError):
             await self.store.save_state(self._make_state("mem-dup"))
+
+    async def test_save_state_canonicalizes_state_id_by_owner(self):
+        await self.store.save_state(self._make_state("owner-a"))
+        attacker_state = self._make_state("owner-b")
+        attacker_state.state_id = "memory:owner-a"
+
+        await self.store.save_state(attacker_state)
+
+        owner_a = await self.store.get_by_owner(OwnerType.MEMORY, "owner-a")
+        owner_b = await self.store.get_by_owner(OwnerType.MEMORY, "owner-b")
+        self.assertIsNotNone(owner_a)
+        self.assertIsNotNone(owner_b)
+        self.assertEqual(owner_a.state_id, "memory:owner-a")
+        self.assertEqual(owner_b.state_id, "memory:owner-b")
 
     async def test_update_state_rejects_stale_version(self):
         await self.store.save_state(self._make_state("mem-2"))
@@ -253,6 +276,45 @@ class TestCognitiveStateStore(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state_b.version, 1)
         self.assertEqual(state_a.activation_score, 0.0)
         self.assertEqual(state_b.activation_score, 0.0)
+
+    async def test_persist_batch_flush_failure_rolls_back_prior_state_writes(self):
+        await self.store.save_state(self._make_state("mem-r1"))
+        await self.store.save_state(self._make_state("mem-r2"))
+        self.storage.fail_on_state_upsert_number = self.storage._state_upsert_count + 2
+        batch = MutationBatch(batch_id="batch-flush-fail", owner_ids=["mem-r1", "mem-r2"])
+
+        committed = await self.store.persist_batch(
+            batch=batch,
+            state_updates=[
+                {
+                    "owner_type": OwnerType.MEMORY,
+                    "owner_id": "mem-r1",
+                    "expected_version": 1,
+                    "fields": {"activation_score": 0.7},
+                },
+                {
+                    "owner_type": OwnerType.MEMORY,
+                    "owner_id": "mem-r2",
+                    "expected_version": 1,
+                    "fields": {"activation_score": 0.9},
+                },
+            ],
+        )
+        self.assertFalse(committed)
+
+        state_1 = await self.store.get_by_owner(OwnerType.MEMORY, "mem-r1")
+        state_2 = await self.store.get_by_owner(OwnerType.MEMORY, "mem-r2")
+        self.assertIsNotNone(state_1)
+        self.assertIsNotNone(state_2)
+        self.assertEqual(state_1.version, 1)
+        self.assertEqual(state_2.version, 1)
+        self.assertEqual(state_1.activation_score, 0.0)
+        self.assertEqual(state_2.activation_score, 0.0)
+
+        ledger_rows = await self.storage.get(self.store._batch_collection, ["batch-flush-fail"])
+        self.assertEqual(len(ledger_rows), 1)
+        self.assertEqual(ledger_rows[0]["status"], MutationBatchStatus.FAILED.value)
+        self.assertIn("state flush failed", ledger_rows[0]["error"])
 
     async def test_update_state_rejects_identity_field_mutation(self):
         await self.store.save_state(self._make_state("mem-identity"))
