@@ -341,3 +341,11 @@ class RecallMutationResult:
     quarantine_events: List[Dict[str, Any]] = field(default_factory=list)
     contestation_events: List[Dict[str, Any]] = field(default_factory=list)
     explanations: List[Dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class MetabolismResult:
+    """Pure/store-free result envelope for metabolism ticks."""
+
+    state_updates: List[Dict[str, Any]] = field(default_factory=list)
+    review_events: List[Dict[str, Any]] = field(default_factory=list)

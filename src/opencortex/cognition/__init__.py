@@ -2,6 +2,7 @@
 
 from .candidate_store import CandidateStore
 from .consolidation_gate import ConsolidationGate, ConsolidationGateResult
+from .metabolism import CognitiveMetabolismController
 from .mutation_engine import RecallMutationEngine
 from .recall_planner import RecallPlanner
 from .state_store import (
@@ -18,6 +19,7 @@ from .state_types import (
     LifecycleState,
     MutationBatch,
     MutationBatchStatus,
+    MetabolismResult,
     OwnerType,
     RecallMutationResult,
 )
@@ -28,6 +30,7 @@ __all__ = [
     "CandidateStore",
     "ConsolidationGate",
     "ConsolidationGateResult",
+    "CognitiveMetabolismController",
     "OwnerType",
     "LifecycleState",
     "ExposureState",
@@ -39,6 +42,7 @@ __all__ = [
     "CognitiveState",
     "MutationBatch",
     "RecallMutationResult",
+    "MetabolismResult",
     "CognitiveStateStore",
     "StaleStateVersionError",
 ]
