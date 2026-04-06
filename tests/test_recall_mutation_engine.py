@@ -65,6 +65,12 @@ class TestRecallMutationEngine(unittest.TestCase):
         self.assertIsNotNone(fields["last_reinforced_at"])
         self.assertEqual(fields["last_mutation_reason"], "reinforce")
         self.assertEqual(fields["last_mutation_source"], "recall_mutation_engine")
+        self.assertEqual(len(result.explanations), 1)
+        self.assertIsInstance(result.explanations[0], dict)
+        self.assertEqual(result.explanations[0]["kind"], "reinforce")
+        self.assertEqual(result.explanations[0]["owner_type"], "memory")
+        self.assertEqual(result.explanations[0]["owner_id"], "mem-used")
+        self.assertIn("gain", result.explanations[0])
 
     def test_recalled_but_unused_penalizes_hot_candidate(self):
         hot = self._state("mem-hot", activation=0.92)
@@ -88,6 +94,10 @@ class TestRecallMutationEngine(unittest.TestCase):
         self.assertIsNotNone(fields["last_penalized_at"])
         self.assertEqual(fields["last_mutation_reason"], "penalize")
         self.assertEqual(fields["last_mutation_source"], "recall_mutation_engine")
+        self.assertEqual(len(result.explanations), 1)
+        self.assertEqual(result.explanations[0]["kind"], "penalize")
+        self.assertEqual(result.explanations[0]["owner_id"], "mem-hot")
+        self.assertIn("decay", result.explanations[0])
 
     def test_conflict_signal_marks_state_contested(self):
         target = self._state("mem-conflict", activation=0.4)
@@ -116,6 +126,10 @@ class TestRecallMutationEngine(unittest.TestCase):
         self.assertEqual(len(result.contestation_events), 1)
         self.assertEqual(result.contestation_events[0]["owner_id"], "mem-conflict")
         self.assertIn("reason", result.contestation_events[0])
+        self.assertEqual(len(result.explanations), 1)
+        self.assertEqual(result.explanations[0]["kind"], "contest")
+        self.assertEqual(result.explanations[0]["owner_id"], "mem-conflict")
+        self.assertEqual(result.explanations[0]["reason"], "answer conflict")
 
     def test_same_owner_id_for_memory_and_trace_produces_distinct_updates(self):
         memory_state = self._state("shared", activation=0.5, owner_type=OwnerType.MEMORY)
@@ -143,6 +157,38 @@ class TestRecallMutationEngine(unittest.TestCase):
         )
         self.assertEqual(
             trace_update["fields"]["access_count"], trace_state.access_count + 1
+        )
+
+    def test_apply_accepts_owner_keyed_state_mapping(self):
+        used = self._state("mapped-used", activation=0.65)
+        warm = self._state("mapped-neutral", activation=0.4)
+        engine = RecallMutationEngine()
+
+        recall_outcome = {
+            "selected_results": [
+                {"owner_type": "memory", "owner_id": "mapped-used"},
+                {"owner_type": "memory", "owner_id": "mapped-neutral"},
+            ],
+            "final_answer_used_memories": ["mapped-used"],
+        }
+        result = engine.apply(
+            query="dict-shaped states",
+            states={
+                "mapped-used": used,
+                "mapped-neutral": warm,
+            },
+            recall_outcome=recall_outcome,
+        )
+
+        self.assertEqual(len(result.state_updates), 2)
+        used_update = self._find_update(result, "mapped-used")
+        neutral_update = self._find_update(result, "mapped-neutral")
+        self.assertGreater(
+            used_update["fields"]["activation_score"], used.activation_score
+        )
+        self.assertEqual(
+            neutral_update["fields"]["last_mutation_reason"],
+            "touch",
         )
 
     def test_touched_neutral_state_sets_mutation_metadata(self):

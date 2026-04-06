@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Set, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Mapping, MutableMapping, Set, Tuple
 
 from .state_types import CognitiveState, ExposureState, RecallMutationResult
 
@@ -31,7 +31,7 @@ class RecallMutationEngine:
     def apply(
         self,
         query: str,
-        states: List[CognitiveState],
+        states: Mapping[str, CognitiveState] | Iterable[CognitiveState],
         recall_outcome: Mapping[str, Any] | None,
     ) -> RecallMutationResult:
         del query  # query is carried by caller and reserved for future scoring logic.
@@ -56,10 +56,10 @@ class RecallMutationEngine:
         touched_state_keys = used_state_keys | recalled_state_keys | conflict_state_keys
 
         updates_by_owner: Dict[Tuple[str, str], Dict[str, Any]] = {}
-        explanations: List[str] = []
+        explanations: List[Dict[str, Any]] = []
         contestation_events: List[Dict[str, Any]] = []
 
-        for state in states:
+        for state in self._iter_states(states):
             state_key = (state.owner_type.value, state.owner_id)
             if state_key not in touched_state_keys:
                 continue
@@ -78,7 +78,15 @@ class RecallMutationEngine:
                 fields["last_reinforced_at"] = now
                 mutation_reason = "reinforce"
                 explanations.append(
-                    f"reinforce:{state.owner_type.value}:{state.owner_id}:gain={gain:.4f}"
+                    {
+                        "kind": "reinforce",
+                        "owner_type": state.owner_type.value,
+                        "owner_id": state.owner_id,
+                        "state_id": state.state_id,
+                        "gain": gain,
+                        "activation_before": state.activation_score,
+                        "activation_after": next_activation,
+                    }
                 )
             elif (
                 state_key in recalled_state_keys
@@ -90,7 +98,15 @@ class RecallMutationEngine:
                 fields["last_penalized_at"] = now
                 mutation_reason = "penalize"
                 explanations.append(
-                    f"penalize:{state.owner_type.value}:{state.owner_id}:decay={decay:.4f}"
+                    {
+                        "kind": "penalize",
+                        "owner_type": state.owner_type.value,
+                        "owner_id": state.owner_id,
+                        "state_id": state.state_id,
+                        "decay": decay,
+                        "activation_before": state.activation_score,
+                        "activation_after": next_activation,
+                    }
                 )
 
             if state_key in conflict_state_keys:
@@ -109,7 +125,13 @@ class RecallMutationEngine:
                     }
                 )
                 explanations.append(
-                    f"contest:{state.owner_type.value}:{state.owner_id}:reason={reason}"
+                    {
+                        "kind": "contest",
+                        "owner_type": state.owner_type.value,
+                        "owner_id": state.owner_id,
+                        "state_id": state.state_id,
+                        "reason": reason,
+                    }
                 )
 
             fields["last_mutation_reason"] = mutation_reason
@@ -130,6 +152,19 @@ class RecallMutationEngine:
             contestation_events=contestation_events,
             explanations=explanations,
         )
+
+    @staticmethod
+    def _iter_states(
+        states: Mapping[str, CognitiveState] | Iterable[CognitiveState],
+    ) -> Iterator[CognitiveState]:
+        if isinstance(states, Mapping):
+            for state in states.values():
+                if isinstance(state, CognitiveState):
+                    yield state
+            return
+        for state in states:
+            if isinstance(state, CognitiveState):
+                yield state
 
     @staticmethod
     def _extract_state_keys(
