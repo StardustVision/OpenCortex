@@ -4,6 +4,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+import json
 from typing import Any, Dict, List, Optional
 
 
@@ -96,7 +97,7 @@ class CognitiveState:
             "last_mutation_reason": self.last_mutation_reason,
             "last_mutation_source": self.last_mutation_source,
             "version": self.version,
-            "metadata": self.metadata,
+            "metadata": json.dumps(self.metadata, separators=(",", ":"), sort_keys=True),
         }
         if self.last_accessed_at:
             record["last_accessed_at"] = self.last_accessed_at
@@ -110,6 +111,16 @@ class CognitiveState:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "CognitiveState":
+        metadata_raw = data.get("metadata", {})
+        if isinstance(metadata_raw, str):
+            try:
+                metadata = json.loads(metadata_raw) if metadata_raw else {}
+            except json.JSONDecodeError:
+                metadata = {}
+        elif isinstance(metadata_raw, dict):
+            metadata = dict(metadata_raw)
+        else:
+            metadata = {}
         return cls(
             state_id=data["state_id"],
             owner_type=OwnerType(data["owner_type"]),
@@ -137,7 +148,7 @@ class CognitiveState:
             last_mutation_reason=data.get("last_mutation_reason", ""),
             last_mutation_source=data.get("last_mutation_source", ""),
             version=int(data.get("version", 1)),
-            metadata=dict(data.get("metadata", {})),
+            metadata=metadata,
         )
 
 
@@ -160,10 +171,10 @@ class MutationBatch:
         record = {
             "id": self.id,
             "batch_id": self.batch_id,
-            "owner_ids": self.owner_ids,
+            "owner_ids": json.dumps(self.owner_ids, separators=(",", ":")),
             "status": self.status.value,
             "error": self.error,
-            "metadata": self.metadata,
+            "metadata": json.dumps(self.metadata, separators=(",", ":"), sort_keys=True),
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -174,12 +185,34 @@ class MutationBatch:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MutationBatch":
         committed_at = data.get("committed_at") or None
+        owner_ids_raw = data.get("owner_ids", [])
+        if isinstance(owner_ids_raw, str):
+            try:
+                owner_ids_value = json.loads(owner_ids_raw) if owner_ids_raw else []
+            except json.JSONDecodeError:
+                owner_ids_value = []
+        elif isinstance(owner_ids_raw, list):
+            owner_ids_value = owner_ids_raw
+        else:
+            owner_ids_value = []
+
+        metadata_raw = data.get("metadata", {})
+        if isinstance(metadata_raw, str):
+            try:
+                metadata_value = json.loads(metadata_raw) if metadata_raw else {}
+            except json.JSONDecodeError:
+                metadata_value = {}
+        elif isinstance(metadata_raw, dict):
+            metadata_value = metadata_raw
+        else:
+            metadata_value = {}
+
         return cls(
             batch_id=data["batch_id"],
-            owner_ids=list(data.get("owner_ids", [])),
+            owner_ids=list(owner_ids_value),
             status=MutationBatchStatus(data.get("status", MutationBatchStatus.PENDING.value)),
             error=data.get("error", ""),
-            metadata=dict(data.get("metadata", {})),
+            metadata=dict(metadata_value),
             created_at=data.get("created_at") or _utc_now_iso(),
             updated_at=data.get("updated_at") or _utc_now_iso(),
             committed_at=committed_at,

@@ -51,8 +51,15 @@ class CognitiveStateStore:
 
     async def save_state(self, state: CognitiveState) -> CognitiveState:
         async with await self._get_owner_lock(state.owner_type, state.owner_id):
+            existing = await self.get_by_owner(state.owner_type, state.owner_id)
+            if existing is not None:
+                raise ValueError(
+                    f"state already exists for {state.owner_type.value}:{state.owner_id}; "
+                    "use update_state or persist_batch"
+                )
             if not state.state_id:
                 state.state_id = self._owner_state_id(state.owner_type, state.owner_id)
+            state.version = 1
             await self._storage.upsert(self._state_collection, state.to_dict())
             return state
 
@@ -187,12 +194,23 @@ class CognitiveStateStore:
             await self._storage.upsert(self._batch_collection, batch.to_dict())
             return False
 
-        now = _utc_now_iso()
-        batch.status = MutationBatchStatus.COMMITTED
-        batch.updated_at = now
-        batch.committed_at = now
-        await self._storage.upsert(self._batch_collection, batch.to_dict())
-        return True
+        try:
+            now = _utc_now_iso()
+            batch.status = MutationBatchStatus.COMMITTED
+            batch.updated_at = now
+            batch.committed_at = now
+            await self._storage.upsert(self._batch_collection, batch.to_dict())
+            return True
+        except Exception as exc:
+            batch.status = MutationBatchStatus.FAILED
+            batch.error = f"{type(exc).__name__}: {exc}"
+            batch.updated_at = _utc_now_iso()
+            batch.committed_at = None
+            try:
+                await self._storage.upsert(self._batch_collection, batch.to_dict())
+            except Exception:
+                pass
+            return False
 
     async def _get_owner_lock(self, owner_type: OwnerType, owner_id: str) -> asyncio.Lock:
         key = self._owner_state_id(owner_type, owner_id)
@@ -230,6 +248,30 @@ class CognitiveStateStore:
         for key in fields:
             if key in immutable_keys:
                 raise ValueError(f"identity field mutation is not allowed: {key}")
+
+        allowed_mutable_keys = {
+            "lifecycle_state",
+            "exposure_state",
+            "consolidation_state",
+            "activation_score",
+            "stability_score",
+            "risk_score",
+            "novelty_score",
+            "evidence_residual_score",
+            "access_count",
+            "retrieval_success_count",
+            "retrieval_failure_count",
+            "last_accessed_at",
+            "last_reinforced_at",
+            "last_penalized_at",
+            "last_mutation_at",
+            "last_mutation_reason",
+            "last_mutation_source",
+            "metadata",
+        }
+        unknown_keys = [key for key in fields if key not in allowed_mutable_keys and key not in immutable_keys]
+        if unknown_keys:
+            raise ValueError(f"unknown mutable field(s): {', '.join(sorted(unknown_keys))}")
 
     @staticmethod
     def _owner_state_id(owner_type: OwnerType, owner_id: str) -> str:
