@@ -120,31 +120,36 @@ class CognitiveStateStore:
         batch: MutationBatch,
         state_updates: Sequence[Mapping[str, Any]],
     ) -> bool:
+        if not batch.owner_ids:
+            batch.owner_ids = [
+                str(update["owner_id"])
+                for update in state_updates
+                if "owner_id" in update
+            ]
+
         batch.status = MutationBatchStatus.PENDING
         batch.error = ""
         batch.updated_at = _utc_now_iso()
         await self._storage.upsert(self._batch_collection, batch.to_dict())
 
-        normalized_updates = [
-            {
-                "owner_type": _coerce_owner_type(update["owner_type"]),
-                "owner_id": str(update["owner_id"]),
-                "expected_version": int(update["expected_version"]),
-                "fields": dict(update.get("fields", {})),
-            }
-            for update in state_updates
-        ]
-        if not batch.owner_ids:
-            batch.owner_ids = [update["owner_id"] for update in normalized_updates]
-
-        lock_keys = sorted(
-            {
-                self._owner_state_id(update["owner_type"], update["owner_id"])
-                for update in normalized_updates
-            }
-        )
-
         try:
+            normalized_updates = [
+                {
+                    "owner_type": _coerce_owner_type(update["owner_type"]),
+                    "owner_id": str(update["owner_id"]),
+                    "expected_version": int(update["expected_version"]),
+                    "fields": dict(update.get("fields", {})),
+                }
+                for update in state_updates
+            ]
+
+            lock_keys = sorted(
+                {
+                    self._owner_state_id(update["owner_type"], update["owner_id"])
+                    for update in normalized_updates
+                }
+            )
+
             async with _LockGroup([await self._get_lock_by_key(key) for key in lock_keys]):
                 staged: Dict[str, CognitiveState] = {}
                 for update in normalized_updates:
@@ -175,9 +180,9 @@ class CognitiveStateStore:
                     state = staged.get(state_key)
                     if state is not None:
                         await self._storage.upsert(self._state_collection, state.to_dict())
-        except StaleStateVersionError as exc:
+        except Exception as exc:
             batch.status = MutationBatchStatus.FAILED
-            batch.error = str(exc)
+            batch.error = f"{type(exc).__name__}: {exc}"
             batch.updated_at = _utc_now_iso()
             await self._storage.upsert(self._batch_collection, batch.to_dict())
             return False
@@ -220,6 +225,7 @@ class CognitiveStateStore:
             "tenant_id",
             "user_id",
             "project_id",
+            "version",
         }
         for key in fields:
             if key in immutable_keys:

@@ -1,6 +1,8 @@
 import unittest
+import os
+import sys
 
-from tests.test_e2e_phase1 import InMemoryStorage
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from opencortex.cognition.state_store import (
     CognitiveStateStore,
@@ -17,9 +19,52 @@ from opencortex.cognition.state_types import (
 )
 
 
+class _LocalInMemoryStorage:
+    def __init__(self):
+        self._collections = {}
+        self._records = {}
+        self.upsert_calls = []
+
+    async def create_collection(self, name, schema):
+        if name in self._collections:
+            return False
+        self._collections[name] = schema
+        self._records[name] = {}
+        return True
+
+    async def collection_exists(self, name):
+        return name in self._collections
+
+    async def upsert(self, collection, data):
+        record_id = data["id"]
+        row = dict(data)
+        self._records[collection][record_id] = row
+        self.upsert_calls.append((collection, dict(row)))
+        return record_id
+
+    async def get(self, collection, ids):
+        records = self._records.get(collection, {})
+        return [dict(records[rid]) for rid in ids if rid in records]
+
+    async def filter(self, collection, filter, limit=10, **kwargs):
+        records = list(self._records.get(collection, {}).values())
+        matched = [dict(r) for r in records if self._eval_filter(r, filter)]
+        return matched[:limit]
+
+    def _eval_filter(self, record, filt):
+        if not filt:
+            return True
+        op = filt.get("op", "")
+        if op == "must":
+            return record.get(filt.get("field")) in filt.get("conds", [])
+        if op == "and":
+            return all(self._eval_filter(record, c) for c in filt.get("conds", []))
+        return True
+
+
 class TestCognitiveStateStore(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.storage = InMemoryStorage()
+        self.storage = _LocalInMemoryStorage()
         self.store = CognitiveStateStore(self.storage)
         await self.store.init()
 
@@ -213,6 +258,16 @@ class TestCognitiveStateStore(unittest.IsolatedAsyncioTestCase):
                 fields={"tenant_id": "other-tenant"},
             )
 
+    async def test_update_state_rejects_version_field_mutation(self):
+        await self.store.save_state(self._make_state("mem-version"))
+        with self.assertRaises(ValueError):
+            await self.store.update_state(
+                owner_type=OwnerType.MEMORY,
+                owner_id="mem-version",
+                expected_version=1,
+                fields={"version": 999},
+            )
+
     def test_mutation_batch_to_dict_omits_unset_committed_at(self):
         batch = MutationBatch(batch_id="batch-no-commit", owner_ids=["mem-1"])
         record = batch.to_dict()
@@ -233,6 +288,52 @@ class TestCognitiveStateStore(unittest.IsolatedAsyncioTestCase):
         store = CognitiveStateStore(self.storage, batch_collection="custom_batches")
         await store.init()
         self.assertTrue(await self.storage.collection_exists("custom_batches"))
+
+    async def test_persist_batch_non_stale_error_marks_ledger_failed(self):
+        await self.store.save_state(self._make_state("mem-invalid"))
+        batch = MutationBatch(batch_id="batch-invalid")
+        committed = await self.store.persist_batch(
+            batch=batch,
+            state_updates=[
+                {
+                    "owner_type": OwnerType.MEMORY,
+                    "owner_id": "mem-invalid",
+                    "expected_version": 1,
+                    "fields": {"lifecycle_state": "not-a-state"},
+                }
+            ],
+        )
+        self.assertFalse(committed)
+        ledger_rows = await self.storage.get(self.store._batch_collection, ["batch-invalid"])
+        self.assertEqual(len(ledger_rows), 1)
+        self.assertEqual(ledger_rows[0]["status"], MutationBatchStatus.FAILED.value)
+        self.assertTrue(ledger_rows[0].get("error"))
+
+    async def test_persist_batch_failure_row_keeps_owner_ids(self):
+        await self.store.save_state(self._make_state("mem-owner-link"))
+        batch = MutationBatch(batch_id="batch-owner-ids", owner_ids=[])
+        committed = await self.store.persist_batch(
+            batch=batch,
+            state_updates=[
+                {
+                    "owner_type": OwnerType.MEMORY,
+                    "owner_id": "mem-owner-link",
+                    "expected_version": 0,
+                    "fields": {"activation_score": 0.3},
+                }
+            ],
+        )
+        self.assertFalse(committed)
+        ledger_rows = await self.storage.get(self.store._batch_collection, ["batch-owner-ids"])
+        self.assertEqual(len(ledger_rows), 1)
+        self.assertEqual(ledger_rows[0]["status"], MutationBatchStatus.FAILED.value)
+        self.assertEqual(ledger_rows[0]["owner_ids"], ["mem-owner-link"])
+        first_pending = next(
+            row for col, row in self.storage.upsert_calls
+            if col == self.store._batch_collection and row["batch_id"] == "batch-owner-ids"
+        )
+        self.assertEqual(first_pending["status"], MutationBatchStatus.PENDING.value)
+        self.assertEqual(first_pending["owner_ids"], ["mem-owner-link"])
 
 
 if __name__ == "__main__":
