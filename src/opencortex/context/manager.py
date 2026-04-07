@@ -662,87 +662,87 @@ class ContextManager:
     ) -> Dict[str, Any]:
         sk = self._make_session_key(tenant_id, user_id, session_id)
         total_turns = len(self._committed_turns.get(sk, set()))
-
-        # Flush conversation buffer before Alpha pipeline
-        buffer = self._conversation_buffers.get(sk)
-        if buffer and buffer.messages:
-            try:
-                await self._merge_buffer(sk, session_id, tenant_id, user_id)
-            except Exception as exc:
-                logger.warning("[ContextManager] End-of-session buffer flush failed: %s", exc)
-
-        # Catch-all: delete any remaining immediate records for this session
-        try:
-            await self._orchestrator._storage.batch_delete(
-                "context",
-                {"op": "and", "conds": [
-                    {"op": "must", "field": "session_id", "conds": [session_id]},
-                    {"op": "must", "field": "meta.layer", "conds": ["immediate"]},
-                ]},
-            )
-        except Exception as exc:
-            logger.warning("[ContextManager] End cleanup immediates: %s", exc)
-
-        # Delegate to orchestrator.session_end() — includes:
-        # Observer.flush → TraceSplitter → TraceStore → Archivist
-        start_time = time.monotonic()
-        status = "closed"
-        traces = 0
-        knowledge_candidates = 0
-        session_owner_ids = sorted(self._session_memory_owner_ids.get(sk, set()))
         session_project_id = self._session_project_ids.get(sk) or get_effective_project_id()
+        project_token = set_request_project_id(session_project_id)
 
         try:
-            project_token = set_request_project_id(session_project_id)
+            # Flush conversation buffer before Alpha pipeline
+            buffer = self._conversation_buffers.get(sk)
+            if buffer and buffer.messages:
+                try:
+                    await self._merge_buffer(sk, session_id, tenant_id, user_id)
+                except Exception as exc:
+                    logger.warning("[ContextManager] End-of-session buffer flush failed: %s", exc)
+
+            # Catch-all: delete any remaining immediate records for this session
+            try:
+                await self._orchestrator._storage.batch_delete(
+                    "context",
+                    {"op": "and", "conds": [
+                        {"op": "must", "field": "session_id", "conds": [session_id]},
+                        {"op": "must", "field": "meta.layer", "conds": ["immediate"]},
+                    ]},
+                )
+            except Exception as exc:
+                logger.warning("[ContextManager] End cleanup immediates: %s", exc)
+
+            # Delegate to orchestrator.session_end() — includes:
+            # Observer.flush → TraceSplitter → TraceStore → Archivist
+            start_time = time.monotonic()
+            status = "closed"
+            traces = 0
+            knowledge_candidates = 0
+            session_owner_ids = sorted(self._session_memory_owner_ids.get(sk, set()))
+
             try:
                 result = await self._orchestrator.session_end(
                     session_id=session_id,
                     quality_score=0.5,
                 )
-            finally:
-                reset_request_project_id(project_token)
-            traces = result.get("alpha_traces", 0)
-            knowledge_candidates = result.get("knowledge_candidates", 0)
-        except Exception as exc:
-            logger.warning(
-                "[ContextManager] session_end failed sid=%s tenant=%s user=%s: %s",
-                session_id, tenant_id, user_id, exc,
-            )
-            status = "partial"
-
-        if (
-            session_owner_ids
-            and getattr(self._orchestrator, "_autophagy_kernel", None) is not None
-        ):
-            task = asyncio.create_task(
-                self._run_autophagy_metabolism(
-                    session_id=session_id,
-                    tenant_id=tenant_id,
-                    user_id=user_id,
-                    owner_ids=session_owner_ids,
+                traces = result.get("alpha_traces", 0)
+                knowledge_candidates = result.get("knowledge_candidates", 0)
+            except Exception as exc:
+                logger.warning(
+                    "[ContextManager] session_end failed sid=%s tenant=%s user=%s: %s",
+                    session_id, tenant_id, user_id, exc,
                 )
+                status = "partial"
+
+            if (
+                session_owner_ids
+                and getattr(self._orchestrator, "_autophagy_kernel", None) is not None
+            ):
+                task = asyncio.create_task(
+                    self._run_autophagy_metabolism(
+                        session_id=session_id,
+                        tenant_id=tenant_id,
+                        user_id=user_id,
+                        owner_ids=session_owner_ids,
+                    )
+                )
+                self._pending_tasks.add(task)
+                task.add_done_callback(self._pending_tasks.discard)
+
+            duration_ms = int((time.monotonic() - start_time) * 1000)
+
+            # Cleanup session state
+            self._cleanup_session(sk)
+
+            logger.info(
+                "[ContextManager] end sid=%s tenant=%s user=%s turns=%d traces=%d latency=%dms",
+                session_id, tenant_id, user_id, total_turns, traces, duration_ms,
             )
-            self._pending_tasks.add(task)
-            task.add_done_callback(self._pending_tasks.discard)
 
-        duration_ms = int((time.monotonic() - start_time) * 1000)
-
-        # Cleanup session state
-        self._cleanup_session(sk)
-
-        logger.info(
-            "[ContextManager] end sid=%s tenant=%s user=%s turns=%d traces=%d latency=%dms",
-            session_id, tenant_id, user_id, total_turns, traces, duration_ms,
-        )
-
-        return {
-            "session_id": session_id,
-            "status": status,
-            "total_turns": total_turns,
-            "traces": traces,
-            "knowledge_candidates": knowledge_candidates,
-            "duration_ms": duration_ms,
-        }
+            return {
+                "session_id": session_id,
+                "status": status,
+                "total_turns": total_turns,
+                "traces": traces,
+                "knowledge_candidates": knowledge_candidates,
+                "duration_ms": duration_ms,
+            }
+        finally:
+            reset_request_project_id(project_token)
 
     # =========================================================================
     # Cache management

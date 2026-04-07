@@ -505,6 +505,47 @@ class TestContextManagerAutophagyHooks(unittest.IsolatedAsyncioTestCase):
 
         await orch.close()
 
+    async def test_end_flushes_merged_buffer_with_remembered_project_id(self):
+        orch = self._make_orchestrator()
+        await orch.init()
+        cm = orch._context_manager
+        session_key = ("testteam", "alice", "sess-merged-project")
+        cm._committed_turns[session_key] = {"t1"}
+        cm._session_project_ids[session_key] = "project-42"
+        cm._conversation_buffers[session_key] = ConversationBuffer(
+            messages=["user likes dark mode", "assistant confirmed preference"],
+            token_count=32,
+            start_msg_index=0,
+            immediate_uris=[],
+        )
+
+        async def fake_session_end(**kwargs):
+            return {
+                "session_id": kwargs["session_id"],
+                "alpha_traces": 0,
+                "knowledge_candidates": 0,
+            }
+
+        orch.session_end = fake_session_end
+
+        public_project = set_request_project_id("public")
+        try:
+            result = await cm._end("sess-merged-project", "testteam", "alice")
+        finally:
+            reset_request_project_id(public_project)
+
+        self.assertEqual(result["status"], "closed")
+        records = list(self.storage._records["context"].values())
+        merged = [
+            r for r in records
+            if r.get("session_id") == "sess-merged-project"
+            and (r.get("meta") or {}).get("layer") == "merged"
+        ]
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0].get("project_id"), "project-42")
+
+        await orch.close()
+
     # -----------------------------------------------------------------
     # 8. End cleans up all session state
     # -----------------------------------------------------------------

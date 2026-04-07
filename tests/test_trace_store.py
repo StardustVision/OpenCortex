@@ -34,6 +34,21 @@ class TestTraceStore(unittest.IsolatedAsyncioTestCase):
         call_args = self.storage.upsert.call_args
         self.assertEqual(call_args[0][0], "traces")  # collection name
 
+    async def test_save_trace_persists_explicit_project_id(self):
+        trace = Trace(
+            trace_id="tr-project", session_id="s1",
+            tenant_id="team", user_id="hugo",
+            project_id="project-42",
+            source="claude_code",
+            turns=[Turn(turn_id="t1", prompt_text="fix bug", final_text="done")],
+            abstract="Project-scoped trace",
+        )
+
+        await self.store.save(trace)
+
+        saved_record = self.storage.upsert.call_args[0][1]
+        self.assertEqual(saved_record["project_id"], "project-42")
+
     async def test_save_trace_invokes_optional_callback(self):
         on_trace_saved = AsyncMock()
         self.store = TraceStore(
