@@ -24,6 +24,8 @@ class _StateStoreSpy:
         self.persist_batch_calls = []
         self.persist_batch_results = []
         self.get_states_for_owners_calls = []
+        self.scroll_states_calls = []
+        self.scroll_states_results = []
 
     async def get_by_owner(self, owner_type: OwnerType, owner_id: str):
         return self.states_by_owner.get((owner_type, owner_id))
@@ -40,6 +42,13 @@ class _StateStoreSpy:
             for (owner_type, owner_id), state in self.states_by_owner.items()
             if owner_id in owner_ids
         }
+
+    async def scroll_states(self, **kwargs):
+        self.scroll_states_calls.append(dict(kwargs))
+        if self.scroll_states_results:
+            states, cursor = self.scroll_states_results.pop(0)
+            return list(states), cursor
+        return [], None
 
     async def persist_batch(self, batch: MutationBatch, state_updates):
         self.persist_batch_calls.append((batch, list(state_updates)))
@@ -507,6 +516,65 @@ class TestAutophagyKernel(unittest.IsolatedAsyncioTestCase):
         batch, updates = state_store.persist_batch_calls[0]
         self.assertIsInstance(batch, MutationBatch)
         self.assertEqual(updates, metabolism_result.state_updates)
+
+    async def test_sweep_metabolism_fetches_one_page_ticks_and_persists_updates(self) -> None:
+        state = self._state("mem-sweep", version=4)
+        state_store = _StateStoreSpy()
+        state_store.states_by_owner[(OwnerType.MEMORY, "mem-sweep")] = state
+        state_store.scroll_states_results = [([state], "cursor-1")]
+
+        metabolism_result = MetabolismResult(
+            state_updates=[
+                {
+                    "owner_type": OwnerType.MEMORY,
+                    "owner_id": "mem-sweep",
+                    "expected_version": 4,
+                    "fields": {"activation_score": 0.1},
+                }
+            ]
+        )
+        controller = _MetabolismControllerSpy(metabolism_result)
+        kernel = AutophagyKernel(
+            state_store=state_store,
+            mutation_engine=_MutationEngineSpy(RecallMutationResult()),
+            consolidation_gate=_ConsolidationGateSpy(ConsolidationGateResult()),
+            candidate_store=_CandidateStoreSpy(),
+            metabolism_controller=controller,
+        )
+
+        out = await kernel.sweep_metabolism(
+            owner_type=OwnerType.MEMORY,
+            limit=50,
+            cursor=None,
+        )
+
+        self.assertEqual(out.next_cursor, "cursor-1")
+        self.assertEqual(out.processed_owner_ids, ["mem-sweep"])
+        self.assertEqual(out.processed_count, 1)
+        self.assertEqual(len(controller.calls), 1)
+        self.assertEqual(len(state_store.persist_batch_calls), 1)
+
+    async def test_sweep_metabolism_empty_batch_is_safe(self) -> None:
+        state_store = _StateStoreSpy()
+        state_store.scroll_states_results = [([], None)]
+        kernel = AutophagyKernel(
+            state_store=state_store,
+            mutation_engine=_MutationEngineSpy(RecallMutationResult()),
+            consolidation_gate=_ConsolidationGateSpy(ConsolidationGateResult()),
+            candidate_store=_CandidateStoreSpy(),
+            metabolism_controller=_MetabolismControllerSpy(MetabolismResult()),
+        )
+
+        out = await kernel.sweep_metabolism(
+            owner_type=OwnerType.MEMORY,
+            limit=10,
+            cursor=None,
+        )
+
+        self.assertEqual(out.processed_owner_ids, [])
+        self.assertEqual(out.processed_count, 0)
+        self.assertIsNone(out.next_cursor)
+        self.assertEqual(state_store.persist_batch_calls, [])
 
 
 if __name__ == "__main__":

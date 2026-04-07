@@ -173,6 +173,12 @@ class CortexConfig:
     cone_edge_miss_cost: float = 0.9
     cone_entity_degree_cap: int = 50
 
+    # Autophagy (cognition maintenance)
+    # Periodic sweep interval for paged metabolism maintenance.
+    autophagy_sweep_interval_seconds: int = 900  # 15 minutes
+    # Bounded batch size per sweep tick (avoid full-collection scans).
+    autophagy_sweep_batch_size: int = 200
+
     def to_dict(self) -> dict:
         return asdict(self)
 

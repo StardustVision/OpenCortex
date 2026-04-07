@@ -33,6 +33,20 @@ class RecallOutcomeApplicationResult:
     consolidation_batch_committed: bool | None = None
 
 
+@dataclass
+class MetabolismSweepResult:
+    """One paged metabolism sweep result for incremental autophagy maintenance."""
+
+    next_cursor: str | None
+    processed_owner_ids: list[str]
+    processed_count: int
+    updated_owner_ids: list[str]
+    updated_count: int
+    state_updates_count: int = 0
+    metabolism_batch: MutationBatch | None = None
+    metabolism_batch_committed: bool | None = None
+
+
 class AutophagyKernel:
     """Store-aware facade that wires existing cognition contracts together."""
 
@@ -161,3 +175,84 @@ class AutophagyKernel:
         if not committed:
             raise RuntimeError(f"failed to persist metabolism batch: {batch.batch_id}")
         return result
+
+    async def sweep_metabolism(
+        self,
+        *,
+        cursor: str | None = None,
+        limit: int = 100,
+        owner_type: OwnerType | None = None,
+        tenant_id: str | None = None,
+        user_id: str | None = None,
+        project_id: str | None = None,
+        dominance_window: Mapping[Any, Any] | Sequence[Any] | None = None,
+    ) -> MetabolismSweepResult:
+        """Incrementally metabolize one paged batch of states.
+
+        Fetches at most `limit` cognitive states (via store scroll), runs the
+        metabolism controller once over that batch, and persists any resulting
+        state updates via the existing mutation batch ledger flow.
+        """
+        states, next_cursor = await self._state_store.scroll_states(
+            cursor=cursor,
+            limit=limit,
+            owner_type=owner_type,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            project_id=project_id,
+        )
+
+        processed_owner_ids = [state.owner_id for state in states]
+        if not states:
+            return MetabolismSweepResult(
+                next_cursor=next_cursor,
+                processed_owner_ids=[],
+                processed_count=0,
+                updated_owner_ids=[],
+                updated_count=0,
+                state_updates_count=0,
+                metabolism_batch=None,
+                metabolism_batch_committed=None,
+            )
+
+        result = self._metabolism_controller.tick(
+            states,
+            dominance_window=dominance_window,
+        )
+        state_updates = list(result.state_updates or [])
+        if not state_updates:
+            return MetabolismSweepResult(
+                next_cursor=next_cursor,
+                processed_owner_ids=processed_owner_ids,
+                processed_count=len(processed_owner_ids),
+                updated_owner_ids=[],
+                updated_count=0,
+                state_updates_count=0,
+                metabolism_batch=None,
+                metabolism_batch_committed=None,
+            )
+
+        updated_owner_ids = sorted(
+            {str(update.get("owner_id", "")) for update in state_updates if update.get("owner_id")}
+        )
+        batch = MutationBatch(
+            batch_id=f"metabolism-sweep-{uuid4()}",
+            owner_ids=list(processed_owner_ids),
+            metadata={"kind": "metabolism_sweep"},
+        )
+        committed = await self._state_store.persist_batch(batch, state_updates)
+        if not committed:
+            raise RuntimeError(
+                f"failed to persist metabolism sweep batch: {batch.batch_id}"
+            )
+
+        return MetabolismSweepResult(
+            next_cursor=next_cursor,
+            processed_owner_ids=processed_owner_ids,
+            processed_count=len(processed_owner_ids),
+            updated_owner_ids=updated_owner_ids,
+            updated_count=len(updated_owner_ids),
+            state_updates_count=len(state_updates),
+            metabolism_batch=batch,
+            metabolism_batch_committed=committed,
+        )

@@ -76,6 +76,32 @@ class _LocalInMemoryStorage:
         matched = [dict(r) for r in records if self._eval_filter(r, filter)]
         return matched[:limit]
 
+    async def scroll(self, collection, filter=None, limit=100, cursor=None, output_fields=None):
+        limit_value = int(limit or 0)
+        if limit_value <= 0:
+            return [], None
+
+        records = list(self._records.get(collection, {}).values())
+        matched = [dict(r) for r in records if self._eval_filter(r, filter)]
+        matched.sort(key=lambda row: str(row.get("id", "")))
+
+        start = 0
+        if cursor:
+            cursor_str = str(cursor)
+            for idx, row in enumerate(matched):
+                if str(row.get("id")) == cursor_str:
+                    start = idx + 1
+                    break
+
+        batch = matched[start : start + limit_value]
+        if output_fields:
+            fields = set(output_fields)
+            batch = [{k: v for k, v in row.items() if k in fields} for row in batch]
+
+        exhausted = start + limit_value >= len(matched)
+        next_cursor = None if exhausted or not batch else str(batch[-1].get("id", ""))
+        return batch, next_cursor
+
     def _eval_filter(self, record, filt):
         if not filt:
             return True
@@ -142,6 +168,27 @@ class TestCognitiveStateStore(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(loaded.version, 1)
         self.assertEqual(loaded.activation_score, 0.8)
         self.assertEqual(loaded.retrieval_success_count, 5)
+
+    async def test_scroll_states_pages_through_filtered_rows(self):
+        await self.store.save_state(self._make_state("mem-1", owner_type=OwnerType.MEMORY))
+        await self.store.save_state(self._make_state("mem-2", owner_type=OwnerType.MEMORY))
+        await self.store.save_state(self._make_state("trace-1", owner_type=OwnerType.TRACE))
+
+        page1, cursor = await self.store.scroll_states(
+            owner_type=OwnerType.MEMORY,
+            limit=1,
+            cursor=None,
+        )
+        self.assertEqual([state.owner_id for state in page1], ["mem-1"])
+        self.assertIsNotNone(cursor)
+
+        page2, cursor2 = await self.store.scroll_states(
+            owner_type=OwnerType.MEMORY,
+            limit=1,
+            cursor=cursor,
+        )
+        self.assertEqual([state.owner_id for state in page2], ["mem-2"])
+        self.assertIsNone(cursor2)
 
     async def test_save_state_rejects_existing_owner_row(self):
         await self.store.save_state(self._make_state("mem-dup"))

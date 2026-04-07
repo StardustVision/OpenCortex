@@ -33,6 +33,7 @@ Typical usage::
 """
 
 import asyncio
+from contextlib import suppress
 import hashlib
 import logging
 import os
@@ -160,6 +161,11 @@ class MemoryOrchestrator:
             cone_enabled=self._config.cone_retrieval_enabled
         )
 
+        # Autophagy background sweeps (metabolism)
+        self._autophagy_sweep_task: asyncio.Task | None = None
+        self._autophagy_startup_sweep_task: asyncio.Task | None = None
+        self._autophagy_sweep_cursor: str | None = None
+
     # =========================================================================
     # Collection Routing
     # =========================================================================
@@ -280,6 +286,7 @@ class MemoryOrchestrator:
 
         # 9. Autophagy cognition components
         await self._init_cognition()
+        self._start_autophagy_sweeper()
 
         # 10. Cortex Alpha components
         await self._init_alpha()
@@ -316,6 +323,66 @@ class MemoryOrchestrator:
             candidate_store=self._candidate_store,
             metabolism_controller=self._cognitive_metabolism_controller,
         )
+
+    def _start_autophagy_sweeper(self) -> None:
+        """Start autophagy metabolism sweeps (startup + periodic) in background."""
+        kernel = getattr(self, "_autophagy_kernel", None)
+        if kernel is None:
+            return
+
+        # Be resilient to unit tests that bypass __init__ via __new__.
+        if not hasattr(self, "_autophagy_sweep_cursor"):
+            self._autophagy_sweep_cursor = None
+        if not hasattr(self, "_autophagy_sweep_task"):
+            self._autophagy_sweep_task = None
+        if not hasattr(self, "_autophagy_startup_sweep_task"):
+            self._autophagy_startup_sweep_task = None
+
+        if self._autophagy_sweep_task is not None and not self._autophagy_sweep_task.done():
+            return
+
+        # Startup: one immediate batch (fire-and-forget) for crash recovery / backlog drain.
+        self._autophagy_startup_sweep_task = asyncio.create_task(
+            self._run_autophagy_sweep_once(),
+            name="opencortex.autophagy.startup_sweep",
+        )
+
+        # Periodic: one bounded page per interval, cursor carried across ticks.
+        self._autophagy_sweep_task = asyncio.create_task(
+            self._autophagy_sweep_loop(),
+            name="opencortex.autophagy.periodic_sweep",
+        )
+
+    async def _run_autophagy_sweep_once(self) -> None:
+        kernel = getattr(self, "_autophagy_kernel", None)
+        if kernel is None:
+            return
+
+        try:
+            result = await kernel.sweep_metabolism(
+                owner_type=OwnerType.MEMORY,
+                limit=int(getattr(self._config, "autophagy_sweep_batch_size", 200)),
+                cursor=getattr(self, "_autophagy_sweep_cursor", None),
+            )
+            self._autophagy_sweep_cursor = getattr(result, "next_cursor", None)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("[Orchestrator] Autophagy metabolism sweep failed: %s", exc)
+
+    async def _autophagy_sweep_loop(self) -> None:
+        interval = float(getattr(self._config, "autophagy_sweep_interval_seconds", 900))
+        if interval <= 0:
+            interval = 0.01  # allow fast unit tests; never busy-loop.
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                await self._run_autophagy_sweep_once()
+                # Reset on exhaustion so next tick starts from the beginning.
+                if getattr(self, "_autophagy_sweep_cursor", None) is None:
+                    self._autophagy_sweep_cursor = None
+        except asyncio.CancelledError:
+            raise
 
     async def _init_alpha(self) -> None:
         """Initialize Cortex Alpha components if enabled."""
@@ -3240,6 +3307,20 @@ class MemoryOrchestrator:
 
     async def close(self) -> None:
         """Close storage and release resources."""
+        startup_task = getattr(self, "_autophagy_startup_sweep_task", None)
+        if startup_task is not None and not startup_task.done():
+            startup_task.cancel()
+        periodic_task = getattr(self, "_autophagy_sweep_task", None)
+        if periodic_task is not None and not periodic_task.done():
+            periodic_task.cancel()
+        for task in (startup_task, periodic_task):
+            if task is None:
+                continue
+            with suppress(asyncio.CancelledError):
+                await task
+        self._autophagy_startup_sweep_task = None
+        self._autophagy_sweep_task = None
+
         if self._context_manager:
             await self._context_manager.close()
         if self._storage:

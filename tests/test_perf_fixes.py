@@ -97,6 +97,43 @@ class TestColdStartNonBlocking(unittest.IsolatedAsyncioTestCase):
         assert elapsed < 1.0, f"init() took {elapsed:.2f}s — maintenance leaked into init"
 
 
+class TestAutophagySweeperLifecycle(unittest.IsolatedAsyncioTestCase):
+    async def test_periodic_autophagy_sweeper_invokes_kernel_and_close_cleans_up(self):
+        from opencortex.orchestrator import MemoryOrchestrator
+        from opencortex.config import CortexConfig
+
+        cfg = CortexConfig(
+            autophagy_sweep_interval_seconds=0.01,
+            autophagy_sweep_batch_size=2,
+        )
+        oc = MemoryOrchestrator.__new__(MemoryOrchestrator)
+        oc._config = cfg
+        oc._context_manager = None
+        oc._storage = MagicMock()
+        oc._storage.close = AsyncMock()
+        oc._initialized = True
+
+        sweep_called = asyncio.Event()
+
+        async def sweep_metabolism(**kwargs):
+            sweep_called.set()
+            return MagicMock(next_cursor=None)
+
+        oc._autophagy_kernel = MagicMock()
+        oc._autophagy_kernel.sweep_metabolism = AsyncMock(side_effect=sweep_metabolism)
+
+        # Expected to exist after Task 7 wiring.
+        oc._start_autophagy_sweeper()
+
+        try:
+            await asyncio.wait_for(sweep_called.wait(), timeout=1.0)
+            assert oc._autophagy_kernel.sweep_metabolism.await_count >= 1
+        finally:
+            await oc.close()
+
+        assert oc._autophagy_sweep_task is None or oc._autophagy_sweep_task.done()
+
+
 class TestFrontierStillStarvedBatch(unittest.IsolatedAsyncioTestCase):
     async def test_still_starved_single_batch_query(self):
         """3 still-starved parents → 3 searches total (main+comp+batch), not 5."""

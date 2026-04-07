@@ -102,6 +102,66 @@ class CognitiveStateStore:
                 states[state.owner_id] = state
         return states
 
+    async def scroll_states(
+        self,
+        *,
+        cursor: str | None = None,
+        limit: int = 100,
+        owner_type: OwnerType | None = None,
+        tenant_id: str | None = None,
+        user_id: str | None = None,
+        project_id: str | None = None,
+        lifecycle_state: LifecycleState | None = None,
+        exposure_state: ExposureState | None = None,
+        consolidation_state: ConsolidationState | None = None,
+    ) -> tuple[list[CognitiveState], str | None]:
+        """Page through cognitive states using storage-native scroll.
+
+        This is intended for maintenance/sweeper flows (autophagy) that must
+        scan states without loading the full collection at once.
+        """
+        conds: list[Dict[str, Any]] = []
+        if owner_type is not None:
+            conds.append({"op": "must", "field": "owner_type", "conds": [owner_type.value]})
+        if tenant_id is not None:
+            conds.append({"op": "must", "field": "tenant_id", "conds": [str(tenant_id)]})
+        if user_id is not None:
+            conds.append({"op": "must", "field": "user_id", "conds": [str(user_id)]})
+        if project_id is not None:
+            conds.append({"op": "must", "field": "project_id", "conds": [str(project_id)]})
+        if lifecycle_state is not None:
+            conds.append(
+                {"op": "must", "field": "lifecycle_state", "conds": [lifecycle_state.value]}
+            )
+        if exposure_state is not None:
+            conds.append(
+                {"op": "must", "field": "exposure_state", "conds": [exposure_state.value]}
+            )
+        if consolidation_state is not None:
+            conds.append(
+                {
+                    "op": "must",
+                    "field": "consolidation_state",
+                    "conds": [consolidation_state.value],
+                }
+            )
+
+        storage_filter: Dict[str, Any] | None
+        if not conds:
+            storage_filter = None
+        elif len(conds) == 1:
+            storage_filter = conds[0]
+        else:
+            storage_filter = {"op": "and", "conds": conds}
+
+        rows, next_cursor = await self._storage.scroll(
+            self._state_collection,
+            filter=storage_filter,
+            limit=int(limit),
+            cursor=cursor,
+        )
+        return [CognitiveState.from_dict(row) for row in rows], next_cursor
+
     async def update_state(
         self,
         owner_type: OwnerType,
