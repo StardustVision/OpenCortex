@@ -168,6 +168,8 @@ class MemoryOrchestrator:
             OwnerType.MEMORY: None,
             OwnerType.TRACE: None,
         }
+        # Guard to serialize sweep execution across startup/periodic triggers.
+        self._autophagy_sweep_guard = asyncio.Lock()
 
     # =========================================================================
     # Collection Routing
@@ -345,6 +347,8 @@ class MemoryOrchestrator:
                 OwnerType.MEMORY: None,
                 OwnerType.TRACE: None,
             }
+        if not hasattr(self, "_autophagy_sweep_guard"):
+            self._autophagy_sweep_guard = asyncio.Lock()
 
         if self._autophagy_sweep_task is not None and not self._autophagy_sweep_task.done():
             return
@@ -366,21 +370,38 @@ class MemoryOrchestrator:
         if kernel is None:
             return
 
-        try:
+        # Be resilient to unit tests that bypass __init__ via __new__.
+        if not hasattr(self, "_autophagy_sweep_guard") or self._autophagy_sweep_guard is None:
+            self._autophagy_sweep_guard = asyncio.Lock()
+        if not hasattr(self, "_autophagy_sweep_cursors") or self._autophagy_sweep_cursors is None:
+            self._autophagy_sweep_cursors = {
+                OwnerType.MEMORY: None,
+                OwnerType.TRACE: None,
+            }
+
+        async with self._autophagy_sweep_guard:
             limit = int(getattr(self._config, "autophagy_sweep_batch_size", 200))
             for owner_type in (OwnerType.MEMORY, OwnerType.TRACE):
-                cursor = self._autophagy_sweep_cursors.get(owner_type)
-                result = await kernel.sweep_metabolism(
-                    owner_type=owner_type,
-                    limit=limit,
-                    cursor=cursor,
-                )
-                # Reset to None when exhausted, so subsequent sweeps restart cleanly.
-                self._autophagy_sweep_cursors[owner_type] = getattr(result, "next_cursor", None)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.warning("[Orchestrator] Autophagy metabolism sweep failed: %s", exc)
+                try:
+                    cursor = self._autophagy_sweep_cursors.get(owner_type)
+                    result = await kernel.sweep_metabolism(
+                        owner_type=owner_type,
+                        limit=limit,
+                        cursor=cursor,
+                    )
+                    # Reset to None when exhausted, so subsequent sweeps restart cleanly.
+                    self._autophagy_sweep_cursors[owner_type] = getattr(
+                        result, "next_cursor", None
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        "[Orchestrator] Autophagy metabolism sweep failed (owner_type=%s): %s",
+                        owner_type.value,
+                        exc,
+                    )
+                    continue
 
     async def _autophagy_sweep_loop(self) -> None:
         interval = float(getattr(self._config, "autophagy_sweep_interval_seconds", 900))
