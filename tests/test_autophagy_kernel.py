@@ -621,6 +621,12 @@ class TestAutophagyKernel(unittest.IsolatedAsyncioTestCase):
         # Critical regression: sweep returns next_cursor even when page persist fails,
         # so orchestrator cursor can advance and later rows are not pinned forever.
         self.assertEqual(out.next_cursor, "cursor-1")
+        self.assertTrue(out.fallback_used)
+        self.assertFalse(out.metabolism_batch_committed)
+        self.assertEqual(out.updated_owner_ids, ["mem-a"])
+        self.assertEqual(out.updated_count, 1)
+        self.assertEqual(out.failed_owner_ids, ["mem-b"])
+        self.assertEqual(out.failed_count, 1)
         self.assertEqual(len(state_store.persist_batch_calls), 3)
 
         updated_a = state_store.states_by_owner[(OwnerType.MEMORY, "mem-a")]
@@ -630,6 +636,56 @@ class TestAutophagyKernel(unittest.IsolatedAsyncioTestCase):
         unchanged_b = state_store.states_by_owner[(OwnerType.MEMORY, "mem-b")]
         self.assertEqual(unchanged_b.version, 7)
         self.assertEqual(unchanged_b.activation_score, 0.0)
+
+    async def test_sweep_metabolism_does_not_advance_cursor_when_fallback_fails_for_all_owners(
+        self,
+    ) -> None:
+        state_a = self._state("mem-a", version=4)
+        state_b = self._state("mem-b", version=7)
+        state_store = _StateStoreSpy()
+        state_store.states_by_owner[(OwnerType.MEMORY, "mem-a")] = state_a
+        state_store.states_by_owner[(OwnerType.MEMORY, "mem-b")] = state_b
+        state_store.scroll_states_results = [([state_a, state_b], "cursor-1")]
+
+        metabolism_result = MetabolismResult(
+            state_updates=[
+                {
+                    "owner_type": OwnerType.MEMORY,
+                    "owner_id": "mem-a",
+                    "expected_version": 4,
+                    "fields": {"activation_score": 0.11},
+                },
+                {
+                    "owner_type": OwnerType.MEMORY,
+                    "owner_id": "mem-b",
+                    "expected_version": 7,
+                    "fields": {"activation_score": 0.22},
+                },
+            ]
+        )
+        kernel = AutophagyKernel(
+            state_store=state_store,
+            mutation_engine=_MutationEngineSpy(RecallMutationResult()),
+            consolidation_gate=_ConsolidationGateSpy(ConsolidationGateResult()),
+            candidate_store=_CandidateStoreSpy(),
+            metabolism_controller=_MetabolismControllerSpy(metabolism_result),
+        )
+
+        # Page persist fails; fallback per-owner persists also fail -> should NOT advance cursor.
+        state_store.persist_batch_results = [False, False, False]
+        out = await kernel.sweep_metabolism(
+            owner_type=OwnerType.MEMORY,
+            limit=50,
+            cursor="cursor-0",
+        )
+
+        self.assertTrue(out.fallback_used)
+        self.assertFalse(out.metabolism_batch_committed)
+        self.assertEqual(out.updated_owner_ids, [])
+        self.assertEqual(out.updated_count, 0)
+        self.assertEqual(out.failed_owner_ids, ["mem-a", "mem-b"])
+        self.assertEqual(out.failed_count, 2)
+        self.assertEqual(out.next_cursor, "cursor-0")
 
 
 if __name__ == "__main__":

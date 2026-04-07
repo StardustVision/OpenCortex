@@ -286,8 +286,12 @@ class AutophagyKernel:
             else:
                 failed.append(owner_id)
 
+        # Only advance past this page if we made forward progress for at least one owner.
+        # If everything failed, keep the current cursor so callers can retry the same page.
+        next_cursor_effective = next_cursor if succeeded else cursor
+
         return MetabolismSweepResult(
-            next_cursor=next_cursor,
+            next_cursor=next_cursor_effective,
             processed_owner_ids=processed_owner_ids,
             processed_count=len(processed_owner_ids),
             updated_owner_ids=sorted(set(succeeded)),
