@@ -164,7 +164,10 @@ class MemoryOrchestrator:
         # Autophagy background sweeps (metabolism)
         self._autophagy_sweep_task: asyncio.Task | None = None
         self._autophagy_startup_sweep_task: asyncio.Task | None = None
-        self._autophagy_sweep_cursor: str | None = None
+        self._autophagy_sweep_cursors: dict[OwnerType, str | None] = {
+            OwnerType.MEMORY: None,
+            OwnerType.TRACE: None,
+        }
 
     # =========================================================================
     # Collection Routing
@@ -337,6 +340,11 @@ class MemoryOrchestrator:
             self._autophagy_sweep_task = None
         if not hasattr(self, "_autophagy_startup_sweep_task"):
             self._autophagy_startup_sweep_task = None
+        if not hasattr(self, "_autophagy_sweep_cursors"):
+            self._autophagy_sweep_cursors = {
+                OwnerType.MEMORY: None,
+                OwnerType.TRACE: None,
+            }
 
         if self._autophagy_sweep_task is not None and not self._autophagy_sweep_task.done():
             return
@@ -359,12 +367,16 @@ class MemoryOrchestrator:
             return
 
         try:
-            result = await kernel.sweep_metabolism(
-                owner_type=OwnerType.MEMORY,
-                limit=int(getattr(self._config, "autophagy_sweep_batch_size", 200)),
-                cursor=getattr(self, "_autophagy_sweep_cursor", None),
-            )
-            self._autophagy_sweep_cursor = getattr(result, "next_cursor", None)
+            limit = int(getattr(self._config, "autophagy_sweep_batch_size", 200))
+            for owner_type in (OwnerType.MEMORY, OwnerType.TRACE):
+                cursor = self._autophagy_sweep_cursors.get(owner_type)
+                result = await kernel.sweep_metabolism(
+                    owner_type=owner_type,
+                    limit=limit,
+                    cursor=cursor,
+                )
+                # Reset to None when exhausted, so subsequent sweeps restart cleanly.
+                self._autophagy_sweep_cursors[owner_type] = getattr(result, "next_cursor", None)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -378,9 +390,6 @@ class MemoryOrchestrator:
             while True:
                 await asyncio.sleep(interval)
                 await self._run_autophagy_sweep_once()
-                # Reset on exhaustion so next tick starts from the beginning.
-                if getattr(self, "_autophagy_sweep_cursor", None) is None:
-                    self._autophagy_sweep_cursor = None
         except asyncio.CancelledError:
             raise
 

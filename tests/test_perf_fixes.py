@@ -101,6 +101,7 @@ class TestAutophagySweeperLifecycle(unittest.IsolatedAsyncioTestCase):
     async def test_periodic_autophagy_sweeper_invokes_kernel_and_close_cleans_up(self):
         from opencortex.orchestrator import MemoryOrchestrator
         from opencortex.config import CortexConfig
+        from opencortex.cognition.state_types import OwnerType
 
         cfg = CortexConfig(
             autophagy_sweep_interval_seconds=0.01,
@@ -114,9 +115,12 @@ class TestAutophagySweeperLifecycle(unittest.IsolatedAsyncioTestCase):
         oc._initialized = True
 
         sweep_called = asyncio.Event()
+        seen_owner_types = []
 
         async def sweep_metabolism(**kwargs):
-            sweep_called.set()
+            seen_owner_types.append(kwargs.get("owner_type"))
+            if OwnerType.MEMORY in seen_owner_types and OwnerType.TRACE in seen_owner_types:
+                sweep_called.set()
             return MagicMock(next_cursor=None)
 
         oc._autophagy_kernel = MagicMock()
@@ -132,6 +136,48 @@ class TestAutophagySweeperLifecycle(unittest.IsolatedAsyncioTestCase):
             await oc.close()
 
         assert oc._autophagy_sweep_task is None or oc._autophagy_sweep_task.done()
+        assert OwnerType.MEMORY in seen_owner_types
+        assert OwnerType.TRACE in seen_owner_types
+
+    async def test_init_starts_autophagy_sweeper_fire_and_forget(self):
+        """init() should schedule autophagy sweeps without awaiting them."""
+        import asyncio
+
+        from opencortex.orchestrator import MemoryOrchestrator
+        from opencortex.config import CortexConfig
+
+        async def fake_init_cognition(self_inner):
+            # Ensure _start_autophagy_sweeper() doesn't early-return.
+            self_inner._autophagy_kernel = MagicMock()
+
+        async def slow_startup_sweep(self_inner):
+            await asyncio.sleep(60)
+
+        async def slow_periodic_loop(self_inner):
+            await asyncio.sleep(60)
+
+        with patch.object(MemoryOrchestrator, "_init_cognition", fake_init_cognition), \
+             patch.object(MemoryOrchestrator, "_run_autophagy_sweep_once", slow_startup_sweep), \
+             patch.object(MemoryOrchestrator, "_autophagy_sweep_loop", slow_periodic_loop), \
+             patch("opencortex.orchestrator.init_context_collection", new_callable=AsyncMock), \
+             patch("opencortex.orchestrator.init_cortex_fs", return_value=MagicMock()), \
+             patch("opencortex.orchestrator.HierarchicalRetriever", return_value=MagicMock()), \
+             patch.object(MemoryOrchestrator, "_create_default_embedder", return_value=None), \
+             patch.object(MemoryOrchestrator, "_init_alpha", new_callable=AsyncMock), \
+             patch.object(MemoryOrchestrator, "_init_skill_engine", new_callable=AsyncMock):
+
+            oc = MemoryOrchestrator(CortexConfig(), storage=AsyncMock())
+            t0 = asyncio.get_event_loop().time()
+            await oc.init()
+            elapsed = asyncio.get_event_loop().time() - t0
+
+            assert elapsed < 1.0, f"init() took {elapsed:.2f}s — autophagy leaked into init"
+            assert oc._autophagy_startup_sweep_task is not None
+            assert oc._autophagy_sweep_task is not None
+            assert oc._autophagy_startup_sweep_task.done() is False
+            assert oc._autophagy_sweep_task.done() is False
+
+            await oc.close()
 
 
 class TestFrontierStillStarvedBatch(unittest.IsolatedAsyncioTestCase):
