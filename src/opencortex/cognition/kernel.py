@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 from uuid import uuid4
 
@@ -45,6 +45,9 @@ class MetabolismSweepResult:
     state_updates_count: int = 0
     metabolism_batch: MutationBatch | None = None
     metabolism_batch_committed: bool | None = None
+    failed_owner_ids: list[str] = field(default_factory=list)
+    failed_count: int = 0
+    fallback_used: bool = False
 
 
 class AutophagyKernel:
@@ -240,19 +243,59 @@ class AutophagyKernel:
             owner_ids=list(processed_owner_ids),
             metadata={"kind": "metabolism_sweep"},
         )
-        committed = await self._state_store.persist_batch(batch, state_updates)
-        if not committed:
-            raise RuntimeError(
-                f"failed to persist metabolism sweep batch: {batch.batch_id}"
+        try:
+            committed = await self._state_store.persist_batch(batch, state_updates)
+        except Exception:
+            committed = False
+
+        if committed:
+            return MetabolismSweepResult(
+                next_cursor=next_cursor,
+                processed_owner_ids=processed_owner_ids,
+                processed_count=len(processed_owner_ids),
+                updated_owner_ids=updated_owner_ids,
+                updated_count=len(updated_owner_ids),
+                state_updates_count=len(state_updates),
+                metabolism_batch=batch,
+                metabolism_batch_committed=True,
+                failed_owner_ids=[],
+                failed_count=0,
+                fallback_used=False,
             )
+
+        # Degrade to per-owner persistence so poison rows don't pin the cursor forever.
+        succeeded: list[str] = []
+        failed: list[str] = []
+        for update in state_updates:
+            owner_id = str(update.get("owner_id", ""))
+            if not owner_id:
+                continue
+            single_batch = MutationBatch(
+                batch_id=f"metabolism-sweep-{uuid4()}",
+                owner_ids=[owner_id],
+                metadata={"kind": "metabolism_sweep", "strategy": "single_owner"},
+            )
+            try:
+                single_committed = await self._state_store.persist_batch(
+                    single_batch, [update]
+                )
+            except Exception:
+                single_committed = False
+            if single_committed:
+                succeeded.append(owner_id)
+            else:
+                failed.append(owner_id)
 
         return MetabolismSweepResult(
             next_cursor=next_cursor,
             processed_owner_ids=processed_owner_ids,
             processed_count=len(processed_owner_ids),
-            updated_owner_ids=updated_owner_ids,
-            updated_count=len(updated_owner_ids),
+            updated_owner_ids=sorted(set(succeeded)),
+            updated_count=len(set(succeeded)),
             state_updates_count=len(state_updates),
             metabolism_batch=batch,
-            metabolism_batch_committed=committed,
+            metabolism_batch_committed=False,
+            failed_owner_ids=sorted(set(failed)),
+            failed_count=len(set(failed)),
+            fallback_used=True,
         )

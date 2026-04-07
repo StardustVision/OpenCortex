@@ -576,6 +576,61 @@ class TestAutophagyKernel(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(out.next_cursor)
         self.assertEqual(state_store.persist_batch_calls, [])
 
+    async def test_sweep_metabolism_degrades_to_per_owner_persist_on_page_failure(self) -> None:
+        state_a = self._state("mem-a", version=4)
+        state_b = self._state("mem-b", version=7)
+        state_store = _StateStoreSpy()
+        state_store.states_by_owner[(OwnerType.MEMORY, "mem-a")] = state_a
+        state_store.states_by_owner[(OwnerType.MEMORY, "mem-b")] = state_b
+        state_store.scroll_states_results = [([state_a, state_b], "cursor-1")]
+
+        metabolism_result = MetabolismResult(
+            state_updates=[
+                {
+                    "owner_type": OwnerType.MEMORY,
+                    "owner_id": "mem-a",
+                    "expected_version": 4,
+                    "fields": {"activation_score": 0.11},
+                },
+                {
+                    "owner_type": OwnerType.MEMORY,
+                    "owner_id": "mem-b",
+                    "expected_version": 7,
+                    "fields": {"activation_score": 0.22},
+                },
+            ]
+        )
+        controller = _MetabolismControllerSpy(metabolism_result)
+        kernel = AutophagyKernel(
+            state_store=state_store,
+            mutation_engine=_MutationEngineSpy(RecallMutationResult()),
+            consolidation_gate=_ConsolidationGateSpy(ConsolidationGateResult()),
+            candidate_store=_CandidateStoreSpy(),
+            metabolism_controller=controller,
+        )
+
+        # First page persist fails; fallback commits mem-a, but mem-b still fails.
+        state_store.persist_batch_results = [False, True, False]
+
+        out = await kernel.sweep_metabolism(
+            owner_type=OwnerType.MEMORY,
+            limit=50,
+            cursor=None,
+        )
+
+        # Critical regression: sweep returns next_cursor even when page persist fails,
+        # so orchestrator cursor can advance and later rows are not pinned forever.
+        self.assertEqual(out.next_cursor, "cursor-1")
+        self.assertEqual(len(state_store.persist_batch_calls), 3)
+
+        updated_a = state_store.states_by_owner[(OwnerType.MEMORY, "mem-a")]
+        self.assertEqual(updated_a.version, 5)
+        self.assertEqual(updated_a.activation_score, 0.11)
+
+        unchanged_b = state_store.states_by_owner[(OwnerType.MEMORY, "mem-b")]
+        self.assertEqual(unchanged_b.version, 7)
+        self.assertEqual(unchanged_b.activation_score, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()
