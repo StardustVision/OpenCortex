@@ -85,6 +85,7 @@ class Trace:
     tenant_id: str
     user_id: str
     source: str  # "claude_code" / "codex" / "agno" / ...
+    project_id: str = ""
     turns: List[Turn] = field(default_factory=list)
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
@@ -106,6 +107,7 @@ class Trace:
             "session_id": self.session_id,
             "tenant_id": self.tenant_id,
             "user_id": self.user_id,
+            "project_id": self.project_id,
             "source": self.source,
             "turns": [t.to_dict() for t in self.turns],
             "created_at": self.created_at,

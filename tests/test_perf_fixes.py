@@ -97,6 +97,159 @@ class TestColdStartNonBlocking(unittest.IsolatedAsyncioTestCase):
         assert elapsed < 1.0, f"init() took {elapsed:.2f}s — maintenance leaked into init"
 
 
+class TestAutophagySweeperLifecycle(unittest.IsolatedAsyncioTestCase):
+    async def test_periodic_autophagy_sweeper_invokes_kernel_and_close_cleans_up(self):
+        from opencortex.orchestrator import MemoryOrchestrator
+        from opencortex.config import CortexConfig
+        from opencortex.cognition.state_types import OwnerType
+
+        cfg = CortexConfig(
+            autophagy_sweep_interval_seconds=0.01,
+            autophagy_sweep_batch_size=2,
+        )
+        oc = MemoryOrchestrator.__new__(MemoryOrchestrator)
+        oc._config = cfg
+        oc._context_manager = None
+        oc._storage = MagicMock()
+        oc._storage.close = AsyncMock()
+        oc._initialized = True
+
+        sweep_called = asyncio.Event()
+        seen_owner_types = []
+
+        async def sweep_metabolism(**kwargs):
+            seen_owner_types.append(kwargs.get("owner_type"))
+            if OwnerType.MEMORY in seen_owner_types and OwnerType.TRACE in seen_owner_types:
+                sweep_called.set()
+            return MagicMock(next_cursor=None)
+
+        oc._autophagy_kernel = MagicMock()
+        oc._autophagy_kernel.sweep_metabolism = AsyncMock(side_effect=sweep_metabolism)
+
+        # Expected to exist after Task 7 wiring.
+        oc._start_autophagy_sweeper()
+
+        try:
+            await asyncio.wait_for(sweep_called.wait(), timeout=1.0)
+            assert oc._autophagy_kernel.sweep_metabolism.await_count >= 1
+        finally:
+            await oc.close()
+
+        assert oc._autophagy_sweep_task is None or oc._autophagy_sweep_task.done()
+        assert OwnerType.MEMORY in seen_owner_types
+        assert OwnerType.TRACE in seen_owner_types
+
+    async def test_init_starts_autophagy_sweeper_fire_and_forget(self):
+        """init() should schedule autophagy sweeps without awaiting them."""
+        import asyncio
+
+        from opencortex.orchestrator import MemoryOrchestrator
+        from opencortex.config import CortexConfig
+
+        async def fake_init_cognition(self_inner):
+            # Ensure _start_autophagy_sweeper() doesn't early-return.
+            self_inner._autophagy_kernel = MagicMock()
+
+        async def slow_startup_sweep(self_inner):
+            await asyncio.sleep(60)
+
+        async def slow_periodic_loop(self_inner):
+            await asyncio.sleep(60)
+
+        with patch.object(MemoryOrchestrator, "_init_cognition", fake_init_cognition), \
+             patch.object(MemoryOrchestrator, "_run_autophagy_sweep_once", slow_startup_sweep), \
+             patch.object(MemoryOrchestrator, "_autophagy_sweep_loop", slow_periodic_loop), \
+             patch("opencortex.orchestrator.init_context_collection", new_callable=AsyncMock), \
+             patch("opencortex.orchestrator.init_cortex_fs", return_value=MagicMock()), \
+             patch("opencortex.orchestrator.HierarchicalRetriever", return_value=MagicMock()), \
+             patch.object(MemoryOrchestrator, "_create_default_embedder", return_value=None), \
+             patch.object(MemoryOrchestrator, "_init_alpha", new_callable=AsyncMock), \
+             patch.object(MemoryOrchestrator, "_init_skill_engine", new_callable=AsyncMock):
+
+            oc = MemoryOrchestrator(CortexConfig(), storage=AsyncMock())
+            t0 = asyncio.get_event_loop().time()
+            await oc.init()
+            elapsed = asyncio.get_event_loop().time() - t0
+
+            assert elapsed < 1.0, f"init() took {elapsed:.2f}s — autophagy leaked into init"
+            assert oc._autophagy_startup_sweep_task is not None
+            assert oc._autophagy_sweep_task is not None
+            assert oc._autophagy_startup_sweep_task.done() is False
+            assert oc._autophagy_sweep_task.done() is False
+
+            await oc.close()
+
+    async def test_sweep_is_serialized_across_overlapping_calls(self):
+        """Overlapping sweep triggers must not run concurrently (shared cursor state)."""
+        import asyncio
+
+        from opencortex.orchestrator import MemoryOrchestrator
+        from opencortex.config import CortexConfig
+
+        oc = MemoryOrchestrator.__new__(MemoryOrchestrator)
+        oc._config = CortexConfig(autophagy_sweep_interval_seconds=0.01, autophagy_sweep_batch_size=2)
+        oc._storage = MagicMock()
+        oc._context_manager = None
+        oc._initialized = True
+
+        in_flight = 0
+        max_in_flight = 0
+        first_enter = asyncio.Event()
+        allow_exit = asyncio.Event()
+
+        async def sweep_metabolism(**kwargs):
+            nonlocal in_flight, max_in_flight
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            if not first_enter.is_set():
+                first_enter.set()
+                await allow_exit.wait()
+            in_flight -= 1
+            return MagicMock(next_cursor=None)
+
+        oc._autophagy_kernel = MagicMock()
+        oc._autophagy_kernel.sweep_metabolism = AsyncMock(side_effect=sweep_metabolism)
+
+        t1 = asyncio.create_task(oc._run_autophagy_sweep_once())
+        await asyncio.wait_for(first_enter.wait(), timeout=1.0)
+        t2 = asyncio.create_task(oc._run_autophagy_sweep_once())
+        await asyncio.sleep(0.01)  # give the second sweep a chance to attempt entry
+        allow_exit.set()
+
+        await asyncio.wait_for(asyncio.gather(t1, t2), timeout=1.0)
+        assert max_in_flight == 1, f"expected serialized sweeps; saw concurrency={max_in_flight}"
+
+    async def test_sweep_failure_is_isolated_per_owner_type(self):
+        """If MEMORY sweep fails, TRACE sweep should still run for that tick."""
+        import asyncio
+
+        from opencortex.orchestrator import MemoryOrchestrator
+        from opencortex.config import CortexConfig
+        from opencortex.cognition.state_types import OwnerType
+
+        oc = MemoryOrchestrator.__new__(MemoryOrchestrator)
+        oc._config = CortexConfig(autophagy_sweep_interval_seconds=0.01, autophagy_sweep_batch_size=2)
+        oc._storage = MagicMock()
+        oc._context_manager = None
+        oc._initialized = True
+
+        trace_called = asyncio.Event()
+
+        async def sweep_metabolism(**kwargs):
+            ot = kwargs.get("owner_type")
+            if ot == OwnerType.MEMORY:
+                raise RuntimeError("boom")
+            if ot == OwnerType.TRACE:
+                trace_called.set()
+            return MagicMock(next_cursor=None)
+
+        oc._autophagy_kernel = MagicMock()
+        oc._autophagy_kernel.sweep_metabolism = AsyncMock(side_effect=sweep_metabolism)
+
+        await oc._run_autophagy_sweep_once()
+        await asyncio.wait_for(trace_called.wait(), timeout=1.0)
+
+
 class TestFrontierStillStarvedBatch(unittest.IsolatedAsyncioTestCase):
     async def test_still_starved_single_batch_query(self):
         """3 still-starved parents → 3 searches total (main+comp+batch), not 5."""

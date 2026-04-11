@@ -34,6 +34,68 @@ class TestTraceStore(unittest.IsolatedAsyncioTestCase):
         call_args = self.storage.upsert.call_args
         self.assertEqual(call_args[0][0], "traces")  # collection name
 
+    async def test_save_trace_persists_explicit_project_id(self):
+        trace = Trace(
+            trace_id="tr-project", session_id="s1",
+            tenant_id="team", user_id="hugo",
+            project_id="project-42",
+            source="claude_code",
+            turns=[Turn(turn_id="t1", prompt_text="fix bug", final_text="done")],
+            abstract="Project-scoped trace",
+        )
+
+        await self.store.save(trace)
+
+        saved_record = self.storage.upsert.call_args[0][1]
+        self.assertEqual(saved_record["project_id"], "project-42")
+
+    async def test_save_trace_invokes_optional_callback(self):
+        on_trace_saved = AsyncMock()
+        self.store = TraceStore(
+            storage=self.storage,
+            embedder=self.embedder,
+            cortex_fs=self.cortex_fs,
+            collection_name="traces",
+            embedding_dim=4,
+            on_trace_saved=on_trace_saved,
+        )
+        trace = Trace(
+            trace_id="tr-callback", session_id="s1",
+            tenant_id="team", user_id="hugo",
+            source="claude_code",
+            turns=[Turn(turn_id="t1", prompt_text="fix bug", final_text="done")],
+            abstract="Callback trace",
+        )
+
+        saved_id = await self.store.save(trace)
+
+        self.assertEqual(saved_id, "tr-callback")
+        on_trace_saved.assert_awaited_once_with(trace)
+
+    async def test_save_trace_ignores_callback_failure_after_durable_save(self):
+        on_trace_saved = AsyncMock(side_effect=RuntimeError("callback failed"))
+        self.store = TraceStore(
+            storage=self.storage,
+            embedder=self.embedder,
+            cortex_fs=self.cortex_fs,
+            collection_name="traces",
+            embedding_dim=4,
+            on_trace_saved=on_trace_saved,
+        )
+        trace = Trace(
+            trace_id="tr-safe-callback", session_id="s1",
+            tenant_id="team", user_id="hugo",
+            source="claude_code",
+            turns=[Turn(turn_id="t1", prompt_text="fix bug", final_text="done")],
+            abstract="Safe callback trace",
+        )
+
+        saved_id = await self.store.save(trace)
+
+        self.assertEqual(saved_id, "tr-safe-callback")
+        self.storage.upsert.assert_called_once()
+        on_trace_saved.assert_awaited_once_with(trace)
+
     async def test_get_trace(self):
         self.storage.get = AsyncMock(return_value=[{
             "trace_id": "tr1", "session_id": "s1",

@@ -9,9 +9,11 @@ Traces are stored with three-layer CortexFS architecture:
 
 import orjson
 import logging
-from typing import Any, Dict, List, Optional
+import inspect
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from opencortex.alpha.types import Trace
+from opencortex.http.request_context import get_effective_project_id
 
 logger = logging.getLogger(__name__)
 
@@ -24,12 +26,14 @@ class TraceStore:
         cortex_fs,     # CortexFS
         collection_name: str = "traces",
         embedding_dim: int = 1024,
+        on_trace_saved: Optional[Callable[[Trace], Awaitable[None] | None]] = None,
     ):
         self._storage = storage
         self._embedder = embedder
         self._fs = cortex_fs
         self._collection = collection_name
         self._dim = embedding_dim
+        self._on_trace_saved = on_trace_saved
 
     async def init(self) -> "TraceStore":
         """Ensure collection exists."""
@@ -42,6 +46,8 @@ class TraceStore:
         embed_text = trace.abstract or trace.trace_id
         embed_result = self._embedder.embed(embed_text)
         vector = embed_result.dense_vector
+        project_id = getattr(trace, "project_id", "") or get_effective_project_id()
+        setattr(trace, "project_id", project_id)
 
         record = {
             "id": trace.trace_id,
@@ -58,6 +64,7 @@ class TraceStore:
             "archivist_processed": False,
             "abstract": trace.abstract or "",
             "overview": trace.overview or "",
+            "project_id": project_id,
             "vector": vector,
             "created_at": trace.created_at,
         }
@@ -75,6 +82,18 @@ class TraceStore:
                 abstract=trace.abstract or "",
                 overview=trace.overview or "",
             )
+
+        if self._on_trace_saved:
+            try:
+                callback_result = self._on_trace_saved(trace)
+                if inspect.isawaitable(callback_result):
+                    await callback_result
+            except Exception as exc:
+                logger.warning(
+                    "[TraceStore] on_trace_saved callback failed for trace_id=%s: %s",
+                    trace.trace_id,
+                    exc,
+                )
 
         return trace.trace_id
 

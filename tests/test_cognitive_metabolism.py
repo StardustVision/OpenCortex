@@ -7,13 +7,14 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from opencortex.cognition.metabolism import CognitiveMetabolismController
 from opencortex.cognition.state_types import CognitiveState, LifecycleState, OwnerType
 
 
 class _FakeClock:
     def __init__(self, now: datetime) -> None:
-        self._now = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        self._now = now.astimezone(timezone.utc)
 
     def now_iso(self) -> str:
         return self._now.isoformat()
@@ -55,6 +56,8 @@ class TestCognitiveMetabolismController(unittest.TestCase):
         )
 
     def test_dominant_hot_state_is_cooled(self) -> None:
+        from opencortex.cognition.metabolism import CognitiveMetabolismController
+
         clock = _FakeClock(datetime(2026, 4, 1, 0, 0, 0, tzinfo=timezone.utc))
         controller = CognitiveMetabolismController(
             now_iso_fn=clock.now_iso,
@@ -76,6 +79,8 @@ class TestCognitiveMetabolismController(unittest.TestCase):
         self.assertEqual(update["fields"]["last_mutation_at"], clock.now_iso())
 
     def test_cold_low_value_active_state_is_compressed_and_emits_review_event(self) -> None:
+        from opencortex.cognition.metabolism import CognitiveMetabolismController
+
         clock = _FakeClock(datetime(2026, 4, 1, 0, 0, 0, tzinfo=timezone.utc))
         controller = CognitiveMetabolismController(
             now_iso_fn=clock.now_iso,
@@ -106,6 +111,8 @@ class TestCognitiveMetabolismController(unittest.TestCase):
         self.assertEqual(event["lifecycle_after"], LifecycleState.COMPRESSED.value)
 
     def test_compressed_state_can_be_archived_at_deeper_threshold(self) -> None:
+        from opencortex.cognition.metabolism import CognitiveMetabolismController
+
         clock = _FakeClock(datetime(2026, 4, 1, 0, 0, 0, tzinfo=timezone.utc))
         controller = CognitiveMetabolismController(
             now_iso_fn=clock.now_iso,
@@ -131,6 +138,8 @@ class TestCognitiveMetabolismController(unittest.TestCase):
         self.assertEqual(result.review_events[0]["kind"], "archive")
 
     def test_controller_is_conservative_does_not_compress_high_value_cold_state(self) -> None:
+        from opencortex.cognition.metabolism import CognitiveMetabolismController
+
         controller = CognitiveMetabolismController(
             compress_activation_threshold=0.1,
             compress_value_threshold=0.0,
@@ -147,6 +156,8 @@ class TestCognitiveMetabolismController(unittest.TestCase):
         self.assertEqual(result.review_events, [])
 
     def test_tick_accepts_mapping_input(self) -> None:
+        from opencortex.cognition.metabolism import CognitiveMetabolismController
+
         controller = CognitiveMetabolismController(
             compress_activation_threshold=0.1,
             compress_value_threshold=0.0,
@@ -163,7 +174,50 @@ class TestCognitiveMetabolismController(unittest.TestCase):
         update = self._find_update(result, OwnerType.MEMORY, "mapped-cold")
         self.assertEqual(update["expected_version"], 3)
 
+    def test_dominance_window_owner_id_stats_shape_triggers_cooling(self) -> None:
+        from opencortex.cognition.metabolism import CognitiveMetabolismController
+
+        controller = CognitiveMetabolismController(
+            hot_activation_threshold=0.8,
+            dominance_count_threshold=3,
+            cooling_decay=0.1,
+        )
+        hot = self._state("mem-dom", activation=0.95, stability=0.7, risk=0.1, version=2)
+
+        dominance_window = {
+            # Planned realistic shape: owner-id keyed stats objects.
+            "mem-dom": {"wins": 3, "success_rate": 0.55, "cluster": "auth"}
+        }
+        result = controller.tick([hot], dominance_window=dominance_window)
+
+        update = self._find_update(result, OwnerType.MEMORY, "mem-dom")
+        self.assertLess(update["fields"]["activation_score"], hot.activation_score)
+        self.assertEqual(update["fields"]["last_mutation_reason"], "metabolism_cool")
+
+    def test_archived_state_can_be_forgotten(self) -> None:
+        from opencortex.cognition.metabolism import CognitiveMetabolismController
+
+        controller = CognitiveMetabolismController(
+            forget_activation_threshold=0.02,
+            forget_value_threshold=0.0,
+        )
+        archived = self._state(
+            "mem-forget",
+            activation=0.0,
+            stability=0.05,
+            risk=0.6,
+            lifecycle=LifecycleState.ARCHIVED,
+            version=11,
+        )
+
+        result = controller.tick([archived])
+
+        update = self._find_update(result, OwnerType.MEMORY, "mem-forget")
+        self.assertEqual(update["fields"]["lifecycle_state"], LifecycleState.FORGOTTEN.value)
+        self.assertEqual(update["fields"]["last_mutation_reason"], "metabolism_forget")
+        self.assertEqual(len(result.review_events), 1)
+        self.assertEqual(result.review_events[0]["kind"], "forget")
+
 
 if __name__ == "__main__":
     unittest.main()
-

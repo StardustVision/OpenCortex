@@ -229,6 +229,138 @@ class CollectionSchemas:
             ],
         }
 
+    @staticmethod
+    def cognitive_state_collection(name: str) -> Dict[str, Any]:
+        """Schema for durable cognitive state (payload-only, no vectors)."""
+        return {
+            "CollectionName": name,
+            "Description": "Cognitive owner state",
+            "Fields": [
+                {"FieldName": "id", "FieldType": "string", "IsPrimaryKey": True},
+                {"FieldName": "state_id", "FieldType": "string"},
+                {"FieldName": "owner_type", "FieldType": "string"},
+                {"FieldName": "owner_id", "FieldType": "string"},
+                {"FieldName": "tenant_id", "FieldType": "string"},
+                {"FieldName": "user_id", "FieldType": "string"},
+                {"FieldName": "project_id", "FieldType": "string"},
+                {"FieldName": "lifecycle_state", "FieldType": "string"},
+                {"FieldName": "exposure_state", "FieldType": "string"},
+                {"FieldName": "consolidation_state", "FieldType": "string"},
+                {"FieldName": "activation_score", "FieldType": "float"},
+                {"FieldName": "stability_score", "FieldType": "float"},
+                {"FieldName": "risk_score", "FieldType": "float"},
+                {"FieldName": "novelty_score", "FieldType": "float"},
+                {"FieldName": "evidence_residual_score", "FieldType": "float"},
+                {"FieldName": "access_count", "FieldType": "int64"},
+                {"FieldName": "retrieval_success_count", "FieldType": "int64"},
+                {"FieldName": "retrieval_failure_count", "FieldType": "int64"},
+                {"FieldName": "last_accessed_at", "FieldType": "date_time"},
+                {"FieldName": "last_reinforced_at", "FieldType": "date_time"},
+                {"FieldName": "last_penalized_at", "FieldType": "date_time"},
+                {"FieldName": "last_mutation_at", "FieldType": "date_time"},
+                {"FieldName": "last_mutation_reason", "FieldType": "string"},
+                {"FieldName": "last_mutation_source", "FieldType": "string"},
+                {"FieldName": "version", "FieldType": "int64"},
+                {"FieldName": "metadata", "FieldType": "string"},
+            ],
+            "ScalarIndex": [
+                "state_id",
+                "owner_type",
+                "owner_id",
+                "tenant_id",
+                "user_id",
+                "project_id",
+                "lifecycle_state",
+                "exposure_state",
+                "consolidation_state",
+                "activation_score",
+                "stability_score",
+                "risk_score",
+                "novelty_score",
+                "evidence_residual_score",
+                "access_count",
+                "retrieval_success_count",
+                "retrieval_failure_count",
+                "last_accessed_at",
+                "last_reinforced_at",
+                "last_penalized_at",
+                "last_mutation_at",
+                "last_mutation_reason",
+                "last_mutation_source",
+                "version",
+            ],
+        }
+
+    @staticmethod
+    def cognitive_mutation_batch_collection(name: str) -> Dict[str, Any]:
+        """Schema for cognitive mutation ledger (explicit payload-only schema)."""
+        return {
+            "CollectionName": name,
+            "Description": "Cognitive mutation batch ledger",
+            "Fields": [
+                {"FieldName": "id", "FieldType": "string", "IsPrimaryKey": True},
+                {"FieldName": "batch_id", "FieldType": "string"},
+                {"FieldName": "owner_ids", "FieldType": "string"},
+                {"FieldName": "status", "FieldType": "string"},
+                {"FieldName": "error", "FieldType": "string"},
+                {"FieldName": "metadata", "FieldType": "string"},
+                {"FieldName": "created_at", "FieldType": "date_time"},
+                {"FieldName": "updated_at", "FieldType": "date_time"},
+                {"FieldName": "committed_at", "FieldType": "date_time"},
+            ],
+            "ScalarIndex": [
+                "batch_id",
+                "owner_ids",
+                "status",
+                "created_at",
+                "updated_at",
+                "committed_at",
+            ],
+        }
+
+    @staticmethod
+    def consolidation_candidate_collection(name: str) -> Dict[str, Any]:
+        """Schema for consolidation candidates (payload-only, no vectors)."""
+        return {
+            "CollectionName": name,
+            "Description": "Governance consolidation candidates",
+            "Fields": [
+                {"FieldName": "id", "FieldType": "string", "IsPrimaryKey": True},
+                {"FieldName": "candidate_id", "FieldType": "string"},
+                {"FieldName": "source_owner_type", "FieldType": "string"},
+                {"FieldName": "source_owner_id", "FieldType": "string"},
+                {"FieldName": "tenant_id", "FieldType": "string"},
+                {"FieldName": "user_id", "FieldType": "string"},
+                {"FieldName": "project_id", "FieldType": "string"},
+                {"FieldName": "candidate_kind", "FieldType": "string"},
+                {"FieldName": "statement", "FieldType": "string"},
+                {"FieldName": "abstract", "FieldType": "string"},
+                {"FieldName": "overview", "FieldType": "string"},
+                {"FieldName": "supporting_memory_ids", "FieldType": "string"},
+                {"FieldName": "supporting_trace_ids", "FieldType": "string"},
+                {"FieldName": "confidence_estimate", "FieldType": "float"},
+                {"FieldName": "stability_score", "FieldType": "float"},
+                {"FieldName": "risk_score", "FieldType": "float"},
+                {"FieldName": "conflict_summary", "FieldType": "string"},
+                {"FieldName": "submission_reason", "FieldType": "string"},
+                {"FieldName": "dedupe_fingerprint", "FieldType": "string"},
+                {"FieldName": "created_at", "FieldType": "date_time"},
+                {"FieldName": "updated_at", "FieldType": "date_time"},
+            ],
+            "ScalarIndex": [
+                "candidate_id",
+                "source_owner_type",
+                "source_owner_id",
+                "tenant_id",
+                "user_id",
+                "project_id",
+                "candidate_kind",
+                "dedupe_fingerprint",
+                "created_at",
+                "updated_at",
+            ],
+        }
+
 
 async def init_trace_collection(
     storage: StorageInterface, name: str, vector_dim: int,
@@ -282,3 +414,25 @@ async def init_context_collection(
     return await storage.create_collection(name, schema)
 
 
+async def init_cognitive_state_collection(
+    storage: StorageInterface, name: str,
+) -> bool:
+    """Initialize the cognitive state collection."""
+    schema = CollectionSchemas.cognitive_state_collection(name)
+    return await storage.create_collection(name, schema)
+
+
+async def init_cognitive_mutation_batch_collection(
+    storage: StorageInterface, name: str,
+) -> bool:
+    """Initialize the cognitive mutation batch collection."""
+    schema = CollectionSchemas.cognitive_mutation_batch_collection(name)
+    return await storage.create_collection(name, schema)
+
+
+async def init_consolidation_candidate_collection(
+    storage: StorageInterface, name: str,
+) -> bool:
+    """Initialize the consolidation candidate collection."""
+    schema = CollectionSchemas.consolidation_candidate_collection(name)
+    return await storage.create_collection(name, schema)

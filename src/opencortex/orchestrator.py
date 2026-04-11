@@ -33,6 +33,7 @@ Typical usage::
 """
 
 import asyncio
+from contextlib import suppress
 import hashlib
 import logging
 import os
@@ -41,7 +42,15 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 from uuid import uuid4
 
-from opencortex.cognition import RecallPlanner
+from opencortex.cognition import (
+    AutophagyKernel,
+    CandidateStore,
+    ConsolidationGate,
+    CognitiveMetabolismController,
+    CognitiveStateStore,
+    RecallMutationEngine,
+    RecallPlanner,
+)
 from opencortex.config import CortexConfig, get_config
 from opencortex.prompts import (
     build_doc_summarization_prompt,
@@ -76,6 +85,7 @@ from opencortex.storage.collection_schemas import init_context_collection
 from opencortex.storage.cortex_fs import CortexFS, init_cortex_fs
 from opencortex.storage.storage_interface import StorageInterface
 from opencortex.utils.uri import CortexURI
+from opencortex.cognition.state_types import OwnerType
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +139,12 @@ class MemoryOrchestrator:
         self._archivist = None
         self._context_manager = None
         self._parser_registry = None
+        self._cognitive_state_store = None
+        self._candidate_store = None
+        self._recall_mutation_engine = None
+        self._consolidation_gate = None
+        self._cognitive_metabolism_controller = None
+        self._autophagy_kernel = None
 
         # v0.6: Query classifier (lazy — initialized after embedder is ready)
         self._query_classifier = None
@@ -144,6 +160,16 @@ class MemoryOrchestrator:
         self._recall_planner = RecallPlanner(
             cone_enabled=self._config.cone_retrieval_enabled
         )
+
+        # Autophagy background sweeps (metabolism)
+        self._autophagy_sweep_task: asyncio.Task | None = None
+        self._autophagy_startup_sweep_task: asyncio.Task | None = None
+        self._autophagy_sweep_cursors: dict[OwnerType, str | None] = {
+            OwnerType.MEMORY: None,
+            OwnerType.TRACE: None,
+        }
+        # Guard to serialize sweep execution across startup/periodic triggers.
+        self._autophagy_sweep_guard = asyncio.Lock()
 
     # =========================================================================
     # Collection Routing
@@ -263,10 +289,14 @@ class MemoryOrchestrator:
         # 8. Background maintenance: text indexes, migrations, re-embed
         asyncio.create_task(self._startup_maintenance())
 
-        # 9. Cortex Alpha components
+        # 9. Autophagy cognition components
+        await self._init_cognition()
+        self._start_autophagy_sweeper()
+
+        # 10. Cortex Alpha components
         await self._init_alpha()
 
-        # 10. Skill Engine
+        # 11. Skill Engine
         await self._init_skill_engine()
 
         self._initialized = True
@@ -274,6 +304,115 @@ class MemoryOrchestrator:
             "[MemoryOrchestrator] Initialized (data_root=%s)", self._config.data_root
         )
         return self
+
+    async def _init_cognition(self) -> None:
+        """Initialize cognition-layer stores/controllers/kernel."""
+        if not self._storage:
+            return
+
+        self._cognitive_state_store = CognitiveStateStore(self._storage)
+        await self._cognitive_state_store.init()
+
+        self._candidate_store = CandidateStore(self._storage)
+        await self._candidate_store.init()
+
+        self._recall_mutation_engine = RecallMutationEngine()
+        self._consolidation_gate = ConsolidationGate(
+            candidate_store=self._candidate_store,
+        )
+        self._cognitive_metabolism_controller = CognitiveMetabolismController()
+        self._autophagy_kernel = AutophagyKernel(
+            state_store=self._cognitive_state_store,
+            mutation_engine=self._recall_mutation_engine,
+            consolidation_gate=self._consolidation_gate,
+            candidate_store=self._candidate_store,
+            metabolism_controller=self._cognitive_metabolism_controller,
+        )
+
+    def _start_autophagy_sweeper(self) -> None:
+        """Start autophagy metabolism sweeps (startup + periodic) in background."""
+        kernel = getattr(self, "_autophagy_kernel", None)
+        if kernel is None:
+            return
+
+        # Be resilient to unit tests that bypass __init__ via __new__.
+        if not hasattr(self, "_autophagy_sweep_cursor"):
+            self._autophagy_sweep_cursor = None
+        if not hasattr(self, "_autophagy_sweep_task"):
+            self._autophagy_sweep_task = None
+        if not hasattr(self, "_autophagy_startup_sweep_task"):
+            self._autophagy_startup_sweep_task = None
+        if not hasattr(self, "_autophagy_sweep_cursors"):
+            self._autophagy_sweep_cursors = {
+                OwnerType.MEMORY: None,
+                OwnerType.TRACE: None,
+            }
+        if not hasattr(self, "_autophagy_sweep_guard"):
+            self._autophagy_sweep_guard = asyncio.Lock()
+
+        if self._autophagy_sweep_task is not None and not self._autophagy_sweep_task.done():
+            return
+
+        # Startup: one immediate batch (fire-and-forget) for crash recovery / backlog drain.
+        self._autophagy_startup_sweep_task = asyncio.create_task(
+            self._run_autophagy_sweep_once(),
+            name="opencortex.autophagy.startup_sweep",
+        )
+
+        # Periodic: one bounded page per interval, cursor carried across ticks.
+        self._autophagy_sweep_task = asyncio.create_task(
+            self._autophagy_sweep_loop(),
+            name="opencortex.autophagy.periodic_sweep",
+        )
+
+    async def _run_autophagy_sweep_once(self) -> None:
+        kernel = getattr(self, "_autophagy_kernel", None)
+        if kernel is None:
+            return
+
+        # Be resilient to unit tests that bypass __init__ via __new__.
+        if not hasattr(self, "_autophagy_sweep_guard") or self._autophagy_sweep_guard is None:
+            self._autophagy_sweep_guard = asyncio.Lock()
+        if not hasattr(self, "_autophagy_sweep_cursors") or self._autophagy_sweep_cursors is None:
+            self._autophagy_sweep_cursors = {
+                OwnerType.MEMORY: None,
+                OwnerType.TRACE: None,
+            }
+
+        async with self._autophagy_sweep_guard:
+            limit = int(getattr(self._config, "autophagy_sweep_batch_size", 200))
+            for owner_type in (OwnerType.MEMORY, OwnerType.TRACE):
+                try:
+                    cursor = self._autophagy_sweep_cursors.get(owner_type)
+                    result = await kernel.sweep_metabolism(
+                        owner_type=owner_type,
+                        limit=limit,
+                        cursor=cursor,
+                    )
+                    # Reset to None when exhausted, so subsequent sweeps restart cleanly.
+                    self._autophagy_sweep_cursors[owner_type] = getattr(
+                        result, "next_cursor", None
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        "[Orchestrator] Autophagy metabolism sweep failed (owner_type=%s): %s",
+                        owner_type.value,
+                        exc,
+                    )
+                    continue
+
+    async def _autophagy_sweep_loop(self) -> None:
+        interval = float(getattr(self._config, "autophagy_sweep_interval_seconds", 900))
+        if interval <= 0:
+            interval = 0.01  # allow fast unit tests; never busy-loop.
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                await self._run_autophagy_sweep_once()
+        except asyncio.CancelledError:
+            raise
 
     async def _init_alpha(self) -> None:
         """Initialize Cortex Alpha components if enabled."""
@@ -294,6 +433,7 @@ class MemoryOrchestrator:
                 cortex_fs=self._fs,
                 collection_name=alpha_cfg.trace_collection_name,
                 embedding_dim=self._config.embedding_dimension,
+                on_trace_saved=self._on_trace_saved if self._autophagy_kernel else None,
             )
             await self._trace_store.init()
 
@@ -1255,8 +1395,23 @@ class MemoryOrchestrator:
             if dup:
                 existing_uri, existing_score = dup
                 total_ms = int((asyncio.get_running_loop().time() - add_started) * 1000)
+                existing_record = await self._get_record_by_uri(existing_uri)
+                persisted_owner_id = ""
+                persisted_project_id = get_effective_project_id()
+                if existing_record:
+                    persisted_owner_id = str(existing_record.get("id", ""))
+                    persisted_project_id = str(
+                        existing_record.get("project_id", persisted_project_id)
+                    )
                 if effective_category in MERGEABLE_CATEGORIES:
                     await self._merge_into(existing_uri, abstract, content)
+                    await self._initialize_autophagy_owner_state(
+                        owner_type=OwnerType.MEMORY,
+                        owner_id=persisted_owner_id,
+                        tenant_id=tid,
+                        user_id=uid,
+                        project_id=persisted_project_id,
+                    )
                     logger.info(
                         "[MemoryOrchestrator] add tenant=%s user=%s uri=%s "
                         "dedup_action=merged dedup_target=%s score=%.3f "
@@ -1278,6 +1433,13 @@ class MemoryOrchestrator:
                     ctx.meta["dedup_score"] = round(existing_score, 4)
                     return ctx
                 else:
+                    await self._initialize_autophagy_owner_state(
+                        owner_type=OwnerType.MEMORY,
+                        owner_id=persisted_owner_id,
+                        tenant_id=tid,
+                        user_id=uid,
+                        project_id=persisted_project_id,
+                    )
                     logger.info(
                         "[MemoryOrchestrator] add tenant=%s user=%s uri=%s "
                         "dedup_action=skipped dedup_target=%s score=%.3f "
@@ -1348,6 +1510,15 @@ class MemoryOrchestrator:
         upsert_started = asyncio.get_running_loop().time()
         await self._storage.upsert(self._get_collection(), record)
         upsert_ms = int((asyncio.get_running_loop().time() - upsert_started) * 1000)
+
+        if (context_type or ctx.context_type or "memory") == "memory":
+            await self._initialize_autophagy_owner_state(
+                owner_type=OwnerType.MEMORY,
+                owner_id=str(record["id"]),
+                tenant_id=tid,
+                user_id=uid,
+                project_id=record["project_id"],
+            )
 
         # Sync EntityIndex (if available)
         _entity_idx = getattr(self, '_entity_index', None)
@@ -1907,6 +2078,23 @@ class MemoryOrchestrator:
         result.resources = [m for m in result.resources if m.is_leaf]
         result.skills = [m for m in result.skills if m.is_leaf]
 
+        recalled_owner_ids = await self._resolve_memory_owner_ids(result.memories)
+        if recalled_owner_ids and self._autophagy_kernel:
+            try:
+                await self._autophagy_kernel.apply_recall_outcome(
+                    owner_ids=recalled_owner_ids,
+                    query=query,
+                    recall_outcome={"selected_results": recalled_owner_ids},
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[search] Autophagy recall application failed tenant=%s user=%s owners=%d: %s",
+                    tid,
+                    uid,
+                    len(recalled_owner_ids),
+                    exc,
+                )
+
         # Fire-and-forget: resolve URIs → record IDs → update access stats
         all_matched = result.memories + result.resources + result.skills
         if all_matched:
@@ -1953,7 +2141,7 @@ class MemoryOrchestrator:
         # Skill Engine: search active skills and merge into FindResult.skills
         if self._skill_manager:
             try:
-                from opencortex.retrieve.types import MatchedContext, ContextType
+                from opencortex.retrieve.types import MatchedContext
                 skill_results = await self._skill_manager.search(
                     query, tid, uid, top_k=3,
                 )
@@ -1972,6 +2160,93 @@ class MemoryOrchestrator:
                 logger.debug("[search] Skill search failed: %s", exc)
 
         return result
+
+    async def _resolve_memory_owner_ids(self, matches: List[Any]) -> List[str]:
+        """Resolve memory owner ids from matched contexts using persisted record ids."""
+        if not matches or not self._storage:
+            return []
+
+        uris = []
+        for match in matches:
+            uri = getattr(match, "uri", "")
+            if isinstance(uri, str) and uri:
+                uris.append(uri)
+        if not uris:
+            return []
+
+        try:
+            records = await self._storage.filter(
+                self._get_collection(),
+                {"op": "must", "field": "uri", "conds": list(dict.fromkeys(uris))},
+                limit=max(len(uris), 1) * 4,
+            )
+        except Exception as exc:
+            logger.debug("[Orchestrator] Failed to resolve memory owner ids: %s", exc)
+            return []
+
+        ids_by_uri = {
+            record.get("uri", ""): str(record.get("id", ""))
+            for record in records
+            if record.get("uri") and record.get("id")
+        }
+        owner_ids: List[str] = []
+        for uri in uris:
+            owner_id = ids_by_uri.get(uri)
+            if owner_id and owner_id not in owner_ids:
+                owner_ids.append(owner_id)
+        return owner_ids
+
+    async def _get_record_by_uri(self, uri: str) -> Optional[Dict[str, Any]]:
+        if not uri or not self._storage:
+            return None
+        try:
+            records = await self._storage.filter(
+                self._get_collection(),
+                {"op": "must", "field": "uri", "conds": [uri]},
+                limit=1,
+            )
+        except Exception as exc:
+            logger.debug("[Orchestrator] Failed to load record for uri=%s: %s", uri, exc)
+            return None
+        return records[0] if records else None
+
+    async def _initialize_autophagy_owner_state(
+        self,
+        *,
+        owner_type: OwnerType,
+        owner_id: str,
+        tenant_id: str,
+        user_id: str,
+        project_id: str,
+    ) -> None:
+        if not self._autophagy_kernel or not owner_id:
+            return
+        try:
+            await self._autophagy_kernel.initialize_owner(
+                owner_type=owner_type,
+                owner_id=owner_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                project_id=project_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[Orchestrator] Autophagy owner init failed type=%s owner=%s tenant=%s user=%s: %s",
+                owner_type.value,
+                owner_id,
+                tenant_id,
+                user_id,
+                exc,
+            )
+
+    async def _on_trace_saved(self, trace: Any) -> None:
+        await self._initialize_autophagy_owner_state(
+            owner_type=OwnerType.TRACE,
+            owner_id=str(getattr(trace, "trace_id", "")),
+            tenant_id=str(getattr(trace, "tenant_id", "")),
+            user_id=str(getattr(trace, "user_id", "")),
+            project_id=str(getattr(trace, "project_id", "")) or get_effective_project_id(),
+        )
 
     async def _resolve_and_update_access_stats(self, uris: list) -> None:
         """1 filter + N parallel updates. Old: N filter + N get + N update (serial)."""
@@ -3062,6 +3337,20 @@ class MemoryOrchestrator:
 
     async def close(self) -> None:
         """Close storage and release resources."""
+        startup_task = getattr(self, "_autophagy_startup_sweep_task", None)
+        if startup_task is not None and not startup_task.done():
+            startup_task.cancel()
+        periodic_task = getattr(self, "_autophagy_sweep_task", None)
+        if periodic_task is not None and not periodic_task.done():
+            periodic_task.cancel()
+        for task in (startup_task, periodic_task):
+            if task is None:
+                continue
+            with suppress(asyncio.CancelledError):
+                await task
+        self._autophagy_startup_sweep_task = None
+        self._autophagy_sweep_task = None
+
         if self._context_manager:
             await self._context_manager.close()
         if self._storage:

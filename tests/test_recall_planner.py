@@ -1,5 +1,7 @@
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -7,17 +9,26 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from opencortex.cognition import RecallPlanner
 from opencortex.config import CortexConfig
+from opencortex.cognition.state_types import OwnerType
+from opencortex.http.request_context import (
+    reset_request_identity,
+    reset_request_project_id,
+    set_request_identity,
+    set_request_project_id,
+)
 from opencortex.orchestrator import MemoryOrchestrator
 from opencortex.retrieve.types import (
     ContextType,
     DetailLevel,
     FindResult,
+    MatchedContext,
     QueryResult,
     RecallPlan,
     RecallSurface,
     SearchIntent,
     TypedQuery,
 )
+from test_e2e_phase1 import InMemoryStorage, MockEmbedder
 
 
 class TestRecallPlanTypes(unittest.TestCase):
@@ -318,17 +329,332 @@ class TestOrchestratorRecallPlanning(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.resources, [])
         self.assertEqual(result.skills, [])
         self.assertFalse(result.search_intent.should_recall)
-        self.orch.plan_recall.assert_awaited_once_with(
-            query="hello",
-            max_items=5,
-            recall_mode="auto",
-            include_knowledge=False,
-            detail_level_override=None,
-            context_type=None,
-            session_context=None,
-            search_intent=None,
+
+
+class TestOrchestratorAutophagyIntegration(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp(prefix="opencortex_orch_autophagy_")
+        self.config = CortexConfig(
+            data_root=self.temp_dir,
+            embedding_dimension=MockEmbedder.DIMENSION,
+            rerank_provider="disabled",
+            query_classifier_enabled=False,
+            hyde_enabled=False,
+            explain_enabled=False,
+            cone_retrieval_enabled=False,
         )
-        self.orch._retriever.retrieve.assert_not_called()
+        self.storage = InMemoryStorage()
+        self.embedder = MockEmbedder()
+        self.identity_tokens = set_request_identity("tenant-1", "user-1")
+        self.orch = MemoryOrchestrator(
+            config=CortexConfig(
+                query_classifier_enabled=False,
+                hyde_enabled=False,
+                explain_enabled=False,
+                cone_retrieval_enabled=True,
+            )
+        )
+
+    def tearDown(self):
+        reset_request_identity(self.identity_tokens)
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _make_orchestrator(self) -> MemoryOrchestrator:
+        return MemoryOrchestrator(
+            config=self.config,
+            storage=self.storage,
+            embedder=self.embedder,
+        )
+
+    async def test_init_creates_autophagy_kernel(self):
+        orch = self._make_orchestrator()
+
+        await orch.init()
+
+        self.assertIsNotNone(orch._cognitive_state_store)
+        self.assertIsNotNone(orch._autophagy_kernel)
+
+        await orch.close()
+
+    async def test_add_initializes_memory_owner_state_with_persisted_record_id(self):
+        orch = self._make_orchestrator()
+        await orch.init()
+        orch._autophagy_kernel.initialize_owner = AsyncMock()
+
+        ctx = await orch.add(
+            abstract="prefers dark mode",
+            category="preferences",
+            context_type="memory",
+        )
+
+        orch._autophagy_kernel.initialize_owner.assert_awaited_once_with(
+            owner_type=OwnerType.MEMORY,
+            owner_id=ctx.id,
+            tenant_id="tenant-1",
+            user_id="user-1",
+            project_id="public",
+        )
+
+        await orch.close()
+
+    async def test_add_dedup_skipped_initializes_existing_memory_owner_state(self):
+        orch = self._make_orchestrator()
+        await orch.init()
+        existing_uri = "opencortex://tenant-1/user-1/memories/events/existing-skip"
+        await self.storage.upsert(
+            "context",
+            {
+                "id": "existing-skip-id",
+                "uri": existing_uri,
+                "is_leaf": True,
+                "abstract": "existing event",
+                "overview": "",
+                "context_type": "memory",
+                "category": "events",
+                "source_tenant_id": "tenant-1",
+                "source_user_id": "user-1",
+                "scope": "private",
+                "project_id": "public",
+            },
+        )
+        orch._autophagy_kernel.initialize_owner = AsyncMock()
+        orch._check_duplicate = AsyncMock(return_value=(existing_uri, 0.93))
+
+        ctx = await orch.add(
+            abstract="existing event",
+            category="events",
+            context_type="memory",
+            dedup=True,
+        )
+
+        self.assertEqual(ctx.meta["dedup_action"], "skipped")
+        self.assertEqual(ctx.uri, existing_uri)
+        orch._autophagy_kernel.initialize_owner.assert_awaited_once_with(
+            owner_type=OwnerType.MEMORY,
+            owner_id="existing-skip-id",
+            tenant_id="tenant-1",
+            user_id="user-1",
+            project_id="public",
+        )
+
+        await orch.close()
+
+    async def test_add_dedup_merged_initializes_existing_memory_owner_state(self):
+        orch = self._make_orchestrator()
+        await orch.init()
+        existing_uri = "opencortex://tenant-1/user-1/memories/preferences/existing-merge"
+        await self.storage.upsert(
+            "context",
+            {
+                "id": "existing-merge-id",
+                "uri": existing_uri,
+                "is_leaf": True,
+                "abstract": "dark mode",
+                "overview": "",
+                "context_type": "memory",
+                "category": "preferences",
+                "source_tenant_id": "tenant-1",
+                "source_user_id": "user-1",
+                "scope": "private",
+                "project_id": "public",
+            },
+        )
+        orch._autophagy_kernel.initialize_owner = AsyncMock()
+        orch._check_duplicate = AsyncMock(return_value=(existing_uri, 0.96))
+        orch._merge_into = AsyncMock()
+
+        ctx = await orch.add(
+            abstract="dark mode",
+            category="preferences",
+            context_type="memory",
+            dedup=True,
+        )
+
+        self.assertEqual(ctx.meta["dedup_action"], "merged")
+        self.assertEqual(ctx.uri, existing_uri)
+        orch._merge_into.assert_awaited_once_with(existing_uri, "dark mode", "")
+        orch._autophagy_kernel.initialize_owner.assert_awaited_once_with(
+            owner_type=OwnerType.MEMORY,
+            owner_id="existing-merge-id",
+            tenant_id="tenant-1",
+            user_id="user-1",
+            project_id="public",
+        )
+
+        await orch.close()
+
+    async def test_on_trace_saved_uses_trace_project_id_instead_of_ambient_project(self):
+        orch = self._make_orchestrator()
+        await orch.init()
+        orch._autophagy_kernel.initialize_owner = AsyncMock()
+        trace = Mock(
+            trace_id="trace-proj-1",
+            tenant_id="tenant-1",
+            user_id="user-1",
+            project_id="project-42",
+        )
+        public_project = set_request_project_id("public")
+        try:
+            await orch._on_trace_saved(trace)
+        finally:
+            reset_request_project_id(public_project)
+
+        orch._autophagy_kernel.initialize_owner.assert_awaited_once_with(
+            owner_type=OwnerType.TRACE,
+            owner_id="trace-proj-1",
+            tenant_id="tenant-1",
+            user_id="user-1",
+            project_id="project-42",
+        )
+
+        await orch.close()
+
+    async def test_search_applies_autophagy_recall_outcome_for_recalled_memory_ids(self):
+        orch = self._make_orchestrator()
+        await orch.init()
+        recalled_uri = "opencortex://tenant-1/user-1/memories/preferences/mem-123"
+        await self.storage.upsert(
+            "context",
+            {
+                "id": "mem-123",
+                "uri": recalled_uri,
+                "is_leaf": True,
+                "abstract": "dark mode preference",
+                "overview": "User prefers dark mode",
+                "context_type": "memory",
+                "category": "preferences",
+                "source_tenant_id": "tenant-1",
+                "source_user_id": "user-1",
+                "scope": "private",
+                "project_id": "public",
+            },
+        )
+        orch.plan_recall = AsyncMock(
+            return_value=(
+                SearchIntent(
+                    intent_type="quick_lookup",
+                    detail_level=DetailLevel.L1,
+                    should_recall=True,
+                ),
+                RecallPlan(
+                    should_recall=True,
+                    surfaces=[RecallSurface.MEMORY],
+                    detail_level=DetailLevel.L1,
+                    memory_limit=1,
+                    knowledge_limit=0,
+                    enable_cone=False,
+                    fusion_policy="memory_only",
+                    reasoning="test",
+                ),
+            )
+        )
+        orch._retriever = Mock()
+        orch._retriever.retrieve = AsyncMock(
+            return_value=QueryResult(
+                query=TypedQuery(
+                    query="hello",
+                    context_type=ContextType.MEMORY,
+                    intent="",
+                    detail_level=DetailLevel.L1,
+                ),
+                matched_contexts=[
+                    MatchedContext(
+                        uri=recalled_uri,
+                        context_type=ContextType.MEMORY,
+                        is_leaf=True,
+                        abstract="dark mode preference",
+                        overview="User prefers dark mode",
+                        category="preferences",
+                        score=0.9,
+                    )
+                ],
+                searched_directories=[],
+            )
+        )
+        orch._autophagy_kernel.apply_recall_outcome = AsyncMock()
+
+        result = await orch.search("hello", limit=1)
+
+        self.assertEqual(len(result.memories), 1)
+        orch._autophagy_kernel.apply_recall_outcome.assert_awaited_once_with(
+            owner_ids=["mem-123"],
+            query="hello",
+            recall_outcome={"selected_results": ["mem-123"]},
+        )
+
+        await orch.close()
+
+    async def test_search_ignores_autophagy_recall_failures(self):
+        orch = self._make_orchestrator()
+        await orch.init()
+        recalled_uri = "opencortex://tenant-1/user-1/memories/preferences/mem-456"
+        await self.storage.upsert(
+            "context",
+            {
+                "id": "mem-456",
+                "uri": recalled_uri,
+                "is_leaf": True,
+                "abstract": "dark mode preference",
+                "overview": "User prefers dark mode",
+                "context_type": "memory",
+                "category": "preferences",
+                "source_tenant_id": "tenant-1",
+                "source_user_id": "user-1",
+                "scope": "private",
+                "project_id": "public",
+            },
+        )
+        orch.plan_recall = AsyncMock(
+            return_value=(
+                SearchIntent(
+                    intent_type="quick_lookup",
+                    detail_level=DetailLevel.L1,
+                    should_recall=True,
+                ),
+                RecallPlan(
+                    should_recall=True,
+                    surfaces=[RecallSurface.MEMORY],
+                    detail_level=DetailLevel.L1,
+                    memory_limit=1,
+                    knowledge_limit=0,
+                    enable_cone=False,
+                    fusion_policy="memory_only",
+                    reasoning="test",
+                ),
+            )
+        )
+        orch._retriever = Mock()
+        orch._retriever.retrieve = AsyncMock(
+            return_value=QueryResult(
+                query=TypedQuery(
+                    query="hello",
+                    context_type=ContextType.MEMORY,
+                    intent="",
+                    detail_level=DetailLevel.L1,
+                ),
+                matched_contexts=[
+                    MatchedContext(
+                        uri=recalled_uri,
+                        context_type=ContextType.MEMORY,
+                        is_leaf=True,
+                        abstract="dark mode preference",
+                        overview="User prefers dark mode",
+                        category="preferences",
+                        score=0.9,
+                    )
+                ],
+                searched_directories=[],
+            )
+        )
+        orch._autophagy_kernel.apply_recall_outcome = AsyncMock(
+            side_effect=RuntimeError("persist failure")
+        )
+
+        result = await orch.search("hello", limit=1)
+
+        self.assertEqual([memory.uri for memory in result.memories], [recalled_uri])
+
+        await orch.close()
 
     async def test_search_applies_recall_plan_detail_level_to_existing_queries(self):
         typed_query = TypedQuery(

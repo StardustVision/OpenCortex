@@ -19,8 +19,11 @@ from dataclasses import dataclass, field as dc_field
 
 from opencortex.http.request_context import (
     get_effective_identity,
+    get_effective_project_id,
     reset_request_identity,
+    reset_request_project_id,
     set_request_identity,
+    set_request_project_id,
 )
 from opencortex.utils.text import smart_truncate
 from opencortex.retrieve.types import (
@@ -83,8 +86,12 @@ class ContextManager:
         self._session_activity: Dict[SessionKey, float] = {}
         # Session-level locks: prevent concurrent begin_session
         self._session_locks: Dict[SessionKey, asyncio.Lock] = {}
+        # Session project id snapshot for explicit/idle/background end flows.
+        self._session_project_ids: Dict[SessionKey, str] = {}
         # Pending async tasks (cited_uris reward, etc.)
         self._pending_tasks: Set[asyncio.Task] = set()
+        # Session-scoped memory owner ids recalled during prepare().
+        self._session_memory_owner_ids: Dict[SessionKey, Set[str]] = {}
         # Conversation buffers: per-session incremental chunking
         self._conversation_buffers: Dict[SessionKey, ConversationBuffer] = {}
         # Skill selection tracking: (session_key, turn_id) -> set of skill URIs
@@ -274,6 +281,7 @@ class ContextManager:
 
         # 2. Session auto-create (session-level lock prevents concurrent begin)
         self._touch_session(sk)
+        self._remember_session_project(sk)
         lock = self._session_locks.setdefault(sk, asyncio.Lock())
         async with lock:
             if session_id not in self._observer.active_sessions():
@@ -341,7 +349,7 @@ class ContextManager:
         _skill_uris: List[str] = []
 
         if should_recall:
-            async def _memory_search() -> Tuple[List[Dict[str, Any]], int, List[str]]:
+            async def _memory_search() -> Tuple[List[Dict[str, Any]], int, List[str], List[str]]:
                 started = time.monotonic()
                 try:
                     search_kwargs: Dict[str, Any] = {
@@ -355,18 +363,21 @@ class ContextManager:
                     if category:
                         search_kwargs["metadata_filter"] = {"category": category}
                     find_result = await self._orchestrator.search(**search_kwargs)
+                    owner_ids = await self._orchestrator._resolve_memory_owner_ids(
+                        find_result.memories
+                    )
                     skill_uris = self._extract_skill_uris(
                         getattr(find_result, 'skills', []) or [],
                     )
                     return self._format_memories(find_result, detail_level), int(
                         (time.monotonic() - started) * 1000,
-                    ), skill_uris
+                    ), skill_uris, owner_ids
                 except Exception as exc:
                     logger.warning(
                         "[ContextManager] Memory search failed sid=%s turn=%s tenant=%s user=%s: %s",
                         session_id, turn_id, tenant_id, user_id, exc,
                     )
-                    return [], int((time.monotonic() - started) * 1000), []
+                    return [], int((time.monotonic() - started) * 1000), [], []
 
             async def _knowledge_search() -> Tuple[List[Dict[str, Any]], int]:
                 started = time.monotonic()
@@ -394,7 +405,11 @@ class ContextManager:
             results = await asyncio.gather(*coros) if coros else []
             result_idx = 0
             if include_memory:
-                memory_items, memory_ms, _skill_uris = results[result_idx]
+                memory_items, memory_ms, _skill_uris, memory_owner_ids = results[result_idx]
+                if memory_owner_ids:
+                    self._session_memory_owner_ids.setdefault(sk, set()).update(
+                        memory_owner_ids
+                    )
                 result_idx += 1
             if include_knowledge and recall_plan.knowledge_limit > 0:
                 knowledge_items, knowledge_ms = results[result_idx]
@@ -462,6 +477,7 @@ class ContextManager:
     ) -> Dict[str, Any]:
         sk = self._make_session_key(tenant_id, user_id, session_id)
         self._touch_session(sk)
+        self._remember_session_project(sk)
 
         # Idempotent: same turn_id already committed → duplicate
         if turn_id in self._committed_turns.get(sk, set()):
@@ -646,66 +662,87 @@ class ContextManager:
     ) -> Dict[str, Any]:
         sk = self._make_session_key(tenant_id, user_id, session_id)
         total_turns = len(self._committed_turns.get(sk, set()))
+        session_project_id = self._session_project_ids.get(sk) or get_effective_project_id()
+        project_token = set_request_project_id(session_project_id)
 
-        # Flush conversation buffer before Alpha pipeline
-        buffer = self._conversation_buffers.get(sk)
-        if buffer and buffer.messages:
+        try:
+            # Flush conversation buffer before Alpha pipeline
+            buffer = self._conversation_buffers.get(sk)
+            if buffer and buffer.messages:
+                try:
+                    await self._merge_buffer(sk, session_id, tenant_id, user_id)
+                except Exception as exc:
+                    logger.warning("[ContextManager] End-of-session buffer flush failed: %s", exc)
+
+            # Catch-all: delete any remaining immediate records for this session
             try:
-                await self._merge_buffer(sk, session_id, tenant_id, user_id)
+                await self._orchestrator._storage.batch_delete(
+                    "context",
+                    {"op": "and", "conds": [
+                        {"op": "must", "field": "session_id", "conds": [session_id]},
+                        {"op": "must", "field": "meta.layer", "conds": ["immediate"]},
+                    ]},
+                )
             except Exception as exc:
-                logger.warning("[ContextManager] End-of-session buffer flush failed: %s", exc)
+                logger.warning("[ContextManager] End cleanup immediates: %s", exc)
 
-        # Catch-all: delete any remaining immediate records for this session
-        try:
-            await self._orchestrator._storage.batch_delete(
-                "context",
-                {"op": "and", "conds": [
-                    {"op": "must", "field": "session_id", "conds": [session_id]},
-                    {"op": "must", "field": "meta.layer", "conds": ["immediate"]},
-                ]},
+            # Delegate to orchestrator.session_end() — includes:
+            # Observer.flush → TraceSplitter → TraceStore → Archivist
+            start_time = time.monotonic()
+            status = "closed"
+            traces = 0
+            knowledge_candidates = 0
+            session_owner_ids = sorted(self._session_memory_owner_ids.get(sk, set()))
+
+            try:
+                result = await self._orchestrator.session_end(
+                    session_id=session_id,
+                    quality_score=0.5,
+                )
+                traces = result.get("alpha_traces", 0)
+                knowledge_candidates = result.get("knowledge_candidates", 0)
+            except Exception as exc:
+                logger.warning(
+                    "[ContextManager] session_end failed sid=%s tenant=%s user=%s: %s",
+                    session_id, tenant_id, user_id, exc,
+                )
+                status = "partial"
+
+            if (
+                session_owner_ids
+                and getattr(self._orchestrator, "_autophagy_kernel", None) is not None
+            ):
+                task = asyncio.create_task(
+                    self._run_autophagy_metabolism(
+                        session_id=session_id,
+                        tenant_id=tenant_id,
+                        user_id=user_id,
+                        owner_ids=session_owner_ids,
+                    )
+                )
+                self._pending_tasks.add(task)
+                task.add_done_callback(self._pending_tasks.discard)
+
+            duration_ms = int((time.monotonic() - start_time) * 1000)
+
+            # Cleanup session state
+            self._cleanup_session(sk)
+
+            logger.info(
+                "[ContextManager] end sid=%s tenant=%s user=%s turns=%d traces=%d latency=%dms",
+                session_id, tenant_id, user_id, total_turns, traces, duration_ms,
             )
-        except Exception as exc:
-            logger.warning("[ContextManager] End cleanup immediates: %s", exc)
 
-        # Delegate to orchestrator.session_end() — includes:
-        # Observer.flush → TraceSplitter → TraceStore → Archivist
-        start_time = time.monotonic()
-        status = "closed"
-        traces = 0
-        knowledge_candidates = 0
-
-        try:
-            result = await self._orchestrator.session_end(
-                session_id=session_id,
-                quality_score=0.5,
-            )
-            traces = result.get("alpha_traces", 0)
-            knowledge_candidates = result.get("knowledge_candidates", 0)
-        except Exception as exc:
-            logger.warning(
-                "[ContextManager] session_end failed sid=%s tenant=%s user=%s: %s",
-                session_id, tenant_id, user_id, exc,
-            )
-            status = "partial"
-
-        duration_ms = int((time.monotonic() - start_time) * 1000)
-
-        # Cleanup session state
-        self._cleanup_session(sk)
-
-        logger.info(
-            "[ContextManager] end sid=%s tenant=%s user=%s turns=%d traces=%d latency=%dms",
-            session_id, tenant_id, user_id, total_turns, traces, duration_ms,
-        )
-
-        return {
-            "session_id": session_id,
-            "status": status,
-            "total_turns": total_turns,
-            "traces": traces,
-            "knowledge_candidates": knowledge_candidates,
-            "duration_ms": duration_ms,
-        }
+            return {
+                "session_id": session_id,
+                "status": status,
+                "total_turns": total_turns,
+                "traces": traces,
+                "knowledge_candidates": knowledge_candidates,
+                "duration_ms": duration_ms,
+            }
+        finally:
+            reset_request_project_id(project_token)
 
     # =========================================================================
     # Cache management
@@ -750,6 +787,9 @@ class ContextManager:
     def _touch_session(self, sk: SessionKey) -> None:
         self._session_activity[sk] = time.time()
 
+    def _remember_session_project(self, sk: SessionKey) -> None:
+        self._session_project_ids[sk] = get_effective_project_id()
+
     def _cleanup_session(self, sk: SessionKey) -> None:
         """Remove all session state including cache entries via reverse index."""
         cache_keys = self._session_cache_keys.pop(sk, set())
@@ -758,10 +798,32 @@ class ContextManager:
         self._committed_turns.pop(sk, None)
         self._session_activity.pop(sk, None)
         self._session_locks.pop(sk, None)
+        self._session_project_ids.pop(sk, None)
+        self._session_memory_owner_ids.pop(sk, None)
         # Clean up turn-scoped skill selections for this session
         stale_keys = [k for k in self._selected_skill_uris if k[0] == sk]
         for k in stale_keys:
             del self._selected_skill_uris[k]
+
+    async def _run_autophagy_metabolism(
+        self,
+        *,
+        session_id: str,
+        tenant_id: str,
+        user_id: str,
+        owner_ids: List[str],
+    ) -> None:
+        try:
+            await self._orchestrator._autophagy_kernel.metabolize_states(owner_ids)
+        except Exception as exc:
+            logger.warning(
+                "[ContextManager] Autophagy metabolism failed sid=%s tenant=%s user=%s owners=%d: %s",
+                session_id,
+                tenant_id,
+                user_id,
+                len(owner_ids),
+                exc,
+            )
 
     # =========================================================================
     # Idle session auto-close
