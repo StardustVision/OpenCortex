@@ -1033,7 +1033,7 @@ class MemoryOrchestrator:
 
         parent_ctx = await self.add(
             abstract=doc_title,
-            content="",
+            content=content,
             category=category,
             parent_uri=parent_uri,
             is_leaf=False,

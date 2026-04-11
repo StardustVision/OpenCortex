@@ -1445,6 +1445,9 @@ class HierarchicalRetriever:
                 keywords=c.get("keywords", ""),
                 category=c.get("category", ""),
                 score=c.get("_final_score", c.get("_score", 0.0)),
+                source_doc_id=c.get("source_doc_id"),
+                source_doc_title=c.get("source_doc_title"),
+                source_section_path=c.get("source_section_path"),
                 relations=relations,
             )
 

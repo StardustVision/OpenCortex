@@ -392,6 +392,12 @@ def _register_routes(app: FastAPI) -> None:
                 item["content"] = matched.content
             if matched.keywords:
                 item["keywords"] = matched.keywords
+            if getattr(matched, "source_doc_id", None):
+                item["source_doc_id"] = matched.source_doc_id
+            if getattr(matched, "source_doc_title", None):
+                item["source_doc_title"] = matched.source_doc_title
+            if getattr(matched, "source_section_path", None):
+                item["source_section_path"] = matched.source_section_path
             items.append(item)
         resp: Dict[str, Any] = {"results": items, "total": result.total}
         if result.search_intent:

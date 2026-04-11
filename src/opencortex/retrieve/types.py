@@ -394,6 +394,11 @@ class MatchedContext:
     score: float = 0.0
     match_reason: str = ""
 
+    # Source tracing (document mode chunks)
+    source_doc_id: Optional[str] = None
+    source_doc_title: Optional[str] = None
+    source_section_path: Optional[str] = None
+
     relations: List[RelatedContext] = field(default_factory=list)
 
 
