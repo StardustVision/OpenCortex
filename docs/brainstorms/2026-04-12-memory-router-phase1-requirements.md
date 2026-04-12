@@ -1,9 +1,9 @@
 ---
 date: 2026-04-12
-topic: memory-router-rearchitecture
+topic: memory-router-phase1
 ---
 
-# Memory Router Rearchitecture
+# Memory Router Phase 1
 
 ## Problem Frame
 

@@ -15,7 +15,7 @@ After Phase 1 router rearchitecture, memory routing is reduced to a pure semanti
 
 That split only works if a downstream planner takes over the next responsibility cleanly: translating router output into a retrieval strategy without reintroducing router concerns or runtime concerns.
 
-This document defines the target responsibility of the **memory planner**. It assumes the Phase 1 router boundary documented in `docs/brainstorms/2026-04-12-memory-router-rearchitecture-requirements.md`.
+This document defines the target responsibility of the **memory planner**. It assumes the Phase 1 router boundary documented in `docs/brainstorms/2026-04-12-memory-router-phase1-requirements.md`.
 
 ## Requirements
 
@@ -35,6 +35,10 @@ This document defines the target responsibility of the **memory planner**. It as
   - `depth`
   - `cone_budget`
   - `rerank`
+- R4a. The planner output must also carry read-only provenance fields for downstream runtime traceability:
+  - `task_class`
+  - `confidence`
+- R4b. These provenance fields must be identical to router output and must not be treated as a second planning decision.
 - R5. The first supported `strategy` set must be:
   - `exact`
   - `time_aware`
@@ -60,6 +64,8 @@ This document defines the target responsibility of the **memory planner**. It as
   - `l2`
 - R9. `cone_budget` must be numeric rather than expressed as fixed labels.
 - R9a. `cone_budget` must use the same unified `0.0 ~ 1.0` scale as `breadth_budget`.
+- R9b. `cone_budget` must remain a single semantic planner field even if downstream runtime execution splits cone behavior into narrower internal modes.
+- R9c. Runtime binding must deterministically map `cone_budget` into `core_cone` and `extended_cone` execution posture so benchmark behavior remains comparable across implementations.
 - R10. `rerank` must be an explicit boolean planner output.
 - R10a. `rerank` must always be present in planner output even when false.
 
@@ -121,6 +127,7 @@ This document defines the target responsibility of the **memory planner**. It as
 - One primary strategy per task class: Planner remains interpretable while still allowing parameter-level flexibility.
 - `confidence` as parameter tuner: Confidence should widen or relax strategy, not replace semantic category.
 - Numeric budgets for breadth and cone: This keeps planner outputs tunable without hardcoding a small set of labels.
+- Single semantic `cone_budget`: Planner stays semantic even if runtime later decomposes cone execution into narrower internal controls.
 - Shared `0.0 ~ 1.0` budget scale: Breadth and cone remain comparable and easier to tune/debug.
 - Existing `l0/l1/l2` retained for depth: This reduces migration cost and keeps continuity with current retrieval stack.
 - Structured explanation required: Planner must be debuggable and benchmark-analyzable, not a black box.
@@ -129,7 +136,7 @@ This document defines the target responsibility of the **memory planner**. It as
 ## Dependencies / Assumptions
 
 - Phase 1 router contract is accepted as input boundary:
-  - `docs/brainstorms/2026-04-12-memory-router-rearchitecture-requirements.md`
+  - `docs/brainstorms/2026-04-12-memory-router-phase1-requirements.md`
 - A downstream binding stage will exist even if it is lightweight in the first implementation.
 - Current code concepts that may evolve toward this split include:
   - `src/opencortex/cognition/recall_planner.py`
@@ -139,7 +146,7 @@ This document defines the target responsibility of the **memory planner**. It as
 
 ### Deferred to Planning
 - [Affects R7a][Technical] How should `breadth_budget` map onto concrete candidate pool sizes or expansion counts?
-- [Affects R9a][Technical] How should `cone_budget` map onto concrete entity expansion behavior?
+- [Affects R9c][Technical] What exact runtime knob mapping should implement `core_cone` and `extended_cone` from one semantic `cone_budget`?
 - [Affects R10][Technical] What exact planner rules should toggle `rerank` on/off under each strategy and confidence range?
 - [Affects R12][Technical] What exact machine-readable schema should `evidence` and `decision_trace` use?
 - [Affects R20][Technical] What component should own source/scope binding after planner output is produced?
