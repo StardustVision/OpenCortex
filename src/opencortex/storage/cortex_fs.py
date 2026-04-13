@@ -368,6 +368,20 @@ class CortexFS:
         content = self.agfs.read(file_path)
         return self._handle_agfs_content(content)
 
+    async def abstract_json(
+        self,
+        uri: str,
+    ) -> Dict[str, Any]:
+        """Read directory's machine-readable L0 payload (`.abstract.json`)."""
+        path = self._uri_to_path(uri)
+        info = self.agfs.stat(path)
+        if not info.get("isDir"):
+            raise ValueError(f"{uri} is not a directory")
+        file_path = f"{path}/.abstract.json"
+        content = self.agfs.read(file_path)
+        raw_bytes = content if isinstance(content, bytes) else bytes(content or b"")
+        return orjson.loads(raw_bytes) if raw_bytes else {}
+
     async def relations(
         self,
         uri: str,
@@ -403,11 +417,10 @@ class CortexFS:
         Returns:
             FindResult
         """
-        from opencortex.retrieve.hierarchical_retriever import HierarchicalRetriever
         from opencortex.retrieve.types import (
             ContextType,
             FindResult,
-            TypedQuery,
+            MatchedContext,
         )
 
         if not self.rerank_config:
@@ -421,32 +434,41 @@ class CortexFS:
         if not embedder:
             raise RuntimeError("Embedder not configured.")
 
-        retriever = HierarchicalRetriever(
-            storage=storage,
-            embedder=embedder,
-            rerank_config=self.rerank_config,
-        )
-
         # Infer context_type
         context_type = self._infer_context_type(target_uri) if target_uri else ContextType.RESOURCE
-
-        typed_query = TypedQuery(
-            query=query,
-            context_type=context_type,
-            intent="",
-            target_directories=[target_uri] if target_uri else None,
-        )
-
-        result = await retriever.retrieve(
-            typed_query,
+        query_vector = embedder.embed_query(query).dense_vector
+        conds = [{"op": "must", "field": "is_leaf", "conds": [True]}]
+        if context_type != ContextType.ANY:
+            conds.append(
+                {"op": "must", "field": "context_type", "conds": [context_type.value]}
+            )
+        if target_uri:
+            conds.append({"op": "prefix", "field": "uri", "prefix": target_uri})
+        if filter:
+            conds.append(filter)
+        results = await storage.search(
+            "context",
+            query_vector=query_vector,
+            filter={"op": "and", "conds": conds},
             limit=limit,
-            score_threshold=score_threshold,
-            metadata_filter=filter,
+            text_query=query,
         )
 
         # Convert QueryResult to FindResult
         memories, resources, skills = [], [], []
-        for ctx in result.matched_contexts:
+        for record in results:
+            score = float(record.get("_score", record.get("score", 0.0)) or 0.0)
+            if score_threshold is not None and score < score_threshold:
+                continue
+            ctx = MatchedContext(
+                uri=record.get("uri", ""),
+                context_type=ContextType(record.get("context_type", context_type.value)),
+                is_leaf=bool(record.get("is_leaf", False)),
+                abstract=record.get("abstract", ""),
+                overview=record.get("overview"),
+                category=record.get("category", ""),
+                score=score,
+            )
             if ctx.context_type == ContextType.MEMORY:
                 memories.append(ctx)
             elif ctx.context_type == ContextType.RESOURCE:
@@ -481,11 +503,11 @@ class CortexFS:
         Returns:
             FindResult
         """
-        from opencortex.retrieve.hierarchical_retriever import HierarchicalRetriever
         from opencortex.retrieve.intent_analyzer import IntentAnalyzer
         from opencortex.retrieve.types import (
             ContextType,
             FindResult,
+            MatchedContext,
             QueryPlan,
             TypedQuery,
         )
@@ -540,29 +562,58 @@ class CortexFS:
                     for ctx_type in [ContextType.MEMORY, ContextType.RESOURCE]
                 ]
 
-        # Concurrent execution
         storage = self._get_vector_store()
         embedder = self._get_embedder()
-        retriever = HierarchicalRetriever(
-            storage=storage,
-            embedder=embedder,
-            rerank_config=self.rerank_config,
-        )
+        if not storage:
+            raise RuntimeError("Vector store not initialized. Call init_cortex_fs() first.")
+        if not embedder:
+            raise RuntimeError("Embedder not configured.")
 
         async def _execute(tq: TypedQuery):
-            return await retriever.retrieve(
-                tq,
+            query_vector = embedder.embed_query(tq.query).dense_vector
+            conds = [{"op": "must", "field": "is_leaf", "conds": [True]}]
+            if tq.context_type != ContextType.ANY:
+                conds.append(
+                    {"op": "must", "field": "context_type", "conds": [tq.context_type.value]}
+                )
+            if tq.target_directories:
+                conds.append(
+                    {
+                        "op": "or",
+                        "conds": [
+                            {"op": "prefix", "field": "uri", "prefix": prefix}
+                            for prefix in tq.target_directories
+                        ],
+                    }
+                )
+            if filter:
+                conds.append(filter)
+            return await storage.search(
+                "context",
+                query_vector=query_vector,
+                filter={"op": "and", "conds": conds},
                 limit=limit,
-                score_threshold=score_threshold,
-                metadata_filter=filter,
+                text_query=tq.query,
             )
 
         query_results = await asyncio.gather(*[_execute(tq) for tq in typed_queries])
 
         # Aggregate results to FindResult
         memories, resources, skills = [], [], []
-        for result in query_results:
-            for ctx in result.matched_contexts:
+        for records in query_results:
+            for record in records:
+                score = float(record.get("_score", record.get("score", 0.0)) or 0.0)
+                if score_threshold is not None and score < score_threshold:
+                    continue
+                ctx = MatchedContext(
+                    uri=record.get("uri", ""),
+                    context_type=ContextType(record.get("context_type", ContextType.RESOURCE.value)),
+                    is_leaf=bool(record.get("is_leaf", False)),
+                    abstract=record.get("abstract", ""),
+                    overview=record.get("overview"),
+                    category=record.get("category", ""),
+                    score=score,
+                )
                 if ctx.context_type == ContextType.MEMORY:
                     memories.append(ctx)
                 elif ctx.context_type == ContextType.RESOURCE:
@@ -1106,6 +1157,7 @@ class CortexFS:
         uri: str,
         content: Union[str, bytes] = "",
         abstract: str = "",
+        abstract_json: Optional[Union[Dict[str, Any], Any]] = None,
         overview: str = "",
         content_filename: str = "content.md",
         is_leaf: bool = False,
@@ -1125,6 +1177,15 @@ class CortexFS:
                 self.agfs.write(f"{path}/{content_filename}", data)
             if abstract:
                 self.agfs.write(f"{path}/.abstract.md", abstract.encode("utf-8"))
+            if abstract_json is not None:
+                if hasattr(abstract_json, "model_dump"):
+                    json_payload = abstract_json.model_dump(mode="json")
+                else:
+                    json_payload = abstract_json
+                self.agfs.write(
+                    f"{path}/.abstract.json",
+                    orjson.dumps(json_payload),
+                )
             if overview:
                 self.agfs.write(f"{path}/.overview.md", overview.encode("utf-8"))
 
@@ -1133,4 +1194,3 @@ class CortexFS:
         except Exception as e:
             logger.error(f"[CortexFS] Failed to write {uri}: {e}")
             raise IOError(f"Failed to write {uri}: {e}")
-

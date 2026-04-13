@@ -1,4 +1,5 @@
 """Paragraph-aware text truncation and splitting utilities."""
+import asyncio
 import re
 from typing import Any, Awaitable, Callable, Dict, List
 
@@ -130,6 +131,7 @@ async def chunked_llm_derive(
     parse_fn: Callable[[str], dict],
     merge_policy: str = "default",
     max_chars_per_chunk: int = 3000,
+    max_parallel_chunks: int = 5,
 ) -> Dict[str, Any]:
     """Split content into chunks, call LLM on each, merge results.
 
@@ -152,19 +154,40 @@ async def chunked_llm_derive(
             }
         return result
 
-    # Process each chunk
+    # Process each chunk with bounded async concurrency.
     import logging
     _logger = logging.getLogger(__name__)
-    chunk_results = []
-    for i, chunk in enumerate(chunks):
+
+    semaphore = asyncio.Semaphore(max(1, max_parallel_chunks))
+
+    async def _run_chunk(index: int, chunk: str) -> tuple[int, dict] | None:
         prompt = prompt_builder(chunk)
         try:
-            response = await llm_fn(prompt)
+            async with semaphore:
+                response = await llm_fn(prompt)
             parsed = parse_fn(response)
             if isinstance(parsed, dict):
-                chunk_results.append(parsed)
+                return index, parsed
         except Exception as exc:
-            _logger.warning("chunked_llm_derive: chunk %d/%d failed: %s", i + 1, len(chunks), exc)
+            _logger.warning(
+                "chunked_llm_derive: chunk %d/%d failed: %s",
+                index + 1,
+                len(chunks),
+                exc,
+            )
+        return None
+
+    chunk_outcomes = await asyncio.gather(
+        *(_run_chunk(i, chunk) for i, chunk in enumerate(chunks)),
+        return_exceptions=False,
+    )
+    chunk_results = [
+        parsed
+        for _, parsed in sorted(
+            (outcome for outcome in chunk_outcomes if outcome is not None),
+            key=lambda item: item[0],
+        )
+    ]
 
     if not chunk_results:
         return {"abstract": "", "overview": ""}

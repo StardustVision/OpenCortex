@@ -191,35 +191,50 @@ class TestIngestionE2E(unittest.TestCase):
 
         asyncio.run(run())
 
-    # ── 5. IntentRouter: no-session fast path ────────────────────────
+    # ── 5. Probe: no-session fast path ────────────────────────
 
-    def test_intent_router_no_session_fast(self):
-        """IntentRouter without session context skips LLM classification."""
-        from opencortex.retrieve.intent_router import IntentRouter
+    def test_memory_probe_no_session_fast(self):
+        """Bootstrap probe stays local and stable without session context."""
+        from opencortex.intent import MemoryBootstrapProbe
 
-        llm_called = False
+        class _StorageStub:
+            async def search(self, **kwargs):
+                return [
+                    {
+                        "uri": "opencortex://memory/preferences/dark-mode",
+                        "category": "preferences",
+                        "context_type": "memory",
+                        "abstract": "User prefers dark mode.",
+                        "_score": 0.82,
+                    }
+                ]
 
-        async def mock_llm(prompt):
-            nonlocal llm_called
-            llm_called = True
-            return '{"intent": "lookup", "queries": ["test"]}'
+        class _EmbedderStub:
+            model_name = "mock-probe"
+            is_available = True
+
+            def embed_query(self, text):
+                class _Result:
+                    dense_vector = [0.1, 0.2, 0.3, 0.4]
+
+                return _Result()
 
         async def run():
-            nonlocal llm_called
             tmpdir = tempfile.mkdtemp()
             try:
                 cfg = CortexConfig(data_root=tmpdir, embedding_dimension=4)
                 init_config(cfg)
-                router = IntentRouter(llm_completion=mock_llm)
+                probe = MemoryBootstrapProbe(
+                    storage=_StorageStub(),
+                    embedder=_EmbedderStub(),
+                    collection_resolver=lambda: "context",
+                    filter_builder=lambda: {"op": "and", "conds": []},
+                )
 
-                # Without session_context → should NOT call LLM
-                intent = await router.route("What is dark mode?", session_context=None)
-                self.assertIsNotNone(intent)
-                self.assertFalse(llm_called, "LLM should not be called without session context")
-
-                # With session_context → should call LLM
-                intent = await router.route("What is dark mode?", session_context={"session_id": "s1"})
-                self.assertTrue(llm_called, "LLM should be called with session context")
+                first = await probe.probe("What is dark mode?")
+                second = await probe.probe("What is dark mode?")
+                self.assertTrue(first.should_recall)
+                self.assertEqual(first.to_dict(), second.to_dict())
             finally:
                 shutil.rmtree(tmpdir, ignore_errors=True)
 

@@ -10,8 +10,10 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "benchmark"))
 
 from opencortex.eval.memory_eval import _query_metrics, _aggregate, compute_report
+from runner import _extract_search_attribution
 
 
 class TestBenchmarkMetrics(unittest.TestCase):
@@ -101,6 +103,44 @@ class TestBenchmarkMetrics(unittest.TestCase):
         )
         self.assertAlmostEqual(metrics["recall@5"], 0.0)
         self.assertAlmostEqual(metrics["mrr"], 0.0)
+
+    def test_extract_search_attribution_reads_memory_pipeline(self):
+        attribution = _extract_search_attribution(
+            {
+                "memory_pipeline": {
+                    "probe": {
+                        "should_recall": True,
+                        "evidence": {"candidate_count": 2, "top_score": 0.82},
+                    },
+                    "planner": {
+                        "target_memory_kinds": ["relation", "event"],
+                        "retrieval_depth": "l1",
+                    },
+                    "runtime": {
+                        "trace": {
+                            "probe": {
+                                "should_recall": True,
+                                "evidence": {"candidate_count": 2},
+                            },
+                            "planner": {"retrieval_depth": "l1"},
+                            "effective": {
+                                "sources": ["memory"],
+                                "retrieval_depth": "l1",
+                            },
+                            "latency_ms": {"execution": 12},
+                        },
+                        "degrade": {"applied": False, "actions": []},
+                    },
+                }
+            }
+        )
+
+        self.assertEqual(attribution["probe"]["evidence"]["candidate_count"], 2)
+        self.assertEqual(attribution["planner"]["retrieval_depth"], "l1")
+        self.assertEqual(
+            attribution["runtime"]["trace"]["effective"]["sources"], ["memory"]
+        )
+        self.assertFalse(attribution["runtime"]["degrade"]["applied"])
 
 
 if __name__ == "__main__":

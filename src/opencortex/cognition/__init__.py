@@ -5,7 +5,6 @@ from .consolidation_gate import ConsolidationGate, ConsolidationGateResult
 from .kernel import AutophagyKernel, RecallOutcomeApplicationResult
 from .metabolism import CognitiveMetabolismController
 from .mutation_engine import RecallMutationEngine
-from .recall_planner import RecallPlanner
 from .state_store import (
     CognitiveStateStore,
     StaleStateVersionError,
@@ -26,7 +25,6 @@ from .state_types import (
 )
 
 __all__ = [
-    "RecallPlanner",
     "RecallMutationEngine",
     "AutophagyKernel",
     "RecallOutcomeApplicationResult",

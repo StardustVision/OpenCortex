@@ -8,7 +8,7 @@ internal components:
 - CortexConfig: tenant/user isolation
 - CortexFS: three-layer (L0/L1/L2) filesystem abstraction
 - StorageInterface: vector storage (Qdrant-backed)
-- HierarchicalRetriever: directory-aware recursive search
+- Object-aware retrieval executor over canonical memory records
 - IntentAnalyzer: LLM-driven session-aware query planning
 - EmbedderBase: pluggable embedding
 
@@ -36,7 +36,10 @@ import asyncio
 from contextlib import suppress
 import hashlib
 import logging
+import math
 import os
+import re
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
@@ -49,7 +52,6 @@ from opencortex.cognition import (
     CognitiveMetabolismController,
     CognitiveStateStore,
     RecallMutationEngine,
-    RecallPlanner,
 )
 from opencortex.config import CortexConfig, get_config
 from opencortex.prompts import (
@@ -60,25 +62,41 @@ from opencortex.http.request_context import (
     get_effective_identity,
     get_effective_project_id,
 )
+from opencortex.intent import (
+    MemoryBootstrapProbe,
+    MemoryExecutor,
+    RecallPlanner,
+    RetrievalDepth,
+    RetrievalPlan,
+    SearchResult,
+)
+from opencortex.intent.timing import (
+    StageTimingCollector,
+    measure_async,
+    measure_sync,
+)
+from opencortex.memory import (
+    MemoryKind,
+    memory_abstract_from_record,
+    memory_anchor_hits_from_abstract,
+    memory_kind_policy,
+    memory_merge_signature_from_abstract,
+)
 from opencortex.utils.json_parse import parse_json_from_response
 from opencortex.utils.text import smart_truncate, chunked_llm_derive
 from opencortex.core.context import Context, ContextType as CoreContextType
 from opencortex.core.message import Message
 from opencortex.core.user_id import UserIdentifier
 from opencortex.models.embedder.base import EmbedderBase
-from opencortex.retrieve.hierarchical_retriever import HierarchicalRetriever
 from opencortex.retrieve.intent_analyzer import IntentAnalyzer, LLMCompletionCallable
 from opencortex.retrieve.rerank_config import RerankConfig
-from opencortex.retrieve.intent_router import IntentRouter
 from opencortex.retrieve.types import (
     ContextType,
     DetailLevel,
     FindResult,
     MatchedContext,
-    MERGEABLE_CATEGORIES,
     QueryResult,
-    RecallPlan,
-    SearchIntent,
+    SearchExplain,
     TypedQuery,
 )
 from opencortex.storage.collection_schemas import init_context_collection
@@ -126,7 +144,6 @@ class MemoryOrchestrator:
         self._llm_completion = llm_completion
 
         self._fs: Optional[CortexFS] = None
-        self._retriever: Optional[HierarchicalRetriever] = None
         self._analyzer: Optional[IntentAnalyzer] = None
         self._user: Optional[UserIdentifier] = None
         self._initialized = False
@@ -146,9 +163,6 @@ class MemoryOrchestrator:
         self._cognitive_metabolism_controller = None
         self._autophagy_kernel = None
 
-        # v0.6: Query classifier (lazy — initialized after embedder is ready)
-        self._query_classifier = None
-
         # Skill Engine
         self._skill_manager = None
         self._skill_event_store = None
@@ -160,6 +174,8 @@ class MemoryOrchestrator:
         self._recall_planner = RecallPlanner(
             cone_enabled=self._config.cone_retrieval_enabled
         )
+        self._memory_runtime = MemoryExecutor()
+        self._memory_probe = None
 
         # Autophagy background sweeps (metabolism)
         self._autophagy_sweep_task: asyncio.Task | None = None
@@ -180,20 +196,6 @@ class MemoryOrchestrator:
         from opencortex.http.request_context import get_collection_name
 
         return get_collection_name() or _CONTEXT_COLLECTION
-
-    def _ensure_query_classifier(self):
-        """Lazily initialize QueryFastClassifier after embedder is ready."""
-        if self._query_classifier is None and self._config.query_classifier_enabled:
-            try:
-                from opencortex.retrieve.query_classifier import QueryFastClassifier
-
-                self._query_classifier = QueryFastClassifier(
-                    self._embedder, self._config
-                )
-            except Exception as e:
-                logger.warning(
-                    "[Orchestrator] Failed to init QueryFastClassifier: %s", e
-                )
 
     # =========================================================================
     # Initialization
@@ -273,17 +275,12 @@ class MemoryOrchestrator:
                 self._storage, self._get_collection()
             ))
 
-        # 7. Retriever (with rerank config from CortexConfig + LLM fallback)
-        rerank_cfg = self._build_rerank_config()
-        self._retriever = HierarchicalRetriever(
+        # 7. Memory bootstrap probe
+        self._memory_probe = MemoryBootstrapProbe(
             storage=self._storage,
             embedder=self._embedder,
-            rerank_config=rerank_cfg,
-            llm_completion=self._llm_completion,
-            flat_rerank_multiplier=self._config.rerank_flat_pool_multiplier,
-            force_flat_search=self._config.force_flat_search,
-            cone_scorer=self._cone_scorer,
-            cone_weight=self._config.cone_weight if self._config.cone_retrieval_enabled else 0.0,
+            collection_resolver=self._get_collection,
+            filter_builder=self._build_probe_filter,
         )
 
         # 8. Background maintenance: text indexes, migrations, re-embed
@@ -570,7 +567,7 @@ class MemoryOrchestrator:
 
         Resolution order:
         1. If ``embedding_provider == "local"``, create a
-           :class:`LocalEmbedder` using FastEmbed ONNX inference (BGE-M3).
+           :class:`LocalEmbedder` using FastEmbed ONNX inference.
         2. If ``embedding_provider == "openai"``, create an
            :class:`OpenAIDenseEmbedder` (works with any OpenAI-compatible API).
         3. If nothing works, log a warning and return ``None``.
@@ -673,10 +670,13 @@ class MemoryOrchestrator:
     def _create_local_embedder(self) -> Optional[EmbedderBase]:
         """Create a local FastEmbed embedder with BM25 sparse + LRU cache."""
         try:
-            from opencortex.models.embedder.local_embedder import LocalEmbedder
+            from opencortex.models.embedder.local_embedder import (
+                DEFAULT_LOCAL_EMBEDDING_MODEL,
+                LocalEmbedder,
+            )
 
             model_name = (
-                self._config.embedding_model or "intfloat/multilingual-e5-large"
+                self._config.embedding_model or DEFAULT_LOCAL_EMBEDDING_MODEL
             )
             local_config = {"onnx_intra_op_threads": self._config.onnx_intra_op_threads}
             embedder = LocalEmbedder(model_name=model_name, config=local_config)
@@ -874,7 +874,7 @@ class MemoryOrchestrator:
         text: str,
         tool_calls: Optional[list] = None,
     ) -> str:
-        """Write a single message for immediate searchability. No LLM, no CortexFS."""
+        """Write a single message for immediate searchability using the shared contract."""
         from opencortex.http.request_context import (
             get_effective_identity,
             get_effective_project_id,
@@ -930,7 +930,6 @@ class MemoryOrchestrator:
             },
             "session_id": session_id,
             "project_id": get_effective_project_id(),
-            "mergeable": False,
             "ttl_expires_at": self._ttl_from_hours(
                 self._config.immediate_event_ttl_hours
             ),
@@ -941,7 +940,33 @@ class MemoryOrchestrator:
         if sparse_vector:
             record["sparse_vector"] = sparse_vector
 
+        abstract_json = self._build_abstract_json(
+            uri=uri,
+            context_type="memory",
+            category="events",
+            abstract=text,
+            overview="",
+            content=text,
+            entities=[],
+            meta=record["meta"],
+            parent_uri=record["parent_uri"],
+            session_id=session_id,
+        )
+        record.update(self._memory_object_payload(abstract_json))
+        record["abstract_json"] = abstract_json
+
         await self._storage.upsert(self._get_collection(), record)
+        try:
+            await self._fs.write_context(
+                uri=uri,
+                content=text,
+                abstract=text,
+                abstract_json=abstract_json,
+                overview="",
+                is_leaf=True,
+            )
+        except Exception as exc:
+            logger.warning("[MemoryOrchestrator] Immediate CortexFS write failed for %s: %s", uri, exc)
         return uri
 
     async def _add_document(
@@ -1189,6 +1214,49 @@ class MemoryOrchestrator:
             )
         return {"abstract": abstract, "overview": overview, "keywords": "", "entities": []}
 
+    def _build_abstract_json(
+        self,
+        *,
+        uri: str,
+        context_type: str,
+        category: str,
+        abstract: str,
+        overview: str,
+        content: str,
+        entities: List[str],
+        meta: Optional[Dict[str, Any]],
+        parent_uri: str,
+        session_id: str,
+    ) -> Dict[str, Any]:
+        """Build the fixed shared `.abstract.json` payload for one entry."""
+        record = {
+            "uri": uri,
+            "context_type": context_type,
+            "category": category,
+            "abstract": abstract,
+            "overview": overview,
+            "content": content,
+            "entities": entities,
+            "metadata": meta or {},
+            "parent_uri": parent_uri,
+            "session_id": session_id,
+        }
+        return memory_abstract_from_record(record).to_dict()
+
+    @staticmethod
+    def _memory_object_payload(
+        abstract_json: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Project canonical abstract payload into flat vector metadata."""
+        memory_kind = MemoryKind(str(abstract_json["memory_kind"]))
+        policy = memory_kind_policy(memory_kind)
+        return {
+            "memory_kind": memory_kind.value,
+            "anchor_hits": memory_anchor_hits_from_abstract(abstract_json),
+            "merge_signature": memory_merge_signature_from_abstract(abstract_json),
+            "mergeable": policy.mergeable,
+        }
+
     def _ensure_init(self) -> None:
         """Raise if not initialized."""
         if not self._initialized:
@@ -1260,8 +1328,9 @@ class MemoryOrchestrator:
             related_uri: List of related context URIs.
             session_id: Session identifier.
             dedup: If True, check for semantically similar records before
-                inserting. Mergeable categories merge content; non-mergeable
-                categories skip silently. Set False for bulk import.
+                inserting. Mergeable memory kinds update the stable object;
+                non-mergeable kinds always append as new objects. Set False
+                for bulk import.
             dedup_threshold: Minimum similarity score to consider a duplicate
                 (default 0.82).
             embed_text: Optional text used for embedding instead of abstract.
@@ -1269,9 +1338,8 @@ class MemoryOrchestrator:
                 optimal search text (e.g., omitting date prefixes).
 
         Returns:
-            The created Context object.  ``meta["dedup_action"]`` indicates
-            what happened: ``"created"`` (new), ``"merged"``, or
-            ``"skipped"``.
+            The created Context object. ``meta["dedup_action"]`` indicates
+            what happened: ``"created"`` (new) or ``"merged"``.
         """
         self._ensure_init()
 
@@ -1368,6 +1436,24 @@ class MemoryOrchestrator:
         elif embed_text:
             ctx.vectorize = Vectorize(embed_text)
 
+        effective_category = category or self._extract_category_from_uri(uri)
+        abstract_json = self._build_abstract_json(
+            uri=uri,
+            context_type=context_type or "",
+            category=effective_category,
+            abstract=abstract,
+            overview=overview,
+            content=content,
+            entities=entities,
+            meta=meta,
+            parent_uri=parent_uri,
+            session_id=session_id,
+        )
+        object_payload = self._memory_object_payload(abstract_json)
+        memory_kind = MemoryKind(object_payload["memory_kind"])
+        merge_signature = str(object_payload["merge_signature"])
+        mergeable = bool(object_payload["mergeable"])
+
         # Embed (offload sync embedder to thread so we don't block the loop)
         result = None
         if self._embedder:
@@ -1380,13 +1466,12 @@ class MemoryOrchestrator:
             ctx.vector = result.dense_vector
 
         # --- Write-time semantic dedup ---
-        effective_category = category or self._extract_category_from_uri(uri)
-        if dedup and ctx.vector and is_leaf:
+        if dedup and ctx.vector and is_leaf and mergeable:
             dedup_started = asyncio.get_running_loop().time()
             dup = await self._check_duplicate(
                 vector=ctx.vector,
-                category=effective_category,
-                context_type=context_type or "memory",
+                memory_kind=memory_kind.value,
+                merge_signature=merge_signature,
                 threshold=dedup_threshold,
                 tid=tid,
                 uid=uid,
@@ -1403,63 +1488,34 @@ class MemoryOrchestrator:
                     persisted_project_id = str(
                         existing_record.get("project_id", persisted_project_id)
                     )
-                if effective_category in MERGEABLE_CATEGORIES:
-                    await self._merge_into(existing_uri, abstract, content)
-                    await self._initialize_autophagy_owner_state(
-                        owner_type=OwnerType.MEMORY,
-                        owner_id=persisted_owner_id,
-                        tenant_id=tid,
-                        user_id=uid,
-                        project_id=persisted_project_id,
-                    )
-                    logger.info(
-                        "[MemoryOrchestrator] add tenant=%s user=%s uri=%s "
-                        "dedup_action=merged dedup_target=%s score=%.3f "
-                        "timing_ms(total=%d derive_layers=%d embed=%d dedup=%d upsert=%d fs_write=%d)",
-                        tid,
-                        uid,
-                        uri,
-                        existing_uri,
-                        existing_score,
-                        total_ms,
-                        derive_layers_ms,
-                        embed_ms,
-                        dedup_ms,
-                        upsert_ms,
-                        fs_write_ms,
-                    )
-                    ctx.uri = existing_uri
-                    ctx.meta["dedup_action"] = "merged"
-                    ctx.meta["dedup_score"] = round(existing_score, 4)
-                    return ctx
-                else:
-                    await self._initialize_autophagy_owner_state(
-                        owner_type=OwnerType.MEMORY,
-                        owner_id=persisted_owner_id,
-                        tenant_id=tid,
-                        user_id=uid,
-                        project_id=persisted_project_id,
-                    )
-                    logger.info(
-                        "[MemoryOrchestrator] add tenant=%s user=%s uri=%s "
-                        "dedup_action=skipped dedup_target=%s score=%.3f "
-                        "timing_ms(total=%d derive_layers=%d embed=%d dedup=%d upsert=%d fs_write=%d)",
-                        tid,
-                        uid,
-                        uri,
-                        existing_uri,
-                        existing_score,
-                        total_ms,
-                        derive_layers_ms,
-                        embed_ms,
-                        dedup_ms,
-                        upsert_ms,
-                        fs_write_ms,
-                    )
-                    ctx.uri = existing_uri
-                    ctx.meta["dedup_action"] = "skipped"
-                    ctx.meta["dedup_score"] = round(existing_score, 4)
-                    return ctx
+                await self._merge_into(existing_uri, abstract, content)
+                await self._initialize_autophagy_owner_state(
+                    owner_type=OwnerType.MEMORY,
+                    owner_id=persisted_owner_id,
+                    tenant_id=tid,
+                    user_id=uid,
+                    project_id=persisted_project_id,
+                )
+                logger.info(
+                    "[MemoryOrchestrator] add tenant=%s user=%s uri=%s "
+                    "dedup_action=merged dedup_target=%s score=%.3f "
+                    "timing_ms(total=%d derive_layers=%d embed=%d dedup=%d upsert=%d fs_write=%d)",
+                    tid,
+                    uid,
+                    uri,
+                    existing_uri,
+                    existing_score,
+                    total_ms,
+                    derive_layers_ms,
+                    embed_ms,
+                    dedup_ms,
+                    upsert_ms,
+                    fs_write_ms,
+                )
+                ctx.uri = existing_uri
+                ctx.meta["dedup_action"] = "merged"
+                ctx.meta["dedup_score"] = round(existing_score, 4)
+                return ctx
 
         # Ensure parent directory records exist in vector DB
         if is_leaf and parent_uri:
@@ -1477,13 +1533,14 @@ class MemoryOrchestrator:
         record["scope"] = inferred_scope
         record["category"] = effective_category
         record["source_user_id"] = uid
-        record["mergeable"] = effective_category in MERGEABLE_CATEGORIES
         record["session_id"] = session_id or ""
         record["ttl_expires_at"] = ""
         record["project_id"] = get_effective_project_id()
         record["source_tenant_id"] = tid
         record["keywords"] = keywords
         record["entities"] = entities
+        record.update(object_payload)
+        record["abstract_json"] = abstract_json
 
         # v0.6: Flatten doc/conversation enrichment fields to top-level payload
         record["source_doc_id"] = (meta or {}).get("source_doc_id", "")
@@ -1540,6 +1597,7 @@ class MemoryOrchestrator:
                 uri=uri,
                 content=content,
                 abstract=abstract,
+                abstract_json=abstract_json,
                 overview=overview,
                 is_leaf=is_leaf,
             )
@@ -1578,8 +1636,8 @@ class MemoryOrchestrator:
     async def _check_duplicate(
         self,
         vector: list,
-        category: str,
-        context_type: str,
+        memory_kind: str,
+        merge_signature: str,
         threshold: float,
         tid: str,
         uid: str,
@@ -1591,8 +1649,18 @@ class MemoryOrchestrator:
                 {"op": "must", "field": "source_tenant_id", "conds": [tid]},
                 {"op": "must", "field": "is_leaf", "conds": [True]},
             ]
-            if category:
-                conds.append({"op": "must", "field": "category", "conds": [category]})
+            if memory_kind:
+                conds.append(
+                    {"op": "must", "field": "memory_kind", "conds": [memory_kind]}
+                )
+            if merge_signature:
+                conds.append(
+                    {
+                        "op": "must",
+                        "field": "merge_signature",
+                        "conds": [merge_signature],
+                    }
+                )
             # Scope: shared OR (private AND own user)
             conds.append(
                 {
@@ -1701,6 +1769,7 @@ class MemoryOrchestrator:
         record_id = record.get("id", "")
 
         update_data: Dict[str, Any] = {}
+        next_meta = record.get("meta")
 
         if abstract is not None:
             update_data["abstract"] = abstract
@@ -1725,6 +1794,26 @@ class MemoryOrchestrator:
                     existing_meta = {}
             existing_meta.update(meta)
             update_data["meta"] = existing_meta
+            next_meta = existing_meta
+
+        next_abstract = abstract if abstract is not None else record.get("abstract", "")
+        next_content = content if content is not None else record.get("content", "")
+        next_overview = record.get("overview", "")
+        next_entities = record.get("entities") or []
+        abstract_json = self._build_abstract_json(
+            uri=uri,
+            context_type=record.get("context_type", ""),
+            category=record.get("category", ""),
+            abstract=next_abstract,
+            overview=next_overview,
+            content=next_content,
+            entities=next_entities,
+            meta=next_meta,
+            parent_uri=record.get("parent_uri", ""),
+            session_id=record.get("session_id", ""),
+        )
+        update_data.update(self._memory_object_payload(abstract_json))
+        update_data["abstract_json"] = abstract_json
 
         if update_data:
             await self._storage.update(self._get_collection(), record_id, update_data)
@@ -1735,6 +1824,7 @@ class MemoryOrchestrator:
                 uri=uri,
                 content=content or "",
                 abstract=abstract or "",
+                abstract_json=abstract_json,
             )
 
         # Sync entity index if content/abstract changed
@@ -1809,47 +1899,490 @@ class MemoryOrchestrator:
     # Search / Retrieve
     # =========================================================================
 
-    async def plan_recall(
+    async def probe_memory(self, query: str) -> SearchResult:
+        """Run the Phase 1 bootstrap probe."""
+        self._ensure_init()
+        if self._memory_probe is None:
+            raise RuntimeError("memory probe is not initialized")
+        return await self._memory_probe.probe(query)
+
+    def memory_probe_mode(self) -> str:
+        """Return the active probe backend."""
+        if self._memory_probe is None:
+            return "unavailable"
+        return self._memory_probe.mode
+
+    def memory_probe_trace(self) -> Dict[str, Any]:
+        """Return machine-readable attribution for the last probe call."""
+        if self._memory_probe is None:
+            return {}
+        return self._memory_probe.probe_trace()
+
+    def plan_memory(
         self,
+        *,
         query: str,
+        probe_result: SearchResult,
         max_items: int,
         recall_mode: str,
-        include_knowledge: bool,
         detail_level_override: Optional[str],
-        context_type: Optional[ContextType],
-        session_context: Optional[Dict[str, Any]],
-        search_intent: Optional[SearchIntent],
-    ) -> tuple[SearchIntent, RecallPlan]:
-        """Resolve recall intent and produce an explicit recall plan."""
-        intent = search_intent
-
-        if recall_mode == "never":
-            if intent is None:
-                intent = SearchIntent(
-                    intent_type="quick_lookup",
-                    detail_level=DetailLevel(detail_level_override or "l1"),
-                    should_recall=False,
-                )
-        elif intent is None:
-            router = IntentRouter(llm_completion=self._llm_completion)
-            intent = await router.route(
-                query,
-                context_type=context_type,
-                session_context=session_context,
-            )
-
-        plan = self._recall_planner.plan(
+    ) -> Optional[RetrievalPlan]:
+        """Run the Phase 2 evidence-driven planner."""
+        return self._recall_planner.semantic_plan(
             query=query,
-            intent=intent,
+            probe_result=probe_result,
             max_items=max_items,
             recall_mode=recall_mode,
-            include_knowledge=include_knowledge,
             detail_level_override=detail_level_override,
         )
-        intent.should_recall = plan.should_recall
-        intent.detail_level = plan.detail_level
-        intent.recall_plan = plan
-        return intent, plan
+
+    def bind_memory_runtime(
+        self,
+        *,
+        probe_result: SearchResult,
+        retrieve_plan: RetrievalPlan,
+        max_items: int,
+        session_context: Optional[Dict[str, Any]],
+        include_knowledge: bool,
+    ) -> Dict[str, Any]:
+        """Run the Phase 3 runtime binder."""
+        tid, uid = get_effective_identity()
+        return self._memory_runtime.bind(
+            probe_result=probe_result,
+            retrieve_plan=retrieve_plan,
+            max_items=max_items,
+            session_id=(session_context or {}).get("session_id", ""),
+            tenant_id=tid,
+            user_id=uid,
+            project_id=get_effective_project_id(),
+            include_knowledge=include_knowledge,
+        )
+
+    def _build_typed_queries(
+        self,
+        *,
+        query: str,
+        context_type: Optional[ContextType],
+        target_uri: str,
+        retrieve_plan: RetrievalPlan,
+        runtime_bound_plan: Dict[str, Any],
+    ) -> List[TypedQuery]:
+        """Project planner posture into concrete retrieval queries."""
+        if context_type:
+            types_to_search = [context_type]
+        elif target_uri:
+            types_to_search = [self._infer_context_type(target_uri)]
+        else:
+            raw_context_types = runtime_bound_plan.get("context_types") or ["memory"]
+            types_to_search = [
+                self._context_type_from_value(raw_value)
+                for raw_value in raw_context_types
+            ]
+
+        return [
+            TypedQuery(
+                query=query,
+                context_type=ct,
+                intent="memory",
+                priority=1,
+                target_directories=[target_uri] if target_uri else [],
+                detail_level=self._detail_level_from_retrieval_depth(
+                    retrieve_plan.retrieval_depth
+                ),
+            )
+            for ct in types_to_search
+        ]
+
+    @staticmethod
+    def _context_type_from_value(raw_value: str) -> ContextType:
+        try:
+            return ContextType(raw_value)
+        except ValueError:
+            return ContextType.ANY
+
+    @staticmethod
+    def _detail_level_from_retrieval_depth(
+        retrieval_depth: RetrievalDepth,
+    ) -> DetailLevel:
+        return DetailLevel(retrieval_depth.value)
+
+    @staticmethod
+    def _summarize_retrieve_breakdown(
+        query_results: List[QueryResult],
+    ) -> Dict[str, float]:
+        """Aggregate per-query retrieval timings into a request-level breakdown."""
+        keys = ("embed", "search", "rerank", "assemble", "total")
+        if not query_results:
+            return {key: 0.0 for key in keys}
+
+        summary: Dict[str, float] = {}
+        for key in keys:
+            values = [
+                float((query_result.timing_ms or {}).get(key, 0.0))
+                for query_result in query_results
+            ]
+            summary[key] = round(max(values, default=0.0), 4)
+        return summary
+
+    def _build_search_filter(
+        self,
+        *,
+        category_filter: Optional[List[str]] = None,
+        metadata_filter: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Build the shared search filter used by probe and retrieval."""
+        tid, uid = get_effective_identity()
+
+        staging_exclude = {
+            "op": "must_not",
+            "field": "context_type",
+            "conds": ["staging"],
+        }
+        scope_filter = {
+            "op": "or",
+            "conds": [
+                {"op": "must", "field": "scope", "conds": ["shared", ""]},
+                {
+                    "op": "and",
+                    "conds": [
+                        {"op": "must", "field": "scope", "conds": ["private"]},
+                        {"op": "must", "field": "source_user_id", "conds": [uid]},
+                    ],
+                },
+            ],
+        }
+
+        combined_conds = [staging_exclude, scope_filter]
+        if tid:
+            combined_conds.append(
+                {
+                    "op": "must",
+                    "field": "source_tenant_id",
+                    "conds": [tid, ""],
+                }
+            )
+
+        project_id = get_effective_project_id()
+        if project_id and project_id != "public":
+            combined_conds.append(
+                {
+                    "op": "or",
+                    "conds": [
+                        {
+                            "op": "must",
+                            "field": "project_id",
+                            "conds": [project_id, "public"],
+                        },
+                    ],
+                }
+            )
+
+        if category_filter:
+            combined_conds.append(
+                {"op": "must", "field": "category", "conds": list(category_filter)}
+            )
+
+        if metadata_filter:
+            return {"op": "and", "conds": [metadata_filter] + combined_conds}
+        return {"op": "and", "conds": combined_conds}
+
+    def _build_probe_filter(self) -> Dict[str, Any]:
+        """Return the bounded Phase 1 probe filter."""
+        return self._build_search_filter()
+
+    @staticmethod
+    def _merge_filter_clauses(
+        *filters: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Merge non-empty filter clauses into one AND filter."""
+        clauses = [clause for clause in filters if clause]
+        if not clauses:
+            return None
+        if len(clauses) == 1:
+            return clauses[0]
+        return {"op": "and", "conds": clauses}
+
+    @staticmethod
+    def _normalize_anchor_value(value: Any) -> str:
+        """Normalize anchor text for cheap overlap scoring."""
+        return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+    def _query_anchor_values(
+        self,
+        retrieve_plan: Optional[RetrievalPlan],
+        probe_result: Optional[SearchResult],
+    ) -> set[str]:
+        """Collect normalized query-side anchors from planner and probe."""
+        values: set[str] = set()
+        if retrieve_plan is not None:
+            for anchor in retrieve_plan.query_plan.anchors:
+                normalized = self._normalize_anchor_value(anchor.value)
+                if normalized:
+                    values.add(normalized)
+        if probe_result is not None:
+            for anchor in probe_result.anchor_hits:
+                normalized = self._normalize_anchor_value(anchor)
+                if normalized:
+                    values.add(normalized)
+        return values
+
+    async def _embed_retrieval_query(self, query_text: str) -> Optional[List[float]]:
+        """Embed one retrieval query for dense search."""
+        if not self._embedder or not query_text:
+            return None
+        loop = asyncio.get_running_loop()
+        try:
+            result = await loop.run_in_executor(
+                None,
+                self._embedder.embed_query,
+                query_text,
+            )
+        except Exception:
+            return None
+        return getattr(result, "dense_vector", None)
+
+    def _score_object_record(
+        self,
+        *,
+        record: Dict[str, Any],
+        typed_query: TypedQuery,
+        retrieve_plan: Optional[RetrievalPlan],
+        probe_result: Optional[SearchResult],
+        query_anchor_values: set[str],
+    ) -> tuple[float, str]:
+        """Fuse vector score with object-aware boosts."""
+        score = float(record.get("_score", record.get("score", 0.0)) or 0.0)
+        reasons: List[str] = []
+        target_kinds = (
+            [kind.value for kind in retrieve_plan.target_memory_kinds]
+            if retrieve_plan is not None
+            else []
+        )
+        record_kind = str(record.get("memory_kind", ""))
+        if record_kind in target_kinds:
+            kind_rank = target_kinds.index(record_kind)
+            score += 0.14 * (len(target_kinds) - kind_rank) / max(len(target_kinds), 1)
+            reasons.append("kind")
+
+        record_anchors = {
+            self._normalize_anchor_value(value)
+            for value in (record.get("anchor_hits") or [])
+            if self._normalize_anchor_value(value)
+        }
+        overlap = query_anchor_values & record_anchors
+        if overlap:
+            score += min(0.24, 0.08 * len(overlap))
+            reasons.append("anchor")
+
+        probe_candidate_uris = (
+            {candidate.uri for candidate in probe_result.candidate_entries}
+            if probe_result is not None
+            else set()
+        )
+        if record.get("uri", "") in probe_candidate_uris:
+            score += 0.10
+            reasons.append("probe")
+
+        if typed_query.target_directories and any(
+            str(record.get("uri", "")).startswith(prefix)
+            for prefix in typed_query.target_directories
+        ):
+            score += 0.06
+            reasons.append("scope")
+
+        if typed_query.target_doc_id and (
+            str(record.get("source_doc_id", "")) == typed_query.target_doc_id
+        ):
+            score += 0.08
+            reasons.append("doc")
+
+        reward = float(record.get("reward_score", 0.0) or 0.0)
+        if reward:
+            score += max(min(0.06, reward * 0.03), -0.03)
+            reasons.append("reward")
+
+        active_count = int(record.get("active_count", 0) or 0)
+        if active_count > 0:
+            score += min(0.05, math.log1p(active_count) * 0.01)
+            reasons.append("hot")
+
+        return score, ",".join(reasons) or "semantic"
+
+    async def _records_to_matched_contexts(
+        self,
+        *,
+        candidates: List[Dict[str, Any]],
+        context_type: ContextType,
+        detail_level: DetailLevel,
+    ) -> List[MatchedContext]:
+        """Convert raw store records into MatchedContext objects."""
+
+        async def _build_one(record: Dict[str, Any]) -> MatchedContext:
+            uri = str(record.get("uri", ""))
+            overview = None
+            if detail_level in (DetailLevel.L1, DetailLevel.L2):
+                overview = str(record.get("overview", "") or "") or None
+
+            content = None
+            if detail_level == DetailLevel.L2:
+                content = str(record.get("content", "") or "") or None
+                if content is None and self._fs:
+                    try:
+                        content = await self._fs.read_file(f"{uri}/content.md")
+                    except Exception:
+                        content = None
+
+            effective_type = context_type
+            if context_type == ContextType.ANY:
+                try:
+                    effective_type = ContextType(str(record.get("context_type", "memory")))
+                except ValueError:
+                    effective_type = ContextType.MEMORY
+
+            return MatchedContext(
+                uri=uri,
+                context_type=effective_type,
+                is_leaf=bool(record.get("is_leaf", False)),
+                abstract=str(record.get("abstract", "") or ""),
+                overview=overview,
+                content=content,
+                keywords=str(record.get("keywords", "") or ""),
+                category=str(record.get("category", "") or ""),
+                score=float(record.get("_final_score", record.get("_score", 0.0)) or 0.0),
+                match_reason=str(record.get("_match_reason", "") or ""),
+                source_doc_id=record.get("source_doc_id"),
+                source_doc_title=record.get("source_doc_title"),
+                source_section_path=record.get("source_section_path"),
+                relations=[],
+            )
+
+        return list(await asyncio.gather(*[_build_one(record) for record in candidates]))
+
+    async def _execute_object_query(
+        self,
+        *,
+        typed_query: TypedQuery,
+        limit: int,
+        score_threshold: Optional[float],
+        metadata_filter: Optional[Dict[str, Any]],
+        retrieve_plan: Optional[RetrievalPlan],
+        probe_result: Optional[SearchResult],
+    ) -> QueryResult:
+        """Execute one object-aware retrieval query without the legacy retriever."""
+        started = time.perf_counter()
+        embed_started = started
+        query_vector = await self._embed_retrieval_query(
+            typed_query.hyde_text or typed_query.query
+        )
+        embed_finished = time.perf_counter()
+
+        type_filter = None
+        if typed_query.context_type != ContextType.ANY:
+            type_filter = {
+                "op": "must",
+                "field": "context_type",
+                "conds": [typed_query.context_type.value],
+            }
+
+        target_filter = None
+        if typed_query.target_directories:
+            target_filter = {
+                "op": "or",
+                "conds": [
+                    {"op": "prefix", "field": "uri", "prefix": prefix}
+                    for prefix in typed_query.target_directories
+                ],
+            }
+
+        doc_filter = None
+        if typed_query.target_doc_id:
+            doc_filter = {
+                "op": "must",
+                "field": "source_doc_id",
+                "conds": [typed_query.target_doc_id],
+            }
+
+        kind_filter = None
+        if retrieve_plan is not None and retrieve_plan.target_memory_kinds:
+            kind_filter = {
+                "op": "must",
+                "field": "memory_kind",
+                "conds": [kind.value for kind in retrieve_plan.target_memory_kinds],
+            }
+
+        final_filter = self._merge_filter_clauses(
+            metadata_filter,
+            type_filter,
+            target_filter,
+            doc_filter,
+            kind_filter,
+            {"op": "must", "field": "is_leaf", "conds": [True]},
+        )
+
+        candidate_limit = max(limit * 4, 20)
+        records = await self._storage.search(
+            self._get_collection(),
+            query_vector=query_vector,
+            filter=final_filter,
+            limit=candidate_limit,
+            text_query=typed_query.query,
+        )
+        search_finished = time.perf_counter()
+
+        query_anchor_values = self._query_anchor_values(retrieve_plan, probe_result)
+        rescored: List[Dict[str, Any]] = []
+        for record in records:
+            final_score, match_reason = self._score_object_record(
+                record=record,
+                typed_query=typed_query,
+                retrieve_plan=retrieve_plan,
+                probe_result=probe_result,
+                query_anchor_values=query_anchor_values,
+            )
+            if score_threshold is not None and final_score < score_threshold:
+                continue
+            rescored_record = dict(record)
+            rescored_record["_final_score"] = final_score
+            rescored_record["_match_reason"] = match_reason
+            rescored.append(rescored_record)
+        rescored.sort(key=lambda record: record.get("_final_score", 0.0), reverse=True)
+
+        matched_contexts = await self._records_to_matched_contexts(
+            candidates=rescored[:limit],
+            context_type=typed_query.context_type,
+            detail_level=typed_query.detail_level,
+        )
+        assembled = time.perf_counter()
+
+        result = QueryResult(
+            query=typed_query,
+            matched_contexts=matched_contexts,
+            searched_directories=list(typed_query.target_directories or []),
+            timing_ms={
+                "embed": round((embed_finished - embed_started) * 1000, 4),
+                "search": round((search_finished - embed_finished) * 1000, 4),
+                "rerank": 0.0,
+                "assemble": round((assembled - search_finished) * 1000, 4),
+                "total": round((assembled - started) * 1000, 4),
+            },
+        )
+        result.explain = SearchExplain(
+            query_class=typed_query.intent or "",
+            path="object_recall",
+            intent_ms=0.0,
+            embed_ms=(embed_finished - embed_started) * 1000,
+            search_ms=(search_finished - embed_finished) * 1000,
+            rerank_ms=0.0,
+            assemble_ms=(assembled - search_finished) * 1000,
+            doc_scope_hit=bool(typed_query.target_doc_id),
+            time_filter_hit=False,
+            candidates_before_rerank=len(records),
+            candidates_after_rerank=len(matched_contexts),
+            frontier_waves=0,
+            frontier_budget_exceeded=False,
+            total_ms=(assembled - started) * 1000,
+        )
+        return result
 
     async def search(
         self,
@@ -1860,15 +2393,15 @@ class MemoryOrchestrator:
         score_threshold: Optional[float] = None,
         metadata_filter: Optional[Dict[str, Any]] = None,
         detail_level: str = "l1",
-        search_intent: Optional[SearchIntent] = None,
+        probe_result: Optional[SearchResult] = None,
+        retrieve_plan: Optional[RetrievalPlan] = None,
         meta: Optional[Dict[str, Any]] = None,
         session_context: Optional[Dict[str, Any]] = None,
     ) -> FindResult:
         """
         Search for relevant contexts.
 
-        Uses IntentRouter to determine retrieval strategy (top_k, detail_level,
-        time_scope, trigger categories) based on the query.
+        Uses probe -> planner -> runtime to determine retrieval posture.
 
         Args:
             query: Natural language query.
@@ -1877,9 +2410,9 @@ class MemoryOrchestrator:
             limit: Maximum results per type.
             score_threshold: Minimum relevance score.
             metadata_filter: Additional filter conditions.
-            detail_level: Fallback detail level if router doesn't override.
-            meta: Optional metadata dict (may contain target_doc_id for classifier).
-            session_context: Optional session context for classifier hints.
+            detail_level: Fallback detail level if planner does not override.
+            meta: Optional metadata dict.
+            session_context: Optional session context for runtime scope.
 
         Returns:
             FindResult with memories, resources, and skills.
@@ -1887,19 +2420,11 @@ class MemoryOrchestrator:
         self._ensure_init()
         search_started = asyncio.get_running_loop().time()
         tid, uid = get_effective_identity()
+        stage_timings = StageTimingCollector()
 
-        # v0.6: Query classification (fast path)
-        classification = None
         target_doc_id = None
         if isinstance(meta, dict):
             target_doc_id = meta.get("target_doc_id")
-
-        if self._config.query_classifier_enabled:
-            self._ensure_query_classifier()
-            if self._query_classifier:
-                classification = self._query_classifier.classify(
-                    query, target_doc_id=target_doc_id, session_context=session_context
-                )
 
         detail_level_value = (
             detail_level.value if isinstance(detail_level, DetailLevel) else detail_level
@@ -1908,21 +2433,33 @@ class MemoryOrchestrator:
             detail_level_value if detail_level_value != DetailLevel.L1.value else None
         )
 
-        intent_started = asyncio.get_running_loop().time()
-        intent, recall_plan = await self.plan_recall(
-            query=query,
-            max_items=limit,
-            recall_mode="auto",
-            include_knowledge=False,
-            detail_level_override=detail_level_override,
-            context_type=context_type,
-            session_context=session_context,
-            search_intent=search_intent,
+        if probe_result is None:
+            probe_result = await measure_async(
+                stage_timings,
+                "probe",
+                self.probe_memory,
+                query,
+            )
+        else:
+            stage_timings.record_ms("probe", 0)
+        if retrieve_plan is None:
+            retrieve_plan = measure_sync(
+                stage_timings,
+                "plan",
+                self.plan_memory,
+                query=query,
+                probe_result=probe_result,
+                max_items=limit,
+                recall_mode="auto",
+                detail_level_override=detail_level_override,
+            )
+        else:
+            stage_timings.record_ms("plan", 0)
+        intent_ms = (
+            stage_timings.snapshot()["probe"] + stage_timings.snapshot()["plan"]
         )
-        intent_ms = int((asyncio.get_running_loop().time() - intent_started) * 1000)
 
-        # Gate: skip retrieval if intent says no recall needed
-        if not recall_plan.should_recall:
+        if retrieve_plan is None:
             total_ms = int((asyncio.get_running_loop().time() - search_started) * 1000)
             logger.debug(
                 "[search] should_recall=False tenant=%s user=%s total_ms=%d",
@@ -1934,38 +2471,31 @@ class MemoryOrchestrator:
                 memories=[],
                 resources=[],
                 skills=[],
-                search_intent=intent,
+                probe_result=probe_result,
             )
 
-        # Planner controls the Phase 1 memory search budget.
-        effective_limit = recall_plan.memory_limit
-        detail_level = recall_plan.detail_level.value
-
-        typed_queries = intent.queries
-        for tq in typed_queries:
-            tq.detail_level = recall_plan.detail_level
-
-        # Fallback: if router produced no queries, build them manually
-        if not typed_queries:
-            if context_type:
-                types_to_search = [context_type]
-            elif target_uri:
-                types_to_search = [self._infer_context_type(target_uri)]
-            else:
-                types_to_search = [ContextType.ANY]
-
-            dl = DetailLevel(detail_level)
-            typed_queries = [
-                TypedQuery(
-                    query=query,
-                    context_type=ct,
-                    intent="",
-                    priority=1,
-                    target_directories=[target_uri] if target_uri else [],
-                    detail_level=dl,
-                )
-                for ct in types_to_search
-            ]
+        runtime_bound_plan = measure_sync(
+            stage_timings,
+            "bind",
+            self.bind_memory_runtime,
+            probe_result=probe_result,
+            retrieve_plan=retrieve_plan,
+            max_items=limit,
+            session_context=session_context,
+            include_knowledge=False,
+        )
+        effective_limit = runtime_bound_plan["memory_limit"]
+        detail_level = runtime_bound_plan["effective_depth"]
+        typed_queries = self._build_typed_queries(
+            query=query,
+            context_type=context_type,
+            target_uri=target_uri,
+            retrieve_plan=retrieve_plan,
+            runtime_bound_plan=runtime_bound_plan,
+        )
+        if target_doc_id:
+            for typed_query in typed_queries:
+                typed_query.target_doc_id = target_doc_id
 
         # HyDE: generate hypothetical answers for dense embedding
         if self._config.hyde_enabled and self._llm_completion:
@@ -1992,85 +2522,36 @@ class MemoryOrchestrator:
                 if not tq.target_directories:
                     tq.target_directories = [target_uri]
 
-        # Exclude staging from global search
-        staging_exclude = {
-            "op": "must_not",
-            "field": "context_type",
-            "conds": ["staging"],
-        }
-
-        # Scope-aware filter: return shared + user's private + legacy (no scope)
-        scope_filter = {
-            "op": "or",
-            "conds": [
-                {"op": "must", "field": "scope", "conds": ["shared", ""]},
-                {
-                    "op": "and",
-                    "conds": [
-                        {"op": "must", "field": "scope", "conds": ["private"]},
-                        {"op": "must", "field": "source_user_id", "conds": [uid]},
-                    ],
-                },
-            ],
-        }
-
-        # Tenant isolation: hard filter by source_tenant_id
-        # Empty string covers legacy records without tenant field
-        if tid:
-            tenant_filter = {
-                "op": "must",
-                "field": "source_tenant_id",
-                "conds": [tid, ""],
-            }
-            combined_conds = [staging_exclude, scope_filter, tenant_filter]
-        else:
-            combined_conds = [staging_exclude, scope_filter]
-
-        # Project-scoped filter: strict isolation by project_id
-        project_id = get_effective_project_id()
-        if project_id and project_id != "public":
-            project_filter = {
-                "op": "or",
-                "conds": [
-                    {
-                        "op": "must",
-                        "field": "project_id",
-                        "conds": [project_id, "public"],
-                    },
-                ],
-            }
-            combined_conds.append(project_filter)
-
-        if metadata_filter:
-            metadata_filter = {"op": "and", "conds": [metadata_filter] + combined_conds}
-        else:
-            metadata_filter = {"op": "and", "conds": combined_conds}
-
-        # Dynamic hybrid weight: classifier takes precedence over intent router
-        lexical_boost = (
-            classification.lexical_boost if classification else intent.lexical_boost
+        metadata_filter = self._build_search_filter(
+            metadata_filter=metadata_filter,
         )
 
         # Build retrieval coroutines
         retrieval_coros = [
-            self._retriever.retrieve(
-                tq,
+            self._execute_object_query(
+                typed_query=tq,
                 limit=effective_limit,
                 score_threshold=score_threshold,
                 metadata_filter=metadata_filter,
-                lexical_boost=lexical_boost,
-                classification=classification,
+                retrieve_plan=retrieve_plan,
+                probe_result=probe_result,
             )
             for tq in typed_queries
         ]
 
-        query_results = list(await asyncio.gather(*retrieval_coros))
-        retrieval_ms = (
-            int((asyncio.get_running_loop().time() - search_started) * 1000) - intent_ms
+        query_results = await measure_async(
+            stage_timings,
+            "retrieve",
+            asyncio.gather,
+            *retrieval_coros,
         )
+        query_results = list(query_results)
 
+        aggregate_started = asyncio.get_running_loop().time()
         result = self._aggregate_results(query_results)
-        result.search_intent = intent
+        result.probe_result = probe_result
+        result.retrieve_plan = retrieve_plan
+        retrieve_breakdown_ms = self._summarize_retrieve_breakdown(query_results)
 
         # Filter out directory nodes (is_leaf=False) — they exist for
         # hierarchical traversal but have no abstract/content of their own.
@@ -2102,17 +2583,35 @@ class MemoryOrchestrator:
             asyncio.create_task(self._resolve_and_update_access_stats(uris))
 
         total_ms = int((asyncio.get_running_loop().time() - search_started) * 1000)
+        stage_timings.record_elapsed("aggregate", aggregate_started)
+        stage_timings.record_ms("total", total_ms)
+        if runtime_bound_plan is not None:
+            runtime_items = [
+                {
+                    "uri": mc.uri,
+                    "context_type": mc.context_type.value,
+                    "score": mc.score,
+                }
+                for mc in all_matched
+            ]
+            result.runtime_result = self._memory_runtime.finalize(
+                bound_plan=runtime_bound_plan,
+                items=runtime_items,
+                latency_ms=max(stage_timings.snapshot()["retrieve"], 0),
+                stage_timing_ms=stage_timings.snapshot(),
+                retrieve_breakdown_ms=retrieve_breakdown_ms,
+            )
         logger.info(
-            "[search] tenant=%s user=%s intent=%s queries=%d results=%d "
+            "[search] tenant=%s user=%s probe_candidates=%d queries=%d results=%d "
             "timing_ms(total=%d intent=%d retrieval=%d)",
             tid,
             uid,
-            intent.intent_type,
+            probe_result.evidence.candidate_count,
             len(typed_queries),
             len(all_matched),
             total_ms,
             intent_ms,
-            max(retrieval_ms, 0),
+            max(stage_timings.snapshot()["retrieve"], 0),
         )
 
         # v0.6: Build SearchExplainSummary
@@ -2353,24 +2852,17 @@ class MemoryOrchestrator:
             for tq in query_plan.queries:
                 tq.target_directories = [target_uri]
 
-        # Exclude staging from session search
-        staging_exclude = {
-            "op": "must_not",
-            "field": "context_type",
-            "conds": ["staging"],
-        }
-        if metadata_filter:
-            metadata_filter = {"op": "and", "conds": [metadata_filter, staging_exclude]}
-        else:
-            metadata_filter = staging_exclude
+        metadata_filter = self._build_search_filter(metadata_filter=metadata_filter)
 
         query_results = await asyncio.gather(
             *[
-                self._retriever.retrieve(
-                    tq,
+                self._execute_object_query(
+                    typed_query=tq,
                     limit=limit,
                     score_threshold=score_threshold,
                     metadata_filter=metadata_filter,
+                    retrieve_plan=None,
+                    probe_result=None,
                 )
                 for tq in query_plan.queries
             ]
@@ -3391,13 +3883,13 @@ class MemoryOrchestrator:
             "model": None,
             "fusion_beta": 0.0,
         }
-        if self._retriever and self._retriever._rerank_client:
-            rc = self._retriever._rerank_client
+        rerank_cfg = self._build_rerank_config()
+        if rerank_cfg.is_available():
             rerank_info = {
-                "enabled": rc.mode != "disabled",
-                "mode": rc.mode,
+                "enabled": True,
+                "mode": rerank_cfg.provider,
                 "model": self._config.rerank_model or None,
-                "fusion_beta": rc.fusion_beta,
+                "fusion_beta": rerank_cfg.fusion_beta,
             }
         tid, uid = get_effective_identity()
         return {
@@ -3560,6 +4052,38 @@ class MemoryOrchestrator:
                         return candidate
         return ""
 
+    @staticmethod
+    def _enrich_abstract(abstract: str, content: str) -> str:
+        """Append missing hard keywords when the abstract has poor term coverage."""
+        if not content.strip():
+            return abstract
+
+        term_pattern = re.compile(
+            r"[a-z]+[A-Z][a-zA-Z0-9]*|\b[A-Z]{2,}\b|[a-zA-Z0-9]+[_./-][a-zA-Z0-9]+"
+        )
+        candidates: list[str] = []
+        seen: set[str] = set()
+        for match in term_pattern.finditer(content):
+            term = match.group(0)
+            key = term.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(term)
+
+        if not candidates:
+            return abstract
+
+        abstract_lower = abstract.lower()
+        covered = [term for term in candidates if term.lower() in abstract_lower]
+        if len(covered) / len(candidates) >= 0.6:
+            return abstract
+
+        missing = [term for term in candidates if term.lower() not in abstract_lower][:10]
+        if not missing:
+            return abstract
+        return f"{abstract} [{', '.join(missing)}]"
+
     def _derive_parent_uri(self, uri: str) -> str:
         """Derive parent URI by removing the last path segment."""
         try:
@@ -3587,9 +4111,10 @@ class MemoryOrchestrator:
         """
         Ensure all ancestor directory records exist in the vector store.
 
-        The HierarchicalRetriever traverses the directory tree via parent_uri
-        links. For leaves to be discoverable, every intermediate directory
-        must have a record in the vector store (is_leaf=False).
+        Retrieval still relies on parent_uri lineage for scoped navigation and
+        document hierarchy. For leaves to remain discoverable under those
+        scopes, every intermediate directory must have a vector-store record
+        (`is_leaf=False`).
 
         This walks upward from parent_uri to the tenant root, creating any
         missing directory records along the way.

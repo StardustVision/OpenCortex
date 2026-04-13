@@ -23,7 +23,7 @@ This document defines the target responsibility of the **memory runtime**. It as
 **Runtime Responsibility**
 - R1. The memory runtime must run only after Phase 2 planner has already produced a semantic retrieval plan.
 - R2. The runtime must accept this minimal explicit input contract:
-  - `planner_plan`
+  - `retrieve_plan`
   - `session_id`
 - R2a. The runtime core must also accept explicit execution-boundary context:
   - `tenant_id`
@@ -46,7 +46,7 @@ This document defines the target responsibility of the **memory runtime**. It as
 
 **Binder Responsibility**
 - R11. `Binder` must consume:
-  - `planner_plan`
+  - `retrieve_plan`
   - `session_id`
   - explicit execution-boundary context (`tenant_id`, `user_id`, `project_id`)
 - R12. `Binder` must decide:

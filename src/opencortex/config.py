@@ -19,7 +19,13 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Dict, Optional
 
+from opencortex.models.embedder.local_embedder import (
+    DEFAULT_LOCAL_EMBEDDING_MODEL,
+)
+
 logger = logging.getLogger(__name__)
+
+DEFAULT_LOCAL_RERANK_MODEL = "jinaai/jina-reranker-v2-base-multilingual"
 
 # Default config file search order (server.json first)
 _CONFIG_FILE_NAMES = ["server.json", "opencortex.json", ".opencortex.json"]
@@ -104,9 +110,9 @@ class CortexConfig:
     """
 
     data_root: str = "./data"
-    embedding_dimension: int = 1024
+    embedding_dimension: int = 384
     embedding_provider: str = "local"
-    embedding_model: str = ""
+    embedding_model: str = DEFAULT_LOCAL_EMBEDDING_MODEL
     embedding_api_key: str = ""
     embedding_api_base: str = ""
     # LLM completion (for IntentAnalyzer)
@@ -116,7 +122,7 @@ class CortexConfig:
     llm_api_format: str = "openai"  # "openai" | "anthropic"
     # Rerank
     rerank_provider: str = "local"  # "jina" | "cohere" | "local" | "llm"
-    rerank_model: str = ""          # Rerank model name
+    rerank_model: str = DEFAULT_LOCAL_RERANK_MODEL  # Rerank model name
     rerank_api_key: str = ""        # API key (defaults to embedding_api_key)
     rerank_api_base: str = ""       # API endpoint
     rerank_threshold: float = 0.0   # Score threshold
@@ -152,6 +158,9 @@ class CortexConfig:
         "simple_recall": {"dense": 0.7, "lexical": 0.3},
         "complex": {"dense": 0.7, "lexical": 0.3},
     })
+    intent_router_zero_shot_model: str = (
+        "onnx-community/multilingual-MiniLMv2-L6-mnli-xnli-ONNX"
+    )
     doc_scope_search_enabled: bool = True
     small_to_big_enabled: bool = True
     small_to_big_sibling_count: int = 2

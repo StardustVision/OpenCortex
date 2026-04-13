@@ -57,7 +57,6 @@ from opencortex.http.models import (
     ContextRequest,
 )
 from opencortex.orchestrator import MemoryOrchestrator
-from opencortex.retrieve.intent_router import IntentRouter
 from opencortex.retrieve.types import ContextType
 
 logger = logging.getLogger(__name__)
@@ -400,26 +399,9 @@ def _register_routes(app: FastAPI) -> None:
                 item["source_section_path"] = matched.source_section_path
             items.append(item)
         resp: Dict[str, Any] = {"results": items, "total": result.total}
-        if result.search_intent:
-            recall_plan = result.search_intent.recall_plan
-            resp["search_intent"] = {
-                "intent_type": result.search_intent.intent_type,
-                "top_k": result.search_intent.top_k,
-                "detail_level": (
-                    recall_plan.detail_level.value
-                    if recall_plan
-                    else result.search_intent.detail_level.value
-                ),
-                "time_scope": result.search_intent.time_scope,
-                "should_recall": (
-                    recall_plan.should_recall
-                    if recall_plan
-                    else result.search_intent.should_recall
-                ),
-                "lexical_boost": result.search_intent.lexical_boost,
-            }
-            if recall_plan:
-                resp["recall_plan"] = recall_plan.to_dict()
+        memory_pipeline = result.memory_pipeline_dict()
+        if memory_pipeline:
+            resp["memory_pipeline"] = memory_pipeline
         # v0.6: explain query param support
         explain_mode = request.query_params.get("explain")
         if (
@@ -509,12 +491,7 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.post("/api/v1/intent/should_recall")
     async def intent_should_recall(req: IntentShouldRecallRequest) -> Dict[str, Any]:
-        router = IntentRouter(llm_completion=_orchestrator._llm_completion)
-        intent = await router.route(req.query)
-        return {
-            "should_recall": intent.should_recall,
-            "intent_type": intent.intent_type,
-        }
+        return (await _orchestrator.probe_memory(req.query)).to_dict()
 
     # =====================================================================
     # Session

@@ -219,6 +219,22 @@ class TestEvalContract(unittest.TestCase):
                 self.assertEqual(data["session_id"], "test-session-contract")
                 # Should also have intent info
                 self.assertIn("intent", data)
+                self.assertIn("memory_pipeline", data["intent"])
+                self.assertIn("runtime", data["intent"]["memory_pipeline"])
+                self.assertIn(
+                    "stage_timing_ms",
+                    data["intent"]["memory_pipeline"]["runtime"]["trace"],
+                )
+                self.assertIn(
+                    "latency_ms",
+                    data["intent"]["memory_pipeline"]["runtime"]["trace"],
+                )
+                self.assertIn(
+                    "retrieve",
+                    data["intent"]["memory_pipeline"]["runtime"]["trace"][
+                        "latency_ms"
+                    ],
+                )
 
         self._run(_test())
 

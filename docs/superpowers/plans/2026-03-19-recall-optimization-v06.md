@@ -6,7 +6,7 @@
 
 **Architecture:** Bottom-up infrastructure first (SearchExplain + schema + collection routing), then query classification + document scoped search, then accuracy improvements (context flattening, hybrid weights, time filter), finally performance polish (rerank gate, frontier budget, ablation).
 
-**Tech Stack:** Python 3.10+ async, Qdrant embedded, FastEmbed (multilingual-e5-large), FastAPI
+**Tech Stack:** Python 3.10+ async, Qdrant embedded, FastEmbed (local embedding), FastAPI
 
 **Spec:** `docs/superpowers/specs/2026-03-19-recall-optimization-v06-design.md`
 

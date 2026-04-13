@@ -42,6 +42,13 @@ class TestConversationImmediate(unittest.TestCase):
                     )
                     self.assertTrue(uri.startswith("opencortex://"))
                     self.assertIn("events", uri)
+                    records = await orch._storage.filter(
+                        "context",
+                        {"op": "must", "field": "uri", "conds": [uri]},
+                        limit=1,
+                    )
+                    self.assertEqual(records[0].get("memory_kind"), "event")
+                    self.assertIn("abstract_json", records[0])
                 finally:
                     reset_request_identity(tokens)
             finally:

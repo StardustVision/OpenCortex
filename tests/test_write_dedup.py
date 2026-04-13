@@ -1,8 +1,8 @@
 """
-Write-time semantic deduplication tests.
+Write-time object-aware deduplication tests.
 
 Validates that orchestrator.add(dedup=True) correctly detects and handles
-duplicates:  same abstract → skip/merge, different abstract → create,
+duplicates: mergeable kinds merge, non-mergeable kinds append, different abstract → create,
 dedup=False → force write, cross-tenant → no dedup.
 """
 
@@ -333,11 +333,11 @@ class TestWriteDedup(unittest.TestCase):
         ])
 
     # -----------------------------------------------------------------
-    # 1. Same abstract twice → second should be skipped (non-mergeable)
+    # 1. Same abstract twice → non-mergeable kind still appends
     # -----------------------------------------------------------------
 
-    def test_same_abstract_non_mergeable_skipped(self):
-        """Identical abstract in 'events' category → second add() skipped."""
+    def test_same_abstract_non_mergeable_creates_new_object(self):
+        """Identical event text still creates a new durable object."""
         orch = self._make_orch()
 
         # No content to avoid enrichment changing the abstract vector
@@ -353,10 +353,9 @@ class TestWriteDedup(unittest.TestCase):
             category="events",
             dedup=True,
         ))
-        self.assertEqual(ctx2.meta.get("dedup_action"), "skipped")
-        self.assertEqual(ctx2.uri, ctx1.uri)
-        # Only 1 leaf record
-        self.assertEqual(self._record_count(), 1)
+        self.assertEqual(ctx2.meta.get("dedup_action"), "created")
+        self.assertNotEqual(ctx2.uri, ctx1.uri)
+        self.assertEqual(self._record_count(), 2)
 
     # -----------------------------------------------------------------
     # 2. Same abstract + mergeable category → merged
@@ -382,6 +381,13 @@ class TestWriteDedup(unittest.TestCase):
         self.assertEqual(ctx2.meta.get("dedup_action"), "merged")
         self.assertEqual(ctx2.uri, ctx1.uri)
         self.assertEqual(self._record_count(), 1)
+        records = [
+            r for r in self.storage._records.get("context", {}).values()
+            if r.get("uri") == ctx1.uri
+        ]
+        self.assertEqual(records[0].get("memory_kind"), "preference")
+        self.assertTrue(records[0].get("mergeable"))
+        self.assertTrue(records[0].get("merge_signature"))
 
     # -----------------------------------------------------------------
     # 3. Different abstract → created normally
@@ -476,6 +482,34 @@ class TestWriteDedup(unittest.TestCase):
         ))
         self.assertEqual(ctx1.meta.get("dedup_action"), "created")
         self.assertEqual(ctx2.meta.get("dedup_action"), "created")
+
+    def test_canonical_payload_fields_written(self):
+        """Canonical store payload includes abstract_json-derived fields."""
+        orch = self._make_orch()
+
+        ctx = self._run(orch.add(
+            abstract="User prefers dark theme in all editors",
+            category="preferences",
+            dedup=True,
+        ))
+        records = self._run(
+            self.storage.filter(
+                "context",
+                {"op": "must", "field": "uri", "conds": [ctx.uri]},
+                limit=1,
+            )
+        )
+
+        self.assertEqual(records[0].get("memory_kind"), "preference")
+        self.assertIn(
+            "User prefers dark theme in all editors",
+            records[0].get("anchor_hits", []),
+        )
+        self.assertEqual(
+            records[0].get("abstract_json", {}).get("summary"),
+            "User prefers dark theme in all editors",
+        )
+        self.assertTrue(records[0].get("merge_signature"))
 
     # -----------------------------------------------------------------
     # 7. Non-leaf nodes bypass dedup

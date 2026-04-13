@@ -25,13 +25,18 @@ from opencortex.http.request_context import (
     set_request_identity,
     set_request_project_id,
 )
+from opencortex.intent import RetrievalPlan, SearchResult
+from opencortex.intent.types import (
+    MemoryQueryPlan,
+    MemoryRuntimeDegrade,
+    MemorySearchProfile,
+    RetrievalDepth,
+)
+from opencortex.intent.timing import StageTimingCollector, measure_async, measure_sync
 from opencortex.utils.text import smart_truncate
 from opencortex.retrieve.types import (
     ContextType,
     DetailLevel,
-    RecallPlan,
-    RecallSurface,
-    SearchIntent,
 )
 
 logger = logging.getLogger(__name__)
@@ -199,38 +204,82 @@ class ContextManager:
         except (TypeError, ValueError):
             return default
 
-    def _build_fallback_recall_plan(
+    def _build_fallback_memory_pipeline(
         self,
         *,
         recall_mode: str,
         max_items: int,
         include_knowledge: bool,
         detail_level_override: Optional[str],
-    ) -> tuple[SearchIntent, RecallPlan]:
-        """Build a local fallback recall plan when planning is skipped or fails."""
+    ) -> tuple[SearchResult, Optional[RetrievalPlan], Dict[str, Any]]:
+        """Build a local fallback memory pipeline when planning is skipped or fails."""
+        if recall_mode == "never":
+            probe_result = SearchResult(should_recall=False)
+            return (
+                probe_result,
+                None,
+                {
+                    "probe": probe_result.to_dict(),
+                    "planner": None,
+                    "sources": [],
+                    "context_types": [],
+                    "category_filter": [],
+                    "memory_limit": 0,
+                    "knowledge_limit": 0,
+                    "planned_depth": self._safe_detail_level(detail_level_override).value,
+                    "effective_depth": self._safe_detail_level(detail_level_override).value,
+                    "association_mode": "off",
+                    "rerank": False,
+                    "hydration_allowed": False,
+                    "scope": {},
+                    "degrade": MemoryRuntimeDegrade().to_dict(),
+                },
+            )
+
         detail_level = self._safe_detail_level(detail_level_override)
-        should_recall = recall_mode == "always"
-        surfaces: List[RecallSurface] = []
-        if should_recall:
-            surfaces.append(RecallSurface.MEMORY)
-            if include_knowledge:
-                surfaces.append(RecallSurface.KNOWLEDGE)
-        intent = SearchIntent(
-            intent_type="quick_lookup",
-            detail_level=detail_level,
-            should_recall=should_recall,
+        probe_result = SearchResult(should_recall=recall_mode == "always")
+        retrieve_plan: Optional[RetrievalPlan] = None
+        if probe_result.should_recall:
+            retrieve_plan = RetrievalPlan(
+                target_memory_kinds=["event", "summary"],
+                query_plan=MemoryQueryPlan(),
+                search_profile=MemorySearchProfile(
+                    recall_budget=min(1.0, max_items / 10.0),
+                    association_budget=0.0,
+                    rerank=False,
+                ),
+                retrieval_depth=RetrievalDepth(detail_level.value),
+            )
+
+        runtime_bound = {
+            "probe": probe_result.to_dict(),
+            "planner": retrieve_plan.to_dict() if retrieve_plan else None,
+            "sources": (
+                ["memory", "knowledge"]
+                if probe_result.should_recall and include_knowledge
+                else (["memory"] if probe_result.should_recall else [])
+            ),
+            "context_types": ["memory"],
+            "category_filter": ["event", "events", "summary", "summaries"],
+            "memory_limit": max_items if probe_result.should_recall else 0,
+            "knowledge_limit": (
+                min(3, max_items)
+                if probe_result.should_recall and include_knowledge
+                else 0
+            ),
+            "planned_depth": detail_level.value,
+            "effective_depth": detail_level.value,
+            "association_mode": "off",
+            "rerank": False,
+            "hydration_allowed": detail_level != DetailLevel.L2,
+            "scope": {},
+            "degrade": MemoryRuntimeDegrade().to_dict(),
+        }
+        return (
+            probe_result,
+            retrieve_plan,
+            runtime_bound,
         )
-        recall_plan = RecallPlan(
-            should_recall=should_recall,
-            surfaces=surfaces,
-            detail_level=detail_level,
-            memory_limit=max_items if RecallSurface.MEMORY in surfaces else 0,
-            knowledge_limit=min(3, max_items) if RecallSurface.KNOWLEDGE in surfaces else 0,
-            enable_cone=False,
-            fusion_policy="fallback",
-            reasoning="context_manager fallback plan",
-        )
-        return intent, recall_plan
 
     @staticmethod
     def _extract_skill_uris(skills: Any) -> List[str]:
@@ -267,6 +316,7 @@ class ContextManager:
         include_knowledge = config.get("include_knowledge", _server_default)
         sk = self._make_session_key(tenant_id, user_id, session_id)
         prepare_started = time.monotonic()
+        stage_timings = StageTimingCollector()
 
         # 1. Idempotent: cache hit → return directly
         cache_key: CacheKey = (tenant_id, user_id, session_id, turn_id)
@@ -295,13 +345,12 @@ class ContextManager:
             return result
 
         # 4. Recall planning (10s timeout, degrade to default on failure)
-        intent, recall_plan = self._build_fallback_recall_plan(
+        probe_result, retrieve_plan, runtime_bound = self._build_fallback_memory_pipeline(
             recall_mode=recall_mode,
             max_items=max_items,
             include_knowledge=include_knowledge,
             detail_level_override=detail_level_override,
         )
-        intent_started = time.monotonic()
         if recall_mode != "never":
             try:
                 session_ctx = {
@@ -309,19 +358,36 @@ class ContextManager:
                     "tenant_id": tenant_id,
                     "user_id": user_id,
                 }
-                intent, recall_plan = await asyncio.wait_for(
-                    self._orchestrator.plan_recall(
-                        query=query,
-                        max_items=max_items,
-                        recall_mode=recall_mode,
-                        include_knowledge=include_knowledge,
-                        detail_level_override=detail_level_override,
-                        context_type=context_type,
-                        session_context=session_ctx,
-                        search_intent=None,
+                probe_result = await asyncio.wait_for(
+                    measure_async(
+                        stage_timings,
+                        "probe",
+                        self._orchestrator.probe_memory,
+                        query,
                     ),
                     timeout=10.0,
                 )
+                retrieve_plan = measure_sync(
+                    stage_timings,
+                    "plan",
+                    self._orchestrator.plan_memory,
+                    query=query,
+                    probe_result=probe_result,
+                    max_items=max_items,
+                    recall_mode=recall_mode,
+                    detail_level_override=detail_level_override,
+                )
+                if retrieve_plan is not None:
+                    runtime_bound = measure_sync(
+                        stage_timings,
+                        "bind",
+                        self._orchestrator.bind_memory_runtime,
+                        probe_result=probe_result,
+                        retrieve_plan=retrieve_plan,
+                        max_items=max_items,
+                        session_context=session_ctx,
+                        include_knowledge=include_knowledge,
+                    )
             except asyncio.TimeoutError:
                 logger.warning(
                     "[ContextManager] Recall planning timeout sid=%s turn=%s tenant=%s user=%s",
@@ -332,14 +398,19 @@ class ContextManager:
                     "[ContextManager] Recall planning failed sid=%s turn=%s tenant=%s user=%s: %s",
                     session_id, turn_id, tenant_id, user_id, exc,
                 )
-        intent_ms = int((time.monotonic() - intent_started) * 1000)
-
-        should_recall = recall_plan.should_recall
-        detail_level = recall_plan.detail_level.value
-        include_memory = (
-            RecallSurface.MEMORY in recall_plan.surfaces and recall_plan.memory_limit > 0
+        intent_ms = (
+            stage_timings.snapshot()["probe"]
+            + stage_timings.snapshot()["plan"]
+            + stage_timings.snapshot()["bind"]
         )
-        include_knowledge = RecallSurface.KNOWLEDGE in recall_plan.surfaces
+
+        should_recall = retrieve_plan is not None
+        detail_level = runtime_bound["effective_depth"]
+        include_memory = "memory" in runtime_bound["sources"] and runtime_bound["memory_limit"] > 0
+        include_knowledge = (
+            "knowledge" in runtime_bound["sources"]
+            and runtime_bound["knowledge_limit"] > 0
+        )
 
         # 6. Retrieval
         memory_items: List[Dict[str, Any]] = []
@@ -347,16 +418,31 @@ class ContextManager:
         memory_ms = 0
         knowledge_ms = 0
         _skill_uris: List[str] = []
+        memory_runtime_trace: Dict[str, Any] = {}
 
         if should_recall:
-            async def _memory_search() -> Tuple[List[Dict[str, Any]], int, List[str], List[str]]:
+            retrieval_started = time.monotonic()
+
+            async def _memory_search() -> Tuple[
+                List[Dict[str, Any]],
+                int,
+                List[str],
+                List[str],
+                Dict[str, Any],
+            ]:
                 started = time.monotonic()
                 try:
                     search_kwargs: Dict[str, Any] = {
                         "query": query,
-                        "limit": recall_plan.memory_limit,
+                        "limit": runtime_bound["memory_limit"],
                         "detail_level": detail_level,
-                        "search_intent": intent,
+                        "probe_result": probe_result,
+                        "retrieve_plan": retrieve_plan,
+                        "session_context": {
+                            "session_id": session_id,
+                            "tenant_id": tenant_id,
+                            "user_id": user_id,
+                        },
                     }
                     if context_type:
                         search_kwargs["context_type"] = context_type
@@ -369,22 +455,25 @@ class ContextManager:
                     skill_uris = self._extract_skill_uris(
                         getattr(find_result, 'skills', []) or [],
                     )
+                    runtime_trace = {}
+                    if getattr(find_result, "runtime_result", None) is not None:
+                        runtime_trace = find_result.runtime_result.trace.to_dict()
                     return self._format_memories(find_result, detail_level), int(
                         (time.monotonic() - started) * 1000,
-                    ), skill_uris, owner_ids
+                    ), skill_uris, owner_ids, runtime_trace
                 except Exception as exc:
                     logger.warning(
                         "[ContextManager] Memory search failed sid=%s turn=%s tenant=%s user=%s: %s",
                         session_id, turn_id, tenant_id, user_id, exc,
                     )
-                    return [], int((time.monotonic() - started) * 1000), [], []
+                    return [], int((time.monotonic() - started) * 1000), [], [], {}
 
             async def _knowledge_search() -> Tuple[List[Dict[str, Any]], int]:
                 started = time.monotonic()
                 try:
                     k_result = await self._orchestrator.knowledge_search(
                         query=query,
-                        limit=recall_plan.knowledge_limit,
+                        limit=runtime_bound["knowledge_limit"],
                     )
                     return self._format_knowledge(k_result.get("results", [])), int(
                         (time.monotonic() - started) * 1000,
@@ -399,19 +488,25 @@ class ContextManager:
             coros = []
             if include_memory:
                 coros.append(_memory_search())
-            if include_knowledge and recall_plan.knowledge_limit > 0:
+            if include_knowledge:
                 coros.append(_knowledge_search())
 
             results = await asyncio.gather(*coros) if coros else []
             result_idx = 0
             if include_memory:
-                memory_items, memory_ms, _skill_uris, memory_owner_ids = results[result_idx]
+                (
+                    memory_items,
+                    memory_ms,
+                    _skill_uris,
+                    memory_owner_ids,
+                    memory_runtime_trace,
+                ) = results[result_idx]
                 if memory_owner_ids:
                     self._session_memory_owner_ids.setdefault(sk, set()).update(
                         memory_owner_ids
                     )
                 result_idx += 1
-            if include_knowledge and recall_plan.knowledge_limit > 0:
+            if include_knowledge:
                 knowledge_items, knowledge_ms = results[result_idx]
 
             # Track selected skills for citation validation in _commit()
@@ -422,34 +517,106 @@ class ContextManager:
                     await self._append_skill_event(
                         session_id, turn_id, s_uri, tenant_id, user_id, "selected",
                     )
+            stage_timings.record_elapsed("retrieve", retrieval_started)
 
         # 6. Build instructions
-        instructions = self._build_instructions(intent, memory_items, knowledge_items)
+        aggregate_started = time.monotonic()
+        instructions = self._build_instructions(
+            detail_level,
+            memory_items,
+            knowledge_items,
+        )
 
         result = {
             "session_id": session_id,
             "turn_id": turn_id,
             "intent": {
                 "should_recall": should_recall,
-                "intent_type": intent.intent_type,
-                "detail_level": detail_level,
-                "recall_plan": recall_plan.to_dict(),
+                "probe_candidate_count": probe_result.evidence.candidate_count,
+                "probe_top_score": probe_result.evidence.top_score,
+                "depth": detail_level,
             },
             "memory": memory_items,
             "knowledge": knowledge_items,
             "instructions": instructions,
         }
+        result["intent"]["memory_pipeline"] = {
+            "probe": probe_result.to_dict(),
+            "planner": retrieve_plan.to_dict() if retrieve_plan else None,
+            "runtime": {
+                "trace": {
+                    "probe_mode": (
+                        self._orchestrator.memory_probe_mode()
+                        if hasattr(self._orchestrator, "memory_probe_mode")
+                        else "unavailable"
+                    ),
+                    "probe_trace": (
+                        self._orchestrator.memory_probe_trace()
+                        if hasattr(self._orchestrator, "memory_probe_trace")
+                        else {
+                            "backend": "unavailable",
+                            "top_k": 0,
+                            "degraded": True,
+                            "degrade_reason": "probe_trace_unavailable",
+                        }
+                    ),
+                    "probe": dict(
+                        memory_runtime_trace.get("probe", probe_result.to_dict())
+                    ),
+                    "planner": dict(
+                        memory_runtime_trace.get(
+                            "planner",
+                            retrieve_plan.to_dict() if retrieve_plan else {},
+                        )
+                    ),
+                    "effective": dict(
+                        memory_runtime_trace.get(
+                            "effective",
+                            {
+                                "sources": list(runtime_bound["sources"]),
+                                "retrieval_depth": runtime_bound["effective_depth"],
+                            },
+                        )
+                    ),
+                    "hydration": list(memory_runtime_trace.get("hydration", [])),
+                    "fallback": list(memory_runtime_trace.get("fallback", [])),
+                    "latency_ms": dict(
+                        memory_runtime_trace.get(
+                            "latency_ms",
+                            {
+                                "execution": 0,
+                                "stages": stage_timings.snapshot(),
+                                "retrieve": {
+                                    "embed": 0.0,
+                                    "search": 0.0,
+                                    "rerank": 0.0,
+                                    "assemble": 0.0,
+                                    "total": 0.0,
+                                },
+                            },
+                        )
+                    ),
+                    "stage_timing_ms": stage_timings.snapshot(),
+                },
+                "degrade": dict(runtime_bound["degrade"]),
+            },
+        }
 
         total_ms = int((time.monotonic() - prepare_started) * 1000)
+        stage_timings.record_elapsed("aggregate", aggregate_started)
+        stage_timings.record_ms("total", total_ms)
+        result["intent"]["memory_pipeline"]["runtime"]["trace"][
+            "stage_timing_ms"
+        ] = stage_timings.snapshot()
         logger.info(
             "[ContextManager] prepare sid=%s turn=%s tenant=%s user=%s "
-            "intent=%s recall=%s memory=%d knowledge=%d "
+            "probe_candidates=%d recall=%s memory=%d knowledge=%d "
             "timing_ms(total=%d intent=%d memory=%d knowledge=%d)",
             session_id,
             turn_id,
             tenant_id,
             user_id,
-            intent.intent_type,
+            probe_result.evidence.candidate_count,
             should_recall,
             len(memory_items),
             len(knowledge_items),
@@ -874,8 +1041,9 @@ class ContextManager:
             "turn_id": turn_id,
             "intent": {
                 "should_recall": False,
-                "intent_type": "unknown",
-                "detail_level": "l1",
+                "probe_candidate_count": 0,
+                "probe_top_score": None,
+                "depth": "l1",
             },
             "memory": [],
             "knowledge": [],
@@ -931,11 +1099,11 @@ class ContextManager:
 
     def _build_instructions(
         self,
-        intent: SearchIntent,
+        retrieval_depth: Optional[str],
         memory_items: List[Dict[str, Any]],
         knowledge_items: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        """Build instructions for Agent based on intent and results."""
+        """Build instructions for Agent based on retrieval posture and results."""
         total_items = len(memory_items) + len(knowledge_items)
 
         if total_items == 0:
@@ -956,14 +1124,13 @@ class ContextManager:
         confidence = max(avg_score, max_confidence)
 
         guidance_map = {
-            "quick_lookup": "Relevant context found. Reference if directly applicable.",
-            "deep_analysis": "Multiple related memories retrieved. Synthesize with retrieved context for comprehensive analysis.",
-            "recent_recall": "Recent session context retrieved. Continue from where the conversation left off.",
-            "summarize": "Historical context loaded. Summarize key themes and patterns.",
-            "personalized": "User preferences and past patterns retrieved. Adapt response accordingly.",
+            "l0": "Direct memory evidence was found. Prefer concise grounded recall.",
+            "l1": "Expanded memory context was retrieved. Synthesize across related items when useful.",
+            "l2": "Deep evidence was retrieved. Use detailed context carefully and keep citations grounded.",
         }
         guidance = guidance_map.get(
-            intent.intent_type, "Context available for reference.",
+            retrieval_depth or "",
+            "Context available for reference.",
         )
 
         return {

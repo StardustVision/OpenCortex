@@ -122,13 +122,10 @@ class TestChunkedLLMDerive(unittest.TestCase):
     def test_multi_chunk_merges_keywords(self):
         from opencortex.utils.text import chunked_llm_derive
 
-        call_count = 0
         async def mock_llm(prompt):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
+            if "Para one content." in prompt:
                 return '{"abstract": "First", "overview": "Overview 1.", "keywords": ["a", "b"]}'
-            elif call_count == 2:
+            if "Para two content." in prompt:
                 return '{"abstract": "Second", "overview": "Overview 2.", "keywords": ["b", "c"]}'
             # Compression call for overview
             return '{"abstract": "Compressed", "overview": "Compressed overview.", "keywords": []}'
@@ -174,6 +171,65 @@ class TestChunkedLLMDerive(unittest.TestCase):
         self.assertIn("abstract", result)
         self.assertIn("overview", result)
         self.assertNotIn("keywords", result)
+
+    def test_multi_chunk_preserves_chunk_order_under_concurrency(self):
+        from opencortex.utils.text import chunked_llm_derive
+
+        async def mock_llm(prompt):
+            if "Chunk 1" in prompt:
+                await asyncio.sleep(0.03)
+                return '{"abstract": "First", "overview": "Overview 1", "keywords": ["a"]}'
+            if "Chunk 2" in prompt:
+                await asyncio.sleep(0.01)
+                return '{"abstract": "Second", "overview": "Overview 2", "keywords": ["b"]}'
+            if "Chunk 3" in prompt:
+                await asyncio.sleep(0.02)
+                return '{"abstract": "Third", "overview": "Overview 3", "keywords": ["c"]}'
+            return '{"abstract": "Compressed", "overview": "Compressed overview", "keywords": []}'
+
+        def mock_parse(response):
+            import json
+            return json.loads(response)
+
+        text = "Chunk 1\n\nChunk 2\n\nChunk 3"
+        result = self._run(chunked_llm_derive(
+            content=text,
+            prompt_builder=lambda c: f"Summarize: {c}",
+            llm_fn=mock_llm,
+            parse_fn=mock_parse,
+            max_chars_per_chunk=10,
+        ))
+        self.assertEqual(result["abstract"], "First")
+        self.assertEqual(result["keywords"], ["a", "b", "c"])
+
+    def test_multi_chunk_limits_parallelism_to_default_five(self):
+        from opencortex.utils.text import chunked_llm_derive
+
+        inflight = 0
+        max_inflight = 0
+
+        async def mock_llm(prompt):
+            nonlocal inflight, max_inflight
+            inflight += 1
+            max_inflight = max(max_inflight, inflight)
+            await asyncio.sleep(0.02)
+            inflight -= 1
+            return '{"abstract": "abs", "overview": "over", "keywords": ["k"]}'
+
+        def mock_parse(response):
+            import json
+            return json.loads(response)
+
+        text = "\n\n".join([f"Chunk {i}" for i in range(1, 7)])
+        result = self._run(chunked_llm_derive(
+            content=text,
+            prompt_builder=lambda c: f"Summarize: {c}",
+            llm_fn=mock_llm,
+            parse_fn=mock_parse,
+            max_chars_per_chunk=10,
+        ))
+        self.assertEqual(result["abstract"], "abs")
+        self.assertLessEqual(max_inflight, 5)
 
 
 if __name__ == "__main__":

@@ -45,14 +45,18 @@ from opencortex.parse.base import estimate_tokens
 
 from benchmarks.llm_client import LLMClient
 from benchmarks.metrics import (
+    bootstrap_ci,
     compute_latency_metrics,
+    compute_ndcg,
     compute_retrieval_metrics,
+    compute_retrieval_metrics_with_ci,
     compute_token_metrics,
     truncate_to_budget,
 )
 from benchmarks.oc_client import OCClient
 from benchmarks.report import build_report, print_report, save_report
 from benchmarks.scoring import (
+    bleu1_score,
     exact_match,
     f1_score,
     jscore_judge,
@@ -107,7 +111,8 @@ _DATASET_PROMPTS: Dict[str, str] = {
 _DEFAULT_DATASETS = {
     "memory": ("personamem", "benchmarks/datasets/personamem/data.json"),
     "conversation": ("locomo", "benchmarks/locomo10.json"),
-    "document": ("qasper", "benchmarks/datasets/qasper/data.json"),
+    "document": ("qasper", "benchmarks/datasets/qasper/qasper-dev-v0.2.json"),
+    "knowledge": ("knowledge", "benchmarks/datasets/knowledge/gold_standard.json"),
 }
 
 
@@ -145,6 +150,10 @@ def _get_adapter(mode: str, dataset: str = ""):
         from benchmarks.adapters.document import DocumentAdapter
 
         return DocumentAdapter()
+    elif mode == "knowledge":
+        from benchmarks.adapters.knowledge import KnowledgeAdapter
+
+        return KnowledgeAdapter()
     raise ValueError(f"Unknown mode: {mode}")
 
 
@@ -164,6 +173,140 @@ def _build_prompt(
     return f"Relevant context:\n{context}\n\n{tpl.format(question=question)}"
 
 
+async def _run_knowledge_mode(
+    adapter, oc: OCClient, llm: LLMClient, args, run_id: str, log
+) -> Dict[str, Any]:
+    """Knowledge quality evaluation: extract from traces, compare to gold standard."""
+    from benchmarks.adapters.knowledge import KnowledgeAdapter
+
+    assert isinstance(adapter, KnowledgeAdapter)
+
+    # Set LLM function for direct-mode Archivist extraction
+    adapter.set_llm_fn(llm.complete)
+
+    # Phase 1: Ingest (no-op for direct mode)
+    ingest_result = await adapter.ingest(
+        oc, max_qa=args.max_qa,
+        eval_method=getattr(args, "eval_method", "direct"),
+    )
+    log(f"  Ingested {ingest_result.ingested_items}/{ingest_result.total_items}")
+
+    # Phase 2: Build QA items (one per cluster)
+    qa_items = adapter.build_qa_items(max_qa=args.max_qa)
+    log(f"Evaluating {len(qa_items)} knowledge clusters...")
+
+    # Phase 3: Extract + Evaluate
+    sem = asyncio.Semaphore(args.concurrency)
+    records: List[Dict[str, Any]] = []
+
+    async def eval_one_cluster(qa_item):
+        async with sem:
+            record: Dict[str, Any] = {
+                "cluster_id": qa_item.meta.get("cluster_id", ""),
+                "description": qa_item.meta.get("description", ""),
+                "category": qa_item.category,
+                "n_expected": len(qa_item.meta.get("expected_knowledge", [])),
+            }
+
+            # Extract knowledge from cluster
+            results, latency_ms = await adapter.retrieve(oc, qa_item, args.top_k)
+            record["latency_ms"] = latency_ms
+            record["n_extracted"] = len(results)
+
+            # Evaluate extraction against gold standard
+            expected = qa_item.meta.get("expected_knowledge", [])
+            if results or expected:
+                eval_result = await adapter.evaluate_extraction(
+                    results, expected, llm.complete
+                )
+                record["knowledge_recall"] = eval_result["recall"]
+                record["knowledge_precision"] = eval_result["precision"]
+                record["type_accuracy"] = eval_result["type_accuracy"]
+                record["hallucination_rate"] = eval_result["hallucination_rate"]
+                record["matches"] = eval_result["matches"]
+
+            return record
+
+    all_records = await asyncio.gather(
+        *[eval_one_cluster(item) for item in qa_items],
+        return_exceptions=True,
+    )
+
+    for i, r in enumerate(all_records):
+        if isinstance(r, Exception):
+            log(f"  Cluster {i} failed: {r}")
+            records.append({
+                "cluster_id": qa_items[i].meta.get("cluster_id", f"cluster_{i}"),
+                "error": str(r),
+            })
+        else:
+            records.append(r)
+
+    # Phase 4: Aggregate metrics
+    recalls = [r["knowledge_recall"] for r in records if "knowledge_recall" in r]
+    precisions = [r["knowledge_precision"] for r in records if "knowledge_precision" in r]
+    type_accs = [r["type_accuracy"] for r in records if "type_accuracy" in r]
+    hallucs = [r["hallucination_rate"] for r in records if "hallucination_rate" in r]
+
+    accuracy: Dict[str, Any] = {}
+    if recalls:
+        accuracy["knowledge_recall"] = round(sum(recalls) / len(recalls), 4)
+        accuracy["knowledge_precision"] = round(sum(precisions) / len(precisions), 4) if precisions else 0.0
+        accuracy["type_accuracy"] = round(sum(type_accs) / len(type_accs), 4) if type_accs else 0.0
+        accuracy["hallucination_rate"] = round(sum(hallucs) / len(hallucs), 4) if hallucs else 0.0
+
+        # Bootstrap CI for recall
+        if len(recalls) >= 5:
+            from benchmarks.metrics import bootstrap_ci
+            ci_lo, ci_hi = bootstrap_ci(recalls)
+            accuracy["recall_ci"] = {"lower": ci_lo, "upper": ci_hi}
+
+    # Per-cluster breakdown
+    cluster_breakdown = {}
+    for r in records:
+        cid = r.get("cluster_id", "unknown")
+        if "knowledge_recall" in r:
+            cluster_breakdown[cid] = {
+                "recall": r["knowledge_recall"],
+                "precision": r.get("knowledge_precision", 0.0),
+                "type_accuracy": r.get("type_accuracy", 0.0),
+                "n_expected": r.get("n_expected", 0),
+                "n_extracted": r.get("n_extracted", 0),
+            }
+    accuracy["by_cluster"] = cluster_breakdown
+
+    # Latency
+    latencies = [r["latency_ms"] for r in records if "latency_ms" in r]
+    latency_metrics = compute_latency_metrics(latencies)
+
+    # Build report
+    metadata = {
+        "run_id": run_id,
+        "llm_model": args.llm_model,
+        "dataset_path": args.data,
+        "total_clusters": len(qa_items),
+        "seed": args.seed,
+    }
+
+    report = build_report(
+        mode="knowledge",
+        dataset="knowledge",
+        retrieval_metrics={},
+        accuracy=accuracy,
+        token_metrics={},
+        latency_metrics=latency_metrics,
+        metadata=metadata,
+        per_query=records,
+    )
+
+    print_report(report)
+    output_dir = args.output or "docs/benchmark"
+    filepath = save_report(report, output_dir, run_id)
+    log(f"Report saved to {filepath}")
+
+    return report
+
+
 async def run_mode(
     mode: str,
     args,
@@ -174,15 +317,17 @@ async def run_mode(
     run_id = args.run_id or f"eval_{mode}_{uuid4().hex[:8]}"
     collection_id = f"bench_{uuid4().hex[:8]}"
     data_root = args.data_root
-    jwt_token = args.token or generate_token(
-        run_id, "eval_runner", ensure_secret(data_root)
-    )
+    secret = ensure_secret(data_root)
+    jwt_token = args.token or generate_token(run_id, "eval_runner", secret)
 
     log(f"Mode: {mode} | Run ID: {run_id}")
 
+    # Create isolated collection using admin token
     oc = OCClient(args.server, jwt_token, timeout=120.0, collection=collection_id)
-    await oc.create_collection(collection_id)
+    admin_token = generate_token("_system", "_admin", secret, role="admin")
+    await oc.create_collection(collection_id, admin_token=admin_token)
     log(f"Isolated collection: {collection_id}")
+    _admin_token = admin_token  # capture for finally block
 
     llm = LLMClient(
         args.llm_base,
@@ -202,11 +347,22 @@ async def run_mode(
             )
         adapter.load_dataset(dataset_path)
 
+        # Set retrieve method on adapter
+        if hasattr(adapter, "_retrieve_method"):
+            adapter._retrieve_method = args.retrieve_method
+        if hasattr(adapter, "_ingest_method"):
+            adapter._ingest_method = args.ingest_method
+
+        # Knowledge mode has its own evaluation flow
+        if mode == "knowledge":
+            return await _run_knowledge_mode(adapter, oc, llm, args, run_id, log)
+
         # Phase 1: Ingest
         if not args.skip_ingest:
             log("Ingesting dataset...")
             ingest_result = await adapter.ingest(
-                oc, max_conv=args.max_conv, max_qa=args.max_qa
+                oc, max_conv=args.max_conv, max_qa=args.max_qa,
+                ingest_method=args.ingest_method,
             )
             log(
                 f"  Ingested {ingest_result.ingested_items}/{ingest_result.total_items}"
@@ -313,8 +469,10 @@ async def run_mode(
                 cat = int(qa_item.category) if qa_item.category.isdigit() else 0
                 if oc_prediction:
                     record["oc_f1"] = score_qa(oc_prediction, qa_item.answer, cat)
+                    record["oc_bleu1"] = bleu1_score(oc_prediction, qa_item.answer)
                 if bl_prediction:
                     record["bl_f1"] = score_qa(bl_prediction, qa_item.answer, cat)
+                    record["bl_bleu1"] = bleu1_score(bl_prediction, qa_item.answer)
 
                 # HotPotQA-specific: EM, SP F1, Joint F1
                 if getattr(adapter, "is_hotpotqa", False):
@@ -402,6 +560,21 @@ async def run_mode(
             ks=[1, 3, 5],
         )
 
+        # NDCG@k retrieval quality
+        ndcg_records = [
+            r for r in records
+            if r.get("retrieved_uris") is not None and r.get("expected_uris")
+        ]
+        if ndcg_records:
+            retrieval_metrics["ndcg"] = compute_ndcg(ndcg_records, k=5)
+
+        # Bootstrap CI for retrieval metrics (if enough records)
+        if len(ndcg_records) >= 10:
+            retrieval_ci = compute_retrieval_metrics_with_ci(ndcg_records, ks=[1, 3, 5])
+            retrieval_metrics["confidence_intervals"] = retrieval_ci.get(
+                "confidence_intervals", {}
+            )
+
         # QA Accuracy — Category 5 (adversarial) excluded from overall per LoCoMo protocol
         EXCLUDE_CATS = {"5"}
         oc_f1s = [
@@ -460,6 +633,29 @@ async def run_mode(
             accuracy["sp_f1"] = round(sum(sp_f1s) / len(sp_f1s), 4)
         if joint_f1s:
             accuracy["joint_f1"] = round(sum(joint_f1s) / len(joint_f1s), 4)
+
+        # BLEU-1 aggregate (generation quality)
+        oc_bleu1s = [
+            r["oc_bleu1"]
+            for r in records
+            if "oc_bleu1" in r and r.get("category") not in EXCLUDE_CATS
+        ]
+        bl_bleu1s = [
+            r["bl_bleu1"]
+            for r in records
+            if "bl_bleu1" in r and r.get("category") not in EXCLUDE_CATS
+        ]
+        if oc_bleu1s:
+            accuracy["bleu1"] = round(sum(oc_bleu1s) / len(oc_bleu1s), 4)
+        if bl_bleu1s:
+            accuracy["baseline_bleu1"] = round(sum(bl_bleu1s) / len(bl_bleu1s), 4)
+        if oc_bleu1s and bl_bleu1s:
+            accuracy["delta_bleu1"] = f"{sum(oc_bleu1s)/len(oc_bleu1s) - sum(bl_bleu1s)/len(bl_bleu1s):+.4f}"
+
+        # F1 bootstrap confidence interval (95%)
+        if len(oc_f1s) >= 10:
+            ci_lo, ci_hi = bootstrap_ci(oc_f1s)
+            accuracy["f1_ci"] = {"lower": ci_lo, "upper": ci_hi}
 
         # LLM Judge (legacy)
         if args.enable_llm_judge:
@@ -542,6 +738,8 @@ async def run_mode(
             "max_context_tokens": args.max_context_tokens,
             "concurrency": args.concurrency,
             "total_qa": len(qa_items),
+            "retrieve_method": args.retrieve_method,
+            "ingest_method": args.ingest_method,
             "enable_llm_judge": args.enable_llm_judge,
             "jscore_enabled": not args.disable_jscore,
             "seed": args.seed,
@@ -567,7 +765,7 @@ async def run_mode(
         return report
 
     finally:
-        await oc.delete_collection(collection_id)
+        await oc.delete_collection(collection_id, admin_token=_admin_token)
         await oc.close()
         await llm.close()
 
@@ -580,7 +778,7 @@ async def run(args):
         print(f"[{ts}] {msg}", flush=True)
 
     modes = (
-        ["memory", "conversation", "document"] if args.mode == "all" else [args.mode]
+        ["memory", "conversation", "document", "knowledge"] if args.mode == "all" else [args.mode]
     )
     reports = []
 
@@ -621,7 +819,7 @@ def main():
 
     # Mode + dataset
     p.add_argument(
-        "--mode", required=True, choices=["memory", "conversation", "document", "all"]
+        "--mode", required=True, choices=["memory", "conversation", "document", "knowledge", "all"]
     )
     p.add_argument(
         "--dataset",
@@ -654,6 +852,18 @@ def main():
 
     # Eval params
     p.add_argument("--top-k", type=int, default=10, help="Retrieval limit")
+    p.add_argument(
+        "--ingest-method",
+        default="store",
+        choices=["store", "mcp"],
+        help="Ingest method for conversation mode: store (observations) or mcp (prepare/commit/end lifecycle)",
+    )
+    p.add_argument(
+        "--retrieve-method",
+        default="search",
+        choices=["search", "recall"],
+        help="Retrieval method: search (raw vector search) or recall (context_recall with IntentRouter + multi-query)",
+    )
     p.add_argument(
         "--max-context-tokens", type=int, default=32000, help="Baseline prompt budget"
     )

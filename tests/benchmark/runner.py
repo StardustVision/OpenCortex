@@ -85,13 +85,32 @@ def seed_memories(base_url: str, memories: List[Dict], jwt_token: str,
 def search_via_http(
     base_url: str, query: str, limit: int, jwt_token: str,
     timeout: int = 30, collection: str = ""
-) -> List[str]:
-    """Search and return ranked URIs."""
+) -> tuple[List[str], Dict[str, Any]]:
+    """Search and return ranked URIs plus the raw payload."""
     payload = {"query": query, "limit": limit, "detail_level": "l1"}
     result = _http_post(base_url, "/api/v1/memory/search", payload, jwt_token, timeout,
                         collection=collection)
     items = result.get("results", [])
-    return [item.get("uri", "") for item in items if isinstance(item, dict) and item.get("uri")]
+    uris = [item.get("uri", "") for item in items if isinstance(item, dict) and item.get("uri")]
+    return uris, result
+
+
+def _extract_search_attribution(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract phase attribution from a search response without affecting metrics."""
+    memory_pipeline = result.get("memory_pipeline", {})
+    probe = memory_pipeline.get("probe") or memory_pipeline.get("route") or {}
+    planner = memory_pipeline.get("planner") or {}
+    runtime = memory_pipeline.get("runtime") or {}
+    runtime_trace = runtime.get("trace") or {}
+    runtime_degrade = runtime.get("degrade") or {}
+    return {
+        "probe": probe,
+        "planner": planner,
+        "runtime": {
+            "trace": runtime_trace,
+            "degrade": runtime_degrade,
+        },
+    }
 
 
 def run_benchmark(
@@ -153,12 +172,31 @@ def run_benchmark(
 
         # Phase 3: Run search + compute metrics
         print(f"Running {len(eval_rows)} queries (k={ks})...", file=sys.stderr)
+        attribution_by_query_id: Dict[str, Dict[str, Any]] = {}
 
         def _search(item: Dict[str, Any], k: int) -> List[str]:
-            return search_via_http(base_url, item["query"], k, jwt_token, timeout,
-                                   collection=collection_name)
+            uris, raw_result = search_via_http(
+                base_url,
+                item["query"],
+                k,
+                jwt_token,
+                timeout,
+                collection=collection_name,
+            )
+            attribution_by_query_id[item["query_id"]] = _extract_search_attribution(raw_result)
+            return uris
 
         report = evaluate_dataset(dataset=eval_rows, ks=ks, search_fn=_search)
+
+        query_attribution: List[Dict[str, Any]] = []
+        for item in eval_rows:
+            query_attribution.append(
+                {
+                    "query_id": item["query_id"],
+                    "query": item["query"],
+                    "attribution": attribution_by_query_id.get(item["query_id"], {}),
+                }
+            )
 
         # Add metadata
         report["metadata"] = {
@@ -171,6 +209,7 @@ def run_benchmark(
             "ks": ks,
             "collection_isolated": bool(collection_name),
         }
+        report["attribution"] = query_attribution
 
         return report
 

@@ -9,6 +9,7 @@ Retrieve: oc.search(context_type="resource") to filter document chunks only.
 
 import json
 import time
+from hashlib import md5
 from typing import Any, Dict, List, Tuple
 
 from benchmarks.adapters.base import EvalAdapter, IngestResult, QAItem
@@ -37,6 +38,10 @@ def _detect_document_dataset(data: Any) -> str:
 
 class DocumentAdapter(EvalAdapter):
     """QASPER / LongBench / CMRC 2018 evaluation adapter."""
+
+    def __init__(self):
+        super().__init__()
+        self._retrieve_method: str = "search"
 
     def load_dataset(self, dataset_path: str, **kwargs) -> None:
         with open(dataset_path, encoding="utf-8") as f:
@@ -225,12 +230,24 @@ class DocumentAdapter(EvalAdapter):
         return ""
 
     async def retrieve(self, oc: Any, qa_item: QAItem, top_k: int) -> Tuple[List[Dict], float]:
-        """Search document chunks with context_type='resource' filter."""
+        """Search document chunks via search (default) or context_recall (production path)."""
         t0 = time.perf_counter()
-        results = await oc.search(
-            query=qa_item.question,
-            limit=top_k,
-            context_type="resource",
-        )
+
+        if self._retrieve_method == "recall":
+            sid = "ev-doc-" + md5(qa_item.question.encode()).hexdigest()[:12]
+            result = await oc.context_recall(
+                session_id=sid,
+                query=qa_item.question,
+                limit=top_k,
+                detail_level="l0",
+            )
+            results = result.get("memory", [])
+        else:
+            results = await oc.search(
+                query=qa_item.question,
+                limit=top_k,
+                context_type="resource",
+            )
+
         latency_ms = (time.perf_counter() - t0) * 1000
         return results, latency_ms

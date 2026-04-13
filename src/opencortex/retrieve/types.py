@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # SPDX-License-Identifier: Apache-2.0
 """
 Data types for OpenCortex retrieval module.
@@ -9,6 +11,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
+from opencortex.intent.types import (
+    ExecutionResult,
+    RetrievalPlan,
+    SearchResult,
+)
 
 class ContextType(str, Enum):
     """Context type for retrieval."""
@@ -22,53 +29,12 @@ class ContextType(str, Enum):
     ANY = "any"  # Global search without context_type filter
 
 
-# Categories where existing memories should be updated (merged) rather than
-# creating duplicates.  Non-mergeable categories (events, cases) always produce
-# new records because each occurrence is unique.
-MERGEABLE_CATEGORIES = frozenset({"profile", "preferences", "entities", "patterns"})
-
-
 class DetailLevel(str, Enum):
     """Detail level for retrieval results."""
 
     L0 = "l0"  # abstract only
     L1 = "l1"  # abstract + overview
     L2 = "l2"  # abstract + overview + full content
-
-
-class RecallSurface(str, Enum):
-    """Recall surfaces that define where to fetch context."""
-
-    MEMORY = "memory"
-    TRACE = "trace"
-    KNOWLEDGE = "knowledge"
-
-
-@dataclass
-class RecallPlan:
-    """Explicit recall plan emitted by Autophagy-level planners."""
-
-    should_recall: bool
-    surfaces: List[RecallSurface]
-    detail_level: DetailLevel
-    memory_limit: int
-    knowledge_limit: int
-    enable_cone: bool
-    fusion_policy: str
-    reasoning: str = ""
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Serialize the recall plan for observability and HTTP payloads."""
-        return {
-            "should_recall": self.should_recall,
-            "surfaces": [surface.value for surface in self.surfaces],
-            "detail_level": self.detail_level.value,
-            "memory_limit": self.memory_limit,
-            "knowledge_limit": self.knowledge_limit,
-            "enable_cone": self.enable_cone,
-            "fusion_policy": self.fusion_policy,
-            "reasoning": self.reasoning,
-        }
 
 
 class TraceEventType(str, Enum):
@@ -356,22 +322,6 @@ class QueryPlan:
 
 
 @dataclass
-class SearchIntent:
-    """Intent Router output that drives retrieval behavior."""
-
-    intent_type: str = "quick_lookup"
-    top_k: int = 5
-    detail_level: DetailLevel = DetailLevel.L1
-    time_scope: str = "all"  # recent | session | all
-    need_rerank: bool = True
-    should_recall: bool = True
-    trigger_categories: List[str] = field(default_factory=list)
-    queries: List[TypedQuery] = field(default_factory=list)
-    lexical_boost: float = 0.3  # RRF weight for lexical path (0.55 for hard keywords)
-    recall_plan: Optional["RecallPlan"] = None
-
-
-@dataclass
 class RelatedContext:
     """Related context with summary."""
 
@@ -418,6 +368,7 @@ class QueryResult:
     matched_contexts: List[MatchedContext]
     searched_directories: List[str]
     thinking_trace: ThinkingTrace = field(default_factory=ThinkingTrace)
+    timing_ms: Dict[str, float] = field(default_factory=dict)
     explain: Optional[SearchExplain] = None
 
     def get_trace_messages(self) -> List[str]:
@@ -436,7 +387,7 @@ class FindResult:
         skills: Matched skill contexts
         query_plan: Query plan used
         query_results: Detailed results for each query
-        total: Total match count
+    total: Total match count
     """
 
     memories: List[MatchedContext]
@@ -444,7 +395,9 @@ class FindResult:
     skills: List[MatchedContext]
     query_plan: Optional[QueryPlan] = None
     query_results: Optional[List[QueryResult]] = None
-    search_intent: Optional[SearchIntent] = None
+    probe_result: Optional[SearchResult] = None
+    retrieve_plan: Optional[RetrievalPlan] = None
+    runtime_result: Optional[ExecutionResult] = None
     total: int = 0
     explain_summary: Optional[SearchExplainSummary] = None
 
@@ -472,30 +425,22 @@ class FindResult:
                 "queries": [self._query_to_dict(q) for q in self.query_plan.queries],
             }
 
-        if self.search_intent:
-            recall_plan = self.search_intent.recall_plan
-            result["search_intent"] = {
-                "intent_type": self.search_intent.intent_type,
-                "top_k": self.search_intent.top_k,
-                "detail_level": (
-                    recall_plan.detail_level.value
-                    if recall_plan
-                    else self.search_intent.detail_level.value
-                ),
-                "time_scope": self.search_intent.time_scope,
-                "need_rerank": self.search_intent.need_rerank,
-                "should_recall": (
-                    recall_plan.should_recall
-                    if recall_plan
-                    else self.search_intent.should_recall
-                ),
-                "trigger_categories": self.search_intent.trigger_categories,
-                "lexical_boost": self.search_intent.lexical_boost,
-            }
-            if recall_plan:
-                result["recall_plan"] = recall_plan.to_dict()
+        memory_pipeline = self.memory_pipeline_dict()
+        if memory_pipeline:
+            result["memory_pipeline"] = memory_pipeline
 
         return result
+
+    def memory_pipeline_dict(self) -> Optional[Dict[str, Any]]:
+        """Serialize phase-native memory pipeline metadata."""
+        pipeline: Dict[str, Any] = {}
+        if self.probe_result is not None:
+            pipeline["probe"] = self.probe_result.to_dict()
+        if self.retrieve_plan is not None:
+            pipeline["planner"] = self.retrieve_plan.to_dict()
+        if self.runtime_result is not None:
+            pipeline["runtime"] = self.runtime_result.to_dict()
+        return pipeline or None
 
     def _context_to_dict(self, ctx: MatchedContext) -> Dict[str, Any]:
         """Convert MatchedContext to dict."""

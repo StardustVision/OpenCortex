@@ -49,6 +49,15 @@ class TestDocumentMode(unittest.TestCase):
                     )
                     self.assertIsNotNone(result)
                     self.assertIsNotNone(result.uri)
+                    records = await orch._storage.filter("context", None, limit=50)
+                    leaf_records = [record for record in records if record.get("is_leaf")]
+                    self.assertGreaterEqual(len(leaf_records), 2)
+                    self.assertTrue(
+                        all(record.get("abstract_json") for record in leaf_records)
+                    )
+                    self.assertTrue(
+                        all(record.get("memory_kind") for record in leaf_records)
+                    )
                 finally:
                     reset_request_identity(tokens)
             finally:

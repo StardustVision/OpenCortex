@@ -4,11 +4,15 @@
   "data_root": "/data",
 
   "embedding_provider": "local",
-  "embedding_dimension": 1024,
+  "embedding_dimension": 384,
+  "embedding_model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
 
   "llm_model": "",
   "llm_api_key": "",
   "llm_api_base": "",
+
+  "rerank_provider": "local",
+  "rerank_model": "jinaai/jina-reranker-v2-base-multilingual",
 
   "cortex_alpha": {
     "observer_enabled": true,

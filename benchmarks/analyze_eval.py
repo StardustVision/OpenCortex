@@ -10,6 +10,23 @@ from collections import defaultdict
 from typing import Dict, List
 
 
+CAT_NAMES = {
+    # LoCoMo categories
+    "1": "Single-hop factual",
+    "2": "Multi-hop factual",
+    "3": "Temporal",
+    "4": "Open-domain",
+    "5": "Adversarial (excluded)",
+    # LongMemEval question types
+    "single-session-user": "Single-Session (User)",
+    "single-session-assistant": "Single-Session (Assistant)",
+    "single-session-preference": "Single-Session (Preference)",
+    "multi-session": "Multi-Session",
+    "temporal-reasoning": "Temporal Reasoning",
+    "knowledge-update": "Knowledge Update",
+}
+
+
 def analyze(report_path: str) -> None:
     with open(report_path) as f:
         report = json.load(f)
@@ -22,6 +39,7 @@ def analyze(report_path: str) -> None:
     acc = report.get("accuracy", {})
     ret = report.get("retrieval", {})
     meta = report.get("metadata", {})
+    mode = report.get("mode", "")
 
     print(f"=== Report: {report_path} ===")
     print(f"Run ID: {meta.get('run_id', '?')}")
@@ -50,7 +68,7 @@ def analyze(report_path: str) -> None:
             bl_j = bl_j_by_cat.get(cat, {}).get("jscore", 0)
             n = oc_j_by_cat.get(cat, {}).get("n", bl_j_by_cat.get(cat, {}).get("n", 0))
             delta = oc_j - bl_j
-            name = cat_names.get(cat, f"Category {cat}")
+            name = CAT_NAMES.get(cat, f"Category {cat}")
             print(f"  Cat {cat} ({name}): OC={oc_j:.4f} BL={bl_j:.4f} Δ={delta:+.4f} (n={n})")
 
         # Per-query J-score wins/ties
@@ -71,19 +89,12 @@ def analyze(report_path: str) -> None:
 
     # Per-category F1
     print("=== Per-Category F1 ===")
-    cat_names = {
-        "1": "Single-hop factual",
-        "2": "Multi-hop factual",
-        "3": "Temporal",
-        "4": "Open-domain",
-        "5": "Adversarial (excluded)",
-    }
     oc_by_cat = f1_data.get("by_category", {})
     bl_by_cat = acc.get("baseline_by_category", {})
     for cat in sorted(set(list(oc_by_cat.keys()) + list(bl_by_cat.keys()))):
         oc = oc_by_cat.get(cat, {})
         bl = bl_by_cat.get(cat, {})
-        name = cat_names.get(cat, f"Category {cat}")
+        name = CAT_NAMES.get(cat, f"Category {cat}")
         oc_f1 = oc.get("f1", 0)
         bl_f1 = bl.get("f1", 0)
         n = oc.get("n", bl.get("n", 0))
@@ -107,7 +118,7 @@ def analyze(report_path: str) -> None:
         print("=== Retrieval Per-Category ===")
         for cat in sorted(ret_by_cat.keys()):
             data = ret_by_cat[cat]
-            name = cat_names.get(cat, f"Cat {cat}")
+            name = CAT_NAMES.get(cat, f"Cat {cat}")
             print(f"  Cat {cat} ({name}):")
             print(f"    Recall@5={data.get('recall@5', 0):.4f} "
                   f"HitRate@5={data.get('hit_rate@5', 0):.4f} "
@@ -170,6 +181,48 @@ def analyze(report_path: str) -> None:
         print(f"  P50: {lat.get('p50_ms', '?')}ms")
         print(f"  P95: {lat.get('p95_ms', '?')}ms")
         print(f"  Mean: {lat.get('mean_ms', '?')}ms")
+
+    # Knowledge quality metrics (mode=knowledge)
+    if mode == "knowledge":
+        print("=== Knowledge Quality Metrics ===")
+        print(f"  Recall: {acc.get('knowledge_recall', '?')}")
+        print(f"  Precision: {acc.get('knowledge_precision', '?')}")
+        print(f"  Type Accuracy: {acc.get('type_accuracy', '?')}")
+        print(f"  Hallucination Rate: {acc.get('hallucination_rate', '?')}")
+        ci = acc.get("recall_ci", {})
+        if ci:
+            print(f"  Recall 95% CI: [{ci.get('lower')}, {ci.get('upper')}]")
+        print()
+
+        # Per-cluster breakdown
+        by_cluster = acc.get("by_cluster", {})
+        if by_cluster:
+            print("=== Per-Cluster Knowledge Quality ===")
+            for cid, data in sorted(by_cluster.items()):
+                print(f"  {cid}:")
+                print(f"    Recall={data.get('recall', 0):.2f} "
+                      f"Precision={data.get('precision', 0):.2f} "
+                      f"TypeAcc={data.get('type_accuracy', 0):.2f} "
+                      f"(expected={data.get('n_expected', 0)} extracted={data.get('n_extracted', 0)})")
+            print()
+
+        # Match details
+        if pq:
+            print("=== Match Details ===")
+            for q in pq:
+                cid = q.get("cluster_id", "?")
+                matches = q.get("matches", [])
+                if not matches:
+                    continue
+                print(f"  {cid}: {len(matches)} matches")
+                for m in matches:
+                    if m.get("expected_idx", -1) >= 0:
+                        print(f"    ✓ matched expected #{m['expected_idx']}: {m.get('expected', '')[:60]}")
+                        if not m.get("type_match"):
+                            print(f"      ⚠ type mismatch")
+                    else:
+                        print(f"    ✗ hallucination: {m.get('extracted', '')[:60]}")
+            print()
 
 
 if __name__ == "__main__":

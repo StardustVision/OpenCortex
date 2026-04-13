@@ -635,8 +635,7 @@ class TestE2EPhase1(unittest.TestCase):
             )
         )
         self.assertEqual(len(records), 1)
-        # Overview-first: L0 abstract is extracted from L1 overview, not the user input
-        self.assertIn("Dark theme everywhere", records[0]["abstract"])
+        self.assertIn("User prefers dark theme in all editors", records[0]["abstract"])
 
         # Verify filesystem (L0 abstract written)
         abstract_path = os.path.join(
@@ -645,9 +644,10 @@ class TestE2EPhase1(unittest.TestCase):
             ctx.uri.split("/")[-1],
             ".abstract.md",
         )
+        self._run(asyncio.sleep(0.05))
         self.assertTrue(os.path.exists(abstract_path), f"Abstract file should exist at {abstract_path}")
         with open(abstract_path, "r") as f:
-            self.assertIn("Dark theme everywhere", f.read())
+            self.assertIn("User prefers dark theme in all editors", f.read())
 
     def test_03_add_resource(self):
         """Add a shared resource and verify it's team-level."""
@@ -1260,11 +1260,11 @@ class TestAutoUri(unittest.TestCase):
 
     def test_skill_error_fixes(self):
         uri = self._auto_uri("skill", "error_fixes")
-        self.assertIn("/shared/skills/error_fixes/", uri)
+        self.assertIn("/alice/memories/events/", uri)
 
     def test_skill_empty_defaults_to_general(self):
         uri = self._auto_uri("skill", "")
-        self.assertIn("/shared/skills/general/", uri)
+        self.assertIn("/alice/memories/events/", uri)
 
     def test_resource_documents(self):
         uri = self._auto_uri("resource", "documents")
@@ -1498,7 +1498,7 @@ class TestScopeAwareSearch(unittest.TestCase):
     def _build_orch(self, storage):
         from opencortex.orchestrator import MemoryOrchestrator
         from opencortex.config import CortexConfig
-        from opencortex.retrieve.hierarchical_retriever import HierarchicalRetriever
+        from opencortex.intent import MemoryBootstrapProbe
         cfg = CortexConfig(embedding_provider="none")
         orch = MemoryOrchestrator(config=cfg)
         orch._storage = storage
@@ -1512,25 +1512,25 @@ class TestScopeAwareSearch(unittest.TestCase):
         from opencortex.storage.cortex_fs import CortexFS
         import tempfile
         orch._fs = CortexFS(data_root=tempfile.mkdtemp())
-        # Initialize retriever so search() works
-        orch._retriever = HierarchicalRetriever(
+        orch._memory_probe = MemoryBootstrapProbe(
             storage=storage,
             embedder=MockEmbedder(),
+            collection_resolver=orch._get_collection,
+            filter_builder=orch._build_probe_filter,
         )
         return orch
 
 
 class TestMergeBehavior(unittest.TestCase):
-    """Mergeable categories should update existing instead of creating duplicate."""
+    """Merge policy should come from normalized memory-kind policy."""
 
-    def test_mergeable_categories_constant(self):
-        from opencortex.retrieve.types import MERGEABLE_CATEGORIES
-        self.assertIn("profile", MERGEABLE_CATEGORIES)
-        self.assertIn("preferences", MERGEABLE_CATEGORIES)
-        self.assertIn("entities", MERGEABLE_CATEGORIES)
-        self.assertIn("patterns", MERGEABLE_CATEGORIES)
-        self.assertNotIn("events", MERGEABLE_CATEGORIES)
-        self.assertNotIn("cases", MERGEABLE_CATEGORIES)
+    def test_memory_kind_policy_mergeability(self):
+        from opencortex.memory import MemoryKind, memory_kind_policy
+
+        self.assertTrue(memory_kind_policy(MemoryKind.PROFILE).mergeable)
+        self.assertTrue(memory_kind_policy(MemoryKind.PREFERENCE).mergeable)
+        self.assertFalse(memory_kind_policy(MemoryKind.EVENT).mergeable)
+        self.assertFalse(memory_kind_policy(MemoryKind.DOCUMENT_CHUNK).mergeable)
 
 
 class TestMigrationBackfill(unittest.TestCase):

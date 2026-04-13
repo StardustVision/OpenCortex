@@ -12,12 +12,17 @@ Retrieve: Direct oc.search() (no session context).
 import json
 import time
 from typing import Any, Dict, List, Tuple
+from hashlib import md5
 
 from benchmarks.adapters.base import EvalAdapter, IngestResult, QAItem
 
 
 class MemoryAdapter(EvalAdapter):
     """PersonaMem v2 evaluation adapter."""
+
+    def __init__(self):
+        super().__init__()
+        self._retrieve_method: str = "search"
 
     def load_dataset(self, dataset_path: str, **kwargs) -> None:
         with open(dataset_path, encoding="utf-8") as f:
@@ -136,8 +141,20 @@ class MemoryAdapter(EvalAdapter):
         return "Known facts about the user:\n" + "\n".join(lines)
 
     async def retrieve(self, oc: Any, qa_item: QAItem, top_k: int) -> Tuple[List[Dict], float]:
-        """Direct memory search (no session context)."""
+        """Memory retrieval via search (default) or context_recall (production path)."""
         t0 = time.perf_counter()
-        results = await oc.search(query=qa_item.question, limit=top_k)
+
+        if self._retrieve_method == "recall":
+            sid = "ev-mem-" + md5(qa_item.question.encode()).hexdigest()[:12]
+            result = await oc.context_recall(
+                session_id=sid,
+                query=qa_item.question,
+                limit=top_k,
+                detail_level="l0",
+            )
+            results = result.get("memory", [])
+        else:
+            results = await oc.search(query=qa_item.question, limit=top_k)
+
         latency_ms = (time.perf_counter() - t0) * 1000
         return results, latency_ms

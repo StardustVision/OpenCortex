@@ -1,14 +1,15 @@
 """
-Unified evaluation scoring: F1 token overlap + LLM-as-Judge.
+Unified evaluation scoring: F1 token overlap, BLEU-1, NDCG, LLM-as-Judge.
 
 Migrated from benchmarks/locomo_eval.py with generalized category handling.
 """
 
 import json as _json
+import math
 import re
 import string
 from collections import Counter
-from typing import Any
+from typing import Any, List, Sequence
 
 
 def _normalize(s: str) -> str:
@@ -86,6 +87,53 @@ def supporting_fact_f1(retrieved_titles: set, gold_titles: set) -> float:
     prec = len(common) / len(retrieved_titles)
     rec = len(common) / len(gold_titles)
     return (2 * prec * rec) / (prec + rec)
+
+
+# ---------------------------------------------------------------------------
+# BLEU-1 (LoCoMo official generation metric)
+# ---------------------------------------------------------------------------
+
+def bleu1_score(prediction: str, ground_truth: str) -> float:
+    """BLEU-1 (unigram precision) between prediction and ground truth.
+
+    Used as official metric in LoCoMo benchmark for response generation quality.
+    """
+    pred_tokens = _normalize(prediction).split()
+    gt_tokens = _normalize(ground_truth).split()
+    if not pred_tokens or not gt_tokens:
+        return 0.0
+    gt_counts = Counter(gt_tokens)
+    clipped = 0
+    for tok in pred_tokens:
+        if gt_counts.get(tok, 0) > 0:
+            clipped += 1
+            gt_counts[tok] -= 1
+    # Brevity penalty
+    bp = 1.0 if len(pred_tokens) >= len(gt_tokens) else math.exp(1 - len(gt_tokens) / len(pred_tokens))
+    return bp * clipped / len(pred_tokens)
+
+
+# ---------------------------------------------------------------------------
+# NDCG@k (Normalized Discounted Cumulative Gain)
+# ---------------------------------------------------------------------------
+
+def ndcg_from_relevances(relevances: Sequence[float], k: int) -> float:
+    """Compute NDCG@k from a list of relevance scores (ordered by rank).
+
+    Args:
+        relevances: relevance score per retrieved item (1.0 = relevant, 0.0 = not).
+        k: cutoff rank.
+    """
+    relevances = list(relevances[:k])
+    if not relevances:
+        return 0.0
+
+    def _dcg(scores: List[float]) -> float:
+        return sum(s / math.log2(i + 2) for i, s in enumerate(scores))
+
+    actual = _dcg(relevances)
+    ideal = _dcg(sorted(relevances, reverse=True))
+    return actual / ideal if ideal > 0 else 0.0
 
 
 def _parse_judge_score(response: str) -> float:

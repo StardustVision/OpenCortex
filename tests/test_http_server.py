@@ -356,6 +356,10 @@ async def _test_app_context():
     config = CortexConfig(
         data_root=temp_dir,
         embedding_dimension=MockEmbedder.DIMENSION,
+        rerank_provider="disabled",
+        query_classifier_enabled=False,
+        hyde_enabled=False,
+        explain_enabled=False,
     )
     init_config(config)
 
@@ -452,17 +456,80 @@ class TestHTTPServer(unittest.TestCase):
                 self.assertIn("results", data)
                 self.assertGreater(len(data["results"]), 0)
                 self.assertGreater(data["total"], 0)
-                self.assertIn("search_intent", data)
-                self.assertIn("recall_plan", data)
-                self.assertEqual(data["recall_plan"]["surfaces"], ["memory"])
+                self.assertIn("memory_pipeline", data)
+                self.assertIn("probe", data["memory_pipeline"])
+                self.assertIn("planner", data["memory_pipeline"])
+                self.assertIn("runtime", data["memory_pipeline"])
+                self.assertNotIn("search_intent", data)
+                self.assertNotIn("recall_plan", data)
+                self.assertTrue(data["memory_pipeline"]["probe"]["should_recall"])
+                planned_depth = data["memory_pipeline"]["planner"]["retrieval_depth"]
+                self.assertIn(planned_depth, {"l0", "l1"})
                 self.assertEqual(
-                    data["search_intent"]["should_recall"],
-                    data["recall_plan"]["should_recall"],
+                    data["memory_pipeline"]["runtime"]["trace"]["effective"][
+                        "retrieval_depth"
+                    ],
+                    planned_depth,
+                )
+                self.assertIn(
+                    "probe",
+                    data["memory_pipeline"]["runtime"]["trace"],
                 )
                 self.assertEqual(
-                    data["search_intent"]["detail_level"],
-                    data["recall_plan"]["detail_level"],
+                    sorted(
+                        data["memory_pipeline"]["runtime"]["trace"][
+                            "probe"
+                        ].keys()
+                    ),
+                    [
+                        "anchor_hits",
+                        "candidate_entries",
+                        "evidence",
+                        "should_recall",
+                        "trace",
+                    ],
                 )
+                self.assertIn(
+                    "latency_ms",
+                    data["memory_pipeline"]["runtime"]["trace"],
+                )
+                self.assertEqual(
+                    sorted(
+                        data["memory_pipeline"]["runtime"]["trace"][
+                            "latency_ms"
+                        ]["stages"
+                        ].keys()
+                    ),
+                    ["aggregate", "bind", "plan", "probe", "retrieve", "total"],
+                )
+                self.assertEqual(
+                    sorted(
+                        data["memory_pipeline"]["runtime"]["trace"][
+                            "latency_ms"
+                        ]["retrieve"
+                        ].keys()
+                    ),
+                    ["assemble", "embed", "rerank", "search", "total"],
+                )
+
+        self._run(check())
+
+    def test_03b_intent_should_recall_returns_phase1_contract(self):
+        """POST /api/v1/intent/should_recall returns phase-1 probe semantics."""
+        async def check():
+            async with _test_app_context() as client:
+                resp = await client.post("/api/v1/intent/should_recall", json={
+                    "query": "What did we discuss yesterday?",
+                })
+                self.assertEqual(resp.status_code, 200)
+                data = resp.json()
+                self.assertEqual(
+                    set(data.keys()),
+                    {"should_recall", "anchor_hits", "candidate_entries", "evidence", "trace"},
+                )
+                self.assertTrue(data["should_recall"])
+                self.assertIn("candidate_count", data["evidence"])
+                self.assertIn("top_k", data["trace"])
 
         self._run(check())
 

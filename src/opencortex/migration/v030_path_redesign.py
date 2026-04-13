@@ -2,7 +2,7 @@
 
 import logging
 
-from opencortex.retrieve.types import MERGEABLE_CATEGORIES
+from opencortex.memory import infer_memory_kind, memory_kind_policy
 from opencortex.utils.uri import CortexURI
 
 logger = logging.getLogger(__name__)
@@ -34,8 +34,9 @@ def infer_category(uri: str) -> str:
 
 
 def infer_mergeable(category: str) -> bool:
-    """Check if a category supports merging."""
-    return category in MERGEABLE_CATEGORIES
+    """Check if a legacy category maps to a mergeable memory kind."""
+    memory_kind = infer_memory_kind(category=category)
+    return memory_kind_policy(memory_kind).mergeable
 
 
 async def backfill_new_fields(storage, collection: str) -> int:

@@ -1,8 +1,8 @@
 """
-Local embedding via FastEmbed (BGE-M3 ONNX inference).
+Local embedding via FastEmbed ONNX inference.
 
 Falls back to remote API if local model fails to load.
-Provides ~10-30ms CPU embedding without network latency.
+Provides low-latency local CPU embedding when paired with a lightweight model.
 """
 
 import logging
@@ -12,6 +12,10 @@ from opencortex.models.embedder.base import EmbedderBase, EmbedResult
 
 logger = logging.getLogger(__name__)
 
+
+DEFAULT_LOCAL_EMBEDDING_MODEL = (
+    "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+)
 
 _E5_PREFIXES = frozenset(("intfloat/e5-", "intfloat/multilingual-e5-"))
 
@@ -25,7 +29,7 @@ class LocalEmbedder(EmbedderBase):
 
     def __init__(
         self,
-        model_name: str = "intfloat/multilingual-e5-large",
+        model_name: str = DEFAULT_LOCAL_EMBEDDING_MODEL,
         config: Optional[Dict[str, Any]] = None,
     ):
         super().__init__(model_name=model_name, config=config)

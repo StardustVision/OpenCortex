@@ -89,7 +89,7 @@ Please output JSON:"""
 
 
 # =========================================================================
-# 2. Intent Router  (was: retrieve/intent_router.py)
+# 2. Intent Router
 # =========================================================================
 
 _ROUTER_PROMPT_TEMPLATE = """You are OpenCortex's Intent Router. Analyze the user query and determine:

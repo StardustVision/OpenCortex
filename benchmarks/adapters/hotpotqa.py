@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import time
+from hashlib import md5
 from typing import Any, Dict, List, Set, Tuple
 
 from benchmarks.adapters.base import EvalAdapter, IngestResult, QAItem
@@ -38,6 +39,7 @@ class HotPotQAAdapter(EvalAdapter):
         self._questions: List[Dict] = []
         # question_id → list of [title, sentences] for baseline context
         self._qid_to_context: Dict[int, List[Tuple[str, List[str]]]] = {}
+        self._retrieve_method: str = "search"
 
     def load_dataset(self, dataset_path: str, **kwargs) -> None:
         with open(dataset_path, encoding="utf-8") as f:
@@ -183,12 +185,24 @@ class HotPotQAAdapter(EvalAdapter):
     async def retrieve(
         self, oc: Any, qa_item: QAItem, top_k: int
     ) -> Tuple[List[Dict], float]:
-        """Search document chunks with context_type='resource' filter."""
+        """Search document chunks via search (default) or context_recall (production path)."""
         t0 = time.perf_counter()
-        results = await oc.search(
-            query=qa_item.question,
-            limit=top_k,
-            context_type="resource",
-        )
+
+        if self._retrieve_method == "recall":
+            sid = "ev-hp-" + md5(qa_item.question.encode()).hexdigest()[:12]
+            result = await oc.context_recall(
+                session_id=sid,
+                query=qa_item.question,
+                limit=top_k,
+                detail_level="l0",
+            )
+            results = result.get("memory", [])
+        else:
+            results = await oc.search(
+                query=qa_item.question,
+                limit=top_k,
+                context_type="resource",
+            )
+
         latency_ms = (time.perf_counter() - t0) * 1000
         return results, latency_ms

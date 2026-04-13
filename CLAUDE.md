@@ -98,6 +98,7 @@ tests/
   test_intent_*.py               # IntentRouter optimization tests
   test_conversation_*.py         # Conversation mode tests
   test_document_mode.py          # Document mode tests
+docs/solutions/                  # documented solutions to past problems and patterns, organized by category with YAML frontmatter (module, tags, problem_type)
 ```
 
 ## Development Conventions

@@ -83,7 +83,6 @@ class TestColdStartNonBlocking(unittest.IsolatedAsyncioTestCase):
         with patch.object(MemoryOrchestrator, "_startup_maintenance", slow_maintenance), \
              patch("opencortex.orchestrator.init_context_collection", new_callable=AsyncMock), \
              patch("opencortex.orchestrator.init_cortex_fs", return_value=MagicMock()), \
-             patch("opencortex.orchestrator.HierarchicalRetriever", return_value=MagicMock()), \
              patch.object(MemoryOrchestrator, "_create_default_embedder", return_value=None), \
              patch.object(MemoryOrchestrator, "_init_alpha", new_callable=AsyncMock):
 
@@ -161,7 +160,6 @@ class TestAutophagySweeperLifecycle(unittest.IsolatedAsyncioTestCase):
              patch.object(MemoryOrchestrator, "_autophagy_sweep_loop", slow_periodic_loop), \
              patch("opencortex.orchestrator.init_context_collection", new_callable=AsyncMock), \
              patch("opencortex.orchestrator.init_cortex_fs", return_value=MagicMock()), \
-             patch("opencortex.orchestrator.HierarchicalRetriever", return_value=MagicMock()), \
              patch.object(MemoryOrchestrator, "_create_default_embedder", return_value=None), \
              patch.object(MemoryOrchestrator, "_init_alpha", new_callable=AsyncMock), \
              patch.object(MemoryOrchestrator, "_init_skill_engine", new_callable=AsyncMock):
@@ -250,96 +248,6 @@ class TestAutophagySweeperLifecycle(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(trace_called.wait(), timeout=1.0)
 
 
-class TestFrontierStillStarvedBatch(unittest.IsolatedAsyncioTestCase):
-    async def test_still_starved_single_batch_query(self):
-        """3 still-starved parents → 3 searches total (main+comp+batch), not 5."""
-        from opencortex.retrieve.hierarchical_retriever import HierarchicalRetriever
-
-        call_count = 0
-
-        async def fake_search(**kwargs):
-            nonlocal call_count
-            call_count += 1
-            f = kwargs.get("filter", {})
-            conds = f.get("conds", [])
-            # On the 3rd call (still-starved batch), return one child for parent_a
-            if call_count == 3 and "parent_a" in conds:
-                return [{"uri": "child1", "parent_uri": "parent_a", "_score": 0.9,
-                         "is_leaf": True, "abstract": "x", "active_count": 0,
-                         "category": "", "keywords": ""}]
-            return []
-
-        storage = MagicMock()
-        storage.search = fake_search
-
-        hr = HierarchicalRetriever(
-            storage=storage,
-            embedder=None,
-            rerank_config=None,
-            llm_completion=None,
-            max_waves=1,
-        )
-
-        starting_points = [("parent_a", 0.9), ("parent_b", 0.8), ("parent_c", 0.7)]
-        await hr._frontier_search_impl(
-            query="test",
-            collection="context",
-            query_vector=[0.1] * 10,
-            sparse_query_vector=None,
-            starting_points=starting_points,
-            limit=5,
-            mode="wave",
-            threshold=None,
-            metadata_filter=None,
-            text_query="",
-        )
-
-        # 1 main wave + 1 compensation + 1 still-starved batch = 3, NOT 5
-        assert call_count == 3, f"Expected 3 search calls, got {call_count}"
-
-
-class TestResultAssemblyBatchedRelations(unittest.IsolatedAsyncioTestCase):
-    async def test_relations_read_in_two_batches_not_n(self):
-        """5 candidates → 5 get_relations + 1 read_batch total, not 5 read_batch."""
-        from opencortex.retrieve.hierarchical_retriever import HierarchicalRetriever
-        from opencortex.retrieve.types import ContextType, DetailLevel
-
-        read_batch_calls = []
-
-        async def fake_get_relations(uri):
-            return [f"rel_{uri}"]
-
-        async def fake_read_batch(uris, level="l0"):
-            read_batch_calls.append(sorted(uris))
-            return {u: f"abstract_{u}" for u in uris}
-
-        mock_fs = MagicMock()
-        mock_fs.get_relations = fake_get_relations
-        mock_fs.read_batch = fake_read_batch
-
-        with patch(
-            "opencortex.retrieve.hierarchical_retriever._get_cortex_fs",
-            return_value=mock_fs,
-        ):
-            hr = HierarchicalRetriever(
-                storage=MagicMock(), embedder=None,
-                rerank_config=None, llm_completion=None,
-            )
-            candidates = [
-                {"uri": f"oc://t/u/mem/c/n{i}", "abstract": f"a{i}",
-                 "overview": "", "is_leaf": True, "context_type": "memory",
-                 "category": "events", "keywords": "", "_final_score": 0.9}
-                for i in range(5)
-            ]
-            await hr._convert_to_matched_contexts(
-                candidates, ContextType.MEMORY, DetailLevel.L1,
-            )
-
-        # read_batch called exactly once (not 5 times)
-        assert len(read_batch_calls) == 1, (
-            f"Expected 1 read_batch call, got {len(read_batch_calls)}"
-        )
-        assert len(read_batch_calls[0]) == 5  # 5 unique related URIs in one call
 
 
 class TestBatchAddConcurrency(unittest.IsolatedAsyncioTestCase):

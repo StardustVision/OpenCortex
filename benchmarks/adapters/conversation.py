@@ -10,14 +10,34 @@ LoCoMo evaluation methodology (ACL 2024):
   - Recall@k: evidence dia_ids in QA items map to stored observation URIs.
   - Category 5 (adversarial): excluded from overall F1 per paper protocol.
 
+LongMemEval evaluation methodology (ICLR 2025):
+  - Ingest: Store haystack sessions as memory items (full session text).
+    Sessions are deduplicated across QA items by session_id.
+  - Retrieve: oc.search() for relevant sessions.
+  - Recall@k: answer_session_ids map to stored session URIs.
+  - 6 question types: single-session-user/assistant/preference,
+    multi-session, temporal-reasoning, knowledge-update.
+
 Dataset detection: auto-detects LoCoMo vs LongMemEval from JSON structure.
 """
 
 import json
 import time
+from hashlib import md5
 from typing import Any, Dict, List, Optional, Tuple
 
 from benchmarks.adapters.base import EvalAdapter, IngestResult, QAItem
+
+
+# LongMemEval question type → display name
+LME_QUESTION_TYPES = {
+    "single-session-user": "Single-Session (User)",
+    "single-session-assistant": "Single-Session (Assistant)",
+    "single-session-preference": "Single-Session (Preference)",
+    "multi-session": "Multi-Session",
+    "temporal-reasoning": "Temporal Reasoning",
+    "knowledge-update": "Knowledge Update",
+}
 
 
 def _parse_locomo_sessions(conv: Dict) -> List[Dict]:
@@ -116,6 +136,9 @@ class ConversationAdapter(EvalAdapter):
         super().__init__()
         # Keyed by (conv_id, dia_id) — dia_ids are NOT unique across conversations.
         self._dia_id_to_uri: Dict[Tuple[str, str], str] = {}
+        # MCP lifecycle: session_id → URI mapping
+        self._session_id_to_uri: Dict[str, str] = {}
+        self._retrieve_method: str = "search"
 
     def load_dataset(self, dataset_path: str, **kwargs) -> None:
         with open(dataset_path, encoding="utf-8") as f:
@@ -134,131 +157,224 @@ class ConversationAdapter(EvalAdapter):
             k.startswith("session_") for k in first.get("conversation", {})
         ):
             self._dataset_type = "locomo"
+        elif "haystack_sessions" in first and "question_type" in first:
+            self._dataset_type = "longmemeval"
+            self._lme_session_map: Dict[str, Dict] = {}  # session_id → {messages, date}
         elif "sessions" in first:
             self._dataset_type = "longmemeval"
+            self._lme_session_map: Dict[str, Dict] = {}
         else:
             raise ValueError(
                 "Cannot detect dataset type. Expected LoCoMo (conversation.session_N) "
-                "or LongMemEval (sessions[].messages[])."
+                "or LongMemEval (haystack_sessions / sessions)."
             )
 
     async def ingest(self, oc: Any, **kwargs) -> IngestResult:
-        """Ingest observations via oc.store() (LoCoMo RAG methodology)."""
+        """Ingest observations (LoCoMo) or sessions (LongMemEval).
+
+        Supports two ingest methods (via ingest_method kwarg):
+          - 'store': Use oc.store() for each observation/session (default)
+          - 'mcp': Use MCP lifecycle (prepare/commit/end) for conversations
+        """
         max_conv = kwargs.get("max_conv", 0)
-        conversations = self._dataset
-        if max_conv > 0:
-            conversations = conversations[:max_conv]
+        max_qa = kwargs.get("max_qa", 0)
+        ingest_method = kwargs.get("ingest_method", "store")
 
         total = 0
         ingested = 0
         errors: List[str] = []
         self._dia_id_to_uri = {}
+        self._session_id_to_uri = {}
+        self._lme_session_to_uri: Dict[str, str] = {}
+        self._ingest_method = ingest_method
 
-        for conv in conversations:
-            conv_id = conv.get("sample_id", str(conversations.index(conv)))
+        if self._dataset_type == "locomo":
+            conversations = self._dataset
+            if max_conv > 0:
+                conversations = conversations[:max_conv]
 
-            if self._dataset_type == "locomo":
-                observations = _collect_observations(conv)
-                total += len(observations)
-
-                for obs in observations:
-                    # Include date and speaker for temporal grounding
-                    abstract = f"[{obs['session_date']}] {obs['speaker']}: {obs['text']}"
-                    # Embed on speaker+text only; the [date] prefix
-                    # adds noise that clusters all observations together.
-                    embed_text = f"{obs['speaker']}: {obs['text']}"
-                    try:
-                        result = await oc.store(
-                            abstract=abstract,
-                            category="observation",
-                            embed_text=embed_text,
-                            meta={
-                                "dia_id": obs["dia_id"],
-                                "speaker": obs["speaker"],
-                                "session_num": obs["session_num"],
-                                "conv_id": conv_id,
-                            },
-                        )
-                        uri = result.get("uri", "")
-                        if uri:
-                            self._dia_id_to_uri[(conv_id, obs["dia_id"])] = uri
-                        ingested += 1
-                    except Exception as e:
-                        errors.append(f"conv={conv_id} dia_id={obs['dia_id']}: {e}")
+            if ingest_method == "mcp":
+                # MCP lifecycle path: ingest sessions via context_commit
+                total, ingested, errors = await self._ingest_locomo_mcp(
+                    oc, conversations, total, ingested, errors
+                )
             else:
-                # LongMemEval: fall back to session-based ingest
-                sessions = self._parse_longmemeval_sessions(conv)
-                total += len(sessions)
-                for session in sessions:
-                    session_id = f"eval-{conv_id}-s{session['session_num']}"
-                    try:
-                        await self._ingest_longmemeval_session(oc, session, session_id)
-                        ingested += 1
-                    except Exception as e:
-                        errors.append(f"conv={conv_id} session={session['session_num']}: {e}")
+                # Default: ingest observations via oc.store()
+                for conv in conversations:
+                    conv_id = conv.get("sample_id", str(self._dataset.index(conv)))
+                    observations = _collect_observations(conv)
+                    total += len(observations)
+
+                    for obs in observations:
+                        abstract = f"[{obs['session_date']}] {obs['speaker']}: {obs['text']}"
+                        embed_text = f"{obs['speaker']}: {obs['text']}"
+                        try:
+                            result = await oc.store(
+                                abstract=abstract,
+                                category="observation",
+                                embed_text=embed_text,
+                                meta={
+                                    "dia_id": obs["dia_id"],
+                                    "speaker": obs["speaker"],
+                                    "session_num": obs["session_num"],
+                                    "conv_id": conv_id,
+                                },
+                            )
+                            uri = result.get("uri", "")
+                            if uri:
+                                self._dia_id_to_uri[(conv_id, obs["dia_id"])] = uri
+                            ingested += 1
+                        except Exception as e:
+                            errors.append(f"conv={conv_id} dia_id={obs['dia_id']}: {e}")
+
+        elif self._dataset_type == "longmemeval":
+            qa_items = self._dataset
+            if max_qa > 0:
+                qa_items = qa_items[:max_qa]
+
+            # Collect unique sessions across selected QA items
+            unique_sessions: Dict[str, Dict] = {}
+            for item in qa_items:
+                session_ids = item.get("haystack_session_ids", [])
+                sessions = item.get("haystack_sessions", [])
+                dates = item.get("haystack_dates", [])
+                for i, sid in enumerate(session_ids):
+                    if sid not in unique_sessions:
+                        msgs = sessions[i] if i < len(sessions) else []
+                        date = dates[i] if i < len(dates) else ""
+                        unique_sessions[sid] = {
+                            "messages": msgs,
+                            "date": date,
+                            "session_id": sid,
+                        }
+
+            total = len(unique_sessions)
+            self._lme_session_map = unique_sessions
+
+            # Ingest each unique session as a memory item
+            for sid, sess in unique_sessions.items():
+                msgs = sess["messages"]
+                date = sess["date"]
+                # Build session text
+                parts = []
+                for m in msgs:
+                    if isinstance(m, dict) and m.get("role") and m.get("content"):
+                        parts.append(f"{m['role']}: {m['content']}")
+                if not parts:
+                    continue
+                session_text = "\n".join(parts)
+                # Abstract: date + first user message (truncated)
+                first_user = next(
+                    (m["content"][:200] for m in msgs
+                     if isinstance(m, dict) and m.get("role") == "user"),
+                    ""
+                )
+                abstract = f"[{date}] {first_user}" if date else first_user
+                if len(abstract) > 300:
+                    abstract = abstract[:297] + "..."
+
+                try:
+                    result = await oc.store(
+                        abstract=abstract,
+                        content=session_text,
+                        category="conversation",
+                        embed_text=first_user or session_text[:500],
+                        meta={
+                            "session_id": sid,
+                            "date": date,
+                            "num_messages": len(msgs),
+                            "source": "longmemeval",
+                        },
+                    )
+                    uri = result.get("uri", "")
+                    if uri:
+                        self._lme_session_to_uri[sid] = uri
+                    ingested += 1
+                except Exception as e:
+                    errors.append(f"session={sid}: {e}")
 
         return IngestResult(
             total_items=total,
             ingested_items=ingested,
             errors=errors,
-            meta={"dia_id_count": len(self._dia_id_to_uri)},
+            meta={
+                "dia_id_count": len(self._dia_id_to_uri),
+                "lme_session_count": len(self._lme_session_to_uri),
+                "ingest_method": ingest_method,
+            },
         )
 
-    async def _ingest_longmemeval_session(
-        self, oc: Any, session: Dict, session_id: str
-    ) -> None:
-        """Fallback: ingest LongMemEval sessions via MCP flow."""
-        turns = session.get("turns", [])
-        msg_list = self._build_longmemeval_messages(turns)
-        turn_idx = 0
-        for j in range(0, len(msg_list) - 1, 2):
-            pair = msg_list[j:j + 2]
-            roles = {m["role"] for m in pair}
-            if "user" not in roles or "assistant" not in roles:
-                continue
-            turn_idx += 1
-            await oc.context_commit(
-                session_id=session_id,
-                turn_id=f"t{turn_idx}",
-                messages=pair,
-            )
-        await oc.context_end(session_id)
+    async def _ingest_locomo_mcp(
+        self,
+        oc: Any,
+        conversations: List[Dict],
+        total: int,
+        ingested: int,
+        errors: List[str],
+    ) -> Tuple[int, int, List[str]]:
+        """Ingest LoCoMo sessions via MCP lifecycle (prepare/commit/end).
 
-    def _build_longmemeval_messages(self, turns: List[Dict]) -> List[Dict[str, str]]:
-        return [
-            {"role": t["role"], "content": t["content"]}
-            for t in turns
-            if t.get("role") and t.get("content")
-        ]
+        Instead of storing observations, this ingests raw session turns
+        as conversation messages, letting the server handle chunking and
+        knowledge extraction.
+        """
+        for conv in conversations:
+            conv_id = conv.get("sample_id", str(self._dataset.index(conv)))
+            sessions = _parse_locomo_sessions(conv)
+            total += len(sessions)
 
-    def _parse_longmemeval_sessions(self, conv: Dict) -> List[Dict]:
-        sessions = []
-        for i, sess in enumerate(conv.get("sessions", [])):
-            sessions.append({
-                "session_num": i + 1,
-                "date_time": sess.get("date", ""),
-                "turns": sess.get("messages", []),
-            })
-        return sessions
+            for session in sessions:
+                session_id = f"eval-{conv_id}-s{session['session_num']}"
+                turns = session["turns"]
+                # Build user/assistant message pairs
+                turn_idx = 0
+                for turn in turns:
+                    speaker = turn.get("speaker", "")
+                    text = turn.get("text", "")
+                    if not text:
+                        continue
+
+                    # Determine role from speaker
+                    role = "user" if speaker.lower() in ("user", "person a") else "assistant"
+                    turn_idx += 1
+
+                    try:
+                        result = await oc.context_commit(
+                            session_id=session_id,
+                            turn_id=f"t{turn_idx}",
+                            messages=[{"role": role, "content": text}],
+                        )
+                        uri = result.get("uri", "")
+                        if uri:
+                            dia_id = turn.get("dia_id", f"turn_{turn_idx}")
+                            self._dia_id_to_uri[(conv_id, dia_id)] = uri
+                    except Exception as e:
+                        errors.append(f"conv={conv_id} session={session_id} t={turn_idx}: {e}")
+
+                # End session → triggers Alpha pipeline
+                try:
+                    await oc.context_end(session_id)
+                    ingested += 1
+                except Exception as e:
+                    errors.append(f"conv={conv_id} end session={session_id}: {e}")
+
+        return total, ingested, errors
 
     def build_qa_items(self, **kwargs) -> List[QAItem]:
-        """Build QA items with evidence dia_ids mapped to stored URIs."""
+        """Build QA items with evidence dia_ids / session_ids mapped to stored URIs."""
         max_qa = kwargs.get("max_qa", 0)
         max_conv = kwargs.get("max_conv", 0)
         items: List[QAItem] = []
 
-        conversations = self._dataset
-        if max_conv > 0:
-            conversations = conversations[:max_conv]
+        if self._dataset_type == "locomo":
+            conversations = self._dataset
+            if max_conv > 0:
+                conversations = conversations[:max_conv]
 
-        for conv in conversations:
-            if self._dataset_type == "locomo":
+            for conv in conversations:
                 conv_id = conv.get("sample_id", "")
                 qa_list = conv.get("qa", [])
                 for q in qa_list:
-                    # Map evidence dia_ids to stored URIs for Recall@k.
-                    # dia_ids are NOT unique across conversations, so use
-                    # (conv_id, dia_id) composite key.
                     evidence = q.get("evidence", [])
                     expected_uris = [
                         self._dia_id_to_uri[(conv_id, eid)]
@@ -277,54 +393,129 @@ class ConversationAdapter(EvalAdapter):
                             "dataset": "locomo",
                         },
                     ))
-            else:
-                qa_list = conv.get("questions", [])
-                for q in qa_list:
-                    items.append(QAItem(
-                        question=q["question"],
-                        answer=str(q.get("answer", "")),
-                        category=q.get("category", ""),
-                        difficulty=q.get("difficulty", ""),
-                        meta={"conv_id": conv.get("id", ""), "dataset": "longmemeval"},
-                    ))
+
+        elif self._dataset_type == "longmemeval":
+            for item in self._dataset:
+                answer_sids = item.get("answer_session_ids", [])
+                expected_uris = [
+                    self._lme_session_to_uri[sid]
+                    for sid in answer_sids
+                    if sid in self._lme_session_to_uri
+                ]
+                items.append(QAItem(
+                    question=item["question"],
+                    answer=str(item.get("answer", "")),
+                    category=item.get("question_type", "unknown"),
+                    difficulty="",
+                    expected_ids=answer_sids,
+                    expected_uris=expected_uris,
+                    meta={
+                        "question_id": item.get("question_id", ""),
+                        "question_date": item.get("question_date", ""),
+                        "dataset": "longmemeval",
+                    },
+                ))
 
         if max_qa > 0:
             items = items[:max_qa]
         return items
 
     def get_baseline_context(self, qa_item: QAItem) -> str:
-        """Full conversation text for baseline evaluation (matches paper)."""
+        """Full conversation text for baseline evaluation."""
+        dataset = qa_item.meta.get("dataset", "")
+
+        if dataset == "longmemeval" or self._dataset_type == "longmemeval":
+            return self._lme_baseline_context(qa_item)
+
+        # LoCoMo path
         conv_id = qa_item.meta.get("conv_id", "")
         for conv in self._dataset:
             cid = conv.get("sample_id", conv.get("id", ""))
             if str(cid) != str(conv_id) and conv_id:
                 continue
-
-            if self._dataset_type == "locomo":
-                sessions = _parse_locomo_sessions(conv)
-                speakers = _get_locomo_speakers(sessions)
-                header = f"Conversation between {' and '.join(speakers)} over multiple sessions.\n\n"
-                return header + "\n\n".join(_fmt_locomo_session(s) for s in sessions)
-            else:
-                parts = []
-                for sess in conv.get("sessions", []):
-                    for msg in sess.get("messages", []):
-                        parts.append(f"{msg['role']}: {msg['content']}")
-                return "\n".join(parts)
+            sessions = _parse_locomo_sessions(conv)
+            speakers = _get_locomo_speakers(sessions)
+            header = f"Conversation between {' and '.join(speakers)} over multiple sessions.\n\n"
+            return header + "\n\n".join(_fmt_locomo_session(s) for s in sessions)
 
         return ""
 
-    async def retrieve(self, oc: Any, qa_item: QAItem, top_k: int) -> Tuple[List[Dict], float]:
-        """Memory search retrieval (matches paper's RAG methodology).
+    def _lme_baseline_context(self, qa_item: QAItem) -> str:
+        """Build baseline context from LongMemEval haystack sessions."""
+        qid = qa_item.meta.get("question_id", "")
+        # Find the QA item in the dataset
+        item = None
+        for d in self._dataset:
+            if d.get("question_id") == qid:
+                item = d
+                break
+        if not item:
+            return ""
 
-        Uses oc.search() instead of context_recall() since observations
-        are stored as memory items, not conversation transcripts.
+        session_ids = item.get("haystack_session_ids", [])
+        sessions = item.get("haystack_sessions", [])
+        dates = item.get("haystack_dates", [])
+
+        parts = []
+        for i in range(len(session_ids)):
+            msgs = sessions[i] if i < len(sessions) else []
+            date = dates[i] if i < len(dates) else ""
+            session_lines = [f"--- Session: {session_ids[i]} [{date}] ---"]
+            for m in msgs:
+                if isinstance(m, dict) and m.get("role") and m.get("content"):
+                    session_lines.append(f"{m['role']}: {m['content']}")
+            parts.append("\n".join(session_lines))
+        return "\n\n".join(parts)
+
+    async def retrieve(self, oc: Any, qa_item: QAItem, top_k: int) -> Tuple[List[Dict], float]:
+        """Memory search retrieval.
+
+        LoCoMo (store): searches observations (category=observation).
+        LoCoMo (mcp): uses context_recall for session-based retrieval.
+        LongMemEval: searches all conversations (no category filter).
+        --retrieve-method recall: always uses context_recall (production path).
         """
         t0 = time.perf_counter()
+
+        if self._dataset_type == "locomo" and self._ingest_method == "mcp":
+            # MCP path: use context_recall with the first session ID
+            conv_id = qa_item.meta.get("conv_id", "")
+            session_id = f"ev-{conv_id}-recall"
+            turn_id = "t-" + md5(qa_item.question.encode()).hexdigest()[:12]
+            result = await oc.context_recall(
+                session_id=session_id,
+                query=qa_item.question,
+                turn_id=turn_id,
+                limit=top_k,
+                detail_level="l0",
+            )
+            results = result.get("memory", [])
+            latency_ms = (time.perf_counter() - t0) * 1000
+            return results, latency_ms
+
+        if self._retrieve_method == "recall":
+            # Production path: context_recall with IntentRouter + multi-query
+            conv_id = qa_item.meta.get("conv_id", "")
+            qid = qa_item.meta.get("question_id", "")
+            session_id = f"ev-{conv_id or qid}-recall"
+            # Unique turn_id per question to avoid cache collision
+            turn_id = "t-" + md5(qa_item.question.encode()).hexdigest()[:12]
+            result = await oc.context_recall(
+                session_id=session_id,
+                query=qa_item.question,
+                turn_id=turn_id,
+                limit=top_k,
+                detail_level="l0",
+            )
+            results = result.get("memory", [])
+            latency_ms = (time.perf_counter() - t0) * 1000
+            return results, latency_ms
+
+        category = "observation" if self._dataset_type == "locomo" else ""
         results = await oc.search(
             query=qa_item.question,
             limit=top_k,
-            category="observation",
+            category=category,
             detail_level="l0",
         )
         latency_ms = (time.perf_counter() - t0) * 1000

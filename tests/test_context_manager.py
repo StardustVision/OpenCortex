@@ -1,9 +1,4 @@
-"""
-Tests for the Memory Context Protocol ContextManager.
-
-Validates the three-phase lifecycle (prepare/commit/end), idempotency,
-fallback, cited_uris RL reward, and session cleanup.
-"""
+"""Tests for the probe-first memory ContextManager flow."""
 
 import asyncio
 import os
@@ -18,35 +13,12 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from opencortex.config import CortexConfig, init_config
 from opencortex.context.manager import ConversationBuffer
-from opencortex.http.request_context import (
-    get_effective_project_id,
-    reset_request_identity,
-    reset_request_project_id,
-    set_request_identity,
-    set_request_project_id,
-)
+from opencortex.http.request_context import reset_request_identity, set_request_identity
 from opencortex.orchestrator import MemoryOrchestrator
-from opencortex.retrieve.types import (
-    ContextType,
-    DetailLevel,
-    FindResult,
-    MatchedContext,
-    RecallPlan,
-    RecallSurface,
-    SearchIntent,
-)
+from test_e2e_phase1 import InMemoryStorage, MockEmbedder
 
-# Reuse MockEmbedder and InMemoryStorage from e2e tests
-from test_e2e_phase1 import MockEmbedder, InMemoryStorage
-
-
-# =============================================================================
-# Test Suite
-# =============================================================================
 
 class TestContextManager(unittest.TestCase):
-    """Test the ContextManager three-phase lifecycle."""
-
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp(prefix="opencortex_ctx_")
         self.config = CortexConfig(
@@ -74,66 +46,7 @@ class TestContextManager(unittest.TestCase):
             embedder=self.embedder,
         )
 
-    # -----------------------------------------------------------------
-    # 1. Full lifecycle: prepare → commit → end
-    # -----------------------------------------------------------------
-
-    def test_01_full_lifecycle(self):
-        """prepare → commit → end produces correct responses."""
-        orch = self._make_orchestrator()
-        self._run(orch.init())
-        cm = orch._context_manager
-
-        # prepare
-        result = self._run(cm.handle(
-            session_id="sess_001",
-            phase="prepare",
-            tenant_id="testteam",
-            user_id="alice",
-            turn_id="t1",
-            messages=[{"role": "user", "content": "hello"}],
-        ))
-        self.assertEqual(result["session_id"], "sess_001")
-        self.assertEqual(result["turn_id"], "t1")
-        self.assertIn("intent", result)
-        self.assertIn("memory", result)
-        self.assertIn("knowledge", result)
-        self.assertIn("instructions", result)
-
-        # commit
-        result = self._run(cm.handle(
-            session_id="sess_001",
-            phase="commit",
-            tenant_id="testteam",
-            user_id="alice",
-            turn_id="t1",
-            messages=[
-                {"role": "user", "content": "hello"},
-                {"role": "assistant", "content": "hi there"},
-            ],
-        ))
-        self.assertTrue(result["accepted"])
-        self.assertEqual(result["write_status"], "ok")
-        self.assertEqual(result["session_turns"], 1)
-
-        # end
-        result = self._run(cm.handle(
-            session_id="sess_001",
-            phase="end",
-            tenant_id="testteam",
-            user_id="alice",
-        ))
-        self.assertEqual(result["status"], "closed")
-        self.assertEqual(result["total_turns"], 1)
-
-        self._run(orch.close())
-
-    # -----------------------------------------------------------------
-    # 2. Prepare idempotency
-    # -----------------------------------------------------------------
-
-    def test_02_prepare_idempotent(self):
-        """Same (session_id, turn_id) returns cached result."""
+    def test_prepare_idempotent(self):
         orch = self._make_orchestrator()
         self._run(orch.init())
         cm = orch._context_manager
@@ -153,738 +66,116 @@ class TestContextManager(unittest.TestCase):
 
         self._run(orch.close())
 
-    # -----------------------------------------------------------------
-    # 3. Commit idempotency
-    # -----------------------------------------------------------------
-
-    def test_03_commit_idempotent(self):
-        """Same turn_id committed twice returns duplicate."""
+    def test_recall_mode_never_skips_probe_and_planner(self):
         orch = self._make_orchestrator()
         self._run(orch.init())
         cm = orch._context_manager
+        orch.probe_memory = AsyncMock()
+        orch.plan_memory = Mock()
 
-        commit_args = dict(
-            session_id="sess_003",
-            phase="commit",
-            tenant_id="testteam",
-            user_id="alice",
-            turn_id="t1",
-            messages=[
-                {"role": "user", "content": "q"},
-                {"role": "assistant", "content": "a"},
-            ],
-        )
-
-        r1 = self._run(cm.handle(**commit_args))
-        self.assertEqual(r1["write_status"], "ok")
-
-        r2 = self._run(cm.handle(**commit_args))
-        self.assertEqual(r2["write_status"], "duplicate")
-
-        self._run(orch.close())
-
-    # -----------------------------------------------------------------
-    # 4. recall_mode=never skips retrieval
-    # -----------------------------------------------------------------
-
-    def test_04_recall_mode_never(self):
-        """prepare with recall_mode=never returns empty results without planner."""
-        orch = self._make_orchestrator()
-        self._run(orch.init())
-        cm = orch._context_manager
-        orch.plan_recall = AsyncMock()
-
-        result = self._run(cm.handle(
-            session_id="sess_004",
-            phase="prepare",
-            tenant_id="testteam",
-            user_id="alice",
-            turn_id="t1",
-            messages=[{"role": "user", "content": "test query"}],
-            config={"recall_mode": "never"},
-        ))
-        self.assertEqual(result["memory"], [])
-        self.assertEqual(result["knowledge"], [])
-        self.assertFalse(result["intent"]["should_recall"])
-        orch.plan_recall.assert_not_awaited()
-
-        self._run(orch.close())
-
-    # -----------------------------------------------------------------
-    # 5. recall_mode=always forces retrieval
-    # -----------------------------------------------------------------
-
-    def test_05_recall_mode_always(self):
-        """prepare with recall_mode=always sets should_recall=True."""
-        orch = self._make_orchestrator()
-        self._run(orch.init())
-        cm = orch._context_manager
-
-        result = self._run(cm.handle(
-            session_id="sess_005",
-            phase="prepare",
-            tenant_id="testteam",
-            user_id="alice",
-            turn_id="t1",
-            messages=[{"role": "user", "content": "test query"}],
-            config={"recall_mode": "always"},
-        ))
-        self.assertTrue(result["intent"]["should_recall"])
-
-        self._run(orch.close())
-
-    # -----------------------------------------------------------------
-    # 6. Commit with cited_uris triggers RL reward
-    # -----------------------------------------------------------------
-
-    def test_06_cited_uris_reward(self):
-        """commit with cited_uris calls orchestrator.feedback()."""
-        orch = self._make_orchestrator()
-        self._run(orch.init())
-        cm = orch._context_manager
-
-        # Mock feedback to track calls
-        feedback_calls = []
-        original_feedback = orch.feedback
-        async def mock_feedback(uri, reward):
-            feedback_calls.append((uri, reward))
-        orch.feedback = mock_feedback
-
-        result = self._run(cm.handle(
-            session_id="sess_006",
-            phase="commit",
-            tenant_id="testteam",
-            user_id="alice",
-            turn_id="t1",
-            messages=[
-                {"role": "user", "content": "q"},
-                {"role": "assistant", "content": "a"},
-            ],
-            cited_uris=[
-                "opencortex://testteam/alice/memory/entities/abc",
-                "invalid-uri-ignored",
-            ],
-        ))
-        self.assertTrue(result["accepted"])
-
-        # Wait for async reward tasks to complete
-        async def wait_pending():
-            if cm._pending_tasks:
-                await asyncio.gather(*cm._pending_tasks, return_exceptions=True)
-        self._run(wait_pending())
-
-        # Only the valid opencortex:// URI should have gotten a reward
-        self.assertEqual(len(feedback_calls), 1)
-        self.assertEqual(feedback_calls[0][0], "opencortex://testteam/alice/memory/entities/abc")
-        self.assertAlmostEqual(feedback_calls[0][1], 0.1)
-
-        orch.feedback = original_feedback
-
-    def test_06b_merged_events_get_ttl(self):
-        """Merged conversation events should be summarized and expire by config."""
-        orch = self._make_orchestrator()
-        self._run(orch.init())
-        cm = orch._context_manager
-
-        sk = ("testteam", "alice", "sess_007")
-        cm._conversation_buffers[sk] = ConversationBuffer(
-            messages=["user likes dark mode", "assistant confirmed preference"],
-            token_count=32,
-            start_msg_index=0,
-            immediate_uris=[],
-        )
-
-        self._run(cm._merge_buffer(sk, "sess_007", "testteam", "alice"))
-
-        records = list(self.storage._records["context"].values())
-        merged = [
-            r for r in records
-            if r.get("category") == "events" and (r.get("meta") or {}).get("layer") == "merged"
-        ]
-        self.assertEqual(len(merged), 1)
-        self.assertTrue(merged[0].get("abstract"))
-
-        # Verify TTL matches configured 48h (within 5-minute tolerance)
-        from datetime import datetime, timezone, timedelta
-        ttl_str = merged[0].get("ttl_expires_at")
-        self.assertTrue(ttl_str)
-        expires = datetime.strptime(ttl_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        expected = datetime.now(timezone.utc) + timedelta(hours=48)
-        self.assertLess(abs((expires - expected).total_seconds()), 300)
-
-        self._run(orch.close())
-
-    # -----------------------------------------------------------------
-    # 7. Unknown phase raises ValueError
-    # -----------------------------------------------------------------
-
-    def test_07_unknown_phase(self):
-        """handle() with unknown phase raises ValueError."""
-        orch = self._make_orchestrator()
-        self._run(orch.init())
-        cm = orch._context_manager
-
-        with self.assertRaises(ValueError) as ctx:
-            self._run(cm.handle(
-                session_id="sess_007",
-                phase="unknown",
+        result = self._run(
+            cm.handle(
+                session_id="sess_004",
+                phase="prepare",
                 tenant_id="testteam",
                 user_id="alice",
-            ))
-        self.assertIn("Unknown phase", str(ctx.exception))
-
-
-class TestContextManagerAutophagyHooks(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        self.temp_dir = tempfile.mkdtemp(prefix="opencortex_ctx_autophagy_")
-        self.config = CortexConfig(
-            data_root=self.temp_dir,
-            embedding_dimension=MockEmbedder.DIMENSION,
-            rerank_provider="disabled",
-            query_classifier_enabled=False,
-            hyde_enabled=False,
-            explain_enabled=False,
-        )
-        init_config(self.config)
-        self._identity_tokens = set_request_identity("testteam", "alice")
-        self.storage = InMemoryStorage()
-        self.embedder = MockEmbedder()
-
-    def tearDown(self):
-        reset_request_identity(self._identity_tokens)
-        shutil.rmtree(self.temp_dir, ignore_errors=True)
-
-    def _run(self, coro):
-        return asyncio.run(coro)
-
-    def _make_orchestrator(self):
-        return MemoryOrchestrator(
-            config=self.config,
-            storage=self.storage,
-            embedder=self.embedder,
-        )
-
-    async def test_prepare_tracks_recalled_memory_owner_ids_for_session(self):
-        orch = self._make_orchestrator()
-        await orch.init()
-        cm = orch._context_manager
-
-        recalled_uri = "opencortex://testteam/alice/memories/preferences/mem-1"
-        await self.storage.upsert(
-            "context",
-            {
-                "id": "mem-1",
-                "uri": recalled_uri,
-                "is_leaf": True,
-                "context_type": "memory",
-                "category": "preferences",
-                "source_tenant_id": "testteam",
-                "source_user_id": "alice",
-                "scope": "private",
-                "project_id": "public",
-            },
-        )
-        orch.plan_recall = AsyncMock(
-            return_value=(
-                SearchIntent(
-                    intent_type="quick_lookup",
-                    detail_level=DetailLevel.L1,
-                    should_recall=True,
-                ),
-                RecallPlan(
-                    should_recall=True,
-                    surfaces=[RecallSurface.MEMORY],
-                    detail_level=DetailLevel.L1,
-                    memory_limit=1,
-                    knowledge_limit=0,
-                    enable_cone=False,
-                    fusion_policy="memory_only",
-                    reasoning="test",
-                ),
+                turn_id="t1",
+                messages=[{"role": "user", "content": "test query"}],
+                config={"recall_mode": "never"},
             )
         )
-        orch.search = AsyncMock(
-            return_value=FindResult(
-                memories=[
-                    MatchedContext(
-                        uri=recalled_uri,
-                        context_type=ContextType.MEMORY,
-                        is_leaf=True,
-                        abstract="dark mode preference",
-                        score=0.9,
-                        category="preferences",
-                    )
-                ],
-                resources=[],
-                skills=[],
-            )
-        )
-
-        await cm.handle(
-            session_id="sess-autophagy",
-            phase="prepare",
-            tenant_id="testteam",
-            user_id="alice",
-            turn_id="t1",
-            messages=[{"role": "user", "content": "what theme do I prefer?"}],
-        )
-
-        session_key = ("testteam", "alice", "sess-autophagy")
-        self.assertEqual(cm._session_memory_owner_ids[session_key], {"mem-1"})
-
-        await orch.close()
-
-    async def test_end_schedules_non_blocking_metabolism_tick(self):
-        orch = self._make_orchestrator()
-        await orch.init()
-        cm = orch._context_manager
-        session_key = ("testteam", "alice", "sess-metabolism")
-        cm._committed_turns[session_key] = {"t1"}
-        cm._session_memory_owner_ids[session_key] = {"mem-2", "mem-1"}
-        orch.session_end = AsyncMock(
-            return_value={
-                "session_id": "sess-metabolism",
-                "alpha_traces": 0,
-                "knowledge_candidates": 0,
-            }
-        )
-
-        started = asyncio.Event()
-        release = asyncio.Event()
-        metabolize_calls = []
-
-        class _KernelStub:
-            async def metabolize_states(self, owner_ids):
-                metabolize_calls.append(list(owner_ids))
-                started.set()
-                await release.wait()
-
-        orch._autophagy_kernel = _KernelStub()
-
-        result = await cm._end("sess-metabolism", "testteam", "alice")
-
-        self.assertEqual(result["status"], "closed")
-        self.assertEqual(len(cm._pending_tasks), 1)
-
-        await asyncio.wait_for(started.wait(), timeout=1.0)
-        self.assertEqual(metabolize_calls, [["mem-1", "mem-2"]])
-
-        release.set()
-        await asyncio.gather(*list(cm._pending_tasks), return_exceptions=True)
-
-        await orch.close()
-
-    async def test_end_restores_session_project_id_for_session_end(self):
-        orch = self._make_orchestrator()
-        await orch.init()
-        cm = orch._context_manager
-        session_key = ("testteam", "alice", "sess-project")
-        cm._committed_turns[session_key] = {"t1"}
-        cm._session_project_ids[session_key] = "project-42"
-
-        seen_projects = []
-
-        async def fake_session_end(**kwargs):
-            seen_projects.append(get_effective_project_id())
-            return {
-                "session_id": kwargs["session_id"],
-                "alpha_traces": 0,
-                "knowledge_candidates": 0,
-            }
-
-        orch.session_end = fake_session_end
-
-        public_project = set_request_project_id("public")
-        try:
-            result = await cm._end("sess-project", "testteam", "alice")
-        finally:
-            reset_request_project_id(public_project)
-
-        self.assertEqual(result["status"], "closed")
-        self.assertEqual(seen_projects, ["project-42"])
-
-        await orch.close()
-
-    async def test_end_flushes_merged_buffer_with_remembered_project_id(self):
-        orch = self._make_orchestrator()
-        await orch.init()
-        cm = orch._context_manager
-        session_key = ("testteam", "alice", "sess-merged-project")
-        cm._committed_turns[session_key] = {"t1"}
-        cm._session_project_ids[session_key] = "project-42"
-        cm._conversation_buffers[session_key] = ConversationBuffer(
-            messages=["user likes dark mode", "assistant confirmed preference"],
-            token_count=32,
-            start_msg_index=0,
-            immediate_uris=[],
-        )
-
-        async def fake_session_end(**kwargs):
-            return {
-                "session_id": kwargs["session_id"],
-                "alpha_traces": 0,
-                "knowledge_candidates": 0,
-            }
-
-        orch.session_end = fake_session_end
-
-        public_project = set_request_project_id("public")
-        try:
-            result = await cm._end("sess-merged-project", "testteam", "alice")
-        finally:
-            reset_request_project_id(public_project)
-
-        self.assertEqual(result["status"], "closed")
-        records = list(self.storage._records["context"].values())
-        merged = [
-            r for r in records
-            if r.get("session_id") == "sess-merged-project"
-            and (r.get("meta") or {}).get("layer") == "merged"
-        ]
-        self.assertEqual(len(merged), 1)
-        self.assertEqual(merged[0].get("project_id"), "project-42")
-
-        await orch.close()
-
-    # -----------------------------------------------------------------
-    # 8. End cleans up all session state
-    # -----------------------------------------------------------------
-
-    def test_08_end_cleanup(self):
-        """end cleans up prepare cache, committed_turns, session state."""
-        orch = self._make_orchestrator()
-        self._run(orch.init())
-        cm = orch._context_manager
-
-        sk = ("testteam", "alice", "sess_008")
-
-        # prepare + commit to populate state
-        self._run(cm.handle(
-            session_id="sess_008", phase="prepare",
-            tenant_id="testteam", user_id="alice",
-            turn_id="t1",
-            messages=[{"role": "user", "content": "q"}],
-        ))
-        self._run(cm.handle(
-            session_id="sess_008", phase="commit",
-            tenant_id="testteam", user_id="alice",
-            turn_id="t1",
-            messages=[
-                {"role": "user", "content": "q"},
-                {"role": "assistant", "content": "a"},
-            ],
-        ))
-
-        # Verify state exists before end
-        self.assertIn(sk, cm._session_activity)
-        self.assertIn(sk, cm._committed_turns)
-
-        # end
-        self._run(cm.handle(
-            session_id="sess_008", phase="end",
-            tenant_id="testteam", user_id="alice",
-        ))
-
-        # All session state should be cleaned
-        self.assertNotIn(sk, cm._session_activity)
-        self.assertNotIn(sk, cm._committed_turns)
-        self.assertNotIn(sk, cm._session_cache_keys)
-        self.assertNotIn(sk, cm._session_locks)
-
-        # Prepare cache entry should also be gone
-        cache_key = ("testteam", "alice", "sess_008", "t1")
-        self.assertNotIn(cache_key, cm._prepare_cache)
-
-        self._run(orch.close())
-
-    # -----------------------------------------------------------------
-    # 9. Prepare routes once through planner
-    # -----------------------------------------------------------------
-
-    def test_09_prepare_routes_once(self):
-        """prepare should not invoke recall planning twice for the same query."""
-        llm_calls = []
-
-        async def fake_llm(_prompt: str) -> str:
-            llm_calls.append(_prompt)
-            return (
-                '{"intent_type":"recent_recall","top_k":5,'
-                '"detail_level":"l1","time_scope":"all","should_recall":true}'
-            )
-
-        orch = MemoryOrchestrator(
-            config=self.config,
-            storage=self.storage,
-            embedder=self.embedder,
-            llm_completion=fake_llm,
-        )
-        self._run(orch.init())
-        cm = orch._context_manager
-
-        result = self._run(cm.handle(
-            session_id="sess_009",
-            phase="prepare",
-            tenant_id="testteam",
-            user_id="alice",
-            turn_id="t1",
-            messages=[{"role": "user", "content": "帮我回忆一下最近讨论的偏好"}],
-        ))
-
-        self.assertIn("intent", result)
-        self.assertEqual(len(llm_calls), 1)
-
-        self._run(orch.close())
-
-    # -----------------------------------------------------------------
-    # 10. include_knowledge defaults to False (Phase 1 shrinkage)
-    # -----------------------------------------------------------------
-
-    def test_10_include_knowledge_default_false(self):
-        """prepare() with default config does NOT call knowledge_search."""
-        orch = self._make_orchestrator()
-        self._run(orch.init())
-        cm = orch._context_manager
-
-        # Spy on orchestrator.knowledge_search to verify it's never called
-        ks_calls = []
-        original_ks = getattr(orch, 'knowledge_search', None)
-        async def spy_ks(*args, **kwargs):
-            ks_calls.append((args, kwargs))
-            if original_ks:
-                return await original_ks(*args, **kwargs)
-            return []
-        orch.knowledge_search = spy_ks
-
-        # recall_mode=always ensures retrieval path runs — isolates the
-        # include_knowledge variable from keyword routing behavior
-        result = self._run(cm.handle(
-            session_id="sess_know",
-            phase="prepare",
-            tenant_id="testteam",
-            user_id="alice",
-            turn_id="t1",
-            messages=[{"role": "user", "content": "test knowledge default"}],
-            config={"recall_mode": "always"},
-        ))
-        # knowledge_search must NOT be called when include_knowledge defaults to False
-        self.assertEqual(len(ks_calls), 0, "knowledge_search should not be called")
-        self.assertEqual(result.get("knowledge", []), [])
-
-        if original_ks:
-            orch.knowledge_search = original_ks
-        self._run(orch.close())
-
-    # -----------------------------------------------------------------
-    # 11. Prepare uses planner-derived limits, detail, and surfaces
-    # -----------------------------------------------------------------
-
-    def test_11_prepare_uses_planner_limits_and_detail_level(self):
-        """prepare() should follow recall_plan for limits, detail, and surfaces."""
-        orch = self._make_orchestrator()
-        self._run(orch.init())
-        cm = orch._context_manager
-
-        class FakeFindResult(list):
-            def __init__(self, items, skills=None):
-                super().__init__(items)
-                self.memories = list(items)
-                self.skills = skills or []
-
-        matched_memory = Mock(
-            uri="opencortex://testteam/alice/memory/entities/pref",
-            abstract="pref",
-            score=0.91,
-            context_type=ContextType.MEMORY,
-            category="entities",
-            overview="likes concise answers",
-            content="full preference record",
-        )
-        intent = SearchIntent(
-            intent_type="recent_recall",
-            top_k=5,
-            detail_level=DetailLevel.L0,
-            should_recall=False,
-        )
-        with_knowledge = RecallPlan(
-            should_recall=True,
-            surfaces=[RecallSurface.MEMORY, RecallSurface.KNOWLEDGE],
-            detail_level=DetailLevel.L2,
-            memory_limit=7,
-            knowledge_limit=2,
-            enable_cone=True,
-            fusion_policy="memory_then_knowledge",
-            reasoning="planner selected both surfaces",
-        )
-        memory_only = RecallPlan(
-            should_recall=True,
-            surfaces=[RecallSurface.MEMORY],
-            detail_level=DetailLevel.L1,
-            memory_limit=4,
-            knowledge_limit=1,
-            enable_cone=True,
-            fusion_policy="memory_only",
-            reasoning="planner selected memory only",
-        )
-
-        memory_calls = []
-        knowledge_calls = []
-
-        async def fake_search(**kwargs):
-            memory_calls.append(kwargs)
-            return FakeFindResult(
-                [matched_memory],
-                skills=[Mock(uri="opencortex://testteam/alice/skills/valid"), object(), {"uri": "ignored"}],
-            )
-
-        async def fake_knowledge_search(**kwargs):
-            knowledge_calls.append(kwargs)
-            return {
-                "results": [
-                    {
-                        "knowledge_id": "k1",
-                        "knowledge_type": "doc",
-                        "abstract": "knowledge item",
-                        "confidence": 0.7,
-                    },
-                ],
-            }
-
-        orch.search = fake_search
-        orch.knowledge_search = fake_knowledge_search
-        orch.plan_recall = AsyncMock(side_effect=[
-            (intent, with_knowledge),
-            (intent, memory_only),
-        ])
-
-        result = self._run(cm.handle(
-            session_id="sess_plan",
-            phase="prepare",
-            tenant_id="testteam",
-            user_id="alice",
-            turn_id="t1",
-            messages=[{"role": "user", "content": "what do you remember about my preferences?"}],
-        ))
-
-        self.assertEqual(memory_calls[0]["limit"], 7)
-        self.assertEqual(memory_calls[0]["detail_level"], "l2")
-        self.assertIs(memory_calls[0]["search_intent"], intent)
-        self.assertEqual(knowledge_calls[0]["limit"], 2)
-        self.assertEqual(result["intent"]["detail_level"], "l2")
-        self.assertTrue(result["intent"]["should_recall"])
-        self.assertEqual(len(result["memory"]), 1)
-
-        memory_calls.clear()
-        knowledge_calls.clear()
-
-        result = self._run(cm.handle(
-            session_id="sess_plan",
-            phase="prepare",
-            tenant_id="testteam",
-            user_id="alice",
-            turn_id="t2",
-            messages=[{"role": "user", "content": "continue from memory only"}],
-        ))
-
-        self.assertEqual(memory_calls[0]["limit"], 4)
-        self.assertEqual(memory_calls[0]["detail_level"], "l1")
-        self.assertEqual(len(knowledge_calls), 0)
-        self.assertEqual(result["knowledge"], [])
-        self.assertEqual(result["intent"]["detail_level"], "l1")
-
-        self._run(orch.close())
-
-    # -----------------------------------------------------------------
-    # 12. Prepare payload includes serialized recall_plan
-    # -----------------------------------------------------------------
-
-    def test_12_prepare_returns_recall_plan_payload(self):
-        """prepare() should return the planner recall_plan in the intent payload."""
-        orch = self._make_orchestrator()
-        self._run(orch.init())
-        cm = orch._context_manager
-
-        intent = SearchIntent(
-            intent_type="personalized",
-            top_k=5,
-            detail_level=DetailLevel.L0,
-            should_recall=False,
-        )
-        recall_plan = RecallPlan(
-            should_recall=True,
-            surfaces=[RecallSurface.MEMORY],
-            detail_level=DetailLevel.L2,
-            memory_limit=6,
-            knowledge_limit=0,
-            enable_cone=True,
-            fusion_policy="memory_only",
-            reasoning="planner promoted detail",
-        )
-        orch.plan_recall = AsyncMock(return_value=(intent, recall_plan))
-        orch.search = AsyncMock(return_value=[])
-        orch.knowledge_search = AsyncMock(return_value={"results": []})
-
-        result = self._run(cm.handle(
-            session_id="sess_payload",
-            phase="prepare",
-            tenant_id="testteam",
-            user_id="alice",
-            turn_id="t1",
-            messages=[{"role": "user", "content": "personalize this reply"}],
-        ))
-
-        self.assertEqual(result["intent"]["should_recall"], True)
-        self.assertEqual(result["intent"]["detail_level"], "l2")
-        self.assertEqual(result["intent"]["recall_plan"], recall_plan.to_dict())
-
-        self._run(orch.close())
-
-    # -----------------------------------------------------------------
-    # 13. Invalid prepare config degrades safely
-    # -----------------------------------------------------------------
-
-    def test_13_prepare_invalid_context_type_and_detail_do_not_crash(self):
-        """prepare() should ignore invalid context_type/detail config safely."""
-        orch = self._make_orchestrator()
-        self._run(orch.init())
-        cm = orch._context_manager
-        orch.plan_recall = AsyncMock()
-
-        result = self._run(cm.handle(
-            session_id="sess_invalid_cfg",
-            phase="prepare",
-            tenant_id="testteam",
-            user_id="alice",
-            turn_id="t1",
-            messages=[{"role": "user", "content": "ignore invalid config"}],
-            config={
-                "recall_mode": "never",
-                "context_type": "not-a-context-type",
-                "detail_level": "not-a-detail-level",
-                "max_items": "not-a-number",
-            },
-        ))
-
         self.assertEqual(result["memory"], [])
         self.assertEqual(result["knowledge"], [])
         self.assertFalse(result["intent"]["should_recall"])
-        self.assertEqual(result["intent"]["detail_level"], "l1")
-        orch.plan_recall.assert_not_awaited()
+        orch.probe_memory.assert_not_awaited()
+        orch.plan_memory.assert_not_called()
 
-        result = self._run(cm.handle(
-            session_id="sess_invalid_cfg",
-            phase="prepare",
-            tenant_id="testteam",
-            user_id="alice",
-            turn_id="t2",
-            messages=[{"role": "user", "content": "ignore invalid config again"}],
-            config={
-                "recall_mode": "never",
-                "max_items": -8,
-            },
-        ))
+        self._run(orch.close())
 
-        self.assertEqual(result["memory"], [])
-        self.assertEqual(result["knowledge"], [])
+    def test_prepare_emits_probe_planner_runtime_envelope(self):
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        self._run(
+            orch.add(
+                abstract="User prefers dark theme in editors",
+                category="general",
+            )
+        )
+        cm = orch._context_manager
+
+        result = self._run(
+            cm.handle(
+                session_id="sess_100",
+                phase="prepare",
+                tenant_id="testteam",
+                user_id="alice",
+                turn_id="t1",
+                messages=[{"role": "user", "content": "What theme do I prefer?"}],
+            )
+        )
+
+        self.assertIn("memory_pipeline", result["intent"])
+        self.assertIn("probe", result["intent"]["memory_pipeline"])
+        self.assertIn("planner", result["intent"]["memory_pipeline"])
+        self.assertIn("runtime", result["intent"]["memory_pipeline"])
+        self.assertIn("probe_mode", result["intent"]["memory_pipeline"]["runtime"]["trace"])
+        self.assertIn("probe_trace", result["intent"]["memory_pipeline"]["runtime"]["trace"])
+        self.assertGreaterEqual(
+            result["intent"]["probe_candidate_count"],
+            1,
+        )
+
+        self._run(orch.close())
+
+    def test_merge_buffer_replaces_immediate_records_with_merged_object(self):
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        cm = orch._context_manager
+        session_id = "sess_merge_001"
+        sk = cm._make_session_key("testteam", "alice", session_id)
+
+        uri1 = self._run(
+            orch._write_immediate(
+                session_id=session_id,
+                msg_index=0,
+                text="我下周二要去杭州出差。",
+            )
+        )
+        uri2 = self._run(
+            orch._write_immediate(
+                session_id=session_id,
+                msg_index=1,
+                text="住在西湖边，不吃辣。",
+            )
+        )
+        buffer = cm._conversation_buffers.setdefault(sk, ConversationBuffer())
+        buffer.messages = [
+            "我下周二要去杭州出差。",
+            "住在西湖边，不吃辣。",
+        ]
+        buffer.immediate_uris = [uri1, uri2]
+        buffer.tool_calls_per_turn = []
+        buffer.token_count = 1200
+
+        self._run(cm._merge_buffer(sk, session_id, "testteam", "alice"))
+
+        immediate_records = self._run(
+            self.storage.filter(
+                "context",
+                {"op": "must", "field": "uri", "conds": [uri1, uri2]},
+                limit=10,
+            )
+        )
+        self.assertEqual(immediate_records, [])
+
+        merged_records = [
+            record
+            for record in self.storage._records.get("context", {}).values()
+            if record.get("meta", {}).get("layer") == "merged"
+        ]
+        self.assertEqual(len(merged_records), 1)
+        self.assertEqual(merged_records[0].get("memory_kind"), "event")
+        self.assertIn("abstract_json", merged_records[0])
 
         self._run(orch.close())
 

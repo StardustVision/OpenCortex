@@ -143,7 +143,6 @@ async def admin_search_debug(req: MemorySearchRequest) -> Dict[str, Any]:
     _require_admin()
     storage = _orchestrator._storage
     embedder = _orchestrator._embedder
-    retriever = _orchestrator._retriever
 
     loop = asyncio.get_running_loop()
     embed_result = await asyncio.wait_for(
@@ -158,9 +157,16 @@ async def admin_search_debug(req: MemorySearchRequest) -> Dict[str, Any]:
     )
 
     rerank_scores = None
-    if retriever._rerank_client:
+    rerank_cfg = _orchestrator._build_rerank_config()
+    if rerank_cfg.is_available():
+        from opencortex.retrieve.rerank_client import RerankClient
+
+        rerank_client = RerankClient(
+            rerank_cfg,
+            llm_completion=_orchestrator._llm_completion,
+        )
         docs = [r.get("abstract", "") for r in raw_results]
-        rerank_scores = await retriever._rerank_client.rerank(req.query, docs)
+        rerank_scores = await rerank_client.rerank(req.query, docs)
 
     rows = []
     beta = retriever._fusion_beta

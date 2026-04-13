@@ -45,17 +45,27 @@ class OCClient:
         self._retries = retries
         self._retry_delay = retry_delay
 
-    async def create_collection(self, name: str) -> bool:
+    async def create_collection(self, name: str, admin_token: str = "") -> bool:
+        """Create a benchmark-isolated collection (requires admin token)."""
         try:
-            await self._post("/api/v1/admin/collection", {"name": name})
+            headers = dict(self._hdrs)
+            if admin_token:
+                headers["Authorization"] = f"Bearer {admin_token}"
+            url = f"{self._base}/api/v1/admin/collection"
+            r = await self._client.post(url, json={"name": name}, headers=headers)
+            r.raise_for_status()
             return True
         except Exception:
             return False
 
-    async def delete_collection(self, name: str) -> None:
+    async def delete_collection(self, name: str, admin_token: str = "") -> None:
+        """Delete a benchmark-isolated collection."""
         try:
+            headers = dict(self._hdrs)
+            if admin_token:
+                headers["Authorization"] = f"Bearer {admin_token}"
             url = f"{self._base}/api/v1/admin/collection/{name}"
-            r = await self._client.delete(url, headers=self._hdrs)
+            r = await self._client.delete(url, headers=headers)
             r.raise_for_status()
         except Exception:
             pass
@@ -167,6 +177,44 @@ class OCClient:
                 "phase": "end",
             },
         )
+
+    # ------------------------------------------------------------------
+    # Knowledge / Archivist
+    # ------------------------------------------------------------------
+
+    async def knowledge_search(
+        self,
+        query: str,
+        types: Optional[List[str]] = None,
+        limit: int = 10,
+    ) -> List[Dict]:
+        """Search approved (ACTIVE) knowledge items."""
+        payload: Dict[str, Any] = {"query": query, "limit": limit}
+        if types:
+            payload["types"] = types
+        result = await self._post("/api/v1/knowledge/search", payload)
+        return result.get("results", [])
+
+    async def knowledge_candidates(self) -> List[Dict]:
+        """List CANDIDATE + VERIFIED knowledge items."""
+        result = await self._post("/api/v1/knowledge/candidates", {})
+        return result.get("candidates", [])
+
+    async def knowledge_approve(self, knowledge_id: str) -> Dict:
+        """Approve a knowledge item (VERIFIED -> ACTIVE)."""
+        return await self._post("/api/v1/knowledge/approve", {"knowledge_id": knowledge_id})
+
+    async def knowledge_reject(self, knowledge_id: str) -> Dict:
+        """Reject a knowledge item."""
+        return await self._post("/api/v1/knowledge/reject", {"knowledge_id": knowledge_id})
+
+    async def archivist_trigger(self) -> Dict:
+        """Manually trigger the Archivist pipeline."""
+        return await self._post("/api/v1/archivist/trigger", {})
+
+    async def archivist_status(self) -> Dict:
+        """Get Archivist pipeline status."""
+        return await self._post("/api/v1/archivist/status", {})
 
     async def _post(self, path: str, payload: Dict) -> Dict:
         """POST with retry logic (retryable on 429/5xx and transport errors)."""
