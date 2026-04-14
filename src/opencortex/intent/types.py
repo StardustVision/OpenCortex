@@ -87,7 +87,12 @@ class SearchEvidence(MemoryDomainModel):
 
     top_score: Optional[float] = None
     score_gap: Optional[float] = None
+    object_top_score: Optional[float] = None
+    anchor_top_score: Optional[float] = None
     candidate_count: int = 0
+    object_candidate_count: int = 0
+    anchor_candidate_count: int = 0
+    anchor_hit_count: int = 0
 
 
 class MemoryProbeTrace(MemoryDomainModel):
@@ -97,6 +102,10 @@ class MemoryProbeTrace(MemoryDomainModel):
     model: Optional[str] = None
     top_k: int = 0
     latency_ms: Optional[float] = None
+    object_latency_ms: Optional[float] = None
+    anchor_latency_ms: Optional[float] = None
+    object_candidates: int = 0
+    anchor_candidates: int = 0
     degraded: bool = False
     degrade_reason: Optional[str] = None
 
@@ -145,6 +154,8 @@ class RetrievalPlan(MemoryDomainModel):
     query_plan: MemoryQueryPlan = Field(default_factory=MemoryQueryPlan)
     search_profile: MemorySearchProfile
     retrieval_depth: RetrievalDepth
+    confidence: Optional[float] = None
+    decision: str = ""
 
 
 class ExecutionResult(MemoryDomainModel):

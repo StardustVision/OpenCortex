@@ -73,6 +73,24 @@ class OCClient:
     async def close(self):
         await self._client.aclose()
 
+    async def memory_list(
+        self,
+        category: Optional[str] = None,
+        context_type: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+        include_payload: bool = False,
+    ) -> Dict[str, Any]:
+        """List accessible memories for the current benchmark tenant."""
+        params: Dict[str, Any] = {"limit": limit, "offset": offset}
+        if category is not None:
+            params["category"] = category
+        if context_type is not None:
+            params["context_type"] = context_type
+        if include_payload:
+            params["include_payload"] = True
+        return await self._get("/api/v1/memory/list", params=params)
+
     async def store(
         self,
         abstract: str,
@@ -106,6 +124,24 @@ class OCClient:
         context_type: Optional[str] = None,
     ) -> List[Dict]:
         """Search memories. context_type filters results (e.g. 'resource' for documents)."""
+        result = await self.search_payload(
+            query=query,
+            limit=limit,
+            category=category,
+            detail_level=detail_level,
+            context_type=context_type,
+        )
+        return result.get("results", [])
+
+    async def search_payload(
+        self,
+        query: str,
+        limit: int = 10,
+        category: str = "",
+        detail_level: str = "l2",
+        context_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Search memories and return the raw response payload."""
         payload: Dict[str, Any] = {
             "query": query,
             "limit": limit,
@@ -115,8 +151,7 @@ class OCClient:
             payload["category"] = category
         if context_type:
             payload["context_type"] = context_type
-        result = await self._post("/api/v1/memory/search", payload)
-        return result.get("results", [])
+        return await self._post("/api/v1/memory/search", payload)
 
     async def forget(self, uri: str) -> Dict:
         """Delete a memory by URI."""
@@ -153,7 +188,7 @@ class OCClient:
         self,
         session_id: str,
         turn_id: str,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
     ) -> Dict:
         """MCP commit: write messages via conversation mode (immediate + merge)."""
         return await self._post(
@@ -163,7 +198,12 @@ class OCClient:
                 "phase": "commit",
                 "turn_id": turn_id,
                 "messages": [
-                    {"role": m["role"], "content": m["content"]} for m in messages
+                    {
+                        "role": m["role"],
+                        "content": m["content"],
+                        **({"meta": m["meta"]} if m.get("meta") else {}),
+                    }
+                    for m in messages
                 ],
             },
         )
@@ -225,6 +265,32 @@ class OCClient:
                 r = await self._client.post(url, json=payload, headers=self._hdrs)
                 r.raise_for_status()
                 return r.json()
+            except (
+                httpx.TimeoutException,
+                httpx.HTTPStatusError,
+                httpx.TransportError,
+            ) as exc:
+                last_error = exc
+                if attempt >= self._retries or not _is_retryable_http_error(exc):
+                    raise
+                await asyncio.sleep(min(2**attempt, 120))
+        if last_error:
+            raise last_error
+        return {}
+
+    async def _get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Dict:
+        """GET with retry logic (retryable on 429/5xx and transport errors)."""
+        url = f"{self._base}{path}"
+        last_error: Optional[Exception] = None
+        for attempt in range(1, self._retries + 1):
+            try:
+                response = await self._client.get(
+                    url,
+                    params=params,
+                    headers={k: v for k, v in self._hdrs.items() if k != "Content-Type"},
+                )
+                response.raise_for_status()
+                return response.json()
             except (
                 httpx.TimeoutException,
                 httpx.HTTPStatusError,

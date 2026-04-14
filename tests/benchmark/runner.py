@@ -98,7 +98,7 @@ def search_via_http(
 def _extract_search_attribution(result: Dict[str, Any]) -> Dict[str, Any]:
     """Extract phase attribution from a search response without affecting metrics."""
     memory_pipeline = result.get("memory_pipeline", {})
-    probe = memory_pipeline.get("probe") or memory_pipeline.get("route") or {}
+    probe = memory_pipeline.get("probe") or {}
     planner = memory_pipeline.get("planner") or {}
     runtime = memory_pipeline.get("runtime") or {}
     runtime_trace = runtime.get("trace") or {}

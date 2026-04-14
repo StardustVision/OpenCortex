@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
+import json
 import logging
 import re
 import time
@@ -23,7 +25,62 @@ logger = logging.getLogger(__name__)
 _CAMEL_CASE_RE = re.compile(r"[a-z]+[A-Z][a-zA-Z]*")
 _ALL_CAPS_RE = re.compile(r"\b[A-Z]{2,}\b")
 _PATH_SYMBOL_RE = re.compile(r"[a-zA-Z0-9]+[_./-][a-zA-Z0-9]+")
+_QUOTED_PHRASE_RE = re.compile(r"[\"'`“”‘’]([^\"'`“”‘’]{2,})[\"'`“”‘’]")
+_CAPITALIZED_PHRASE_RE = re.compile(r"\b[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})*\b")
+_WORD_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{2,}")
+_TIME_TOKEN_RE = re.compile(
+    r"\b(?:\d{4}-\d{2}-\d{2}|\d{4}|\d{1,2}:\d{2}|yesterday|today|tomorrow|last|next)\b",
+    re.IGNORECASE,
+)
+_CJK_TOKEN_RE = re.compile(r"[\u4e00-\u9fff]{2,}")
 _WHITESPACE_RE = re.compile(r"\s+")
+_LEAF_FILTER = {"op": "must", "field": "is_leaf", "conds": [True]}
+_MAX_ANCHOR_TERMS = 6
+_MIN_ANCHOR_QUERY_LENGTH = 2
+_QUERY_STOPWORDS = {
+    "what",
+    "which",
+    "who",
+    "when",
+    "where",
+    "why",
+    "how",
+    "did",
+    "does",
+    "do",
+    "about",
+    "from",
+    "with",
+    "that",
+    "this",
+    "have",
+    "been",
+    "were",
+    "your",
+    "their",
+    "there",
+    "into",
+    "just",
+    "will",
+    "would",
+    "could",
+    "should",
+    "please",
+    "tell",
+    "show",
+    "list",
+    "summary",
+    "summarize",
+    "过去",
+    "之前",
+    "一下",
+    "关于",
+    "什么",
+    "哪个",
+    "哪些",
+    "现在",
+    "需要",
+}
 
 _HARD_KEYWORD_LEXICAL_BOOST = 0.55
 _DEFAULT_LEXICAL_BOOST = 0.3
@@ -34,6 +91,16 @@ _CACHE_MAX_SIZE = 128
 
 def _copy_trace(trace: Dict[str, Any]) -> Dict[str, Any]:
     return copy.deepcopy(trace)
+
+
+def _merge_filters(
+    left: Optional[Dict[str, Any]],
+    right: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Combine two filter clauses into one AND clause."""
+    if left and right:
+        return {"op": "and", "conds": [left, right]}
+    return left or right
 
 
 class MemoryBootstrapProbe:
@@ -86,7 +153,12 @@ class MemoryBootstrapProbe:
     def probe_trace(self) -> Dict[str, Any]:
         return _copy_trace(self._last_probe_trace)
 
-    async def probe(self, query: str) -> SearchResult:
+    async def probe(
+        self,
+        query: str,
+        *,
+        scope_filter: Optional[Dict[str, Any]] = None,
+    ) -> SearchResult:
         """Run the bootstrap probe against L0 evidence only."""
         query_stripped = _WHITESPACE_RE.sub(" ", (query or "").strip())
         if not query_stripped:
@@ -104,23 +176,36 @@ class MemoryBootstrapProbe:
             self._last_probe_trace = result.trace.to_dict()
             return result
 
-        cached = self._decision_cache_get(query_stripped)
+        cache_key = self._cache_key(query=query_stripped, scope_filter=scope_filter)
+        cached = self._decision_cache_get(cache_key)
         if cached is not None:
             return cached
 
         started = time.perf_counter()
         try:
             query_vector = self._embed_query(query_stripped)
-            records = await self._storage.search(
-                collection=self._collection_resolver(),
-                query_vector=query_vector,
-                filter=self._filter_builder(),
-                limit=self._top_k,
-                text_query=query_stripped,
+            base_filter = _merge_filters(self._filter_builder(), scope_filter)
+            object_probe, anchor_probe = await asyncio.gather(
+                self._timed_probe(
+                    self._object_probe(
+                        query=query_stripped,
+                        query_vector=query_vector,
+                        base_filter=base_filter,
+                    )
+                ),
+                self._timed_probe(
+                    self._anchor_probe(
+                        query=query_stripped,
+                        base_filter=base_filter,
+                    )
+                ),
             )
             result = self._build_probe_result(
-                records=records,
+                object_records=object_probe[0],
+                anchor_records=anchor_probe[0],
                 latency_ms=(time.perf_counter() - started) * 1000.0,
+                object_latency_ms=object_probe[1],
+                anchor_latency_ms=anchor_probe[1],
             )
         except Exception as exc:
             logger.warning("[MemoryBootstrapProbe] probe failed: %s", exc)
@@ -137,35 +222,108 @@ class MemoryBootstrapProbe:
             )
 
         self._last_probe_trace = result.trace.to_dict()
-        self._decision_cache_put(query_stripped, result, self._last_probe_trace)
+        self._decision_cache_put(cache_key, result, self._last_probe_trace)
         return result
+
+    async def _timed_probe(
+        self,
+        awaitable: Any,
+    ) -> tuple[list[Dict[str, Any]], float]:
+        started = time.perf_counter()
+        records = await awaitable
+        return records, (time.perf_counter() - started) * 1000.0
+
+    async def _object_probe(
+        self,
+        *,
+        query: str,
+        query_vector: Optional[list[float]],
+        base_filter: Optional[Dict[str, Any]],
+    ) -> list[Dict[str, Any]]:
+        object_filter = _merge_filters(base_filter, _LEAF_FILTER)
+        return await self._storage.search(
+            collection=self._collection_resolver(),
+            query_vector=query_vector,
+            filter=object_filter,
+            limit=self._top_k,
+            text_query=query,
+        )
+
+    async def _anchor_probe(
+        self,
+        *,
+        query: str,
+        base_filter: Optional[Dict[str, Any]],
+    ) -> list[Dict[str, Any]]:
+        anchor_terms = self._query_anchor_terms(query)
+        if not anchor_terms:
+            return []
+
+        searches = [
+            self._storage.search(
+                collection=self._collection_resolver(),
+                filter=_merge_filters(
+                    _merge_filters(base_filter, _LEAF_FILTER),
+                    {"op": "must", "field": "anchor_hits", "conds": [term]},
+                ),
+                limit=self._top_k,
+                text_query=term,
+            )
+            for term in anchor_terms
+        ]
+        term_results = await asyncio.gather(*searches)
+        merged: Dict[str, Dict[str, Any]] = {}
+        for term, records in zip(anchor_terms, term_results):
+            for record in records:
+                uri = str(record.get("uri", "") or "")
+                if not uri:
+                    continue
+                score = self._record_score(record)
+                existing = merged.get(uri)
+                if existing is None or score > self._record_score(existing):
+                    merged_record = dict(record)
+                    merged_record["_anchor_terms"] = [term]
+                    merged[uri] = merged_record
+                    continue
+                terms = list(existing.get("_anchor_terms") or [])
+                if term not in terms:
+                    terms.append(term)
+                existing["_anchor_terms"] = terms
+
+        anchor_records = list(merged.values())
+        anchor_records.sort(
+            key=lambda record: self._record_score(record),
+            reverse=True,
+        )
+        return anchor_records[: max(self._top_k, 1)]
 
     def _build_probe_result(
         self,
         *,
-        records: list[Dict[str, Any]],
+        object_records: list[Dict[str, Any]],
+        anchor_records: list[Dict[str, Any]],
         latency_ms: float,
+        object_latency_ms: float,
+        anchor_latency_ms: float,
     ) -> SearchResult:
-        candidate_entries: list[SearchCandidate] = []
+        candidate_entries_by_uri: Dict[str, SearchCandidate] = {}
         anchor_values: list[str] = []
-        scores: list[float] = []
 
-        for record in records:
+        def _merge_record(record: Dict[str, Any], *, anchor_first: bool) -> None:
             object_view = memory_object_view_from_record(record)
-            score = record.get("_score")
-            if score is None:
-                score = record.get("score")
-            normalized_score = float(score) if score is not None else None
-            if normalized_score is not None:
-                scores.append(normalized_score)
+            normalized_score = self._record_score(record)
 
-            anchors = self._candidate_anchors(object_view)
+            anchors = self._candidate_anchors(
+                object_view,
+                extra_terms=record.get("_anchor_terms"),
+            )
             for anchor in anchors:
                 if anchor not in anchor_values:
                     anchor_values.append(anchor)
 
-            candidate_entries.append(
-                SearchCandidate(
+            existing = candidate_entries_by_uri.get(object_view.uri)
+            if existing is None:
+                candidate_entries_by_uri[object_view.uri] = SearchCandidate(
                     uri=object_view.uri,
                     memory_kind=object_view.memory_kind,
                     context_type=object_view.context_type,
@@ -175,7 +333,54 @@ class MemoryBootstrapProbe:
                     overview=object_view.overview,
                     anchors=anchors,
                 )
+                return
+            existing.score = max(
+                existing.score or 0.0,
+                normalized_score or 0.0,
             )
+            merged_anchors = list(existing.anchors)
+            sources = anchors + existing.anchors if anchor_first else existing.anchors + anchors
+            for anchor in sources:
+                if anchor not in merged_anchors:
+                    merged_anchors.append(anchor)
+            existing.anchors = merged_anchors[:8]
+            if not existing.abstract and object_view.abstract:
+                existing.abstract = object_view.abstract
+            if existing.overview is None and object_view.overview:
+                existing.overview = object_view.overview
+
+        for record in object_records:
+            _merge_record(record, anchor_first=False)
+        for record in anchor_records:
+            _merge_record(record, anchor_first=True)
+
+        candidate_entries = list(candidate_entries_by_uri.values())
+        candidate_entries.sort(key=lambda candidate: candidate.score or 0.0, reverse=True)
+        candidate_entries = candidate_entries[: self._top_k]
+        scores = [
+            float(candidate.score)
+            for candidate in candidate_entries
+            if candidate.score is not None
+        ]
+        scores.sort(reverse=True)
+        object_scores = [
+            float(score)
+            for score in (
+                self._record_score(record)
+                for record in object_records
+            )
+            if score is not None
+        ]
+        object_scores.sort(reverse=True)
+        anchor_scores = [
+            float(score)
+            for score in (
+                self._record_score(record)
+                for record in anchor_records
+            )
+            if score is not None
+        ]
+        anchor_scores.sort(reverse=True)
 
         top_score = scores[0] if scores else None
         score_gap = None
@@ -189,18 +394,38 @@ class MemoryBootstrapProbe:
             evidence=SearchEvidence(
                 top_score=top_score,
                 score_gap=score_gap,
+                object_top_score=object_scores[0] if object_scores else None,
+                anchor_top_score=anchor_scores[0] if anchor_scores else None,
                 candidate_count=len(candidate_entries),
+                object_candidate_count=len(object_records),
+                anchor_candidate_count=len(anchor_records),
+                anchor_hit_count=len(anchor_values),
             ),
             trace=MemoryProbeTrace(
                 backend="local_probe",
                 model=self._model_name(),
                 top_k=self._top_k,
                 latency_ms=round(latency_ms, 4),
+                object_latency_ms=round(object_latency_ms, 4),
+                anchor_latency_ms=round(anchor_latency_ms, 4),
+                object_candidates=len(object_records),
+                anchor_candidates=len(anchor_records),
             ),
         )
 
-    def _candidate_anchors(self, object_view: Any) -> list[str]:
+    def _candidate_anchors(
+        self,
+        object_view: Any,
+        *,
+        extra_terms: Optional[list[str]] = None,
+    ) -> list[str]:
         anchors: list[str] = []
+        for value in extra_terms or []:
+            normalized = str(value).strip()
+            if normalized and normalized not in anchors:
+                anchors.append(normalized)
+            if len(anchors) >= 6:
+                return anchors
         slot_groups = (
             object_view.structured_slots.entities,
             object_view.structured_slots.time_refs,
@@ -218,6 +443,43 @@ class MemoryBootstrapProbe:
                     return anchors
         return anchors
 
+    @staticmethod
+    def _record_score(record: Dict[str, Any]) -> Optional[float]:
+        for key in ("_score", "score", "_text_score"):
+            raw_value = record.get(key)
+            if raw_value is not None:
+                return float(raw_value)
+        return None
+
+    def _query_anchor_terms(self, query: str) -> list[str]:
+        values: list[str] = []
+
+        def _add(candidate: str) -> None:
+            normalized = _WHITESPACE_RE.sub(" ", str(candidate or "").strip())
+            if len(normalized) < _MIN_ANCHOR_QUERY_LENGTH:
+                return
+            if normalized.lower() in _QUERY_STOPWORDS:
+                return
+            if normalized not in values:
+                values.append(normalized)
+
+        for match in _QUOTED_PHRASE_RE.findall(query):
+            _add(match)
+        for match in _TIME_TOKEN_RE.findall(query):
+            _add(match)
+        for match in _CAPITALIZED_PHRASE_RE.findall(query):
+            _add(match)
+        for match in _CJK_TOKEN_RE.findall(query):
+            _add(match)
+        for match in _PATH_SYMBOL_RE.findall(query):
+            _add(match)
+        for match in _WORD_TOKEN_RE.findall(query):
+            _add(match)
+            if len(values) >= _MAX_ANCHOR_TERMS:
+                break
+
+        return values[:_MAX_ANCHOR_TERMS]
+
     def _embed_query(self, query: str) -> Optional[list[float]]:
         if self._embedder is None:
             return None
@@ -228,6 +490,21 @@ class MemoryBootstrapProbe:
 
     def _model_name(self) -> Optional[str]:
         return getattr(self._embedder, "model_name", None)
+
+    @staticmethod
+    def _cache_key(
+        *,
+        query: str,
+        scope_filter: Optional[Dict[str, Any]],
+    ) -> str:
+        return json.dumps(
+            {
+                "query": query,
+                "scope_filter": scope_filter or {},
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
 
     def _decision_cache_get(self, key: str) -> Optional[SearchResult]:
         if key not in self._decision_cache:

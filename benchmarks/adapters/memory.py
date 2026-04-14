@@ -152,9 +152,12 @@ class MemoryAdapter(EvalAdapter):
                 limit=top_k,
                 detail_level="l0",
             )
+            self._set_last_retrieval_meta(result)
             results = result.get("memory", [])
         else:
-            results = await oc.search(query=qa_item.question, limit=top_k)
+            result = await oc.search_payload(query=qa_item.question, limit=top_k)
+            self._set_last_retrieval_meta(result)
+            results = result.get("results", [])
 
         latency_ms = (time.perf_counter() - t0) * 1000
         return results, latency_ms

@@ -343,6 +343,7 @@ class MatchedContext:
     category: str = ""
     score: float = 0.0
     match_reason: str = ""
+    session_id: str = ""
 
     # Source tracing (document mode chunks)
     source_doc_id: Optional[str] = None
@@ -455,6 +456,8 @@ class FindResult:
             "abstract": ctx.abstract,
             "overview": ctx.overview,
         }
+        if ctx.session_id:
+            d["session_id"] = ctx.session_id
         if ctx.content is not None:
             d["content"] = ctx.content
         return d
@@ -484,6 +487,7 @@ class FindResult:
                 category=d.get("category", ""),
                 score=d.get("score", 0.0),
                 match_reason=d.get("match_reason", ""),
+                session_id=d.get("session_id", ""),
                 relations=[
                     RelatedContext(uri=r.get("uri", ""), abstract=r.get("abstract", ""))
                     for r in d.get("relations", [])

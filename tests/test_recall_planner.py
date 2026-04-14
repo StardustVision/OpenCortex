@@ -34,13 +34,22 @@ class TestRecallPlanContracts(unittest.TestCase):
                 "evidence": {
                     "top_score": None,
                     "score_gap": None,
+                    "object_top_score": None,
+                    "anchor_top_score": None,
                     "candidate_count": 0,
+                    "object_candidate_count": 0,
+                    "anchor_candidate_count": 0,
+                    "anchor_hit_count": 0,
                 },
                 "trace": {
                     "backend": "local_probe",
                     "model": None,
                     "top_k": 0,
                     "latency_ms": None,
+                    "object_latency_ms": None,
+                    "anchor_latency_ms": None,
+                    "object_candidates": 0,
+                    "anchor_candidates": 0,
                     "degraded": False,
                     "degrade_reason": None,
                 },
@@ -153,6 +162,53 @@ class TestRecallPlannerIntegration(unittest.IsolatedAsyncioTestCase):
             {MemoryKind.PREFERENCE, MemoryKind.PROFILE},
         )
         self.assertEqual(plan.retrieval_depth, "l1")
+        self.assertEqual(plan.decision, "arbitrate_l1")
+        self.assertGreater(plan.confidence or 0.0, 0.7)
+
+    async def test_search_caps_final_results_to_requested_limit(self):
+        await self.orch.add(
+            abstract="Launch checklist reviewed by the team.",
+            category="events",
+        )
+        await self.orch.add(
+            abstract="Launch rollback plan was updated.",
+            category="events",
+        )
+        await self.orch.add(
+            abstract="Launch timeline moved by one week.",
+            category="events",
+        )
+
+        result = await self.orch.search("launch", limit=1)
+
+        self.assertEqual(result.total, 1)
+        self.assertEqual(len(list(result)), 1)
+
+    async def test_search_respects_session_scope(self):
+        self.orch._skill_manager = None
+        await self.orch.add(
+            abstract="Launch checklist reviewed for session A.",
+            category="events",
+            session_id="sess-a",
+        )
+        await self.orch.add(
+            abstract="Launch checklist reviewed for session B.",
+            category="events",
+            session_id="sess-b",
+        )
+
+        result = await self.orch.search(
+            "launch checklist",
+            limit=5,
+            session_context={
+                "session_id": "sess-a",
+                "tenant_id": "testteam",
+                "user_id": "alice",
+            },
+        )
+
+        self.assertEqual(result.total, 1)
+        self.assertEqual(result.memories[0].session_id, "sess-a")
 
 
 if __name__ == "__main__":

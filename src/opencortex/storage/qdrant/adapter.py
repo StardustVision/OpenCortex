@@ -570,34 +570,26 @@ class QdrantStorageAdapter(StorageInterface):
         qdrant_filter = translate_filter(filter) if filter else None
 
         if order_by:
-            try:
-                points, _ = await client.scroll(
+            batch_size = max(limit + offset, 128)
+            all_points = []
+            next_offset = None
+            while True:
+                page, next_offset = await client.scroll(
                     collection_name=collection,
                     scroll_filter=qdrant_filter,
-                    limit=limit + offset,
-                    with_payload=True,
-                    order_by=models.OrderBy(
-                        key=order_by,
-                        direction=(
-                            models.Direction.DESC if order_desc
-                            else models.Direction.ASC
-                        ),
-                    ),
-                )
-                points = points[offset:]
-            except Exception:
-                # Fallback: scroll without order and sort in Python
-                points, _ = await client.scroll(
-                    collection_name=collection,
-                    scroll_filter=qdrant_filter,
-                    limit=limit + offset,
+                    limit=batch_size,
+                    offset=next_offset,
                     with_payload=True,
                 )
-                points = sorted(
-                    points[offset:],
-                    key=lambda p: (p.payload or {}).get(order_by, ""),
-                    reverse=order_desc,
-                )
+                all_points.extend(page)
+                if next_offset is None:
+                    break
+            points = sorted(
+                all_points,
+                key=lambda point: (point.payload or {}).get(order_by, ""),
+                reverse=order_desc,
+            )
+            points = points[offset : offset + limit]
         else:
             points, _ = await client.scroll(
                 collection_name=collection,

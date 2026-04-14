@@ -112,6 +112,11 @@ def set_collection_name(name: str) -> Token[Optional[str]]:
     return _collection_name.set(name)
 
 
+def reset_collection_name(token: Token[Optional[str]]) -> None:
+    """Reset collection name contextvar using token from :func:`set_collection_name`."""
+    _collection_name.reset(token)
+
+
 # ---------------------------------------------------------------------------
 # Role API
 # ---------------------------------------------------------------------------

@@ -48,6 +48,36 @@ class EvalAdapter(ABC):
 
     def __init__(self):
         self._dataset: Any = None
+        self._last_retrieval_meta: Dict[str, Any] = {}
+
+    def _set_last_retrieval_meta(self, payload: Any) -> None:
+        """Persist raw retrieval attribution for the last adapter call."""
+        if not isinstance(payload, dict):
+            self._last_retrieval_meta = {}
+            return
+
+        intent = payload.get("intent")
+        if not isinstance(intent, dict):
+            intent = {}
+
+        memory_pipeline = payload.get("memory_pipeline")
+        if not isinstance(memory_pipeline, dict):
+            memory_pipeline = intent.get("memory_pipeline")
+        if not isinstance(memory_pipeline, dict):
+            memory_pipeline = {}
+
+        meta: Dict[str, Any] = {}
+        if intent:
+            meta["intent"] = intent
+        if memory_pipeline:
+            meta["memory_pipeline"] = memory_pipeline
+        self._last_retrieval_meta = meta
+
+    def pop_last_retrieval_meta(self) -> Dict[str, Any]:
+        """Return and clear the last raw retrieval attribution payload."""
+        meta = dict(self._last_retrieval_meta)
+        self._last_retrieval_meta = {}
+        return meta
 
     def load_dataset(self, dataset_path: str, **kwargs) -> None:
         """Load and cache the dataset. Called once before ingest/build_qa_items.

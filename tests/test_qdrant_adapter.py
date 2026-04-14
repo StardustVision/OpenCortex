@@ -399,6 +399,25 @@ class TestQdrantAdapter(unittest.TestCase):
         for r in results:
             self.assertEqual(r.get("context_type"), "memory")
 
+    def test_filter_method_with_order_by_missing_field(self):
+        """filter(order_by=...) should not drop records lacking that field."""
+        self._run(self.adapter.create_collection("context", _CONTEXT_SCHEMA))
+
+        self._run(self.adapter.insert("context",
+            _make_record("r1", "opencortex://t/u/m/1", "A", context_type="memory")))
+        self._run(self.adapter.insert("context",
+            _make_record("r2", "opencortex://t/u/m/2", "B", context_type="memory")))
+
+        results = self._run(self.adapter.filter(
+            "context",
+            {"op": "must", "field": "context_type", "conds": ["memory"]},
+            limit=10,
+            order_by="updated_at",
+            order_desc=True,
+        ))
+
+        self.assertEqual(len(results), 2)
+
     # ---- Scroll ----
 
     def test_scroll(self):

@@ -462,6 +462,8 @@ class InMemoryStorage(StorageInterface):
             # Treat None as "" so records missing a field match empty-string conds
             if val is None and "" in conds:
                 return True
+            if isinstance(val, list):
+                return any(item in conds for item in val)
             return val in conds
 
         elif op == "prefix":
@@ -499,6 +501,8 @@ class InMemoryStorage(StorageInterface):
             field_name = filt.get("field", "")
             conds = filt.get("conds", [])
             val = record.get(field_name)
+            if isinstance(val, list):
+                return all(item not in conds for item in val)
             return val not in conds
 
         return True

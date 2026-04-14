@@ -91,6 +91,10 @@ class ContextManager:
         self._session_activity: Dict[SessionKey, float] = {}
         # Session-level locks: prevent concurrent begin_session
         self._session_locks: Dict[SessionKey, asyncio.Lock] = {}
+        # Session-scoped merge locks: protect conversation buffer snapshots.
+        self._session_merge_locks: Dict[SessionKey, asyncio.Lock] = {}
+        # At most one background merge worker per session.
+        self._session_merge_tasks: Dict[SessionKey, asyncio.Task] = {}
         # Session project id snapshot for explicit/idle/background end flows.
         self._session_project_ids: Dict[SessionKey, str] = {}
         # Pending async tasks (cited_uris reward, etc.)
@@ -364,6 +368,13 @@ class ContextManager:
                         "probe",
                         self._orchestrator.probe_memory,
                         query,
+                        context_type=context_type,
+                        session_context=session_ctx,
+                        metadata_filter=(
+                            {"op": "must", "field": "category", "conds": [category]}
+                            if category
+                            else None
+                        ),
                     ),
                     timeout=10.0,
                 )
@@ -447,7 +458,11 @@ class ContextManager:
                     if context_type:
                         search_kwargs["context_type"] = context_type
                     if category:
-                        search_kwargs["metadata_filter"] = {"category": category}
+                        search_kwargs["metadata_filter"] = {
+                            "op": "must",
+                            "field": "category",
+                            "conds": [category],
+                        }
                     find_result = await self._orchestrator.search(**search_kwargs)
                     owner_ids = await self._orchestrator._resolve_memory_owner_ids(
                         find_result.memories
@@ -632,6 +647,121 @@ class ContextManager:
     # Phase: commit
     # =========================================================================
 
+    @staticmethod
+    def _merge_unique_strings(*groups: Any) -> List[str]:
+        """Return a stable ordered union of non-empty string values."""
+        merged: List[str] = []
+        for group in groups:
+            if not group:
+                continue
+            if isinstance(group, str):
+                values = [group]
+            else:
+                values = list(group)
+            for value in values:
+                normalized = str(value).strip()
+                if normalized and normalized not in merged:
+                    merged.append(normalized)
+        return merged
+
+    @staticmethod
+    def _split_topic_values(raw_value: Any) -> List[str]:
+        """Normalize topic-like values, splitting comma-separated strings."""
+        if not raw_value:
+            return []
+        if isinstance(raw_value, str):
+            return [
+                token.strip()
+                for token in raw_value.split(",")
+                if token and token.strip()
+            ]
+        return ContextManager._merge_unique_strings(raw_value)
+
+    @classmethod
+    def _decorate_message_text(
+        cls,
+        text: str,
+        meta: Optional[Dict[str, Any]],
+    ) -> str:
+        """Prefix stored text with the strongest available absolute time hint."""
+        if not text:
+            return text
+        time_refs = cls._merge_unique_strings(
+            (meta or {}).get("time_refs"),
+            (meta or {}).get("event_date"),
+        )
+        if not time_refs:
+            return text
+        first_ref = time_refs[0]
+        if first_ref in text:
+            return text
+        return f"[{first_ref}] {text}"
+
+    async def _aggregate_immediate_metadata(
+        self,
+        immediate_uris: List[str],
+    ) -> Dict[str, Any]:
+        """Collect anchor metadata from immediate records before merge cleanup."""
+        if not immediate_uris:
+            return {}
+
+        records = await self._orchestrator._storage.filter(
+            self._orchestrator._get_collection(),
+            {"op": "must", "field": "uri", "conds": immediate_uris},
+            limit=max(len(immediate_uris), 1),
+        )
+
+        entities: List[str] = []
+        time_refs: List[str] = []
+        topics: List[str] = []
+        event_date = ""
+
+        for record in records:
+            meta = dict(record.get("meta") or {})
+            abstract_json = record.get("abstract_json")
+            slots = (
+                abstract_json.get("slots", {})
+                if isinstance(abstract_json, dict)
+                else {}
+            )
+
+            entities = self._merge_unique_strings(
+                entities,
+                record.get("entities"),
+                meta.get("entities"),
+                slots.get("entities"),
+            )
+            time_refs = self._merge_unique_strings(
+                time_refs,
+                meta.get("time_refs"),
+                slots.get("time_refs"),
+                record.get("event_date"),
+                meta.get("event_date"),
+            )
+            topics = self._merge_unique_strings(
+                topics,
+                self._split_topic_values(record.get("keywords")),
+                self._split_topic_values(meta.get("keywords")),
+                self._split_topic_values(meta.get("topics")),
+                self._split_topic_values(slots.get("topics")),
+            )
+
+            if not event_date:
+                event_date = str(
+                    record.get("event_date") or meta.get("event_date") or ""
+                ).strip()
+
+        merged_meta: Dict[str, Any] = {}
+        if entities:
+            merged_meta["entities"] = entities
+        if time_refs:
+            merged_meta["time_refs"] = time_refs
+        if topics:
+            merged_meta["topics"] = topics
+        if event_date:
+            merged_meta["event_date"] = event_date
+        return merged_meta
+
     async def _commit(
         self,
         session_id: str,
@@ -645,121 +775,150 @@ class ContextManager:
         sk = self._make_session_key(tenant_id, user_id, session_id)
         self._touch_session(sk)
         self._remember_session_project(sk)
+        lock = self._session_locks.setdefault(sk, asyncio.Lock())
 
-        # Idempotent: same turn_id already committed → duplicate
-        if turn_id in self._committed_turns.get(sk, set()):
-            logger.debug(
-                "[ContextManager] commit DUPLICATE sid=%s turn=%s tenant=%s user=%s",
-                session_id, turn_id, tenant_id, user_id,
-            )
-            return {
-                "accepted": True,
-                "write_status": "duplicate",
-                "turn_id": turn_id,
-            }
+        async with lock:
+            if turn_id in self._committed_turns.get(sk, set()):
+                logger.debug(
+                    "[ContextManager] commit DUPLICATE sid=%s turn=%s tenant=%s user=%s",
+                    session_id, turn_id, tenant_id, user_id,
+                )
+                return {
+                    "accepted": True,
+                    "write_status": "duplicate",
+                    "turn_id": turn_id,
+                }
 
-        # Observer gets full data including tool_calls
-        observer_ok = True
-        try:
-            self._observer.record_batch(session_id, messages, tenant_id, user_id,
-                                        tool_calls=tool_calls)
-        except Exception as exc:
-            observer_ok = False
-            logger.warning(
-                "[ContextManager] Observer record failed sid=%s turn=%s tenant=%s user=%s: %s "
-                "— writing to fallback",
-                session_id, turn_id, tenant_id, user_id, exc,
-            )
-            self._write_fallback(session_id, turn_id, messages, tenant_id, user_id)
+            observer_ok = True
+            try:
+                self._observer.record_batch(
+                    session_id,
+                    messages,
+                    tenant_id,
+                    user_id,
+                    tool_calls=tool_calls,
+                )
+            except Exception as exc:
+                observer_ok = False
+                logger.warning(
+                    "[ContextManager] Observer record failed sid=%s turn=%s tenant=%s user=%s: %s "
+                    "— writing to fallback",
+                    session_id,
+                    turn_id,
+                    tenant_id,
+                    user_id,
+                    exc,
+                )
+                self._write_fallback(session_id, turn_id, messages, tenant_id, user_id)
 
-        # Mark turn as committed
-        self._committed_turns.setdefault(sk, set()).add(turn_id)
+            self._committed_turns.setdefault(sk, set()).add(turn_id)
 
-        # Reward scoring for cited URIs (async, non-blocking)
-        if cited_uris:
-            valid_uris = [u for u in cited_uris if u.startswith("opencortex://")]
-            if valid_uris:
-                task = asyncio.create_task(self._apply_cited_rewards(valid_uris))
-                self._pending_tasks.add(task)
-                task.add_done_callback(self._pending_tasks.discard)
+            if cited_uris:
+                valid_uris = [u for u in cited_uris if u.startswith("opencortex://")]
+                if valid_uris:
+                    task = asyncio.create_task(self._apply_cited_rewards(valid_uris))
+                    self._pending_tasks.add(task)
+                    task.add_done_callback(self._pending_tasks.discard)
 
-        # Skill citation tracking (validated against server-selected set)
-        if cited_uris and hasattr(self._orchestrator, '_skill_event_store') and self._orchestrator._skill_event_store:
-            skill_uris = [u for u in cited_uris if "/skills/" in u]
-            server_selected = self._selected_skill_uris.get((sk, turn_id), set())
-            for uri in skill_uris:
-                if uri not in server_selected:
-                    logger.debug("[ContextManager] Dropped forged skill citation: %s", uri)
+            if (
+                cited_uris
+                and hasattr(self._orchestrator, "_skill_event_store")
+                and self._orchestrator._skill_event_store
+            ):
+                skill_uris = [u for u in cited_uris if "/skills/" in u]
+                server_selected = self._selected_skill_uris.get((sk, turn_id), set())
+                for uri in skill_uris:
+                    if uri not in server_selected:
+                        logger.debug(
+                            "[ContextManager] Dropped forged skill citation: %s", uri
+                        )
+                        continue
+                    await self._append_skill_event(
+                        session_id,
+                        turn_id,
+                        uri,
+                        tenant_id,
+                        user_id,
+                        "cited",
+                    )
+
+            buffer = self._conversation_buffers.setdefault(sk, ConversationBuffer())
+            write_items = []
+            for i, msg in enumerate(messages):
+                text = msg.get(
+                    "content",
+                    msg.get("assistant_response", msg.get("user_message", "")),
+                )
+                if not text:
                     continue
-                await self._append_skill_event(
-                    session_id, turn_id, uri, tenant_id, user_id, "cited",
+                msg_meta = dict(msg.get("meta") or {})
+                stored_text = self._decorate_message_text(text, msg_meta)
+                role = msg.get("role", "")
+                idx = buffer.start_msg_index + len(buffer.messages) + i
+                tc = tool_calls if role == "assistant" else None
+                write_items.append((stored_text, idx, tc, msg_meta))
+
+            if write_items:
+                tokens_for_identity = set_request_identity(tenant_id, user_id)
+                try:
+                    results = await asyncio.gather(
+                        *[
+                            self._orchestrator._write_immediate(
+                                session_id=session_id,
+                                msg_index=idx,
+                                text=text,
+                                tool_calls=tc,
+                                meta=msg_meta,
+                            )
+                            for text, idx, tc, msg_meta in write_items
+                        ],
+                        return_exceptions=True,
+                    )
+                finally:
+                    reset_request_identity(tokens_for_identity)
+
+                for (text, idx, tc, _msg_meta), result in zip(write_items, results):
+                    if isinstance(result, Exception):
+                        logger.warning(
+                            "[ContextManager] Immediate write failed: %s", result
+                        )
+                        continue
+                    buffer.messages.append(text)
+                    buffer.immediate_uris.append(result)
+                    buffer.token_count += self._estimate_tokens(text)
+
+                if tool_calls:
+                    buffer.tool_calls_per_turn.append(tool_calls)
+
+            if buffer.token_count >= 1000:
+                self._spawn_merge_task(sk, session_id, tenant_id, user_id)
+
+            write_status = "ok" if observer_ok else "fallback"
+            if not observer_ok:
+                logger.warning(
+                    "[ContextManager] commit FALLBACK sid=%s turn=%s tenant=%s user=%s",
+                    session_id,
+                    turn_id,
+                    tenant_id,
+                    user_id,
+                )
+            else:
+                logger.info(
+                    "[ContextManager] commit sid=%s turn=%s tenant=%s user=%s messages=%d cited=%d",
+                    session_id,
+                    turn_id,
+                    tenant_id,
+                    user_id,
+                    len(messages),
+                    len(cited_uris) if cited_uris else 0,
                 )
 
-        # Build write items (don't mutate buffer yet)
-        buffer = self._conversation_buffers.setdefault(sk, ConversationBuffer())
-        write_items = []
-        for i, msg in enumerate(messages):
-            text = msg.get("content", msg.get("assistant_response", msg.get("user_message", "")))
-            if not text:
-                continue
-            role = msg.get("role", "")
-            idx = buffer.start_msg_index + len(buffer.messages) + i
-            tc = tool_calls if role == "assistant" else None
-            write_items.append((text, idx, tc))
-
-        # Parallel immediate writes
-        if write_items:
-            tokens_for_identity = set_request_identity(tenant_id, user_id)
-            try:
-                results = await asyncio.gather(*[
-                    self._orchestrator._write_immediate(
-                        session_id=session_id, msg_index=idx,
-                        text=text, tool_calls=tc,
-                    )
-                    for text, idx, tc in write_items
-                ], return_exceptions=True)
-            finally:
-                reset_request_identity(tokens_for_identity)
-
-            for (text, idx, tc), result in zip(write_items, results):
-                if isinstance(result, Exception):
-                    logger.warning("[ContextManager] Immediate write failed: %s", result)
-                    continue
-                buffer.messages.append(text)
-                buffer.immediate_uris.append(result)
-                buffer.token_count += self._estimate_tokens(text)
-
-            if tool_calls:
-                buffer.tool_calls_per_turn.append(tool_calls)
-
-        # Check merge threshold
-        if buffer.token_count >= 1000:
-            task = asyncio.create_task(
-                self._merge_buffer(sk, session_id, tenant_id, user_id)
-            )
-            self._pending_tasks.add(task)
-            task.add_done_callback(self._pending_tasks.discard)
-
-        write_status = "ok" if observer_ok else "fallback"
-        if not observer_ok:
-            logger.warning(
-                "[ContextManager] commit FALLBACK sid=%s turn=%s tenant=%s user=%s",
-                session_id, turn_id, tenant_id, user_id,
-            )
-        else:
-            logger.info(
-                "[ContextManager] commit sid=%s turn=%s tenant=%s user=%s messages=%d cited=%d",
-                session_id, turn_id, tenant_id, user_id,
-                len(messages),
-                len(cited_uris) if cited_uris else 0,
-            )
-
-        return {
-            "accepted": True,
-            "write_status": write_status,
-            "turn_id": turn_id,
-            "session_turns": len(self._committed_turns.get(sk, set())),
-        }
+            return {
+                "accepted": True,
+                "write_status": write_status,
+                "turn_id": turn_id,
+                "session_turns": len(self._committed_turns.get(sk, set())),
+            }
 
     @staticmethod
     def _estimate_tokens(text: str) -> int:
@@ -767,52 +926,164 @@ class ContextManager:
         from opencortex.parse.base import estimate_tokens
         return estimate_tokens(text)
 
-    async def _merge_buffer(self, sk, session_id, tenant_id, user_id):
-        """Merge accumulated buffer into a high-quality LLM-derived chunk."""
-        buffer = self._conversation_buffers.get(sk)
-        if not buffer or not buffer.messages:
+    def _spawn_merge_task(
+        self,
+        sk: SessionKey,
+        session_id: str,
+        tenant_id: str,
+        user_id: str,
+    ) -> None:
+        """Start one background merge worker for the session if needed."""
+        existing_task = self._session_merge_tasks.get(sk)
+        if existing_task and not existing_task.done():
             return
+
+        task = asyncio.create_task(
+            self._merge_buffer(
+                sk,
+                session_id,
+                tenant_id,
+                user_id,
+                flush_all=False,
+            )
+        )
+        self._session_merge_tasks[sk] = task
+        self._pending_tasks.add(task)
+
+        def _cleanup(done_task: asyncio.Task) -> None:
+            self._pending_tasks.discard(done_task)
+            if self._session_merge_tasks.get(sk) is done_task:
+                self._session_merge_tasks.pop(sk, None)
+
+        task.add_done_callback(_cleanup)
+
+    async def _wait_for_merge_task(self, sk: SessionKey) -> None:
+        """Wait until any in-flight background merge for the session finishes."""
+        task = self._session_merge_tasks.get(sk)
+        if not task:
+            return
+        await asyncio.gather(task, return_exceptions=True)
+
+    async def _take_merge_snapshot(
+        self,
+        sk: SessionKey,
+        *,
+        flush_all: bool,
+    ) -> Optional[ConversationBuffer]:
+        """Detach the current buffer snapshot for merge processing."""
+        merge_lock = self._session_merge_locks.setdefault(sk, asyncio.Lock())
+        async with merge_lock:
+            buffer = self._conversation_buffers.get(sk)
+            if not buffer or not buffer.messages:
+                return None
+            if not flush_all and buffer.token_count < 1000:
+                return None
+
+            snapshot = ConversationBuffer(
+                messages=list(buffer.messages),
+                token_count=buffer.token_count,
+                start_msg_index=buffer.start_msg_index,
+                immediate_uris=list(buffer.immediate_uris),
+                tool_calls_per_turn=[list(item) for item in buffer.tool_calls_per_turn],
+            )
+            next_start = buffer.start_msg_index + len(buffer.messages)
+            self._conversation_buffers[sk] = ConversationBuffer(
+                start_msg_index=next_start
+            )
+            return snapshot
+
+    async def _restore_merge_snapshot(
+        self,
+        sk: SessionKey,
+        snapshot: ConversationBuffer,
+    ) -> None:
+        """Restore a detached buffer snapshot after merge failure."""
+        merge_lock = self._session_merge_locks.setdefault(sk, asyncio.Lock())
+        async with merge_lock:
+            current = self._conversation_buffers.get(sk)
+            if current is None:
+                self._conversation_buffers[sk] = snapshot
+                return
+
+            merged = ConversationBuffer(
+                messages=list(snapshot.messages) + list(current.messages),
+                token_count=snapshot.token_count + current.token_count,
+                start_msg_index=snapshot.start_msg_index,
+                immediate_uris=list(snapshot.immediate_uris)
+                + list(current.immediate_uris),
+                tool_calls_per_turn=list(snapshot.tool_calls_per_turn)
+                + list(current.tool_calls_per_turn),
+            )
+            self._conversation_buffers[sk] = merged
+
+    async def _merge_buffer(
+        self,
+        sk: SessionKey,
+        session_id: str,
+        tenant_id: str,
+        user_id: str,
+        *,
+        flush_all: bool,
+    ) -> None:
+        """Merge accumulated buffer snapshots into durable merged records."""
         tokens_for_identity = None
         try:
-            combined = "\n\n".join(buffer.messages)
+            while True:
+                snapshot = await self._take_merge_snapshot(
+                    sk,
+                    flush_all=flush_all,
+                )
+                if snapshot is None:
+                    return
 
-            # Aggregate tool_calls across all turns in this buffer
-            all_tool_calls = []
-            for tc_list in buffer.tool_calls_per_turn:
-                all_tool_calls.extend(tc_list)
+                combined = "\n\n".join(snapshot.messages)
+                aggregated_meta = await self._aggregate_immediate_metadata(
+                    snapshot.immediate_uris
+                )
 
-            tokens_for_identity = set_request_identity(tenant_id, user_id)
-            await self._orchestrator.add(
-                abstract="",
-                content=combined,
-                category="events",
-                context_type="memory",
-                meta={
-                    "layer": "merged",
-                    "ingest_mode": "memory",
-                    "msg_range": [
-                        buffer.start_msg_index,
-                        buffer.start_msg_index + len(buffer.messages) - 1,
-                    ],
-                    "session_id": session_id,
-                    "tool_calls": all_tool_calls if all_tool_calls else [],
-                },
-                session_id=session_id,
-            )
-            # Delete merged immediate records from Qdrant
-            if buffer.immediate_uris:
-                try:
-                    await self._orchestrator._storage.batch_delete(
-                        "context",
-                        {"op": "must", "field": "uri", "conds": buffer.immediate_uris},
-                    )
-                except Exception as exc:
-                    logger.warning("[ContextManager] Immediate cleanup after merge: %s", exc)
-            # Reset buffer
-            new_start = buffer.start_msg_index + len(buffer.messages)
-            self._conversation_buffers[sk] = ConversationBuffer(start_msg_index=new_start)
+                all_tool_calls = []
+                for tc_list in snapshot.tool_calls_per_turn:
+                    all_tool_calls.extend(tc_list)
+
+                if tokens_for_identity is None:
+                    tokens_for_identity = set_request_identity(tenant_id, user_id)
+                await self._orchestrator.add(
+                    abstract="",
+                    content=combined,
+                    category="events",
+                    context_type="memory",
+                    meta={
+                        **aggregated_meta,
+                        "layer": "merged",
+                        "ingest_mode": "memory",
+                        "msg_range": [
+                            snapshot.start_msg_index,
+                            snapshot.start_msg_index + len(snapshot.messages) - 1,
+                        ],
+                        "session_id": session_id,
+                        "tool_calls": all_tool_calls if all_tool_calls else [],
+                    },
+                    session_id=session_id,
+                )
+
+                if snapshot.immediate_uris:
+                    try:
+                        await self._orchestrator._storage.batch_delete(
+                            self._orchestrator._get_collection(),
+                            {
+                                "op": "must",
+                                "field": "uri",
+                                "conds": snapshot.immediate_uris,
+                            },
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[ContextManager] Immediate cleanup after merge: %s", exc
+                        )
         except Exception as exc:
             logger.error("[ContextManager] Merge failed: %s", exc)
+            if "snapshot" in locals() and snapshot is not None:
+                await self._restore_merge_snapshot(sk, snapshot)
         finally:
             if tokens_for_identity:
                 reset_request_identity(tokens_for_identity)
@@ -831,83 +1102,110 @@ class ContextManager:
         total_turns = len(self._committed_turns.get(sk, set()))
         session_project_id = self._session_project_ids.get(sk) or get_effective_project_id()
         project_token = set_request_project_id(session_project_id)
+        lock = self._session_locks.setdefault(sk, asyncio.Lock())
 
         try:
-            # Flush conversation buffer before Alpha pipeline
-            buffer = self._conversation_buffers.get(sk)
-            if buffer and buffer.messages:
+            async with lock:
+                await self._wait_for_merge_task(sk)
+                buffer = self._conversation_buffers.get(sk)
+                if buffer and buffer.messages:
+                    try:
+                        await self._merge_buffer(
+                            sk,
+                            session_id,
+                            tenant_id,
+                            user_id,
+                            flush_all=True,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[ContextManager] End-of-session buffer flush failed: %s",
+                            exc,
+                        )
+
                 try:
-                    await self._merge_buffer(sk, session_id, tenant_id, user_id)
-                except Exception as exc:
-                    logger.warning("[ContextManager] End-of-session buffer flush failed: %s", exc)
-
-            # Catch-all: delete any remaining immediate records for this session
-            try:
-                await self._orchestrator._storage.batch_delete(
-                    "context",
-                    {"op": "and", "conds": [
-                        {"op": "must", "field": "session_id", "conds": [session_id]},
-                        {"op": "must", "field": "meta.layer", "conds": ["immediate"]},
-                    ]},
-                )
-            except Exception as exc:
-                logger.warning("[ContextManager] End cleanup immediates: %s", exc)
-
-            # Delegate to orchestrator.session_end() — includes:
-            # Observer.flush → TraceSplitter → TraceStore → Archivist
-            start_time = time.monotonic()
-            status = "closed"
-            traces = 0
-            knowledge_candidates = 0
-            session_owner_ids = sorted(self._session_memory_owner_ids.get(sk, set()))
-
-            try:
-                result = await self._orchestrator.session_end(
-                    session_id=session_id,
-                    quality_score=0.5,
-                )
-                traces = result.get("alpha_traces", 0)
-                knowledge_candidates = result.get("knowledge_candidates", 0)
-            except Exception as exc:
-                logger.warning(
-                    "[ContextManager] session_end failed sid=%s tenant=%s user=%s: %s",
-                    session_id, tenant_id, user_id, exc,
-                )
-                status = "partial"
-
-            if (
-                session_owner_ids
-                and getattr(self._orchestrator, "_autophagy_kernel", None) is not None
-            ):
-                task = asyncio.create_task(
-                    self._run_autophagy_metabolism(
-                        session_id=session_id,
-                        tenant_id=tenant_id,
-                        user_id=user_id,
-                        owner_ids=session_owner_ids,
+                    await self._orchestrator._storage.batch_delete(
+                        self._orchestrator._get_collection(),
+                        {
+                            "op": "and",
+                            "conds": [
+                                {
+                                    "op": "must",
+                                    "field": "session_id",
+                                    "conds": [session_id],
+                                },
+                                {
+                                    "op": "must",
+                                    "field": "meta.layer",
+                                    "conds": ["immediate"],
+                                },
+                            ],
+                        },
                     )
+                except Exception as exc:
+                    logger.warning("[ContextManager] End cleanup immediates: %s", exc)
+
+                start_time = time.monotonic()
+                status = "closed"
+                traces = 0
+                knowledge_candidates = 0
+                session_owner_ids = sorted(
+                    self._session_memory_owner_ids.get(sk, set())
                 )
-                self._pending_tasks.add(task)
-                task.add_done_callback(self._pending_tasks.discard)
 
-            duration_ms = int((time.monotonic() - start_time) * 1000)
+                try:
+                    result = await self._orchestrator.session_end(
+                        session_id=session_id,
+                        quality_score=0.5,
+                    )
+                    traces = result.get("alpha_traces", 0)
+                    knowledge_candidates = result.get("knowledge_candidates", 0)
+                except Exception as exc:
+                    logger.warning(
+                        "[ContextManager] session_end failed sid=%s tenant=%s user=%s: %s",
+                        session_id,
+                        tenant_id,
+                        user_id,
+                        exc,
+                    )
+                    status = "partial"
 
-            # Cleanup session state
-            self._cleanup_session(sk)
+                if (
+                    session_owner_ids
+                    and getattr(self._orchestrator, "_autophagy_kernel", None) is not None
+                ):
+                    task = asyncio.create_task(
+                        self._run_autophagy_metabolism(
+                            session_id=session_id,
+                            tenant_id=tenant_id,
+                            user_id=user_id,
+                            owner_ids=session_owner_ids,
+                        )
+                    )
+                    self._pending_tasks.add(task)
+                    task.add_done_callback(self._pending_tasks.discard)
 
-            logger.info(
-                "[ContextManager] end sid=%s tenant=%s user=%s turns=%d traces=%d latency=%dms",
-                session_id, tenant_id, user_id, total_turns, traces, duration_ms,
-            )
+                duration_ms = int((time.monotonic() - start_time) * 1000)
+                self._cleanup_session(sk)
 
-            return {
-                "session_id": session_id,
-                "status": status,
-                "total_turns": total_turns,
-                "traces": traces,
-                "knowledge_candidates": knowledge_candidates,
-                "duration_ms": duration_ms,
-            }
+                logger.info(
+                    "[ContextManager] end sid=%s tenant=%s user=%s turns=%d traces=%d latency=%dms",
+                    session_id,
+                    tenant_id,
+                    user_id,
+                    total_turns,
+                    traces,
+                    duration_ms,
+                )
+
+                return {
+                    "session_id": session_id,
+                    "status": status,
+                    "total_turns": total_turns,
+                    "traces": traces,
+                    "knowledge_candidates": knowledge_candidates,
+                    "duration_ms": duration_ms,
+                }
         finally:
             reset_request_project_id(project_token)
 
@@ -965,6 +1263,9 @@ class ContextManager:
         self._committed_turns.pop(sk, None)
         self._session_activity.pop(sk, None)
         self._session_locks.pop(sk, None)
+        self._session_merge_locks.pop(sk, None)
+        self._session_merge_tasks.pop(sk, None)
+        self._conversation_buffers.pop(sk, None)
         self._session_project_ids.pop(sk, None)
         self._session_memory_owner_ids.pop(sk, None)
         # Clean up turn-scoped skill selections for this session
@@ -1068,6 +1369,8 @@ class ContextManager:
                 "context_type": str(matched.context_type),
                 "category": matched.category,
             }
+            if getattr(matched, "session_id", ""):
+                item["session_id"] = matched.session_id
             if detail_level in ("l1", "l2") and matched.overview:
                 item["overview"] = self._clamp(matched.overview)
             if detail_level == "l2" and matched.content:

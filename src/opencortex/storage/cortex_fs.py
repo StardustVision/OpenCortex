@@ -468,6 +468,7 @@ class CortexFS:
                 overview=record.get("overview"),
                 category=record.get("category", ""),
                 score=score,
+                session_id=str(record.get("session_id", "") or ""),
             )
             if ctx.context_type == ContextType.MEMORY:
                 memories.append(ctx)
@@ -613,6 +614,7 @@ class CortexFS:
                     overview=record.get("overview"),
                     category=record.get("category", ""),
                     score=score,
+                    session_id=str(record.get("session_id", "") or ""),
                 )
                 if ctx.context_type == ContextType.MEMORY:
                     memories.append(ctx)

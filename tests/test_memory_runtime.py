@@ -64,6 +64,10 @@ class TestMemoryRuntime(unittest.TestCase):
         self.assertEqual(bound["memory_limit"], 8)
         self.assertEqual(bound["knowledge_limit"], 3)
         self.assertEqual(bound["association_mode"], "normal")
+        self.assertEqual(bound["raw_candidate_cap"], 25)
+        self.assertEqual(bound["seed_uri_cap"], 10)
+        self.assertEqual(bound["anchor_cap"], 6)
+        self.assertFalse(bound["bind_start_points"])
         self.assertIn("memory", bound["context_types"])
         self.assertIn("resource", bound["context_types"])
         self.assertIn("relation", bound["category_filter"])
@@ -92,11 +96,53 @@ class TestMemoryRuntime(unittest.TestCase):
         self.assertEqual(result.trace.effective["retrieval_depth"], "l1")
         self.assertEqual(result.trace.effective["association_mode"], "normal")
         self.assertTrue(result.trace.effective["rerank"])
+        self.assertEqual(result.trace.effective["raw_candidate_cap"], 25)
         self.assertEqual(
             result.trace.probe["candidate_entries"][0]["memory_kind"],
             "relation",
         )
         self.assertFalse(result.degrade.applied)
+
+    def test_bind_can_anchor_start_points_without_seed_uris(self):
+        anchor_only_probe = SearchResult(
+            should_recall=True,
+            anchor_hits=["杭州", "下周二"],
+            evidence={
+                "candidate_count": 1,
+                "anchor_candidate_count": 1,
+                "anchor_hit_count": 2,
+                "anchor_top_score": 0.68,
+            },
+        )
+        anchor_plan = RetrievalPlan(
+            target_memory_kinds=[MemoryKind.EVENT, MemoryKind.SUMMARY],
+            query_plan=MemoryQueryPlan(
+                anchors=[
+                    {"kind": "entity", "value": "杭州"},
+                    {"kind": "time", "value": "下周二"},
+                ]
+            ),
+            search_profile=MemorySearchProfile(
+                recall_budget=0.45,
+                association_budget=0.0,
+                rerank=True,
+            ),
+            retrieval_depth=RetrievalDepth.L1,
+        )
+
+        bound = self.runtime.bind(
+            probe_result=anchor_only_probe,
+            retrieve_plan=anchor_plan,
+            max_items=5,
+            session_id="sess-1",
+            tenant_id="tenant-1",
+            user_id="user-1",
+            project_id="project-1",
+            include_knowledge=False,
+        )
+
+        self.assertTrue(bound["bind_start_points"])
+        self.assertEqual(bound["anchor_cap"], 6)
 
     def test_degrade_can_disable_association_before_other_actions(self):
         bound = self.runtime.bind(

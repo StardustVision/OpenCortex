@@ -435,6 +435,7 @@ def _register_routes(app: FastAPI) -> None:
         context_type: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
+        include_payload: bool = False,
     ) -> Dict[str, Any]:
         """List user's accessible memories (private + shared)."""
         items = await _orchestrator.list_memories(
@@ -442,6 +443,7 @@ def _register_routes(app: FastAPI) -> None:
             context_type=context_type,
             limit=limit,
             offset=offset,
+            include_payload=include_payload,
         )
         return {"results": items, "total": len(items)}
 

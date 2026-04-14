@@ -13,7 +13,12 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from opencortex.config import CortexConfig, init_config
 from opencortex.context.manager import ConversationBuffer
-from opencortex.http.request_context import reset_request_identity, set_request_identity
+from opencortex.http.request_context import (
+    reset_collection_name,
+    reset_request_identity,
+    set_collection_name,
+    set_request_identity,
+)
 from opencortex.orchestrator import MemoryOrchestrator
 from test_e2e_phase1 import InMemoryStorage, MockEmbedder
 
@@ -127,6 +132,34 @@ class TestContextManager(unittest.TestCase):
 
         self._run(orch.close())
 
+    def test_prepare_can_recall_memory_written_under_different_session(self):
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        self._run(
+            orch.add(
+                abstract="我下周二要去杭州出差，住在西湖边。",
+                category="events",
+                session_id="ingest-session",
+            )
+        )
+        cm = orch._context_manager
+
+        result = self._run(
+            cm.handle(
+                session_id="query-session",
+                phase="prepare",
+                tenant_id="testteam",
+                user_id="alice",
+                turn_id="t1",
+                messages=[{"role": "user", "content": "你记得我下周二去哪里出差吗"}],
+            )
+        )
+
+        self.assertGreaterEqual(result["intent"]["probe_candidate_count"], 1)
+        self.assertGreaterEqual(len(result["memory"]), 1)
+
+        self._run(orch.close())
+
     def test_merge_buffer_replaces_immediate_records_with_merged_object(self):
         orch = self._make_orchestrator()
         self._run(orch.init())
@@ -138,7 +171,13 @@ class TestContextManager(unittest.TestCase):
             orch._write_immediate(
                 session_id=session_id,
                 msg_index=0,
-                text="我下周二要去杭州出差。",
+                text="[1 May, 2023] 我下周二要去杭州出差。",
+                meta={
+                    "event_date": "2023-05-01T09:00:00Z",
+                    "time_refs": ["1 May, 2023", "2023-05-01"],
+                    "entities": ["杭州"],
+                    "topics": ["出差"],
+                },
             )
         )
         uri2 = self._run(
@@ -146,18 +185,32 @@ class TestContextManager(unittest.TestCase):
                 session_id=session_id,
                 msg_index=1,
                 text="住在西湖边，不吃辣。",
+                meta={
+                    "event_date": "2023-05-01T09:00:00Z",
+                    "time_refs": ["1 May, 2023"],
+                    "entities": ["西湖"],
+                    "topics": ["住宿"],
+                },
             )
         )
         buffer = cm._conversation_buffers.setdefault(sk, ConversationBuffer())
         buffer.messages = [
-            "我下周二要去杭州出差。",
+            "[1 May, 2023] 我下周二要去杭州出差。",
             "住在西湖边，不吃辣。",
         ]
         buffer.immediate_uris = [uri1, uri2]
         buffer.tool_calls_per_turn = []
         buffer.token_count = 1200
 
-        self._run(cm._merge_buffer(sk, session_id, "testteam", "alice"))
+        self._run(
+            cm._merge_buffer(
+                sk,
+                session_id,
+                "testteam",
+                "alice",
+                flush_all=True,
+            )
+        )
 
         immediate_records = self._run(
             self.storage.filter(
@@ -176,8 +229,246 @@ class TestContextManager(unittest.TestCase):
         self.assertEqual(len(merged_records), 1)
         self.assertEqual(merged_records[0].get("memory_kind"), "event")
         self.assertIn("abstract_json", merged_records[0])
+        slots = merged_records[0]["abstract_json"]["slots"]
+        self.assertIn("1 May, 2023", slots["time_refs"])
+        self.assertIn("杭州", slots["entities"])
+        self.assertIn("西湖", slots["entities"])
+        self.assertIn("出差", slots["topics"])
+        self.assertIn("住宿", slots["topics"])
 
         self._run(orch.close())
+
+    def test_commit_persists_message_meta_into_immediate_records(self):
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        cm = orch._context_manager
+        session_id = "sess_commit_001"
+        sk = cm._make_session_key("testteam", "alice", session_id)
+
+        self._run(
+            cm.handle(
+                session_id=session_id,
+                phase="commit",
+                tenant_id="testteam",
+                user_id="alice",
+                turn_id="t1",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": "[Alice]: 我搬到了杭州。",
+                        "meta": {
+                            "speaker": "Alice",
+                            "event_date": "2023-05-01T09:00:00Z",
+                            "time_refs": ["1 May, 2023", "2023-05-01"],
+                        },
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "记住了。",
+                    },
+                ],
+            )
+        )
+
+        buffer = cm._conversation_buffers[sk]
+        self.assertTrue(buffer.messages[0].startswith("[1 May, 2023] [Alice]:"))
+
+        immediate_records = [
+            record
+            for record in self.storage._records.get("context", {}).values()
+            if record.get("meta", {}).get("layer") == "immediate"
+        ]
+        self.assertEqual(len(immediate_records), 2)
+        user_record = next(
+            record
+            for record in immediate_records
+            if record.get("meta", {}).get("msg_index") == 0
+        )
+        self.assertEqual(user_record["event_date"], "2023-05-01T09:00:00Z")
+        self.assertEqual(user_record["speaker"], "Alice")
+        self.assertIn(
+            "1 May, 2023",
+            user_record["abstract_json"]["slots"]["time_refs"],
+        )
+
+        self._run(orch.close())
+
+    def test_merge_cleanup_uses_active_collection_override(self):
+        collection_token = set_collection_name("bench_ctx")
+        orch = None
+        try:
+            orch = self._make_orchestrator()
+            self._run(orch.init())
+            cm = orch._context_manager
+            session_id = "sess_merge_002"
+            sk = cm._make_session_key("testteam", "alice", session_id)
+
+            uri = self._run(
+                orch._write_immediate(
+                    session_id=session_id,
+                    msg_index=0,
+                    text="[1 May, 2023] 我下周二要去杭州出差。",
+                    meta={
+                        "event_date": "2023-05-01T09:00:00Z",
+                        "time_refs": ["1 May, 2023"],
+                    },
+                )
+            )
+            buffer = cm._conversation_buffers.setdefault(sk, ConversationBuffer())
+            buffer.messages = ["[1 May, 2023] 我下周二要去杭州出差。"]
+            buffer.immediate_uris = [uri]
+            buffer.token_count = 1200
+
+            self._run(
+                cm._merge_buffer(
+                    sk,
+                    session_id,
+                    "testteam",
+                    "alice",
+                    flush_all=True,
+                )
+            )
+
+            remaining = self._run(
+                self.storage.filter(
+                    "bench_ctx",
+                    {"op": "must", "field": "uri", "conds": [uri]},
+                    limit=10,
+                )
+            )
+            self.assertEqual(remaining, [])
+            self.assertNotIn("context", self.storage._records)
+        finally:
+            if orch is not None:
+                self._run(orch.close())
+            reset_collection_name(collection_token)
+
+    def test_end_waits_for_background_merge_and_keeps_single_merged_record(self):
+        async def _case():
+            orch = self._make_orchestrator()
+            await orch.init()
+            cm = orch._context_manager
+            session_id = "sess_merge_async_001"
+            sk = cm._make_session_key("testteam", "alice", session_id)
+            cm._estimate_tokens = lambda _text: 1200
+
+            original_add = orch.add
+            merge_started = asyncio.Event()
+            allow_merge = asyncio.Event()
+
+            async def slow_add(*args, **kwargs):
+                merge_started.set()
+                await allow_merge.wait()
+                return await original_add(*args, **kwargs)
+
+            orch.add = AsyncMock(side_effect=slow_add)
+
+            await cm.handle(
+                session_id=session_id,
+                phase="commit",
+                tenant_id="testteam",
+                user_id="alice",
+                turn_id="t1",
+                messages=[
+                    {"role": "user", "content": "我下周二要去杭州出差。"},
+                    {"role": "assistant", "content": "记住了，你住在西湖边。"},
+                ],
+            )
+
+            self.assertIn(sk, cm._session_merge_tasks)
+            await asyncio.wait_for(merge_started.wait(), timeout=1.0)
+
+            end_task = asyncio.create_task(
+                cm.handle(
+                    session_id=session_id,
+                    phase="end",
+                    tenant_id="testteam",
+                    user_id="alice",
+                )
+            )
+            await asyncio.sleep(0.05)
+            self.assertFalse(end_task.done())
+
+            allow_merge.set()
+            result = await asyncio.wait_for(end_task, timeout=2.0)
+            self.assertEqual(result["status"], "closed")
+
+            merged_records = [
+                record
+                for record in self.storage._records.get("context", {}).values()
+                if record.get("meta", {}).get("layer") == "merged"
+            ]
+            immediate_records = [
+                record
+                for record in self.storage._records.get("context", {}).values()
+                if record.get("meta", {}).get("layer") == "immediate"
+            ]
+            self.assertEqual(len(merged_records), 1)
+            self.assertEqual(immediate_records, [])
+            self.assertNotIn(sk, cm._session_merge_tasks)
+
+            await orch.close()
+
+        self._run(_case())
+
+    def test_failed_background_merge_is_restored_and_flushed_on_end(self):
+        async def _case():
+            orch = self._make_orchestrator()
+            await orch.init()
+            cm = orch._context_manager
+            session_id = "sess_merge_async_002"
+            sk = cm._make_session_key("testteam", "alice", session_id)
+            cm._estimate_tokens = lambda _text: 1200
+
+            original_add = orch.add
+            first_call = True
+
+            async def flaky_add(*args, **kwargs):
+                nonlocal first_call
+                if first_call:
+                    first_call = False
+                    raise RuntimeError("merge boom")
+                return await original_add(*args, **kwargs)
+
+            orch.add = AsyncMock(side_effect=flaky_add)
+
+            await cm.handle(
+                session_id=session_id,
+                phase="commit",
+                tenant_id="testteam",
+                user_id="alice",
+                turn_id="t1",
+                messages=[
+                    {"role": "user", "content": "我搬到了杭州。"},
+                    {"role": "assistant", "content": "记住了，你现在住在杭州。"},
+                ],
+            )
+
+            await cm._wait_for_merge_task(sk)
+            restored_buffer = cm._conversation_buffers.get(sk)
+            self.assertIsNotNone(restored_buffer)
+            self.assertGreater(restored_buffer.token_count, 0)
+            self.assertGreater(len(restored_buffer.messages), 0)
+
+            result = await cm.handle(
+                session_id=session_id,
+                phase="end",
+                tenant_id="testteam",
+                user_id="alice",
+            )
+            self.assertEqual(result["status"], "closed")
+
+            merged_records = [
+                record
+                for record in self.storage._records.get("context", {}).values()
+                if record.get("meta", {}).get("layer") == "merged"
+            ]
+            self.assertEqual(len(merged_records), 1)
+            self.assertNotIn(sk, cm._conversation_buffers)
+
+            await orch.close()
+
+        self._run(_case())
 
 
 if __name__ == "__main__":

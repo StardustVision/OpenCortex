@@ -5,6 +5,8 @@ topic: memory-bootstrap-probe
 
 # Memory Bootstrap Probe
 
+> Naming alignment: in the current refactor, Phase 1 is `probe`, not `router`; Phase 3 is `executor`, not `runtime`.
+
 ## Problem Frame
 
 OpenCortex's current hot path still assumes that Phase 1 should perform semantic routing before retrieval begins. That made the router responsible for deciding:
@@ -113,10 +115,10 @@ Under the current hybrid direction, the probe should be understood as **anchor-a
 - R33. Planner may infer object-type priors from the retrieved `memory_kind` distribution inside `probe_result`, but Phase 1 must not convert those observations into a standalone semantic route output.
 - R34. Phase 1 must not reintroduce semantic classes indirectly through trace-only or metadata-only side channels.
 
-**Boundary With Runtime**
-- R35. Runtime must treat Phase 1 output as first-pass evidence, not as a semantic route.
-- R36. Runtime must not recreate a semantic router from `probe_result`.
-- R37. Runtime must execute planner decisions that were informed by the probe rather than adding a hidden pre-planning classifier of its own.
+**Boundary With Executor**
+- R35. Executor must treat Phase 1 output as first-pass evidence, not as a semantic route.
+- R36. Executor must not recreate a semantic router from `probe_result`.
+- R37. Executor must execute planner decisions that were informed by the probe rather than adding a hidden pre-planning classifier of its own.
 
 **Performance Direction**
 - R38. Phase 1 must make latency more predictable than the current classifier-first approach.
@@ -132,16 +134,16 @@ Under the current hybrid direction, the probe should be understood as **anchor-a
 - Phase 1 stops being a semantic bottleneck.
 - All normal queries follow the same cheap first-pass entry path.
 - Planner decisions are based on real evidence rather than pre-retrieval intent guesses.
-- Router latency becomes more predictable and easier to budget.
-- Future retrieval quality improvements can come from `L0` quality, planner policy, and cone/runtime evolution rather than more query classification logic.
+- Phase 1 latency becomes more predictable and easier to budget.
+- Future retrieval quality improvements can come from `L0` quality, planner policy, and cone/executor evolution rather than more query classification logic.
 
 ## Scope Boundaries
 
 - This document does not define exact scoring formulas for probe sufficiency.
 - This document does not define exact `L0` storage or summary generation strategy.
 - This document does not define class-prior computation details.
-- This document does not define exact runtime escalation policy.
-- This document does not remove the `router -> planner -> runtime` phase split; it changes the meaning of Phase 1.
+- This document does not define exact executor escalation policy.
+- This document does not remove the `probe -> planner -> executor` phase split; it changes the meaning of Phase 1.
 - This document does not define the exact vector index implementation or ANN backend for the probe.
 
 ## Key Decisions
@@ -156,7 +158,7 @@ Under the current hybrid direction, the probe should be understood as **anchor-a
 ## Dependencies / Assumptions
 
 - The three-phase hot-path split remains accepted:
-  - `router -> planner -> runtime`
+  - `probe -> planner -> executor`
 - `L0` evidence exists or can be made reliable enough to support a cheap first-pass probe.
 - Local vectorization defaults are allowed to change when hot-path latency requires it.
 - Future retrieval quality should come primarily from staged loading, better object surfaces, and evidence-driven cone expansion rather than stronger query classification.

@@ -136,6 +136,14 @@ def _get_adapter(mode: str, dataset: str = ""):
         from benchmarks.adapters.hotpotqa import HotPotQAAdapter
 
         return HotPotQAAdapter()
+    if dataset == "locomo":
+        from benchmarks.adapters.locomo import LoCoMoBench
+
+        return LoCoMoBench()
+    if dataset == "longmemeval":
+        from benchmarks.adapters.conversation import LongMemEvalBench
+
+        return LongMemEvalBench()
 
     # Default mode-based routing
     if mode == "memory":
@@ -143,9 +151,9 @@ def _get_adapter(mode: str, dataset: str = ""):
 
         return MemoryAdapter()
     elif mode == "conversation":
-        from benchmarks.adapters.conversation import ConversationAdapter
+        from benchmarks.adapters.locomo import LoCoMoBench
 
-        return ConversationAdapter()
+        return LoCoMoBench()
     elif mode == "document":
         from benchmarks.adapters.document import DocumentAdapter
 
@@ -413,6 +421,10 @@ async def run_mode(
                         if isinstance(r, dict) and r.get("uri")
                     ]
                     record["retrieved_uris"] = retrieved_uris
+                    if hasattr(adapter, "pop_last_retrieval_meta"):
+                        retrieval_trace = adapter.pop_last_retrieval_meta()
+                        if retrieval_trace:
+                            record["retrieval_trace"] = retrieval_trace
 
                     # Build OC context from results
                     ctx_parts = []

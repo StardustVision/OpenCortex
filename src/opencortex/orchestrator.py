@@ -65,6 +65,7 @@ from opencortex.http.request_context import (
 from opencortex.intent import (
     MemoryBootstrapProbe,
     MemoryExecutor,
+    QueryAnchorKind,
     RecallPlanner,
     RetrievalDepth,
     RetrievalPlan,
@@ -112,6 +113,34 @@ _CONTEXT_COLLECTION = "context"
 
 # Maximum number of batch_add items processed concurrently
 _BATCH_ADD_CONCURRENCY = 8
+
+
+def _merge_unique_strings(*groups: Any) -> List[str]:
+    """Return a stable ordered union of non-empty string values."""
+    merged: List[str] = []
+    for group in groups:
+        if not group:
+            continue
+        if isinstance(group, str):
+            values = [group]
+        else:
+            values = list(group)
+        for value in values:
+            normalized = str(value).strip()
+            if normalized and normalized not in merged:
+                merged.append(normalized)
+    return merged
+
+
+def _split_keyword_string(raw_keywords: str) -> List[str]:
+    """Split a comma-separated keyword string into normalized tokens."""
+    if not raw_keywords:
+        return []
+    return [
+        token.strip()
+        for token in str(raw_keywords).split(",")
+        if token and token.strip()
+    ]
 
 
 class MemoryOrchestrator:
@@ -873,6 +902,7 @@ class MemoryOrchestrator:
         msg_index: int,
         text: str,
         tool_calls: Optional[list] = None,
+        meta: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Write a single message for immediate searchability using the shared contract."""
         from opencortex.http.request_context import (
@@ -885,6 +915,18 @@ class MemoryOrchestrator:
         tid, uid = get_effective_identity()
         nid = uuid4().hex
         uri = CortexURI.build_private(tid, uid, "memories", "events", nid)
+        meta = dict(meta or {})
+        explicit_entities = _merge_unique_strings(meta.get("entities"))
+        explicit_topics = _merge_unique_strings(meta.get("topics"))
+        record_meta = dict(meta)
+        record_meta.update(
+            {
+                "layer": "immediate",
+                "msg_index": msg_index,
+                "session_id": session_id,
+                "tool_calls": tool_calls or [],
+            }
+        )
 
         # Embed without LLM
         embed_input = text
@@ -921,18 +963,18 @@ class MemoryOrchestrator:
             "scope": "private",
             "source_user_id": uid,
             "source_tenant_id": tid,
-            "keywords": "",
+            "keywords": ", ".join(explicit_topics),
+            "entities": explicit_entities,
             "meta": {
-                "layer": "immediate",
-                "msg_index": msg_index,
-                "session_id": session_id,
-                "tool_calls": tool_calls or [],
+                **record_meta,
             },
             "session_id": session_id,
             "project_id": get_effective_project_id(),
             "ttl_expires_at": self._ttl_from_hours(
                 self._config.immediate_event_ttl_hours
             ),
+            "speaker": str(record_meta.get("speaker", "") or ""),
+            "event_date": record_meta.get("event_date"),
         }
 
         if vector:
@@ -947,15 +989,21 @@ class MemoryOrchestrator:
             abstract=text,
             overview="",
             content=text,
-            entities=[],
-            meta=record["meta"],
+            entities=explicit_entities,
+            meta=record_meta,
             parent_uri=record["parent_uri"],
             session_id=session_id,
         )
         record.update(self._memory_object_payload(abstract_json))
         record["abstract_json"] = abstract_json
 
-        await self._storage.upsert(self._get_collection(), record)
+        record_id = await self._storage.upsert(self._get_collection(), record)
+        if self._entity_index and explicit_entities:
+            self._entity_index.add(
+                self._get_collection(),
+                str(record.get("id") or record_id),
+                explicit_entities,
+            )
         try:
             await self._fs.write_context(
                 uri=uri,
@@ -1342,6 +1390,9 @@ class MemoryOrchestrator:
             what happened: ``"created"`` (new) or ``"merged"``.
         """
         self._ensure_init()
+        meta = dict(meta or {})
+        explicit_entities = _merge_unique_strings(meta.get("entities"))
+        explicit_topics = _merge_unique_strings(meta.get("topics"))
 
         # Determine ingestion mode
         from opencortex.ingest.resolver import IngestModeResolver
@@ -1349,7 +1400,7 @@ class MemoryOrchestrator:
         ingest_mode = IngestModeResolver.resolve(
             content=content,
             meta=meta,
-            source_path=(meta or {}).get("source_path", ""),
+            source_path=meta.get("source_path", ""),
             session_id=session_id or "",
         )
 
@@ -1364,7 +1415,7 @@ class MemoryOrchestrator:
                 context_type=context_type or "resource",
                 meta=meta,
                 session_id=session_id,
-                source_path=(meta or {}).get("source_path", ""),
+                source_path=meta.get("source_path", ""),
             )
 
         add_started = asyncio.get_running_loop().time()
@@ -1400,9 +1451,18 @@ class MemoryOrchestrator:
             if not overview:
                 overview = layers["overview"]
             keywords = layers["keywords"]
-            entities = layers.get("entities", [])
+            entities = _merge_unique_strings(
+                layers.get("entities", []),
+                explicit_entities,
+            )
         else:
-            entities = []
+            entities = explicit_entities
+
+        keywords_list = _merge_unique_strings(
+            _split_keyword_string(keywords),
+            explicit_topics,
+        )
+        keywords = ", ".join(keywords_list)
 
         # Build effective user identity (per-request or config default)
         tid, uid = get_effective_identity()
@@ -1418,7 +1478,7 @@ class MemoryOrchestrator:
             context_type=context_type,
             category=category,
             related_uri=related_uri or [],
-            meta=meta or {},
+            meta=meta,
             session_id=session_id,
             user=effective_user,
         )
@@ -1899,12 +1959,28 @@ class MemoryOrchestrator:
     # Search / Retrieve
     # =========================================================================
 
-    async def probe_memory(self, query: str) -> SearchResult:
+    async def probe_memory(
+        self,
+        query: str,
+        *,
+        context_type: Optional[ContextType] = None,
+        target_uri: str = "",
+        target_doc_id: Optional[str] = None,
+        session_context: Optional[Dict[str, Any]] = None,
+        metadata_filter: Optional[Dict[str, Any]] = None,
+    ) -> SearchResult:
         """Run the Phase 1 bootstrap probe."""
         self._ensure_init()
         if self._memory_probe is None:
             raise RuntimeError("memory probe is not initialized")
-        return await self._memory_probe.probe(query)
+        scope_filter = self._build_scope_filter(
+            context_type=context_type,
+            target_uri=target_uri,
+            target_doc_id=target_doc_id,
+            session_context=session_context,
+            metadata_filter=metadata_filter,
+        )
+        return await self._memory_probe.probe(query, scope_filter=scope_filter)
 
     def memory_probe_mode(self) -> str:
         """Return the active probe backend."""
@@ -2090,6 +2166,47 @@ class MemoryOrchestrator:
         """Return the bounded Phase 1 probe filter."""
         return self._build_search_filter()
 
+    def _build_scope_filter(
+        self,
+        *,
+        context_type: Optional[ContextType],
+        target_uri: str,
+        target_doc_id: Optional[str],
+        session_context: Optional[Dict[str, Any]],
+        metadata_filter: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Build shared scope clauses for probe and execution."""
+        type_filter = None
+        if context_type and context_type != ContextType.ANY:
+            type_filter = {
+                "op": "must",
+                "field": "context_type",
+                "conds": [context_type.value],
+            }
+
+        target_filter = None
+        if target_uri:
+            target_filter = {
+                "op": "prefix",
+                "field": "uri",
+                "prefix": target_uri,
+            }
+
+        doc_filter = None
+        if target_doc_id:
+            doc_filter = {
+                "op": "must",
+                "field": "source_doc_id",
+                "conds": [target_doc_id],
+            }
+
+        return self._merge_filter_clauses(
+            metadata_filter,
+            type_filter,
+            target_filter,
+            doc_filter,
+        )
+
     @staticmethod
     def _merge_filter_clauses(
         *filters: Optional[Dict[str, Any]],
@@ -2107,24 +2224,285 @@ class MemoryOrchestrator:
         """Normalize anchor text for cheap overlap scoring."""
         return re.sub(r"\s+", " ", str(value or "").strip().lower())
 
-    def _query_anchor_values(
+    @staticmethod
+    def _normalize_anchor_kind(value: Any) -> str:
+        """Normalize anchor kind strings into the active planner taxonomy."""
+        normalized = str(value or "").strip().lower()
+        if normalized in {"preference", "constraint", "relation"}:
+            return QueryAnchorKind.TOPIC.value
+        if normalized:
+            return normalized
+        return QueryAnchorKind.TOPIC.value
+
+    def _query_anchor_groups(
         self,
         retrieve_plan: Optional[RetrievalPlan],
         probe_result: Optional[SearchResult],
-    ) -> set[str]:
-        """Collect normalized query-side anchors from planner and probe."""
-        values: set[str] = set()
+    ) -> Dict[str, set[str]]:
+        """Collect query anchors grouped by semantic kind."""
+        groups: Dict[str, set[str]] = {}
+
         if retrieve_plan is not None:
             for anchor in retrieve_plan.query_plan.anchors:
                 normalized = self._normalize_anchor_value(anchor.value)
-                if normalized:
-                    values.add(normalized)
+                if not normalized:
+                    continue
+                kind = self._normalize_anchor_kind(anchor.kind.value)
+                groups.setdefault(kind, set()).add(normalized)
+
         if probe_result is not None:
+            topic_group = groups.setdefault(QueryAnchorKind.TOPIC.value, set())
             for anchor in probe_result.anchor_hits:
                 normalized = self._normalize_anchor_value(anchor)
                 if normalized:
-                    values.add(normalized)
-        return values
+                    topic_group.add(normalized)
+
+        return groups
+
+    def _record_anchor_groups(self, record: Dict[str, Any]) -> Dict[str, set[str]]:
+        """Project record-side anchors into grouped normalized sets."""
+        groups: Dict[str, set[str]] = {}
+
+        abstract_json = record.get("abstract_json")
+        if isinstance(abstract_json, dict):
+            for anchor in abstract_json.get("anchors") or []:
+                if not isinstance(anchor, dict):
+                    continue
+                normalized = self._normalize_anchor_value(
+                    anchor.get("text") or anchor.get("value")
+                )
+                if not normalized:
+                    continue
+                kind = self._normalize_anchor_kind(anchor.get("anchor_type"))
+                groups.setdefault(kind, set()).add(normalized)
+
+        topic_group = groups.setdefault(QueryAnchorKind.TOPIC.value, set())
+        for value in record.get("anchor_hits") or []:
+            normalized = self._normalize_anchor_value(value)
+            if normalized:
+                topic_group.add(normalized)
+
+        return groups
+
+    @staticmethod
+    def _probe_candidate_ranks(
+        probe_result: Optional[SearchResult],
+    ) -> Dict[str, int]:
+        """Return a stable URI -> rank map from Phase 1 probe results."""
+        if probe_result is None:
+            return {}
+        return {
+            candidate.uri: rank
+            for rank, candidate in enumerate(probe_result.candidate_entries)
+            if candidate.uri
+        }
+
+    @staticmethod
+    def _probe_confidence(probe_result: Optional[SearchResult]) -> float:
+        """Project the bounded probe evidence into a cheap confidence score."""
+        if probe_result is None:
+            return 0.0
+        evidence = probe_result.evidence
+        top_score = evidence.top_score or 0.0
+        score_gap = evidence.score_gap or 0.0
+        object_top = evidence.object_top_score or 0.0
+        anchor_top = evidence.anchor_top_score or 0.0
+
+        confidence = top_score + min(score_gap, 0.18)
+        if object_top > 0.0 and anchor_top > 0.0:
+            confidence += 0.05 if abs(object_top - anchor_top) <= 0.15 else 0.02
+        if evidence.anchor_hit_count > 0:
+            confidence += min(0.08, evidence.anchor_hit_count * 0.02)
+        if evidence.candidate_count == 0:
+            confidence *= 0.45 if anchor_top <= 0.0 else 0.7
+        return max(0.0, min(1.0, confidence))
+
+    def _start_point_filter(
+        self,
+        *,
+        retrieve_plan: Optional[RetrievalPlan],
+        probe_result: Optional[SearchResult],
+        bound_plan: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Build a bounded start-point filter from Phase 1 evidence."""
+        if probe_result is None:
+            return None
+
+        plan = bound_plan or {}
+        bind_start_points = bool(plan.get("bind_start_points"))
+        if not bind_start_points:
+            return None
+
+        uri_cap = int(plan.get("seed_uri_cap", 0) or 0)
+        if uri_cap <= 0:
+            uri_cap = 6
+        anchor_cap = int(plan.get("anchor_cap", 0) or 0)
+        if anchor_cap <= 0:
+            anchor_cap = 4
+        confidence = self._probe_confidence(probe_result)
+
+        uri_values = [
+            candidate.uri
+            for candidate in probe_result.candidate_entries[:uri_cap]
+            if candidate.uri
+        ]
+        anchor_values: List[str] = []
+        if retrieve_plan is not None:
+            for anchor in retrieve_plan.query_plan.anchors:
+                normalized = str(anchor.value or "").strip()
+                if normalized and normalized not in anchor_values:
+                    anchor_values.append(normalized)
+                if len(anchor_values) >= anchor_cap:
+                    break
+        if not anchor_values:
+            for anchor in probe_result.anchor_hits:
+                normalized = str(anchor or "").strip()
+                if normalized and normalized not in anchor_values:
+                    anchor_values.append(normalized)
+                if len(anchor_values) >= anchor_cap:
+                    break
+
+        if confidence < 0.25 and not uri_values and not anchor_values:
+            return None
+
+        clauses: List[Dict[str, Any]] = []
+        if uri_values:
+            clauses.append({"op": "must", "field": "uri", "conds": uri_values})
+        if anchor_values:
+            clauses.append({"op": "must", "field": "anchor_hits", "conds": anchor_values})
+        if not clauses:
+            return None
+        if len(clauses) == 1:
+            return clauses[0]
+        return {"op": "or", "conds": clauses}
+
+    def _anchor_rerank_bonus(
+        self,
+        *,
+        query_anchor_groups: Dict[str, set[str]],
+        record_anchor_groups: Dict[str, set[str]],
+    ) -> tuple[float, List[str]]:
+        """Compute a cheap structured-anchor rerank bonus."""
+        weights = {
+            QueryAnchorKind.TIME.value: 0.18,
+            QueryAnchorKind.ENTITY.value: 0.14,
+            QueryAnchorKind.TOPIC.value: 0.08,
+            QueryAnchorKind.PROFILE.value: 0.06,
+        }
+        caps = {
+            QueryAnchorKind.TIME.value: 0.24,
+            QueryAnchorKind.ENTITY.value: 0.22,
+            QueryAnchorKind.TOPIC.value: 0.16,
+            QueryAnchorKind.PROFILE.value: 0.06,
+        }
+        all_record_values = set().union(*record_anchor_groups.values()) if record_anchor_groups else set()
+        bonus = 0.0
+        reasons: List[str] = []
+        overlap_counts: Dict[str, int] = {}
+
+        for kind, query_values in query_anchor_groups.items():
+            if not query_values:
+                continue
+            record_values = record_anchor_groups.get(kind, set())
+            if kind == QueryAnchorKind.TOPIC.value:
+                overlap = query_values & all_record_values
+            else:
+                overlap = query_values & record_values
+                if not overlap:
+                    overlap = query_values & all_record_values
+            if not overlap:
+                continue
+            overlap_count = len(overlap)
+            overlap_counts[kind] = overlap_count
+            bonus += min(caps.get(kind, 0.08), weights.get(kind, 0.08) * overlap_count)
+            reasons.append(f"anchor_{kind}")
+
+        if (
+            overlap_counts.get(QueryAnchorKind.TIME.value, 0) > 0
+            and overlap_counts.get(QueryAnchorKind.ENTITY.value, 0) > 0
+        ):
+            bonus += 0.12
+            reasons.append("anchor_combo")
+        elif (
+            overlap_counts.get(QueryAnchorKind.ENTITY.value, 0) > 0
+            and overlap_counts.get(QueryAnchorKind.TOPIC.value, 0) > 0
+        ):
+            bonus += 0.06
+            reasons.append("anchor_combo")
+
+        return min(0.55, bonus), reasons
+
+    def _cone_query_entities(
+        self,
+        *,
+        typed_query: TypedQuery,
+        query_anchor_groups: Dict[str, set[str]],
+        records: List[Dict[str, Any]],
+    ) -> set[str]:
+        """Choose bounded query entities for cone expansion and scoring."""
+        entities = set(query_anchor_groups.get(QueryAnchorKind.ENTITY.value, set()))
+        if entities:
+            return set(sorted(entities, key=len, reverse=True)[:6])
+        if self._cone_scorer is None:
+            return set()
+        extracted = self._cone_scorer.extract_query_entities(
+            typed_query.query,
+            records,
+            self._get_collection(),
+        )
+        if not extracted:
+            return set()
+        return set(sorted(extracted, key=len, reverse=True)[:6])
+
+    async def _apply_cone_rerank(
+        self,
+        *,
+        typed_query: TypedQuery,
+        retrieve_plan: Optional[RetrievalPlan],
+        query_anchor_groups: Dict[str, set[str]],
+        records: List[Dict[str, Any]],
+    ) -> tuple[List[Dict[str, Any]], bool]:
+        """Apply lightweight cone expansion/scoring over the dense candidate pool."""
+        if (
+            self._cone_scorer is None
+            or self._entity_index is None
+            or retrieve_plan is None
+            or retrieve_plan.search_profile.association_budget <= 0.0
+            or not records
+            or not self._entity_index.is_ready(self._get_collection())
+        ):
+            return records, False
+
+        query_entities = self._cone_query_entities(
+            typed_query=typed_query,
+            query_anchor_groups=query_anchor_groups,
+            records=records,
+        )
+        if not query_entities:
+            return records, False
+
+        tid, uid = get_effective_identity()
+        project_id = get_effective_project_id()
+        cone_candidates = [dict(record) for record in records]
+        cone_candidates.sort(
+            key=lambda record: float(record.get("_score", record.get("score", 0.0)) or 0.0),
+            reverse=True,
+        )
+        cone_candidates = await self._cone_scorer.expand_candidates(
+            cone_candidates,
+            query_entities,
+            self._get_collection(),
+            self._storage,
+            tenant_id=tid,
+            user_id=uid,
+            project_id=project_id,
+        )
+        cone_candidates = self._cone_scorer.compute_cone_scores(
+            cone_candidates,
+            query_entities,
+            self._get_collection(),
+        )
+        return cone_candidates, True
 
     async def _embed_retrieval_query(self, query_text: str) -> Optional[List[float]]:
         """Embed one retrieval query for dense search."""
@@ -2147,8 +2525,9 @@ class MemoryOrchestrator:
         record: Dict[str, Any],
         typed_query: TypedQuery,
         retrieve_plan: Optional[RetrievalPlan],
-        probe_result: Optional[SearchResult],
-        query_anchor_values: set[str],
+        query_anchor_groups: Dict[str, set[str]],
+        probe_candidate_ranks: Dict[str, int],
+        cone_weight: float,
     ) -> tuple[float, str]:
         """Fuse vector score with object-aware boosts."""
         score = float(record.get("_score", record.get("score", 0.0)) or 0.0)
@@ -2164,23 +2543,17 @@ class MemoryOrchestrator:
             score += 0.14 * (len(target_kinds) - kind_rank) / max(len(target_kinds), 1)
             reasons.append("kind")
 
-        record_anchors = {
-            self._normalize_anchor_value(value)
-            for value in (record.get("anchor_hits") or [])
-            if self._normalize_anchor_value(value)
-        }
-        overlap = query_anchor_values & record_anchors
-        if overlap:
-            score += min(0.24, 0.08 * len(overlap))
-            reasons.append("anchor")
-
-        probe_candidate_uris = (
-            {candidate.uri for candidate in probe_result.candidate_entries}
-            if probe_result is not None
-            else set()
+        anchor_bonus, anchor_reasons = self._anchor_rerank_bonus(
+            query_anchor_groups=query_anchor_groups,
+            record_anchor_groups=self._record_anchor_groups(record),
         )
-        if record.get("uri", "") in probe_candidate_uris:
-            score += 0.10
+        if anchor_bonus > 0:
+            score += anchor_bonus
+            reasons.extend(anchor_reasons)
+
+        probe_rank = probe_candidate_ranks.get(str(record.get("uri", "") or ""))
+        if probe_rank is not None:
+            score += max(0.04, 0.14 - min(probe_rank, 5) * 0.02)
             reasons.append("probe")
 
         if typed_query.target_directories and any(
@@ -2205,6 +2578,11 @@ class MemoryOrchestrator:
         if active_count > 0:
             score += min(0.05, math.log1p(active_count) * 0.01)
             reasons.append("hot")
+
+        cone_bonus = float(record.get("_cone_bonus", 0.0) or 0.0)
+        if cone_weight > 0.0 and cone_bonus > 0.0:
+            score += min(0.30, cone_weight * min(1.0, cone_bonus))
+            reasons.append("cone")
 
         return score, ",".join(reasons) or "semantic"
 
@@ -2250,6 +2628,7 @@ class MemoryOrchestrator:
                 category=str(record.get("category", "") or ""),
                 score=float(record.get("_final_score", record.get("_score", 0.0)) or 0.0),
                 match_reason=str(record.get("_match_reason", "") or ""),
+                session_id=str(record.get("session_id", "") or ""),
                 source_doc_id=record.get("source_doc_id"),
                 source_doc_title=record.get("source_doc_title"),
                 source_section_path=record.get("source_section_path"),
@@ -2264,9 +2643,10 @@ class MemoryOrchestrator:
         typed_query: TypedQuery,
         limit: int,
         score_threshold: Optional[float],
-        metadata_filter: Optional[Dict[str, Any]],
+        search_filter: Optional[Dict[str, Any]],
         retrieve_plan: Optional[RetrievalPlan],
         probe_result: Optional[SearchResult],
+        bound_plan: Optional[Dict[str, Any]] = None,
     ) -> QueryResult:
         """Execute one object-aware retrieval query without the legacy retriever."""
         started = time.perf_counter()
@@ -2276,32 +2656,6 @@ class MemoryOrchestrator:
         )
         embed_finished = time.perf_counter()
 
-        type_filter = None
-        if typed_query.context_type != ContextType.ANY:
-            type_filter = {
-                "op": "must",
-                "field": "context_type",
-                "conds": [typed_query.context_type.value],
-            }
-
-        target_filter = None
-        if typed_query.target_directories:
-            target_filter = {
-                "op": "or",
-                "conds": [
-                    {"op": "prefix", "field": "uri", "prefix": prefix}
-                    for prefix in typed_query.target_directories
-                ],
-            }
-
-        doc_filter = None
-        if typed_query.target_doc_id:
-            doc_filter = {
-                "op": "must",
-                "field": "source_doc_id",
-                "conds": [typed_query.target_doc_id],
-            }
-
         kind_filter = None
         if retrieve_plan is not None and retrieve_plan.target_memory_kinds:
             kind_filter = {
@@ -2310,16 +2664,33 @@ class MemoryOrchestrator:
                 "conds": [kind.value for kind in retrieve_plan.target_memory_kinds],
             }
 
+        start_point_filter = self._start_point_filter(
+            retrieve_plan=retrieve_plan,
+            probe_result=probe_result,
+            bound_plan=bound_plan,
+        )
         final_filter = self._merge_filter_clauses(
-            metadata_filter,
-            type_filter,
-            target_filter,
-            doc_filter,
+            search_filter,
             kind_filter,
             {"op": "must", "field": "is_leaf", "conds": [True]},
+            start_point_filter,
         )
 
-        candidate_limit = max(limit * 4, 20)
+        query_anchor_groups = self._query_anchor_groups(retrieve_plan, probe_result)
+        rerank_enabled = bool(query_anchor_groups) or bool(
+            retrieve_plan is not None and retrieve_plan.search_profile.rerank
+        )
+        candidate_limit = int((bound_plan or {}).get("raw_candidate_cap") or 0)
+        if candidate_limit <= 0:
+            recall_budget = (
+                retrieve_plan.search_profile.recall_budget
+                if retrieve_plan is not None
+                else 0.4
+            )
+            candidate_limit = max(limit, min(64, limit + max(4, int(round(recall_budget * 20)))))
+            if rerank_enabled:
+                candidate_limit = min(64, candidate_limit + 8)
+
         records = await self._storage.search(
             self._get_collection(),
             query_vector=query_vector,
@@ -2329,15 +2700,34 @@ class MemoryOrchestrator:
         )
         search_finished = time.perf_counter()
 
-        query_anchor_values = self._query_anchor_values(retrieve_plan, probe_result)
+        rerank_started = search_finished
+        frontier_waves = 0
+        probe_candidate_ranks = self._probe_candidate_ranks(probe_result)
+        records, cone_used = await self._apply_cone_rerank(
+            typed_query=typed_query,
+            retrieve_plan=retrieve_plan,
+            query_anchor_groups=query_anchor_groups,
+            records=records,
+        )
+        if cone_used:
+            frontier_waves = 1
+
+        cone_weight = 0.0
+        if retrieve_plan is not None and cone_used:
+            association_budget = retrieve_plan.search_profile.association_budget
+            cone_weight = min(
+                0.24,
+                self._config.cone_weight * (0.6 + 0.8 * association_budget),
+            )
         rescored: List[Dict[str, Any]] = []
         for record in records:
             final_score, match_reason = self._score_object_record(
                 record=record,
                 typed_query=typed_query,
                 retrieve_plan=retrieve_plan,
-                probe_result=probe_result,
-                query_anchor_values=query_anchor_values,
+                query_anchor_groups=query_anchor_groups,
+                probe_candidate_ranks=probe_candidate_ranks,
+                cone_weight=cone_weight,
             )
             if score_threshold is not None and final_score < score_threshold:
                 continue
@@ -2346,6 +2736,7 @@ class MemoryOrchestrator:
             rescored_record["_match_reason"] = match_reason
             rescored.append(rescored_record)
         rescored.sort(key=lambda record: record.get("_final_score", 0.0), reverse=True)
+        rerank_finished = time.perf_counter()
 
         matched_contexts = await self._records_to_matched_contexts(
             candidates=rescored[:limit],
@@ -2361,8 +2752,8 @@ class MemoryOrchestrator:
             timing_ms={
                 "embed": round((embed_finished - embed_started) * 1000, 4),
                 "search": round((search_finished - embed_finished) * 1000, 4),
-                "rerank": 0.0,
-                "assemble": round((assembled - search_finished) * 1000, 4),
+                "rerank": round((rerank_finished - rerank_started) * 1000, 4),
+                "assemble": round((assembled - rerank_finished) * 1000, 4),
                 "total": round((assembled - started) * 1000, 4),
             },
         )
@@ -2372,13 +2763,13 @@ class MemoryOrchestrator:
             intent_ms=0.0,
             embed_ms=(embed_finished - embed_started) * 1000,
             search_ms=(search_finished - embed_finished) * 1000,
-            rerank_ms=0.0,
-            assemble_ms=(assembled - search_finished) * 1000,
+            rerank_ms=(rerank_finished - rerank_started) * 1000,
+            assemble_ms=(assembled - rerank_finished) * 1000,
             doc_scope_hit=bool(typed_query.target_doc_id),
             time_filter_hit=False,
             candidates_before_rerank=len(records),
             candidates_after_rerank=len(matched_contexts),
-            frontier_waves=0,
+            frontier_waves=frontier_waves,
             frontier_budget_exceeded=False,
             total_ms=(assembled - started) * 1000,
         )
@@ -2432,6 +2823,13 @@ class MemoryOrchestrator:
         detail_level_override = (
             detail_level_value if detail_level_value != DetailLevel.L1.value else None
         )
+        scope_filter = self._build_scope_filter(
+            context_type=context_type,
+            target_uri=target_uri,
+            target_doc_id=target_doc_id,
+            session_context=session_context,
+            metadata_filter=metadata_filter,
+        )
 
         if probe_result is None:
             probe_result = await measure_async(
@@ -2439,6 +2837,11 @@ class MemoryOrchestrator:
                 "probe",
                 self.probe_memory,
                 query,
+                context_type=context_type,
+                target_uri=target_uri,
+                target_doc_id=target_doc_id,
+                session_context=session_context,
+                metadata_filter=metadata_filter,
             )
         else:
             stage_timings.record_ms("probe", 0)
@@ -2522,8 +2925,8 @@ class MemoryOrchestrator:
                 if not tq.target_directories:
                     tq.target_directories = [target_uri]
 
-        metadata_filter = self._build_search_filter(
-            metadata_filter=metadata_filter,
+        search_filter = self._build_search_filter(
+            metadata_filter=scope_filter,
         )
 
         # Build retrieval coroutines
@@ -2532,9 +2935,10 @@ class MemoryOrchestrator:
                 typed_query=tq,
                 limit=effective_limit,
                 score_threshold=score_threshold,
-                metadata_filter=metadata_filter,
+                search_filter=search_filter,
                 retrieve_plan=retrieve_plan,
                 probe_result=probe_result,
+                bound_plan=runtime_bound_plan,
             )
             for tq in typed_queries
         ]
@@ -2548,7 +2952,7 @@ class MemoryOrchestrator:
         query_results = list(query_results)
 
         aggregate_started = asyncio.get_running_loop().time()
-        result = self._aggregate_results(query_results)
+        result = self._aggregate_results(query_results, limit=limit)
         result.probe_result = probe_result
         result.retrieve_plan = retrieve_plan
         retrieve_breakdown_ms = self._summarize_retrieve_breakdown(query_results)
@@ -2654,10 +3058,12 @@ class MemoryOrchestrator:
                         content=sr.content,
                         category=sr.category.value,
                         score=0.0,
+                        session_id="",
                     ))
             except Exception as exc:
                 logger.debug("[search] Skill search failed: %s", exc)
 
+        result.total = len(result.memories) + len(result.resources) + len(result.skills)
         return result
 
     async def _resolve_memory_owner_ids(self, matches: List[Any]) -> List[str]:
@@ -2852,7 +3258,7 @@ class MemoryOrchestrator:
             for tq in query_plan.queries:
                 tq.target_directories = [target_uri]
 
-        metadata_filter = self._build_search_filter(metadata_filter=metadata_filter)
+        search_filter = self._build_search_filter(metadata_filter=metadata_filter)
 
         query_results = await asyncio.gather(
             *[
@@ -2860,7 +3266,7 @@ class MemoryOrchestrator:
                     typed_query=tq,
                     limit=limit,
                     score_threshold=score_threshold,
-                    metadata_filter=metadata_filter,
+                    search_filter=search_filter,
                     retrieve_plan=None,
                     probe_result=None,
                 )
@@ -2868,7 +3274,7 @@ class MemoryOrchestrator:
             ]
         )
 
-        result = self._aggregate_results(query_results)
+        result = self._aggregate_results(query_results, limit=limit)
         result.query_plan = query_plan
         result.query_results = list(query_results)
         return result
@@ -2883,6 +3289,7 @@ class MemoryOrchestrator:
         context_type: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
+        include_payload: bool = False,
     ) -> List[Dict[str, Any]]:
         """List user's accessible memories with readable content.
 
@@ -2948,20 +3355,32 @@ class MemoryOrchestrator:
             order_desc=True,
         )
 
-        return [
-            {
-                "uri": r.get("uri", ""),
-                "abstract": r.get("abstract", ""),
-                "category": r.get("category", ""),
-                "context_type": r.get("context_type", ""),
-                "scope": r.get("scope", ""),
-                "project_id": r.get("project_id", ""),
-                "updated_at": r.get("updated_at", ""),
-                "created_at": r.get("created_at", ""),
+        items: List[Dict[str, Any]] = []
+        for record in records:
+            if not record.get("abstract"):
+                continue
+            item = {
+                "uri": record.get("uri", ""),
+                "abstract": record.get("abstract", ""),
+                "category": record.get("category", ""),
+                "context_type": record.get("context_type", ""),
+                "scope": record.get("scope", ""),
+                "project_id": record.get("project_id", ""),
+                "updated_at": record.get("updated_at", ""),
+                "created_at": record.get("created_at", ""),
             }
-            for r in records
-            if r.get("abstract")  # skip directory nodes (empty abstract)
-        ]
+            if include_payload:
+                item.update(
+                    {
+                        "meta": record.get("meta", {}),
+                        "abstract_json": record.get("abstract_json", {}),
+                        "session_id": record.get("session_id", ""),
+                        "speaker": record.get("speaker", ""),
+                        "event_date": record.get("event_date", ""),
+                    }
+                )
+            items.append(item)
+        return items
 
     async def memory_index(
         self,
@@ -4186,9 +4605,14 @@ class MemoryOrchestrator:
             await self._storage.upsert(self._get_collection(), record)
             logger.debug("[MemoryOrchestrator] Created directory record: %s", dir_uri)
 
-    def _aggregate_results(self, query_results: List[QueryResult]) -> FindResult:
+    def _aggregate_results(
+        self,
+        query_results: List[QueryResult],
+        *,
+        limit: Optional[int] = None,
+    ) -> FindResult:
         """Aggregate multiple QueryResults into a single FindResult (deduped by URI)."""
-        memories, resources, skills = [], [], []
+        ranked_contexts = []
         seen_uris: set = set()
 
         for result in query_results:
@@ -4196,19 +4620,29 @@ class MemoryOrchestrator:
                 if ctx.uri in seen_uris:
                     continue
                 seen_uris.add(ctx.uri)
-                if ctx.context_type in (
-                    ContextType.MEMORY,
-                    ContextType.CASE,
-                    ContextType.PATTERN,
-                ):
-                    memories.append(ctx)
-                elif ctx.context_type == ContextType.RESOURCE:
-                    resources.append(ctx)
-                elif ctx.context_type == ContextType.SKILL:
-                    skills.append(ctx)
-                else:
-                    # ANY or unknown — classify as memory
-                    memories.append(ctx)
+                ranked_contexts.append(ctx)
+
+        ranked_contexts.sort(
+            key=lambda ctx: float(getattr(ctx, "score", 0.0) or 0.0),
+            reverse=True,
+        )
+        if limit is not None:
+            ranked_contexts = ranked_contexts[: max(limit, 0)]
+
+        memories, resources, skills = [], [], []
+        for ctx in ranked_contexts:
+            if ctx.context_type in (
+                ContextType.MEMORY,
+                ContextType.CASE,
+                ContextType.PATTERN,
+            ):
+                memories.append(ctx)
+            elif ctx.context_type == ContextType.RESOURCE:
+                resources.append(ctx)
+            elif ctx.context_type == ContextType.SKILL:
+                skills.append(ctx)
+            else:
+                memories.append(ctx)
 
         return FindResult(
             memories=memories,

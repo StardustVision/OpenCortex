@@ -20,6 +20,18 @@ class MemoryExecutor:
     """Bind planner posture into execution facts without semantic replanning."""
 
     @staticmethod
+    def _raw_candidate_cap(
+        *,
+        max_items: int,
+        recall_budget: float,
+        rerank: bool,
+    ) -> int:
+        cap = max_items + max(4, int(round(recall_budget * 20)))
+        if rerank:
+            cap += 8
+        return max(max_items, min(64, cap))
+
+    @staticmethod
     def _association_mode(association_budget: float) -> str:
         if association_budget <= 0.0:
             return "off"
@@ -58,6 +70,25 @@ class MemoryExecutor:
             retrieve_plan.search_profile.association_budget
         )
         hydration_allowed = retrieve_plan.retrieval_depth != RetrievalDepth.L2
+        raw_candidate_cap = self._raw_candidate_cap(
+            max_items=max_items,
+            recall_budget=recall_budget,
+            rerank=retrieve_plan.search_profile.rerank,
+        )
+        seed_uri_cap = min(12, max(3, max_items * 2))
+        anchor_cap = min(8, max(3, max_items + 1))
+        bind_start_points = bool(
+            (
+                probe_result.candidate_entries
+                or probe_result.anchor_hits
+                or retrieve_plan.query_plan.anchors
+            )
+            and (
+                probe_result.evidence.anchor_candidate_count > 0
+                or retrieve_plan.retrieval_depth == RetrievalDepth.L0
+                or recall_budget <= 0.55
+            )
+        )
 
         return {
             "probe": probe_result.to_dict(),
@@ -77,6 +108,10 @@ class MemoryExecutor:
             "effective_depth": retrieve_plan.retrieval_depth.value,
             "association_mode": association_mode,
             "rerank": retrieve_plan.search_profile.rerank,
+            "raw_candidate_cap": raw_candidate_cap,
+            "seed_uri_cap": seed_uri_cap,
+            "anchor_cap": anchor_cap,
+            "bind_start_points": bind_start_points,
             "hydration_allowed": hydration_allowed,
             "degrade": MemoryRuntimeDegrade().to_dict(),
         }
@@ -106,6 +141,10 @@ class MemoryExecutor:
                 "retrieval_depth": bound_plan["effective_depth"],
                 "association_mode": bound_plan["association_mode"],
                 "rerank": bound_plan["rerank"],
+                "raw_candidate_cap": bound_plan["raw_candidate_cap"],
+                "seed_uri_cap": bound_plan["seed_uri_cap"],
+                "anchor_cap": bound_plan["anchor_cap"],
+                "bind_start_points": bound_plan["bind_start_points"],
                 "early_stop": early_stop,
             },
             hydration=list(hydration_actions or []),
@@ -146,6 +185,10 @@ class MemoryExecutor:
             degraded["hydration_allowed"] = False
         if "narrow_recall" in actions:
             degraded["memory_limit"] = max(1, int(degraded["memory_limit"] * 0.7))
+            degraded["raw_candidate_cap"] = max(
+                degraded["memory_limit"],
+                int(degraded["raw_candidate_cap"] * 0.7),
+            )
         runtime_result = self.finalize(
             bound_plan=degraded,
             items=[],

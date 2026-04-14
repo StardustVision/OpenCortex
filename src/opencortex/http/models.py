@@ -176,6 +176,7 @@ class ToolCallRecord(BaseModel):
 class ContextMessage(BaseModel):
     role: str
     content: str
+    meta: Optional[Dict[str, Any]] = None
 
 
 class ContextConfig(BaseModel):

@@ -60,6 +60,7 @@ run() {
 # ---- 1. LoCoMo (conversation) ----
 run "LoCoMo 1986 QA — recall" \
     --mode conversation \
+    --dataset locomo \
     --data benchmarks/locomo10.json \
     --server "$SERVER" \
     --llm-base "$LLM_BASE" --llm-key "$LLM_KEY" --llm-model "$LLM_MODEL" \
@@ -69,6 +70,7 @@ run "LoCoMo 1986 QA — recall" \
 # ---- 2. PersonaMem (memory) ----
 run "PersonaMem 2061 QA — recall" \
     --mode memory \
+    --dataset personamem \
     --data benchmarks/datasets/personamem/data.json \
     --server "$SERVER" \
     --llm-base "$LLM_BASE" --llm-key "$LLM_KEY" --llm-model "$LLM_MODEL" \
@@ -78,6 +80,7 @@ run "PersonaMem 2061 QA — recall" \
 # ---- 3. QASPER (document) ----
 run "QASPER 1005 QA — recall" \
     --mode document \
+    --dataset qasper \
     --data benchmarks/datasets/qasper/qasper-dev-v0.2.json \
     --server "$SERVER" \
     --llm-base "$LLM_BASE" --llm-key "$LLM_KEY" --llm-model "$LLM_MODEL" \
@@ -97,6 +100,7 @@ run "HotPotQA 7405 QA — recall" \
 # ---- 5. LongMemEval (conversation) ----
 run "LongMemEval 500 QA — recall" \
     --mode conversation \
+    --dataset longmemeval \
     --data benchmarks/datasets/longmemeval/longmemeval_s_cleaned.json \
     --server "$SERVER" \
     --llm-base "$LLM_BASE" --llm-key "$LLM_KEY" --llm-model "$LLM_MODEL" \

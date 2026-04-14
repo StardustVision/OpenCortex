@@ -316,7 +316,20 @@ def _unique_strings(raw_values: Any) -> List[str]:
 
 
 def _extract_time_refs(record: Mapping[str, Any], metadata: Mapping[str, Any]) -> List[str]:
-    explicit = _unique_strings(metadata.get("time_refs"))
+    raw_time_refs = metadata.get("time_refs")
+    explicit_values: List[Any] = []
+    if isinstance(raw_time_refs, str):
+        explicit_values.append(raw_time_refs)
+    elif raw_time_refs:
+        explicit_values.extend(list(raw_time_refs))
+    explicit_values.extend(
+        [
+            metadata.get("event_date"),
+            metadata.get("timestamp"),
+            record.get("event_date"),
+        ]
+    )
+    explicit = _unique_strings(explicit_values)
     if explicit:
         return explicit
     content = " ".join(

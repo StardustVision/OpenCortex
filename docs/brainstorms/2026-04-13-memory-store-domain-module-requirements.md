@@ -5,21 +5,23 @@ topic: memory-store-domain-module
 
 # Memory Store Domain Module Phase 4
 
+> Naming alignment: in the current refactor, the hot path is `probe -> planner -> executor`. Older `runtime` wording in this document should be read as `executor`.
+
 ## Problem Frame
 
 OpenCortex now has a clear direction for the first three hot-path phases:
 
-- Phase 1: coarse memory gate
+- Phase 1: bootstrap probe
 - Phase 2: object-aware retrieval planner
-- Phase 3: bounded adaptive runtime
+- Phase 3: bounded adaptive executor
 
-That architecture only works well if the retrieval stack shares a stable memory-object surface. Without that surface, planner and runtime would still have to reason over loosely typed context records, which would recreate the old problem in a different place:
+That architecture only works well if the retrieval stack shares a stable memory-object surface. Without that surface, planner and executor would still have to reason over loosely typed context records, which would recreate the old problem in a different place:
 
 - planner would emit `target_memory_kinds` that store cannot represent cleanly
-- runtime hydration and cone expansion would keep depending on ad hoc record shape
-- store evolution would force planner/runtime changes through scattered coupling
+- executor hydration and cone expansion would keep depending on ad hoc record shape
+- store evolution would force planner/executor changes through scattered coupling
 
-The next step is therefore not a new memory subsystem. It is a **shared domain module** that defines the memory-object contract used by store, planner, runtime, and later cone evolution.
+The next step is therefore not a new memory subsystem. It is a **shared domain module** that defines the memory-object contract used by store, planner, executor, and later cone evolution.
 
 This phase must stay deliberately lightweight:
 
@@ -30,7 +32,7 @@ This phase must stay deliberately lightweight:
 Under the now-selected hybrid direction, Phase 4 store should combine:
 
 - **OpenViking-like layered retrieval surfaces** for cheap `L0/L1` probing and deeper hydration
-- **M-Flow-like cone-ready structure** so runtime can expand from anchors through typed object signals rather than flat co-occurrence alone
+- **M-Flow-like cone-ready structure** so executor can expand from anchors through typed object signals rather than flat co-occurrence alone
 
 The durable store unit should still remain the **memory object**, not the anchor itself:
 
@@ -43,7 +45,7 @@ The durable store unit should still remain the **memory object**, not the anchor
 **Phase 4 Direction**
 - R1. Phase 4 must enhance the existing unified memory store rather than introduce a second primary memory-object store.
 - R2. Phase 4 must introduce a shared domain module that becomes the single source of truth for memory-object typing and object-surface rules.
-- R3. Planner, store, runtime, and later cone logic must import domain types from this shared module rather than redefining them locally.
+- R3. Planner, store, executor, and later cone logic must import domain types from this shared module rather than redefining them locally.
 - R4. The shared domain module must remain a domain-contract module, not a new retrieval engine or storage engine.
 
 **Shared Domain Module Responsibility**
@@ -52,7 +54,7 @@ The durable store unit should still remain the **memory object**, not the anchor
   - `StructuredSlots`
   - `MemoryObjectView`
   - kind-level policy metadata
-- R6. The shared domain module must not own physical persistence, query planning, runtime execution, or training logic.
+- R6. The shared domain module must not own physical persistence, query planning, executor execution, or training logic.
 - R7. The shared domain module must use code-level registration rather than configuration-defined open schemas in the first version.
 
 **Memory Kind Model**
@@ -98,12 +100,12 @@ The durable store unit should still remain the **memory object**, not the anchor
   - `relations` for `relation`
   - document lineage/reference fields for `document_chunk`
   - summary lineage/reference fields for `summary`
-- R23. Slots must be designed so planner anchors and runtime/cone expansion can consume them directly without custom per-call payload translation.
+- R23. Slots must be designed so planner anchors and executor/cone expansion can consume them directly without custom per-call payload translation.
 
 **Memory Object View**
-- R24. The shared domain module must define a normalized `MemoryObjectView` that planner and runtime can rely on instead of raw store payload shape.
+- R24. The shared domain module must define a normalized `MemoryObjectView` that planner and executor can rely on instead of raw store payload shape.
 - R25. `MemoryObjectView` must preserve access to store-backed evidence layers, but expose kind and slots in a normalized way.
-- R26. Planner and runtime must be allowed to reason over `MemoryObjectView` without depending on storage-specific payload quirks.
+- R26. Planner and executor must be allowed to reason over `MemoryObjectView` without depending on storage-specific payload quirks.
 
 **Kind Policy Metadata**
 - R27. The shared domain module must define bounded kind-level policy metadata for each `MemoryKind`.
@@ -112,7 +114,7 @@ The durable store unit should still remain the **memory object**, not the anchor
   - default association friendliness
   - default hydration ceiling
   - default retrieval-surface expectations
-- R29. Kind policy metadata must guide planner/runtime/cone behavior, but must not become a hidden planning engine by itself.
+- R29. Kind policy metadata must guide planner/executor/cone behavior, but must not become a hidden planning engine by itself.
 
 **Cone Alignment**
 - R30. Future cone evolution must expand primarily through `MemoryKind` and `StructuredSlots`, not only through raw entity co-occurrence.
@@ -139,17 +141,17 @@ The durable store unit should still remain the **memory object**, not the anchor
 - R41. Derived anchor projections must be rebuildable from the object's layered files rather than existing only inside vector-store metadata.
 
 **Cone-Ready Expansion Surface**
-- R42. Store must expose a bounded, typed expansion surface that runtime can use for cone expansion without depending on raw record quirks.
+- R42. Store must expose a bounded, typed expansion surface that executor can use for cone expansion without depending on raw record quirks.
 - R43. The first-version expansion surface should support at least these edge families when available:
   - shared entity edges
   - typed relation edges
   - near-time edges
   - shared topic edges
   - lineage edges such as same session, episode, summary source, or document ancestry
-- R44. Expansion edges must be attributable and typed so runtime trace can explain why a candidate was expanded.
+- R44. Expansion edges must be attributable and typed so executor trace can explain why a candidate was expanded.
 - R45. Store must allow cone expansion to differ by `MemoryKind` rather than treating all objects as equally expandable.
-- R46. Store must support retrieving a small bounded neighborhood around an anchor object without requiring runtime to manually reconstruct graph logic from raw payload fields.
-- R47. The expansion surface must be suitable for anchor-first retrieval, where probe finds likely anchors and runtime asks store for a limited structure-aware neighborhood.
+- R46. Store must support retrieving a small bounded neighborhood around an anchor object without requiring executor to manually reconstruct graph logic from raw payload fields.
+- R47. The expansion surface must be suitable for anchor-first retrieval, where probe finds likely anchors and executor asks store for a limited structure-aware neighborhood.
 - R48. Anchors must be treated as derived retrieval projections:
   - they may have their own vector entries
   - they must point back to one parent `MemoryObject`
@@ -178,7 +180,7 @@ The durable store unit should still remain the **memory object**, not the anchor
   - chunk or section hierarchy construction
   - object projection
   - layered file generation
-  but its read path must still converge to the same `probe -> planner -> runtime` contract as other modes.
+  but its read path must still converge to the same `probe -> planner -> executor` contract as other modes.
 - R59. First-version document objects should default to `document_chunk` leaf objects, with parent section objects allowed only when hierarchy materially improves navigation or hydration.
 - R60. `.abstract.json` for document objects must carry document-lineage metadata sufficient for retrieval and expansion, including fields such as:
   - `source_doc_id`
@@ -210,6 +212,8 @@ The durable store unit should still remain the **memory object**, not the anchor
 - R66. `conversation` mode must stop treating merged transcript text as the primary durable memory unit.
 - R67. Raw conversation turns or traces may remain append-only evidence, but they must be treated as source evidence rather than as the main long-lived memory object surface.
 - R68. `conversation` mode must derive `MemoryObject` records from dialogue content and persist them through the same layered object contract used by `memory` and `document` modes.
+- R68a. In v1, conversation-derived retrieval objects must use `session_id` as the sole conversation isolation key.
+  - The shared durable contract must not introduce a separate `conversation_id` field unless product semantics later require one conversation to span multiple OpenCortex sessions.
 - R69. Conversation-derived objects must be allowed to produce kinds such as:
   - `event`
   - `profile`
@@ -247,8 +251,8 @@ The durable store unit should still remain the **memory object**, not the anchor
 ## Success Criteria
 
 - Planner can name `target_memory_kinds` against a real shared object contract rather than an aspirational taxonomy.
-- Runtime hydration and cone evolution can consume a normalized object view rather than raw record quirks.
-- Store, planner, and runtime stop duplicating object-type assumptions.
+- Executor hydration and cone evolution can consume a normalized object view rather than raw record quirks.
+- Store, planner, and executor stop duplicating object-type assumptions.
 - The system gains a stronger memory-object surface without introducing a second primary object store.
 - Future object-surface evolution becomes incremental instead of cross-cutting and fragile.
 - Probe can stay cheap because layered surfaces and cone-ready neighborhoods are already part of the store contract.
@@ -270,7 +274,7 @@ The durable store unit should still remain the **memory object**, not the anchor
 
 - Enhance unified store instead of adding an object store: The current architecture needs a shared object surface more urgently than a second storage system.
 - Shared domain module over independent subsystem: The goal is contract centralization and typed consistency, not a new autonomous memory engine.
-- Strong enum first: A closed first-version taxonomy keeps planner/runtime/store aligned and prevents premature schema drift.
+- Strong enum first: A closed first-version taxonomy keeps planner/executor/store aligned and prevents premature schema drift.
 - One shared `.abstract.json` schema: All kinds and modes must fit one fixed top-level structure; differences belong in field population and field semantics, not separate JSON shapes.
 - `profile` and `preference` stay separate: They represent different retrieval surfaces and should remain distinguishable.
 - Two-layer slot model: Shared slots keep cross-kind retrieval simple; kind-specific slots preserve meaningful object structure.
@@ -280,7 +284,7 @@ The durable store unit should still remain the **memory object**, not the anchor
 - Anchors are durable-derived, not primary records: This keeps retrieval fine-grained without making memory lifecycle explode into many tiny managed items.
 - `conversation` needs the largest store correction: Transcript buffering may remain, but durable memory must move from merged text blobs to extracted objects.
 - Conversation stages must supersede rather than accumulate: `immediate` is temporary, `merged` replaces it, and `final` is optional and selective rather than a third permanent duplicate layer.
-- `document` keeps the richest write path but not a separate read path: it may parse and preserve hierarchy on ingest, but once written it must be retrievable through the same probe/planner/runtime path as other modes.
+- `document` keeps the richest write path but not a separate read path: it may parse and preserve hierarchy on ingest, but once written it must be retrievable through the same probe/planner/executor path as other modes.
 - `document` is structurally closest, but still needs to emit the shared layered object contract instead of only path-shaped chunk records.
 - `memory` mode becomes the canonical object writer: Other modes should converge to the same persistence contract rather than inventing special store semantics.
 
@@ -290,7 +294,7 @@ The durable store unit should still remain the **memory object**, not the anchor
   - `docs/brainstorms/2026-04-13-memory-router-coarse-gating-requirements.md`
 - The new object-aware Phase 2 contract is accepted:
   - `docs/brainstorms/2026-04-13-memory-planner-object-aware-requirements.md`
-- The new bounded adaptive Phase 3 contract is accepted:
+- The new bounded adaptive Phase 3 executor contract is accepted:
   - `docs/brainstorms/2026-04-13-memory-runtime-bounded-adaptive-requirements.md`
 - Existing unified-store architecture remains the primary persistence surface for now.
 
