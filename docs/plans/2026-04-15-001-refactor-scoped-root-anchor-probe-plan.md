@@ -1,7 +1,7 @@
 ---
 title: refactor: implement scoped root-anchor probe
 type: refactor
-status: active
+status: completed
 date: 2026-04-15
 origin: docs/brainstorms/2026-04-15-scoped-root-anchor-probe-requirements.md
 ---
@@ -13,6 +13,17 @@ origin: docs/brainstorms/2026-04-15-scoped-root-anchor-probe-requirements.md
 Implement a minimal `root-first, anchor-second` retrieval path for the existing memory hot path. The change keeps the current `probe -> planner -> executor` split, but makes `probe` choose one active scope bucket before anchor-guided retrieval, makes explicit caller scope authoritative, and keeps v1 local expansion constrained to storage capabilities the repo already supports.
 
 Execution note (final, 2026-04-15): fallback-oriented exploration in this document is superseded by the implemented direction. The shipped path is `single bucket -> in-scope anchors -> scoped miss/no widening`.
+
+## Final Scope
+
+This refactor is complete for the final direction that was actually chosen during execution:
+
+- `probe` selects one active scope bucket before object and anchor retrieval
+- explicit scope remains authoritative and returns `scoped_miss` on miss
+- planner/runtime stay on the chosen bucket and do not silently widen
+- compatibility fields such as `fallback_ready` and runtime `trace.fallback` remain in the DTO/API surface, but are inactive in this shipped path
+
+Anything that still reads like "tiny global root fallback" or "broad search last" below should be treated as superseded exploration notes, not remaining implementation work.
 
 ## Problem Frame
 
@@ -260,7 +271,7 @@ flowchart LR
 - Probe trace tells a reviewer which bucket won and why.
 - Probe no longer needs a reader to infer bucket precedence from parallel search counts.
 
-- [ ] **Unit 3: Align planner and execution with single-bucket semantics**
+- [x] **Unit 3: Align planner and execution with single-bucket semantics**
 
 Progress note (2026-04-15): single-bucket planner/runtime posture and scoped miss behavior landed. Follow-up direction changed during execution: inferred-scope fallback chaining is no longer being pursued for this refactor.
 
@@ -309,7 +320,7 @@ Progress note (2026-04-15): single-bucket planner/runtime posture and scoped mis
 - Planner and executor can no longer silently reopen weaker scope buckets.
 - Runtime trace explains why a miss stayed scoped or why fallback was permitted.
 
-- [ ] **Unit 4: Lock regression coverage for phase-native and public contract surfaces**
+- [x] **Unit 4: Lock regression coverage for phase-native and public contract surfaces**
 
 Progress note (2026-04-15): regression coverage now locks selected-bucket posture, scoped miss contract, scoped runtime binding, and HTTP-visible probe/runtime flags for the single-bucket path. Fallback fields remain API-compatible but inactive.
 
@@ -369,6 +380,11 @@ Progress note (2026-04-15): regression coverage now locks selected-bucket postur
 | Typed anchor preservation becomes a broad DTO expansion | Carry only the anchor kinds already supported by `QueryAnchorKind` |
 | Container-scoped traversal relies on unreliable child lookup | Gate v1 behavior to one-hop `parent_uri` only where existing tests prove it works; otherwise degrade to bucket-local filters |
 | Trace expansion causes payload churn | Reuse existing phase-native envelopes and fallback trace channel instead of inventing a parallel diagnostics payload |
+
+## Remaining Follow-Up
+
+- A separate follow-up may continue the `context_manager` / `immediate` / `anchor_projection` cleanup line, but it is not part of this probe refactor.
+- Benchmark re-baselining remains a separate task after deterministic in-repo behavior is stable.
 
 ## Documentation / Operational Notes
 
