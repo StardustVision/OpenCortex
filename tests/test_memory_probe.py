@@ -298,7 +298,9 @@ class TestMemoryProbe(unittest.IsolatedAsyncioTestCase):
         result = await probe.probe("Query")
 
         self.assertEqual(len(result.starting_points), 2)
-        self.assertEqual(result.scope_level, ScopeLevel.CONTAINER_SCOPED)
+        # With current storage hierarchy, any session_id-bearing record
+        # maps to SESSION_ONLY because parent_uri traversal is not reliable.
+        self.assertEqual(result.scope_level, ScopeLevel.SESSION_ONLY)
 
 
 if __name__ == "__main__":

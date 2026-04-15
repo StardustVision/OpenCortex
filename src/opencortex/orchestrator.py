@@ -34,6 +34,7 @@ Typical usage::
 
 import asyncio
 from contextlib import suppress
+from dataclasses import replace
 import hashlib
 import logging
 import math
@@ -69,6 +70,7 @@ from opencortex.intent import (
     RecallPlanner,
     RetrievalDepth,
     RetrievalPlan,
+    ScopeLevel,
     SearchResult,
 )
 from opencortex.intent.timing import (
@@ -994,10 +996,15 @@ class MemoryOrchestrator:
             parent_uri=record["parent_uri"],
             session_id=session_id,
         )
-        record.update(self._memory_object_payload(abstract_json))
+        record.update(self._memory_object_payload(abstract_json, is_leaf=True))
         record["abstract_json"] = abstract_json
 
         record_id = await self._storage.upsert(self._get_collection(), record)
+        record["id"] = record_id
+        await self._sync_anchor_projection_records(
+            source_record=record,
+            abstract_json=abstract_json,
+        )
         if self._entity_index and explicit_entities:
             self._entity_index.add(
                 self._get_collection(),
@@ -1205,6 +1212,8 @@ class MemoryOrchestrator:
                         parse_fn=parse_json_from_response,
                         max_chars_per_chunk=4000,
                     )
+                    llm_abstract = str(result.get("abstract") or "").strip()
+                    llm_overview = str(result.get("overview") or "").strip()
                     keywords_list = result.get("keywords", [])
                     if isinstance(keywords_list, list):
                         keywords = ", ".join(str(k) for k in keywords_list if k)
@@ -1216,8 +1225,8 @@ class MemoryOrchestrator:
                     else:
                         entities = []
                     return {
-                        "abstract": user_abstract or result.get("abstract", ""),
-                        "overview": user_overview or result.get("overview", ""),
+                        "abstract": user_abstract or llm_abstract or content,
+                        "overview": user_overview or llm_overview,
                         "keywords": keywords,
                         "entities": entities,
                     }
@@ -1243,7 +1252,7 @@ class MemoryOrchestrator:
                     else:
                         entities = []
                     return {
-                        "abstract": user_abstract or llm_abstract,
+                        "abstract": user_abstract or llm_abstract or content,
                         "overview": user_overview or llm_overview,
                         "keywords": keywords,
                         "entities": entities,
@@ -1294,16 +1303,124 @@ class MemoryOrchestrator:
     @staticmethod
     def _memory_object_payload(
         abstract_json: Dict[str, Any],
+        *,
+        is_leaf: bool,
     ) -> Dict[str, Any]:
         """Project canonical abstract payload into flat vector metadata."""
         memory_kind = MemoryKind(str(abstract_json["memory_kind"]))
         policy = memory_kind_policy(memory_kind)
+        anchor_hits = memory_anchor_hits_from_abstract(abstract_json)
         return {
             "memory_kind": memory_kind.value,
-            "anchor_hits": memory_anchor_hits_from_abstract(abstract_json),
+            "anchor_hits": anchor_hits,
             "merge_signature": memory_merge_signature_from_abstract(abstract_json),
             "mergeable": policy.mergeable,
+            "retrieval_surface": "l0_object" if is_leaf else "",
+            "anchor_surface": bool(is_leaf and anchor_hits),
         }
+
+    @staticmethod
+    def _anchor_projection_prefix(uri: str) -> str:
+        """Return the reserved child prefix for derived anchor projection records."""
+        return f"{uri}/anchors"
+
+    def _anchor_projection_records(
+        self,
+        *,
+        source_record: Dict[str, Any],
+        abstract_json: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Build dedicated anchor projection records for one leaf object."""
+        source_uri = str(source_record.get("uri", "") or "")
+        if not source_uri:
+            return []
+
+        projection_records: List[Dict[str, Any]] = []
+        anchors = abstract_json.get("anchors") or []
+        prefix = self._anchor_projection_prefix(source_uri)
+        base_anchor_hits = memory_anchor_hits_from_abstract(abstract_json)
+
+        for index, anchor in enumerate(anchors):
+            if not isinstance(anchor, dict):
+                continue
+            anchor_text = str(anchor.get("text") or anchor.get("value") or "").strip()
+            anchor_value = str(anchor.get("value") or anchor_text).strip()
+            anchor_type = str(anchor.get("anchor_type") or "topic").strip() or "topic"
+            if not anchor_text:
+                continue
+
+            digest = hashlib.sha1(
+                f"{anchor_type}:{anchor_value}:{index}".encode("utf-8")
+            ).hexdigest()[:12]
+            projection_uri = f"{prefix}/{digest}"
+            projection_record = {
+                "id": uuid4().hex,
+                "uri": projection_uri,
+                "parent_uri": source_uri,
+                "is_leaf": False,
+                "abstract": "",
+                "overview": anchor_text,
+                "content": "",
+                "context_type": source_record.get("context_type", ""),
+                "category": source_record.get("category", ""),
+                "scope": source_record.get("scope", ""),
+                "source_user_id": source_record.get("source_user_id", ""),
+                "source_tenant_id": source_record.get("source_tenant_id", ""),
+                "session_id": source_record.get("session_id", ""),
+                "project_id": source_record.get("project_id", ""),
+                "keywords": ", ".join(value for value in [anchor_text, anchor_value] if value),
+                "entities": source_record.get("entities", []),
+                "meta": {
+                    "derived": True,
+                    "derived_kind": "anchor_projection",
+                    "anchor_type": anchor_type,
+                    "anchor_value": anchor_value,
+                    "anchor_text": anchor_text,
+                    "projection_target_uri": source_uri,
+                },
+                "memory_kind": source_record.get("memory_kind", ""),
+                "anchor_hits": _merge_unique_strings(anchor_text, anchor_value, *base_anchor_hits),
+                "merge_signature": "",
+                "mergeable": False,
+                "retrieval_surface": "anchor_projection",
+                "anchor_surface": True,
+                "source_doc_id": source_record.get("source_doc_id", ""),
+                "source_doc_title": source_record.get("source_doc_title", ""),
+                "source_section_path": source_record.get("source_section_path", ""),
+                "chunk_role": source_record.get("chunk_role", ""),
+                "speaker": source_record.get("speaker", ""),
+                "event_date": source_record.get("event_date"),
+                "projection_target_uri": source_uri,
+                "projection_target_abstract": source_record.get("abstract", ""),
+                "projection_target_overview": source_record.get("overview", ""),
+            }
+            projection_records.append(projection_record)
+
+        return projection_records
+
+    async def _sync_anchor_projection_records(
+        self,
+        *,
+        source_record: Dict[str, Any],
+        abstract_json: Dict[str, Any],
+    ) -> None:
+        """Replace derived anchor projection records for one leaf object."""
+        if not bool(source_record.get("is_leaf", False)):
+            return
+
+        source_uri = str(source_record.get("uri", "") or "")
+        if not source_uri:
+            return
+
+        prefix = self._anchor_projection_prefix(source_uri)
+        await self._storage.remove_by_uri(self._get_collection(), prefix)
+
+        projection_records = self._anchor_projection_records(
+            source_record=source_record,
+            abstract_json=abstract_json,
+        )
+        for projection_record in projection_records:
+            await self._storage.upsert(self._get_collection(), projection_record)
 
     def _ensure_init(self) -> None:
         """Raise if not initialized."""
@@ -1509,7 +1626,7 @@ class MemoryOrchestrator:
             parent_uri=parent_uri,
             session_id=session_id,
         )
-        object_payload = self._memory_object_payload(abstract_json)
+        object_payload = self._memory_object_payload(abstract_json, is_leaf=is_leaf)
         memory_kind = MemoryKind(object_payload["memory_kind"])
         merge_signature = str(object_payload["merge_signature"])
         mergeable = bool(object_payload["mergeable"])
@@ -1627,6 +1744,10 @@ class MemoryOrchestrator:
         upsert_started = asyncio.get_running_loop().time()
         await self._storage.upsert(self._get_collection(), record)
         upsert_ms = int((asyncio.get_running_loop().time() - upsert_started) * 1000)
+        await self._sync_anchor_projection_records(
+            source_record=record,
+            abstract_json=abstract_json,
+        )
 
         if (context_type or ctx.context_type or "memory") == "memory":
             await self._initialize_autophagy_owner_state(
@@ -1872,11 +1993,22 @@ class MemoryOrchestrator:
             parent_uri=record.get("parent_uri", ""),
             session_id=record.get("session_id", ""),
         )
-        update_data.update(self._memory_object_payload(abstract_json))
+        update_data.update(
+            self._memory_object_payload(
+                abstract_json,
+                is_leaf=bool(record.get("is_leaf", False)),
+            )
+        )
         update_data["abstract_json"] = abstract_json
 
         if update_data:
             await self._storage.update(self._get_collection(), record_id, update_data)
+            updated_record = dict(record)
+            updated_record.update(update_data)
+            await self._sync_anchor_projection_records(
+                source_record=updated_record,
+                abstract_json=abstract_json,
+            )
 
         # Update filesystem
         if abstract is not None or content is not None:
@@ -2050,10 +2182,13 @@ class MemoryOrchestrator:
             types_to_search = [self._infer_context_type(target_uri)]
         else:
             raw_context_types = runtime_bound_plan.get("context_types") or ["memory"]
-            types_to_search = [
-                self._context_type_from_value(raw_value)
-                for raw_value in raw_context_types
-            ]
+            if len(raw_context_types) > 1:
+                types_to_search = [ContextType.ANY]
+            else:
+                types_to_search = [
+                    self._context_type_from_value(raw_value)
+                    for raw_value in raw_context_types
+                ]
 
         return [
             TypedQuery(
@@ -2200,11 +2335,21 @@ class MemoryOrchestrator:
                 "conds": [target_doc_id],
             }
 
+        session_filter = None
+        scoped_session_id = str((session_context or {}).get("session_id", "") or "").strip()
+        if scoped_session_id:
+            session_filter = {
+                "op": "must",
+                "field": "session_id",
+                "conds": [scoped_session_id],
+            }
+
         return self._merge_filter_clauses(
             metadata_filter,
             type_filter,
             target_filter,
             doc_filter,
+            session_filter,
         )
 
     @staticmethod
@@ -2339,9 +2484,11 @@ class MemoryOrchestrator:
         anchor_cap = int(plan.get("anchor_cap", 0) or 0)
         if anchor_cap <= 0:
             anchor_cap = 4
-        confidence = self._probe_confidence(probe_result)
-
         uri_values = [
+            sp.uri
+            for sp in (probe_result.starting_points or [])
+            if sp.uri
+        ] + [
             candidate.uri
             for candidate in probe_result.candidate_entries[:uri_cap]
             if candidate.uri
@@ -2361,9 +2508,6 @@ class MemoryOrchestrator:
                     anchor_values.append(normalized)
                 if len(anchor_values) >= anchor_cap:
                     break
-
-        if confidence < 0.25 and not uri_values and not anchor_values:
-            return None
 
         clauses: List[Dict[str, Any]] = []
         if uri_values:
@@ -2669,10 +2813,59 @@ class MemoryOrchestrator:
             probe_result=probe_result,
             bound_plan=bound_plan,
         )
+
+        # Scope-aware leaf filter (R3/R6)
+        leaf_filter: Optional[Dict[str, Any]] = None
+        if retrieve_plan is not None:
+            if retrieve_plan.scope_level == ScopeLevel.CONTAINER_SCOPED:
+                if probe_result and probe_result.starting_points:
+                    parent_uris = [
+                        sp.uri for sp in probe_result.starting_points if sp.uri
+                    ]
+                    if parent_uris:
+                        leaf_filter = {
+                            "op": "must",
+                            "field": "parent_uri",
+                            "conds": parent_uris,
+                        }
+            elif retrieve_plan.scope_level == ScopeLevel.SESSION_ONLY:
+                if probe_result and probe_result.starting_points:
+                    session_ids = sorted(
+                        {
+                            sp.session_id
+                            for sp in probe_result.starting_points
+                            if sp.session_id
+                        }
+                    )
+                    if session_ids:
+                        leaf_filter = {
+                            "op": "must",
+                            "field": "session_id",
+                            "conds": session_ids,
+                        }
+            elif retrieve_plan.scope_level == ScopeLevel.DOCUMENT_ONLY:
+                if probe_result and probe_result.starting_points:
+                    doc_ids = sorted(
+                        {
+                            sp.source_doc_id
+                            for sp in probe_result.starting_points
+                            if sp.source_doc_id
+                        }
+                    )
+                    if doc_ids:
+                        leaf_filter = {
+                            "op": "must",
+                            "field": "source_doc_id",
+                            "conds": doc_ids,
+                        }
+
+        if leaf_filter is None:
+            leaf_filter = {"op": "must", "field": "is_leaf", "conds": [True]}
+
         final_filter = self._merge_filter_clauses(
             search_filter,
             kind_filter,
-            {"op": "must", "field": "is_leaf", "conds": [True]},
+            leaf_filter,
             start_point_filter,
         )
 
@@ -2950,6 +3143,43 @@ class MemoryOrchestrator:
             *retrieval_coros,
         )
         query_results = list(query_results)
+        hydration_actions: List[Dict[str, Any]] = []
+        early_stop = False
+        if runtime_bound_plan is not None:
+            (
+                runtime_bound_plan,
+                should_hydrate_l2,
+                hydration_actions,
+                early_stop,
+            ) = self._memory_runtime.arbitrate_hydration(
+                bound_plan=runtime_bound_plan,
+                query_results=query_results,
+            )
+            if should_hydrate_l2:
+                hydrated_queries = [
+                    replace(typed_query, detail_level=DetailLevel.L2)
+                    for typed_query in typed_queries
+                ]
+                query_results = await measure_async(
+                    stage_timings,
+                    "hydrate",
+                    asyncio.gather,
+                    *[
+                        self._execute_object_query(
+                            typed_query=typed_query,
+                            limit=effective_limit,
+                            score_threshold=score_threshold,
+                            search_filter=search_filter,
+                            retrieve_plan=retrieve_plan,
+                            probe_result=probe_result,
+                            bound_plan=runtime_bound_plan,
+                        )
+                        for typed_query in hydrated_queries
+                    ],
+                )
+                query_results = list(query_results)
+            else:
+                stage_timings.record_ms("hydrate", 0)
 
         aggregate_started = asyncio.get_running_loop().time()
         result = self._aggregate_results(query_results, limit=limit)
@@ -2989,6 +3219,10 @@ class MemoryOrchestrator:
         total_ms = int((asyncio.get_running_loop().time() - search_started) * 1000)
         stage_timings.record_elapsed("aggregate", aggregate_started)
         stage_timings.record_ms("total", total_ms)
+        retrieval_latency_ms = (
+            max(stage_timings.snapshot()["retrieve"], 0)
+            + max(stage_timings.snapshot().get("hydrate", 0), 0)
+        )
         if runtime_bound_plan is not None:
             runtime_items = [
                 {
@@ -3001,9 +3235,11 @@ class MemoryOrchestrator:
             result.runtime_result = self._memory_runtime.finalize(
                 bound_plan=runtime_bound_plan,
                 items=runtime_items,
-                latency_ms=max(stage_timings.snapshot()["retrieve"], 0),
+                latency_ms=retrieval_latency_ms,
                 stage_timing_ms=stage_timings.snapshot(),
                 retrieve_breakdown_ms=retrieve_breakdown_ms,
+                hydration_actions=hydration_actions,
+                early_stop=early_stop,
             )
         logger.info(
             "[search] tenant=%s user=%s probe_candidates=%d queries=%d results=%d "
@@ -3015,7 +3251,7 @@ class MemoryOrchestrator:
             len(all_matched),
             total_ms,
             intent_ms,
-            max(stage_timings.snapshot()["retrieve"], 0),
+            retrieval_latency_ms,
         )
 
         # v0.6: Build SearchExplainSummary

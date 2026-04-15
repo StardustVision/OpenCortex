@@ -538,19 +538,10 @@ class MemoryBootstrapProbe:
                 if value and value not in starting_point_anchors:
                     starting_point_anchors.append(value)
 
-            if session_id and parent_uri:
-                # Session root or session-scoped roots are treated as SESSION_ONLY
-                # because conversation records currently hang directly off the
-                # session root; parent_uri traversal would miss them.
-                parent_norm = parent_uri.rstrip("/")
-                if (
-                    parent_norm.endswith(f"/events/{session_id}")
-                    or parent_norm.endswith("/events")
-                ):
-                    scope_levels.add(ScopeLevel.SESSION_ONLY)
-                else:
-                    scope_levels.add(ScopeLevel.CONTAINER_SCOPED)
-            elif session_id:
+            if session_id:
+                # All session-scoped records currently map to SESSION_ONLY
+                # because the storage hierarchy does not support reliable
+                # parent_uri-based child retrieval for arbitrary memory records.
                 scope_levels.add(ScopeLevel.SESSION_ONLY)
             elif source_doc_id:
                 scope_levels.add(ScopeLevel.DOCUMENT_ONLY)

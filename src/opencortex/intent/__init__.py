@@ -24,9 +24,11 @@ from opencortex.intent.types import (
     QueryRewriteMode,
     RetrievalDepth,
     RetrievalPlan,
+    ScopeLevel,
     SearchCandidate,
     SearchEvidence,
     SearchResult,
+    StartingPoint,
 )
 
 __all__ = [
@@ -48,6 +50,8 @@ __all__ = [
     "QueryAnchorKind",
     "QueryRewriteMode",
     "RetrievalDepth",
+    "ScopeLevel",
+    "StartingPoint",
     "_CAMEL_CASE_RE",
     "_ALL_CAPS_RE",
     "_PATH_SYMBOL_RE",
