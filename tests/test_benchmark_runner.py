@@ -5,6 +5,7 @@ Tests use known inputs to verify Recall@k, Precision@k, MRR, and
 category-level aggregation from memory_eval.py.
 """
 
+import asyncio
 import os
 import sys
 import unittest
@@ -178,6 +179,45 @@ class TestBenchmarkMetrics(unittest.TestCase):
                 "method": "recall",
                 "endpoint": "context_recall",
                 "session_scope": True,
+            },
+        )
+
+    def test_document_adapter_recall_mode_still_uses_search_payload(self):
+        from benchmarks.adapters.document import DocumentAdapter
+
+        class _OCStub:
+            def __init__(self):
+                self.search_calls = []
+                self.recall_calls = []
+
+            async def search_payload(self, **kwargs):
+                self.search_calls.append(dict(kwargs))
+                return {"results": [{"uri": "opencortex://resource/doc-1/chunk-1"}]}
+
+            async def context_recall(self, **kwargs):
+                self.recall_calls.append(dict(kwargs))
+                return {"memory": [{"uri": "unexpected"}]}
+
+        adapter = DocumentAdapter()
+        adapter._retrieve_method = "recall"
+        qa_item = type("QA", (), {"question": "What does the paper conclude?"})()
+        oc = _OCStub()
+
+        results, _latency_ms = asyncio.run(adapter.retrieve(oc, qa_item, top_k=4))
+        retrieval_meta = adapter.pop_last_retrieval_meta()
+
+        self.assertEqual(
+            [item["uri"] for item in results],
+            ["opencortex://resource/doc-1/chunk-1"],
+        )
+        self.assertEqual(len(oc.recall_calls), 0)
+        self.assertEqual(oc.search_calls[0]["context_type"], "resource")
+        self.assertEqual(
+            retrieval_meta["retrieval_contract"],
+            {
+                "method": "recall",
+                "endpoint": "memory_search",
+                "session_scope": False,
             },
         )
 

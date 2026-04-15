@@ -164,6 +164,7 @@ class OCClient:
         turn_id: str = "t0",
         limit: int = 10,
         detail_level: Optional[str] = None,
+        session_scope: bool = False,
     ) -> Dict:
         """MCP recall: context phase=prepare with messages containing the query.
 
@@ -173,6 +174,8 @@ class OCClient:
         config: Dict[str, Any] = {"max_items": limit}
         if detail_level is not None:
             config["detail_level"] = detail_level
+        if session_scope:
+            config["session_scope"] = True
         return await self._post(
             "/api/v1/context",
             {

@@ -196,7 +196,11 @@ class HotPotQAAdapter(EvalAdapter):
                 limit=top_k,
                 detail_level="l0",
             )
-            self._set_last_retrieval_meta(result)
+            self._set_last_retrieval_meta(
+                result,
+                endpoint="context_recall",
+                session_scope=False,
+            )
             results = result.get("memory", [])
         else:
             result = await oc.search_payload(
@@ -204,7 +208,11 @@ class HotPotQAAdapter(EvalAdapter):
                 limit=top_k,
                 context_type="resource",
             )
-            self._set_last_retrieval_meta(result)
+            self._set_last_retrieval_meta(
+                result,
+                endpoint="memory_search",
+                session_scope=False,
+            )
             results = result.get("results", [])
 
         latency_ms = (time.perf_counter() - t0) * 1000

@@ -198,6 +198,33 @@ class DocumentAdapter(EvalAdapter):
             except Exception as e:
                 errors.append(f"doc={doc_id}: {e}")
 
+        # Build doc_id -> chunk_uris mapping for ground truth evaluation
+        self._doc_chunk_uris: Dict[str, List[str]] = {}
+        try:
+            offset = 0
+            limit = 500
+            while True:
+                payload = await oc.memory_list(
+                    context_type="resource",
+                    limit=limit,
+                    offset=offset,
+                    include_payload=True,
+                )
+                results = payload.get("results", [])
+                for item in results:
+                    meta = item.get("meta") or {}
+                    source_path = str(meta.get("source_path", ""))
+                    if source_path:
+                        mapped_doc_id = source_path.replace(".md", "")
+                        uri = str(item.get("uri", ""))
+                        if uri:
+                            self._doc_chunk_uris.setdefault(mapped_doc_id, []).append(uri)
+                if len(results) < limit:
+                    break
+                offset += limit
+        except Exception:
+            pass
+
         return IngestResult(
             total_items=len(self._dataset),
             ingested_items=ingested,
@@ -207,13 +234,16 @@ class DocumentAdapter(EvalAdapter):
     def build_qa_items(self, **kwargs) -> List[QAItem]:
         max_qa = kwargs.get("max_qa", 0)
         items: List[QAItem] = []
+        doc_chunk_uris = getattr(self, "_doc_chunk_uris", {})
 
         for doc in self._dataset:
             for qa in doc.get("qas", []):
+                expected_uris = doc_chunk_uris.get(doc["doc_id"], [])
                 items.append(QAItem(
                     question=qa["question"],
                     answer=str(qa.get("answer", "")),
                     category=qa.get("category", ""),
+                    expected_uris=expected_uris,
                     meta={"doc_id": doc["doc_id"], "dataset": self._dataset_type},
                 ))
 
@@ -230,27 +260,22 @@ class DocumentAdapter(EvalAdapter):
         return ""
 
     async def retrieve(self, oc: Any, qa_item: QAItem, top_k: int) -> Tuple[List[Dict], float]:
-        """Search document chunks via search (default) or context_recall (production path)."""
+        """Search document chunks via direct vector search (document mode)."""
         t0 = time.perf_counter()
 
-        if self._retrieve_method == "recall":
-            sid = "ev-doc-" + md5(qa_item.question.encode()).hexdigest()[:12]
-            result = await oc.context_recall(
-                session_id=sid,
-                query=qa_item.question,
-                limit=top_k,
-                detail_level="l0",
-            )
-            self._set_last_retrieval_meta(result)
-            results = result.get("memory", [])
-        else:
-            result = await oc.search_payload(
-                query=qa_item.question,
-                limit=top_k,
-                context_type="resource",
-            )
-            self._set_last_retrieval_meta(result)
-            results = result.get("results", [])
+        # Document mode must use search_payload; context_recall's memory pipeline
+        # targets event/summary kinds and excludes document_chunk.
+        result = await oc.search_payload(
+            query=qa_item.question,
+            limit=top_k,
+            context_type="resource",
+        )
+        self._set_last_retrieval_meta(
+            result,
+            endpoint="memory_search",
+            session_scope=False,
+        )
+        results = result.get("results", [])
 
         latency_ms = (time.perf_counter() - t0) * 1000
         return results, latency_ms

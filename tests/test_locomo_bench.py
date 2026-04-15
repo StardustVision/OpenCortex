@@ -301,6 +301,111 @@ class TestLoCoMoBench(unittest.IsolatedAsyncioTestCase):
         )
 
 
+_LONGMEMEVAL_FIXTURE = [
+    {
+        "question": "Where did the user move in the first session?",
+        "answer": "Hangzhou",
+        "question_type": "single-session-user",
+        "haystack_session_ids": ["s1", "s2"],
+        "haystack_dates": ["2023-05-01", "2023-05-03"],
+        "haystack_sessions": [
+            [
+                {"role": "user", "content": "I moved to Hangzhou."},
+                {"role": "assistant", "content": "Noted."},
+            ],
+            [
+                {"role": "user", "content": "I will visit West Lake next week."},
+            ],
+        ],
+    }
+]
+
+
+class TestLongMemEvalBench(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.dataset_path = os.path.join(self.temp_dir.name, "longmemeval.json")
+        with open(self.dataset_path, "w", encoding="utf-8") as file_obj:
+            json.dump(_LONGMEMEVAL_FIXTURE, file_obj)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    async def test_ingest_maps_inner_sessions_to_merged_uris(self):
+        bench = LongMemEvalBench()
+        bench.load_dataset(self.dataset_path)
+        oc = _OCStub()
+        oc.list_results = [
+            {"results": [], "total": 0},
+            {
+                "results": [
+                    {
+                        "uri": "opencortex://m/lme-session1",
+                        "session_id": "lme-item-0",
+                        "meta": {"msg_range": [0, 1]},
+                        "abstract_json": {"slots": {"time_refs": ["2023-05-01"]}},
+                        "event_date": "2023-05-01T00:00:00Z",
+                    },
+                    {
+                        "uri": "opencortex://m/lme-session2",
+                        "session_id": "lme-item-0",
+                        "meta": {"msg_range": [2, 2]},
+                        "abstract_json": {"slots": {"time_refs": ["2023-05-03"]}},
+                        "event_date": "2023-05-03T00:00:00Z",
+                    },
+                ],
+                "total": 2,
+            },
+        ]
+
+        result = await bench.ingest(oc)
+
+        self.assertEqual(result.total_items, 1)
+        self.assertEqual(result.ingested_items, 1)
+        self.assertEqual(
+            [call["session_id"] for call in oc.commit_calls],
+            ["lme-item-0", "lme-item-0"],
+        )
+        self.assertEqual(oc.end_calls, ["lme-item-0"])
+        items = bench.build_qa_items()
+        self.assertEqual(
+            items[0].expected_uris,
+            ["opencortex://m/lme-session1", "opencortex://m/lme-session2"],
+        )
+        self.assertEqual(items[0].meta["item_index"], 0)
+
+    async def test_retrieve_uses_item_scoped_session_recall(self):
+        bench = LongMemEvalBench()
+        bench.load_dataset(self.dataset_path)
+        bench._retrieve_method = "recall"
+        oc = _OCStub()
+        oc.recall_result = {
+            "memory_pipeline": {
+                "probe": {"should_recall": True},
+                "planner": {"retrieval_depth": "l0"},
+                "runtime": {"trace": {}, "degrade": {"applied": False}},
+            },
+            "memory": [{"uri": "opencortex://m/lme-session1", "abstract": "I moved to Hangzhou."}],
+        }
+
+        qa_item = bench.build_qa_items()[0]
+        qa_item.meta["item_index"] = 0
+        results, _latency_ms = await bench.retrieve(oc, qa_item, top_k=3)
+        retrieval_meta = bench.pop_last_retrieval_meta()
+
+        self.assertEqual([item["uri"] for item in results], ["opencortex://m/lme-session1"])
+        self.assertEqual(oc.recall_calls[0]["session_id"], "lme-item-0")
+        self.assertTrue(oc.recall_calls[0]["session_scope"])
+        self.assertEqual(
+            retrieval_meta["retrieval_contract"],
+            {
+                "method": "recall",
+                "endpoint": "context_recall",
+                "session_scope": True,
+            },
+        )
+
+
 class TestBenchmarkAdapterRouting(unittest.TestCase):
     def test_conversation_defaults_to_locomo_bench(self):
         self.assertIsInstance(_get_adapter("conversation"), LoCoMoBench)
