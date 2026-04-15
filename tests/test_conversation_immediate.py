@@ -38,7 +38,13 @@ class TestConversationImmediate(unittest.TestCase):
                     uri = await orch._write_immediate(
                         session_id="sess-1",
                         msg_index=0,
-                        text="The user prefers dark mode for all applications.",
+                        text="[1 May, 2023] Alice moved to Hangzhou and plans a West Lake visit.",
+                        meta={
+                            "speaker": "Alice",
+                            "event_date": "2023-05-01T09:00:00Z",
+                            "time_refs": ["1 May, 2023"],
+                            "entities": ["Alice", "Hangzhou", "West Lake"],
+                        },
                     )
                     self.assertTrue(uri.startswith("opencortex://"))
                     self.assertIn("events", uri)
@@ -49,6 +55,19 @@ class TestConversationImmediate(unittest.TestCase):
                     )
                     self.assertEqual(records[0].get("memory_kind"), "event")
                     self.assertIn("abstract_json", records[0])
+                    anchor_records = await orch._storage.filter(
+                        "context",
+                        {"op": "prefix", "field": "uri", "prefix": f"{uri}/anchors"},
+                        limit=10,
+                    )
+                    self.assertGreaterEqual(len(anchor_records), 1)
+                    self.assertTrue(
+                        all(
+                            record.get("retrieval_surface") == "anchor_projection"
+                            for record in anchor_records
+                        )
+                    )
+                    self.assertTrue(all(record.get("anchor_surface") for record in anchor_records))
                 finally:
                     reset_request_identity(tokens)
             finally:

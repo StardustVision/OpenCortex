@@ -73,6 +73,8 @@ class CollectionSchemas:
                 {"FieldName": "chunk_role", "FieldType": "string"},
                 {"FieldName": "speaker", "FieldType": "string"},
                 {"FieldName": "event_date", "FieldType": "date_time"},
+                {"FieldName": "retrieval_surface", "FieldType": "string"},
+                {"FieldName": "anchor_surface", "FieldType": "bool"},
             ],
             "ScalarIndex": [
                 "uri",
@@ -103,6 +105,8 @@ class CollectionSchemas:
                 "chunk_role",
                 "speaker",
                 "event_date",
+                "retrieval_surface",
+                "anchor_surface",
             ],
         }
 

@@ -44,11 +44,12 @@ class TestContextManager(unittest.TestCase):
     def _run(self, coro):
         return asyncio.run(coro)
 
-    def _make_orchestrator(self):
+    def _make_orchestrator(self, llm_completion=None):
         return MemoryOrchestrator(
             config=self.config,
             storage=self.storage,
             embedder=self.embedder,
+            llm_completion=llm_completion,
         )
 
     def test_prepare_idempotent(self):
@@ -220,6 +221,22 @@ class TestContextManager(unittest.TestCase):
             )
         )
         self.assertEqual(immediate_records, [])
+        immediate_projection_records = self._run(
+            self.storage.filter(
+                "context",
+                {"op": "prefix", "field": "uri", "prefix": f"{uri1}/anchors"},
+                limit=10,
+            )
+        )
+        self.assertEqual(immediate_projection_records, [])
+        immediate_projection_records = self._run(
+            self.storage.filter(
+                "context",
+                {"op": "prefix", "field": "uri", "prefix": f"{uri2}/anchors"},
+                limit=10,
+            )
+        )
+        self.assertEqual(immediate_projection_records, [])
 
         merged_records = [
             record
@@ -228,6 +245,8 @@ class TestContextManager(unittest.TestCase):
         ]
         self.assertEqual(len(merged_records), 1)
         self.assertEqual(merged_records[0].get("memory_kind"), "event")
+        self.assertEqual(merged_records[0].get("retrieval_surface"), "l0_object")
+        self.assertTrue(merged_records[0].get("anchor_surface"))
         self.assertIn("abstract_json", merged_records[0])
         slots = merged_records[0]["abstract_json"]["slots"]
         self.assertIn("1 May, 2023", slots["time_refs"])
@@ -278,12 +297,20 @@ class TestContextManager(unittest.TestCase):
             for record in self.storage._records.get("context", {}).values()
             if record.get("meta", {}).get("layer") == "immediate"
         ]
+        anchor_projection_records = [
+            record
+            for record in self.storage._records.get("context", {}).values()
+            if record.get("retrieval_surface") == "anchor_projection"
+        ]
         self.assertEqual(len(immediate_records), 2)
+        self.assertGreaterEqual(len(anchor_projection_records), 1)
+        self.assertTrue(all(record.get("retrieval_surface") == "l0_object" for record in immediate_records))
         user_record = next(
             record
             for record in immediate_records
             if record.get("meta", {}).get("msg_index") == 0
         )
+        self.assertTrue(user_record.get("anchor_surface"))
         self.assertEqual(user_record["event_date"], "2023-05-01T09:00:00Z")
         self.assertEqual(user_record["speaker"], "Alice")
         self.assertIn(
@@ -343,6 +370,76 @@ class TestContextManager(unittest.TestCase):
                 self._run(orch.close())
             reset_collection_name(collection_token)
 
+    def test_derive_layers_chunked_llm_blank_abstract_falls_back_to_content(self):
+        async def blank_llm(prompt: str) -> str:
+            if "compress" in prompt.lower():
+                return "   "
+            return '{"abstract":"   ","overview":"   ","keywords":[],"entities":[]}'
+
+        orch = self._make_orchestrator(llm_completion=blank_llm)
+        self._run(orch.init())
+        long_content = ("杭州出差，住在西湖边。\n" * 400).strip()
+
+        layers = self._run(orch._derive_layers("", long_content))
+
+        self.assertEqual(layers["abstract"], long_content)
+        self.assertEqual(layers["overview"], "")
+        self._run(orch.close())
+
+    def test_end_keeps_merged_record_visible_in_memory_list_when_llm_returns_blank(self):
+        async def blank_llm(prompt: str) -> str:
+            if "compress" in prompt.lower():
+                return "   "
+            return '{"abstract":"   ","overview":"   ","keywords":[],"entities":[]}'
+
+        orch = self._make_orchestrator(llm_completion=blank_llm)
+        self._run(orch.init())
+        cm = orch._context_manager
+        repeated_fact = "我下周二要去杭州出差，住在西湖边，不吃辣。"
+        long_message = repeated_fact * 250
+
+        self._run(
+            cm.handle(
+                session_id="sess_merge_list_001",
+                phase="commit",
+                tenant_id="testteam",
+                user_id="alice",
+                turn_id="t1",
+                messages=[
+                    {"role": "user", "content": long_message},
+                    {"role": "assistant", "content": "记住了。"},
+                ],
+            )
+        )
+        self._run(
+            cm.handle(
+                session_id="sess_merge_list_001",
+                phase="end",
+                tenant_id="testteam",
+                user_id="alice",
+            )
+        )
+
+        items = self._run(
+            orch.list_memories(
+                category="events",
+                context_type="memory",
+                limit=10,
+                offset=0,
+                include_payload=True,
+            )
+        )
+
+        session_items = [
+            item for item in items if item.get("session_id") == "sess_merge_list_001"
+        ]
+
+        self.assertGreaterEqual(len(session_items), 1)
+        self.assertTrue(
+            any(item.get("abstract", "").startswith("我下周二要去杭州出差") for item in session_items)
+        )
+        self._run(orch.close())
+
     def test_end_waits_for_background_merge_and_keeps_single_merged_record(self):
         async def _case():
             orch = self._make_orchestrator()
@@ -375,6 +472,11 @@ class TestContextManager(unittest.TestCase):
                 ],
             )
 
+            immediate_uris = [
+                record["uri"]
+                for record in self.storage._records.get("context", {}).values()
+                if record.get("meta", {}).get("layer") == "immediate"
+            ]
             self.assertIn(sk, cm._session_merge_tasks)
             await asyncio.wait_for(merge_started.wait(), timeout=1.0)
 
@@ -405,6 +507,13 @@ class TestContextManager(unittest.TestCase):
             ]
             self.assertEqual(len(merged_records), 1)
             self.assertEqual(immediate_records, [])
+            self.assertFalse(
+                any(
+                    record.get("uri", "").startswith(f"{uri}/anchors")
+                    for uri in immediate_uris
+                    for record in self.storage._records.get("context", {}).values()
+                )
+            )
             self.assertNotIn(sk, cm._session_merge_tasks)
 
             await orch.close()
@@ -444,6 +553,11 @@ class TestContextManager(unittest.TestCase):
                 ],
             )
 
+            immediate_uris = [
+                record["uri"]
+                for record in self.storage._records.get("context", {}).values()
+                if record.get("meta", {}).get("layer") == "immediate"
+            ]
             await cm._wait_for_merge_task(sk)
             restored_buffer = cm._conversation_buffers.get(sk)
             self.assertIsNotNone(restored_buffer)
@@ -464,6 +578,13 @@ class TestContextManager(unittest.TestCase):
                 if record.get("meta", {}).get("layer") == "merged"
             ]
             self.assertEqual(len(merged_records), 1)
+            self.assertFalse(
+                any(
+                    record.get("uri", "").startswith(f"{uri}/anchors")
+                    for uri in immediate_uris
+                    for record in self.storage._records.get("context", {}).values()
+                )
+            )
             self.assertNotIn(sk, cm._conversation_buffers)
 
             await orch.close()

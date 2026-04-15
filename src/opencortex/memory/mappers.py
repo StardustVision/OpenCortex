@@ -309,6 +309,8 @@ def _unique_strings(raw_values: Any) -> List[str]:
 
     values: List[str] = []
     for raw_value in raw_iterable:
+        if raw_value is None:
+            continue
         normalized = str(raw_value).strip()
         if normalized and normalized not in values:
             values.append(normalized)
@@ -329,6 +331,7 @@ def _extract_time_refs(record: Mapping[str, Any], metadata: Mapping[str, Any]) -
             record.get("event_date"),
         ]
     )
+    explicit_values = [v for v in explicit_values if v is not None]
     explicit = _unique_strings(explicit_values)
     if explicit:
         return explicit

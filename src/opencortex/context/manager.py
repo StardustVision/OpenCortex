@@ -318,6 +318,7 @@ class ContextManager:
         if hasattr(self._orchestrator, '_config') and self._orchestrator._config:
             _server_default = self._orchestrator._config.cortex_alpha.knowledge_recall_enabled
         include_knowledge = config.get("include_knowledge", _server_default)
+        session_scope_enabled = bool(config.get("session_scope", False))
         sk = self._make_session_key(tenant_id, user_id, session_id)
         prepare_started = time.monotonic()
         stage_timings = StageTimingCollector()
@@ -357,11 +358,13 @@ class ContextManager:
         )
         if recall_mode != "never":
             try:
-                session_ctx = {
-                    "session_id": session_id,
-                    "tenant_id": tenant_id,
-                    "user_id": user_id,
-                }
+                session_ctx = None
+                if session_scope_enabled:
+                    session_ctx = {
+                        "session_id": session_id,
+                        "tenant_id": tenant_id,
+                        "user_id": user_id,
+                    }
                 probe_result = await asyncio.wait_for(
                     measure_async(
                         stage_timings,
@@ -445,16 +448,17 @@ class ContextManager:
                 try:
                     search_kwargs: Dict[str, Any] = {
                         "query": query,
-                        "limit": runtime_bound["memory_limit"],
+                        "limit": max_items,
                         "detail_level": detail_level,
                         "probe_result": probe_result,
                         "retrieve_plan": retrieve_plan,
-                        "session_context": {
+                    }
+                    if session_scope_enabled:
+                        search_kwargs["session_context"] = {
                             "session_id": session_id,
                             "tenant_id": tenant_id,
                             "user_id": user_id,
-                        },
-                    }
+                        }
                     if context_type:
                         search_kwargs["context_type"] = context_type
                     if category:
@@ -1016,6 +1020,47 @@ class ContextManager:
             )
             self._conversation_buffers[sk] = merged
 
+    async def _delete_immediate_families(self, immediate_uris: List[str]) -> None:
+        """Delete immediate leaf objects and any derived child records by URI prefix."""
+        unique_uris: list[str] = []
+        for uri in immediate_uris:
+            normalized = str(uri or "").strip()
+            if normalized and normalized not in unique_uris:
+                unique_uris.append(normalized)
+
+        for uri in unique_uris:
+            await self._orchestrator._storage.remove_by_uri(
+                self._orchestrator._get_collection(),
+                uri,
+            )
+
+    async def _list_immediate_uris(self, session_id: str) -> List[str]:
+        """Return current session immediate source URIs for prefix cleanup."""
+        records = await self._orchestrator._storage.filter(
+            self._orchestrator._get_collection(),
+            {
+                "op": "and",
+                "conds": [
+                    {
+                        "op": "must",
+                        "field": "session_id",
+                        "conds": [session_id],
+                    },
+                    {
+                        "op": "must",
+                        "field": "meta.layer",
+                        "conds": ["immediate"],
+                    },
+                ],
+            },
+            limit=10000,
+        )
+        return [
+            str(record.get("uri", "")).strip()
+            for record in records
+            if str(record.get("uri", "")).strip()
+        ]
+
     async def _merge_buffer(
         self,
         sk: SessionKey,
@@ -1068,14 +1113,7 @@ class ContextManager:
 
                 if snapshot.immediate_uris:
                     try:
-                        await self._orchestrator._storage.batch_delete(
-                            self._orchestrator._get_collection(),
-                            {
-                                "op": "must",
-                                "field": "uri",
-                                "conds": snapshot.immediate_uris,
-                            },
-                        )
+                        await self._delete_immediate_families(snapshot.immediate_uris)
                     except Exception as exc:
                         logger.warning(
                             "[ContextManager] Immediate cleanup after merge: %s", exc
@@ -1124,24 +1162,8 @@ class ContextManager:
                         )
 
                 try:
-                    await self._orchestrator._storage.batch_delete(
-                        self._orchestrator._get_collection(),
-                        {
-                            "op": "and",
-                            "conds": [
-                                {
-                                    "op": "must",
-                                    "field": "session_id",
-                                    "conds": [session_id],
-                                },
-                                {
-                                    "op": "must",
-                                    "field": "meta.layer",
-                                    "conds": ["immediate"],
-                                },
-                            ],
-                        },
-                    )
+                    immediate_uris = await self._list_immediate_uris(session_id)
+                    await self._delete_immediate_families(immediate_uris)
                 except Exception as exc:
                     logger.warning("[ContextManager] End cleanup immediates: %s", exc)
 
