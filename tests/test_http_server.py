@@ -463,31 +463,49 @@ class TestHTTPServer(unittest.TestCase):
                 self.assertNotIn("search_intent", data)
                 self.assertNotIn("recall_plan", data)
                 self.assertTrue(data["memory_pipeline"]["probe"]["should_recall"])
+                self.assertIn(
+                    data["memory_pipeline"]["probe"]["scope_source"],
+                    {"target_uri", "session_id", "source_doc_id", "context_type", "global_root"},
+                )
+                self.assertIn(
+                    "scope_authoritative",
+                    data["memory_pipeline"]["probe"],
+                )
+                self.assertIn(
+                    "selected_root_uris",
+                    data["memory_pipeline"]["probe"],
+                )
                 planned_depth = data["memory_pipeline"]["planner"]["retrieval_depth"]
                 self.assertIn(planned_depth, {"l0", "l1"})
-                self.assertEqual(
-                    data["memory_pipeline"]["runtime"]["trace"]["effective"][
-                        "retrieval_depth"
-                    ],
-                    planned_depth,
+                effective_depth = data["memory_pipeline"]["runtime"]["trace"][
+                    "effective"
+                ]["retrieval_depth"]
+                self.assertIn(effective_depth, {"l0", "l1", "l2"})
+                self.assertIn(
+                    effective_depth,
+                    {planned_depth, "l2"},
                 )
                 self.assertIn(
                     "probe",
                     data["memory_pipeline"]["runtime"]["trace"],
                 )
-                self.assertEqual(
-                    sorted(
-                        data["memory_pipeline"]["runtime"]["trace"][
-                            "probe"
-                        ].keys()
-                    ),
-                    [
+                self.assertTrue(
+                    {
                         "anchor_hits",
                         "candidate_entries",
                         "evidence",
                         "should_recall",
                         "trace",
-                    ],
+                        "scope_source",
+                        "scope_authoritative",
+                        "selected_root_uris",
+                    }.issubset(
+                        set(
+                            data["memory_pipeline"]["runtime"]["trace"][
+                                "probe"
+                            ].keys()
+                        )
+                    )
                 )
                 self.assertIn(
                     "latency_ms",
@@ -500,7 +518,7 @@ class TestHTTPServer(unittest.TestCase):
                         ]["stages"
                         ].keys()
                     ),
-                    ["aggregate", "bind", "plan", "probe", "retrieve", "total"],
+                    ["aggregate", "bind", "hydrate", "plan", "probe", "retrieve", "total"],
                 )
                 self.assertEqual(
                     sorted(
@@ -510,6 +528,10 @@ class TestHTTPServer(unittest.TestCase):
                         ].keys()
                     ),
                     ["assemble", "embed", "rerank", "search", "total"],
+                )
+                self.assertIn(
+                    "hydration",
+                    data["memory_pipeline"]["runtime"]["trace"],
                 )
 
         self._run(check())
@@ -523,13 +545,57 @@ class TestHTTPServer(unittest.TestCase):
                 })
                 self.assertEqual(resp.status_code, 200)
                 data = resp.json()
-                self.assertEqual(
-                    set(data.keys()),
-                    {"should_recall", "anchor_hits", "candidate_entries", "evidence", "trace"},
+                self.assertTrue(
+                    {
+                        "should_recall",
+                        "anchor_hits",
+                        "candidate_entries",
+                        "evidence",
+                        "trace",
+                        "scope_source",
+                        "scope_authoritative",
+                        "selected_root_uris",
+                    }.issubset(set(data.keys()))
                 )
                 self.assertTrue(data["should_recall"])
                 self.assertIn("candidate_count", data["evidence"])
                 self.assertIn("top_k", data["trace"])
+
+        self._run(check())
+
+    def test_03c_memory_search_exposes_probe_and_runtime_contract_flags(self):
+        """POST /api/v1/memory/search exposes scoped contract flags."""
+        async def check():
+            async with _test_app_context() as client:
+                await client.post("/api/v1/memory/store", json={
+                    "abstract": "Launch plan notes for the active project",
+                    "category": "events",
+                })
+                resp = await client.post("/api/v1/memory/search", json={
+                    "query": "launch notes",
+                    "limit": 5,
+                })
+                self.assertEqual(resp.status_code, 200)
+                data = resp.json()
+                self.assertIn("memory_pipeline", data)
+                self.assertIn(
+                    "scoped_miss",
+                    data["memory_pipeline"]["probe"],
+                )
+                self.assertIn(
+                    "fallback_ready",
+                    data["memory_pipeline"]["probe"],
+                )
+                self.assertFalse(data["memory_pipeline"]["probe"]["fallback_ready"])
+                self.assertIn("runtime", data["memory_pipeline"])
+                self.assertIn(
+                    "fallback",
+                    data["memory_pipeline"]["runtime"]["trace"],
+                )
+                self.assertEqual(
+                    data["memory_pipeline"]["runtime"]["trace"]["fallback"],
+                    [],
+                )
 
         self._run(check())
 

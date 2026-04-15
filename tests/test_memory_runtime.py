@@ -12,7 +12,15 @@ from opencortex.intent import (
     RetrievalPlan,
     SearchResult,
 )
+from opencortex.intent.types import ScopeLevel, StartingPoint
 from opencortex.memory import MemoryKind
+from opencortex.retrieve.types import (
+    ContextType,
+    DetailLevel,
+    MatchedContext,
+    QueryResult,
+    TypedQuery,
+)
 
 
 class TestMemoryRuntime(unittest.TestCase):
@@ -67,7 +75,7 @@ class TestMemoryRuntime(unittest.TestCase):
         self.assertEqual(bound["raw_candidate_cap"], 25)
         self.assertEqual(bound["seed_uri_cap"], 10)
         self.assertEqual(bound["anchor_cap"], 6)
-        self.assertFalse(bound["bind_start_points"])
+        self.assertTrue(bound["bind_start_points"])
         self.assertIn("memory", bound["context_types"])
         self.assertIn("resource", bound["context_types"])
         self.assertIn("relation", bound["category_filter"])
@@ -97,6 +105,7 @@ class TestMemoryRuntime(unittest.TestCase):
         self.assertEqual(result.trace.effective["association_mode"], "normal")
         self.assertTrue(result.trace.effective["rerank"])
         self.assertEqual(result.trace.effective["raw_candidate_cap"], 25)
+        self.assertTrue(result.trace.effective["bind_start_points"])
         self.assertEqual(
             result.trace.probe["candidate_entries"][0]["memory_kind"],
             "relation",
@@ -144,6 +153,53 @@ class TestMemoryRuntime(unittest.TestCase):
         self.assertTrue(bound["bind_start_points"])
         self.assertEqual(bound["anchor_cap"], 6)
 
+    def test_bind_skips_start_point_binding_for_scoped_bucket(self):
+        scoped_probe = SearchResult(
+            should_recall=True,
+            candidate_entries=[
+                {
+                    "uri": "opencortex://memory/session/item-1",
+                    "memory_kind": "event",
+                }
+            ],
+            starting_points=[
+                StartingPoint(
+                    uri="opencortex://memory/session/root-1",
+                    session_id="sess-1",
+                )
+            ],
+            scope_level=ScopeLevel.SESSION_ONLY,
+            evidence={
+                "candidate_count": 1,
+                "object_candidate_count": 1,
+                "top_score": 0.72,
+            },
+        )
+        scoped_plan = RetrievalPlan(
+            target_memory_kinds=[MemoryKind.EVENT, MemoryKind.SUMMARY],
+            query_plan=MemoryQueryPlan(),
+            search_profile=MemorySearchProfile(
+                recall_budget=0.35,
+                association_budget=0.0,
+                rerank=True,
+            ),
+            retrieval_depth=RetrievalDepth.L1,
+            scope_level=ScopeLevel.SESSION_ONLY,
+        )
+
+        bound = self.runtime.bind(
+            probe_result=scoped_probe,
+            retrieve_plan=scoped_plan,
+            max_items=5,
+            session_id="sess-1",
+            tenant_id="tenant-1",
+            user_id="user-1",
+            project_id="project-1",
+            include_knowledge=False,
+        )
+
+        self.assertFalse(bound["bind_start_points"])
+
     def test_degrade_can_disable_association_before_other_actions(self):
         bound = self.runtime.bind(
             probe_result=self.probe,
@@ -165,6 +221,92 @@ class TestMemoryRuntime(unittest.TestCase):
         self.assertTrue(degraded["degrade"]["applied"])
         self.assertEqual(degraded["trace"]["effective"]["association_mode"], "off")
         self.assertEqual(degraded["trace"]["effective"]["retrieval_depth"], "l1")
+
+    def test_l1_arbitration_upgrades_to_l2_when_overview_is_missing(self):
+        bound = self.runtime.bind(
+            probe_result=self.probe,
+            retrieve_plan=self.plan,
+            max_items=5,
+            session_id="sess-1",
+            tenant_id="tenant-1",
+            user_id="user-1",
+            project_id="project-1",
+            include_knowledge=False,
+        )
+        query_results = [
+            QueryResult(
+                query=TypedQuery(
+                    query="What would I likely choose based on habit?",
+                    context_type=ContextType.MEMORY,
+                    intent="memory",
+                    detail_level=DetailLevel.L1,
+                ),
+                matched_contexts=[
+                    MatchedContext(
+                        uri="opencortex://memory/profile/1",
+                        context_type=ContextType.MEMORY,
+                        is_leaf=True,
+                        abstract="User prefers quiet hotels.",
+                        overview=None,
+                        score=0.91,
+                    )
+                ],
+                searched_directories=[],
+            )
+        ]
+
+        upgraded, should_hydrate, actions, early_stop = self.runtime.arbitrate_hydration(
+            bound_plan=bound,
+            query_results=query_results,
+        )
+
+        self.assertTrue(should_hydrate)
+        self.assertFalse(early_stop)
+        self.assertEqual(upgraded["effective_depth"], "l2")
+        self.assertEqual(actions[0]["decision"], "upgrade_l2")
+
+    def test_l1_arbitration_stays_on_l1_when_overview_is_sufficient(self):
+        bound = self.runtime.bind(
+            probe_result=self.probe,
+            retrieve_plan=self.plan,
+            max_items=5,
+            session_id="sess-1",
+            tenant_id="tenant-1",
+            user_id="user-1",
+            project_id="project-1",
+            include_knowledge=False,
+        )
+        query_results = [
+            QueryResult(
+                query=TypedQuery(
+                    query="What would I likely choose based on habit?",
+                    context_type=ContextType.MEMORY,
+                    intent="memory",
+                    detail_level=DetailLevel.L1,
+                ),
+                matched_contexts=[
+                    MatchedContext(
+                        uri="opencortex://memory/profile/1",
+                        context_type=ContextType.MEMORY,
+                        is_leaf=True,
+                        abstract="User prefers quiet hotels.",
+                        overview="User consistently chooses quiet hotels close to lakes and avoids nightlife districts when traveling for work.",
+                        score=0.91,
+                    )
+                ],
+                searched_directories=[],
+            )
+        ]
+
+        upgraded, should_hydrate, actions, early_stop = self.runtime.arbitrate_hydration(
+            bound_plan=bound,
+            query_results=query_results,
+        )
+
+        self.assertFalse(should_hydrate)
+        self.assertTrue(early_stop)
+        self.assertEqual(upgraded["effective_depth"], "l1")
+        self.assertEqual(actions[0]["decision"], "stay_l1")
 
 
 if __name__ == "__main__":

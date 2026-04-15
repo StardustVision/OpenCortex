@@ -32,6 +32,7 @@ class StageTimingCollector:
             "plan": self._timings.get("plan", 0),
             "bind": self._timings.get("bind", 0),
             "retrieve": self._timings.get("retrieve", 0),
+            "hydrate": self._timings.get("hydrate", 0),
             "aggregate": self._timings.get("aggregate", 0),
             "total": self._timings.get("total", 0),
         }
