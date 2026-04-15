@@ -11,6 +11,7 @@ from opencortex.intent.types import (
     MemoryCoarseClass,
     MemoryQueryPlan,
     MemorySearchProfile,
+    ProbeScopeSource,
     QueryAnchor,
     QueryAnchorKind,
     QueryRewriteMode,
@@ -123,13 +124,13 @@ class RecallPlanner:
             fallback_depth=fallback_depth,
         )
 
-        # Enforce invariant: no starting points → scope must be global
         scope_level = probe_result.scope_level
-        if not probe_result.starting_points:
-            scope_level = ScopeLevel.GLOBAL
 
         session_scope = None
-        if probe_result.starting_points:
+        if (
+            scope_level == ScopeLevel.SESSION_ONLY
+            or probe_result.scope_source == ProbeScopeSource.SESSION_ID
+        ):
             for sp in probe_result.starting_points:
                 if sp.session_id:
                     session_scope = sp.session_id
@@ -222,6 +223,16 @@ class RecallPlanner:
             _append_anchor(kind, value)
             if len(anchors) >= 6:
                 return anchors[:6]
+
+        for starting_point in probe_result.starting_points:
+            for value in starting_point.time_refs:
+                _append_anchor(QueryAnchorKind.TIME, value)
+                if len(anchors) >= 6:
+                    return anchors[:6]
+            for value in starting_point.entities:
+                _append_anchor(QueryAnchorKind.ENTITY, value)
+                if len(anchors) >= 6:
+                    return anchors[:6]
 
         for candidate in probe_result.candidate_entries:
             for value in candidate.anchors:

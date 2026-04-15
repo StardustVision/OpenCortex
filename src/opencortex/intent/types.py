@@ -55,6 +55,16 @@ class ScopeLevel(str, Enum):
     GLOBAL = "global"
 
 
+class ProbeScopeSource(str, Enum):
+    """Source that selected the active probe bucket."""
+
+    TARGET_URI = "target_uri"
+    SESSION_ID = "session_id"
+    SOURCE_DOC_ID = "source_doc_id"
+    CONTEXT_TYPE = "context_type"
+    GLOBAL_ROOT = "global_root"
+
+
 class QueryAnchor(MemoryDomainModel):
     """Structured anchor extracted by planner."""
 
@@ -128,8 +138,25 @@ class MemoryProbeTrace(MemoryDomainModel):
     object_candidates: int = 0
     anchor_candidates: int = 0
     starting_points: int = 0
+    selected_bucket_source: Optional[ProbeScopeSource] = None
+    scope_authoritative: bool = False
+    selected_root_uris: List[str] = Field(default_factory=list)
+    # Compatibility field: retained in the DTO, inactive in the current path.
+    fallback_ready: bool = False
+    scoped_miss: bool = False
     degraded: bool = False
     degrade_reason: Optional[str] = None
+
+
+class ProbeScopeInput(MemoryDomainModel):
+    """Structured caller scope that preserves bucket precedence semantics."""
+
+    source: ProbeScopeSource = ProbeScopeSource.GLOBAL_ROOT
+    authoritative: bool = False
+    target_uri: Optional[str] = None
+    session_id: Optional[str] = None
+    source_doc_id: Optional[str] = None
+    context_type: Optional[str] = None
 
 
 class ExecutionTrace(MemoryDomainModel):
@@ -139,6 +166,7 @@ class ExecutionTrace(MemoryDomainModel):
     planner: Dict[str, Any] = Field(default_factory=dict)
     effective: Dict[str, Any] = Field(default_factory=dict)
     hydration: List[Dict[str, Any]] = Field(default_factory=list)
+    # Compatibility field: preserved for contract stability, stays empty.
     fallback: List[Dict[str, Any]] = Field(default_factory=list)
     latency_ms: Dict[str, Any] = Field(default_factory=dict)
 
@@ -161,6 +189,12 @@ class SearchResult(MemoryDomainModel):
     query_entities: List[str] = Field(default_factory=list)
     starting_point_anchors: List[str] = Field(default_factory=list)
     scope_level: ScopeLevel = ScopeLevel.GLOBAL
+    scope_source: ProbeScopeSource = ProbeScopeSource.GLOBAL_ROOT
+    scope_authoritative: bool = False
+    selected_root_uris: List[str] = Field(default_factory=list)
+    # Compatibility field: retained in the public contract, never set true now.
+    fallback_ready: bool = False
+    scoped_miss: bool = False
     evidence: SearchEvidence = Field(default_factory=SearchEvidence)
     trace: MemoryProbeTrace = Field(default_factory=MemoryProbeTrace)
 

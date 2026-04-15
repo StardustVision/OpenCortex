@@ -66,6 +66,8 @@ from opencortex.http.request_context import (
 from opencortex.intent import (
     MemoryBootstrapProbe,
     MemoryExecutor,
+    ProbeScopeInput,
+    ProbeScopeSource,
     QueryAnchorKind,
     RecallPlanner,
     RetrievalDepth,
@@ -2105,6 +2107,12 @@ class MemoryOrchestrator:
         self._ensure_init()
         if self._memory_probe is None:
             raise RuntimeError("memory probe is not initialized")
+        scope_input = self._build_probe_scope_input(
+            context_type=context_type,
+            target_uri=target_uri,
+            target_doc_id=target_doc_id,
+            session_context=session_context,
+        )
         scope_filter = self._build_scope_filter(
             context_type=context_type,
             target_uri=target_uri,
@@ -2112,7 +2120,11 @@ class MemoryOrchestrator:
             session_context=session_context,
             metadata_filter=metadata_filter,
         )
-        return await self._memory_probe.probe(query, scope_filter=scope_filter)
+        return await self._memory_probe.probe(
+            query,
+            scope_filter=scope_filter,
+            scope_input=scope_input,
+        )
 
     def memory_probe_mode(self) -> str:
         """Return the active probe backend."""
@@ -2353,6 +2365,56 @@ class MemoryOrchestrator:
         )
 
     @staticmethod
+    def _build_probe_scope_input(
+        *,
+        context_type: Optional[ContextType],
+        target_uri: str,
+        target_doc_id: Optional[str],
+        session_context: Optional[Dict[str, Any]],
+    ) -> ProbeScopeInput:
+        """Build structured probe scope inputs without flattening precedence."""
+        scoped_session_id = str((session_context or {}).get("session_id", "") or "").strip()
+        normalized_target_uri = str(target_uri or "").strip()
+        normalized_doc_id = str(target_doc_id or "").strip()
+        normalized_context_type = (
+            context_type.value
+            if context_type and context_type != ContextType.ANY
+            else None
+        )
+
+        if normalized_target_uri:
+            return ProbeScopeInput(
+                source=ProbeScopeSource.TARGET_URI,
+                authoritative=True,
+                target_uri=normalized_target_uri,
+                context_type=normalized_context_type,
+            )
+        if scoped_session_id:
+            return ProbeScopeInput(
+                source=ProbeScopeSource.SESSION_ID,
+                authoritative=True,
+                session_id=scoped_session_id,
+                context_type=normalized_context_type,
+            )
+        if normalized_doc_id:
+            return ProbeScopeInput(
+                source=ProbeScopeSource.SOURCE_DOC_ID,
+                authoritative=True,
+                source_doc_id=normalized_doc_id,
+                context_type=normalized_context_type,
+            )
+        if normalized_context_type:
+            return ProbeScopeInput(
+                source=ProbeScopeSource.CONTEXT_TYPE,
+                authoritative=False,
+                context_type=normalized_context_type,
+            )
+        return ProbeScopeInput(
+            source=ProbeScopeSource.GLOBAL_ROOT,
+            authoritative=False,
+        )
+
+    @staticmethod
     def _merge_filter_clauses(
         *filters: Optional[Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
@@ -2401,11 +2463,21 @@ class MemoryOrchestrator:
                 normalized = self._normalize_anchor_value(anchor)
                 if normalized:
                     topic_group.add(normalized)
+            time_group = groups.setdefault(QueryAnchorKind.TIME.value, set())
             entity_group = groups.setdefault(QueryAnchorKind.ENTITY.value, set())
             for value in probe_result.query_entities:
                 normalized = self._normalize_anchor_value(value)
                 if normalized:
                     entity_group.add(normalized)
+            for starting_point in probe_result.starting_points:
+                for value in starting_point.entities:
+                    normalized = self._normalize_anchor_value(value)
+                    if normalized:
+                        entity_group.add(normalized)
+                for value in starting_point.time_refs:
+                    normalized = self._normalize_anchor_value(value)
+                    if normalized:
+                        time_group.add(normalized)
             for value in probe_result.starting_point_anchors:
                 normalized = self._normalize_anchor_value(value)
                 if normalized:
@@ -2481,10 +2553,14 @@ class MemoryOrchestrator:
         """Build a bounded start-point filter from Phase 1 evidence."""
         if probe_result is None:
             return None
+        if retrieve_plan is None:
+            return None
 
         plan = bound_plan or {}
         bind_start_points = bool(plan.get("bind_start_points"))
         if not bind_start_points:
+            return None
+        if retrieve_plan.scope_level != ScopeLevel.GLOBAL:
             return None
 
         uri_cap = int(plan.get("seed_uri_cap", 0) or 0)

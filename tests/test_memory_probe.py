@@ -5,7 +5,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from opencortex.intent import MemoryBootstrapProbe
-from opencortex.intent.types import ScopeLevel
+from opencortex.intent.types import ProbeScopeInput, ProbeScopeSource, ScopeLevel
 
 
 class _StorageStub:
@@ -100,12 +100,21 @@ class TestMemoryProbe(unittest.IsolatedAsyncioTestCase):
             scope_filter={"op": "must", "field": "session_id", "conds": ["sess-1"]},
         )
 
-        first_filter = str(storage.calls[0]["filter"])
-        self.assertIn("scope", first_filter)
-        self.assertIn("session_id", first_filter)
-        self.assertIn("is_leaf", first_filter)
-        self.assertIn("retrieval_surface", first_filter)
-        self.assertIn("l0_object", first_filter)
+        self.assertTrue(
+            any(str(call.get("filter", {})).find("scope") >= 0 for call in storage.calls)
+        )
+        self.assertTrue(
+            any(str(call.get("filter", {})).find("session_id") >= 0 for call in storage.calls)
+        )
+        self.assertTrue(
+            any(str(call.get("filter", {})).find("is_leaf") >= 0 for call in storage.calls)
+        )
+        self.assertTrue(
+            any(str(call.get("filter", {})).find("retrieval_surface") >= 0 for call in storage.calls)
+        )
+        self.assertTrue(
+            any(str(call.get("filter", {})).find("l0_object") >= 0 for call in storage.calls)
+        )
         self.assertTrue(
             any(
                 str(call.get("filter", {})).find("anchor_hits") >= 0
@@ -119,17 +128,94 @@ class TestMemoryProbe(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    async def test_probe_records_target_uri_bucket_without_concrete_roots(self):
+        storage = _StorageStub([])
+        probe = MemoryBootstrapProbe(
+            storage=storage,
+            embedder=_EmbedderStub(),
+            collection_resolver=lambda: "context",
+            filter_builder=lambda: {"op": "and", "conds": []},
+        )
+
+        result = await probe.probe(
+            "launch",
+            scope_filter={"op": "prefix", "field": "uri", "prefix": "opencortex://memory/events"},
+            scope_input=ProbeScopeInput(
+                source=ProbeScopeSource.TARGET_URI,
+                authoritative=True,
+                target_uri="opencortex://memory/events",
+            ),
+        )
+
+        self.assertFalse(result.should_recall)
+        self.assertTrue(result.scoped_miss)
+        self.assertEqual(result.scope_source, ProbeScopeSource.TARGET_URI)
+        self.assertTrue(result.scope_authoritative)
+        self.assertEqual(result.selected_root_uris, ["opencortex://memory/events"])
+        self.assertEqual(result.trace.selected_bucket_source, ProbeScopeSource.TARGET_URI)
+        self.assertEqual(result.trace.selected_root_uris, ["opencortex://memory/events"])
+
+    async def test_probe_records_context_type_bucket_without_concrete_roots(self):
+        probe = MemoryBootstrapProbe(
+            storage=_StorageStub([]),
+            embedder=_EmbedderStub(),
+            collection_resolver=lambda: "context",
+            filter_builder=lambda: {"op": "and", "conds": []},
+        )
+
+        result = await probe.probe(
+            "launch",
+            scope_filter={"op": "must", "field": "context_type", "conds": ["memory"]},
+            scope_input=ProbeScopeInput(
+                source=ProbeScopeSource.CONTEXT_TYPE,
+                authoritative=False,
+                context_type="memory",
+            ),
+        )
+
+        self.assertTrue(result.should_recall)
+        self.assertEqual(result.scope_source, ProbeScopeSource.CONTEXT_TYPE)
+        self.assertFalse(result.scope_authoritative)
+        self.assertFalse(result.fallback_ready)
+        self.assertEqual(result.selected_root_uris, [])
+
+    async def test_probe_cache_key_includes_scope_input(self):
+        storage = _StorageStub([])
+        probe = MemoryBootstrapProbe(
+            storage=storage,
+            embedder=_EmbedderStub(),
+            collection_resolver=lambda: "context",
+            filter_builder=lambda: {"op": "and", "conds": []},
+        )
+
+        await probe.probe(
+            "launch",
+            scope_filter={"op": "must", "field": "session_id", "conds": ["sess-1"]},
+            scope_input=ProbeScopeInput(
+                source=ProbeScopeSource.SESSION_ID,
+                authoritative=True,
+                session_id="sess-1",
+            ),
+        )
+        first_call_count = len(storage.calls)
+
+        await probe.probe(
+            "launch",
+            scope_filter={"op": "must", "field": "context_type", "conds": ["memory"]},
+            scope_input=ProbeScopeInput(
+                source=ProbeScopeSource.CONTEXT_TYPE,
+                authoritative=False,
+                context_type="memory",
+            ),
+        )
+
+        self.assertGreater(len(storage.calls), first_call_count)
+
     async def test_probe_can_return_anchor_only_hits(self):
         source_uri = "opencortex://memory/events/source-1"
 
         def _results(**kwargs):
-            filt = kwargs.get("filter") or {}
-            conds = filt.get("conds", []) if filt.get("op") == "and" else []
-            if any(
-                condition.get("field") == "anchor_hits"
-                for condition in conds
-                if isinstance(condition, dict)
-            ):
+            if str(kwargs.get("filter") or {}).find("anchor_hits") >= 0:
                 return [
                     {
                         "uri": f"{source_uri}/anchors/anchor-only",

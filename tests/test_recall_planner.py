@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from opencortex.config import CortexConfig, init_config
 from opencortex.intent import ExecutionResult, RecallPlanner, RetrievalPlan, SearchResult
-from opencortex.intent.types import ScopeLevel, StartingPoint
+from opencortex.intent.types import ProbeScopeSource, ScopeLevel, StartingPoint
 from opencortex.memory import MemoryKind
 from opencortex.orchestrator import MemoryOrchestrator
 from opencortex.retrieve.types import FindResult
@@ -36,6 +36,11 @@ class TestRecallPlanContracts(unittest.TestCase):
                 "query_entities": [],
                 "starting_point_anchors": [],
                 "scope_level": "global",
+                "scope_source": "global_root",
+                "scope_authoritative": False,
+                "selected_root_uris": [],
+                "fallback_ready": False,
+                "scoped_miss": False,
                 "evidence": {
                     "top_score": None,
                     "score_gap": None,
@@ -56,6 +61,11 @@ class TestRecallPlanContracts(unittest.TestCase):
                     "object_candidates": 0,
                     "anchor_candidates": 0,
                     "starting_points": 0,
+                    "selected_bucket_source": None,
+                    "scope_authoritative": False,
+                    "selected_root_uris": [],
+                    "fallback_ready": False,
+                    "scoped_miss": False,
                     "degraded": False,
                     "degrade_reason": None,
                 },
@@ -216,6 +226,41 @@ class TestRecallPlannerIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.total, 1)
         self.assertEqual(result.memories[0].session_id, "sess-a")
 
+    async def test_search_probe_pipeline_exposes_selected_scope_bucket(self):
+        await self.orch.add(
+            abstract="Project launch notes under events root.",
+            category="events",
+            context_type="memory",
+        )
+
+        result = await self.orch.search(
+            "launch notes",
+            limit=5,
+            target_uri="opencortex://memory/events",
+        )
+
+        probe_payload = result.to_dict()["memory_pipeline"]["probe"]
+        self.assertEqual(probe_payload["scope_level"], ScopeLevel.CONTAINER_SCOPED.value)
+        self.assertEqual(probe_payload["scope_source"], ProbeScopeSource.TARGET_URI.value)
+        self.assertTrue(probe_payload["scope_authoritative"])
+        self.assertEqual(probe_payload["selected_root_uris"], ["opencortex://memory/events"])
+
+    async def test_search_authoritative_scope_miss_stays_scoped(self):
+        result = await self.orch.search(
+            "launch notes",
+            limit=5,
+            target_uri="opencortex://memory/missing-scope",
+        )
+
+        payload = result.to_dict()["memory_pipeline"]
+        self.assertEqual(payload["probe"]["scope_source"], ProbeScopeSource.TARGET_URI.value)
+        self.assertTrue(payload["probe"]["scope_authoritative"])
+        self.assertTrue(payload["probe"]["scoped_miss"])
+        self.assertFalse(payload["probe"]["fallback_ready"])
+        self.assertEqual(payload["probe"]["selected_root_uris"], ["opencortex://memory/missing-scope"])
+        self.assertNotIn("planner", payload)
+        self.assertNotIn("runtime", payload)
+
     async def test_search_upgrades_to_l2_when_l1_evidence_is_insufficient(self):
         long_content = (
             "用户在出差订酒店时总是优先选择安静、靠湖、步行可达会场的酒店，"
@@ -344,7 +389,7 @@ class TestRecallPlannerStartingPoints(unittest.TestCase):
         # but base association for EXPLORE is 0.35
         self.assertGreaterEqual(plan.search_profile.association_budget, 0.0)
 
-    def test_case4_no_starting_points_no_entities_fallback_global(self):
+    def test_case4_no_starting_points_no_entities_stays_global(self):
         probe = self._make_probe(
             starting_points=[],
             starting_point_anchors=[],
@@ -362,6 +407,31 @@ class TestRecallPlannerStartingPoints(unittest.TestCase):
         assert plan is not None
         self.assertEqual(plan.scope_level, ScopeLevel.GLOBAL)
         self.assertEqual(plan.search_profile.association_budget, 0.0)
+
+    def test_target_uri_bucket_without_starting_points_preserves_container_scope(self):
+        probe = SearchResult(
+            should_recall=True,
+            candidate_entries=[
+                {"uri": "opencortex://memory/events/item-1", "memory_kind": "event"}
+            ],
+            evidence={"candidate_count": 1, "top_score": 0.83},
+            scope_level=ScopeLevel.CONTAINER_SCOPED,
+            scope_source=ProbeScopeSource.TARGET_URI,
+            scope_authoritative=True,
+            selected_root_uris=["opencortex://memory/events"],
+        )
+        planner = RecallPlanner(cone_enabled=True)
+        plan = planner.semantic_plan(
+            query="launch notes",
+            probe_result=probe,
+            max_items=5,
+            recall_mode="auto",
+            detail_level_override=None,
+        )
+
+        assert plan is not None
+        self.assertEqual(plan.scope_level, ScopeLevel.CONTAINER_SCOPED)
+        self.assertIsNone(plan.session_scope)
 
     def test_most_specific_scope_level_wins(self):
         probe = self._make_probe(

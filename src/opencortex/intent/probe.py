@@ -14,6 +14,8 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 from opencortex.intent.types import (
     MemoryProbeTrace,
+    ProbeScopeInput,
+    ProbeScopeSource,
     ScopeLevel,
     SearchCandidate,
     SearchEvidence,
@@ -34,7 +36,7 @@ _TIME_TOKEN_RE = re.compile(
     r"\b(?:\d{4}-\d{2}-\d{2}|\d{4}|\d{1,2}:\d{2}|yesterday|today|tomorrow|last|next)\b",
     re.IGNORECASE,
 )
-_CJK_TOKEN_RE = re.compile(r"[\u4e00-\u9fff]{2,}")
+_CJK_TOKEN_RE = re.compile(r"[\u4e00-\u9fff]")
 _WHITESPACE_RE = re.compile(r"\s+")
 _LEAF_FILTER = {"op": "must", "field": "is_leaf", "conds": [True]}
 _OBJECT_SURFACE_FILTER = {
@@ -170,6 +172,7 @@ class MemoryBootstrapProbe:
         query: str,
         *,
         scope_filter: Optional[Dict[str, Any]] = None,
+        scope_input: Optional[ProbeScopeInput] = None,
     ) -> SearchResult:
         """Run the bootstrap probe against L0 evidence only."""
         query_stripped = _WHITESPACE_RE.sub(" ", (query or "").strip())
@@ -188,7 +191,12 @@ class MemoryBootstrapProbe:
             self._last_probe_trace = result.trace.to_dict()
             return result
 
-        cache_key = self._cache_key(query=query_stripped, scope_filter=scope_filter)
+        normalized_scope_input = scope_input or ProbeScopeInput()
+        cache_key = self._cache_key(
+            query=query_stripped,
+            scope_filter=scope_filter,
+            scope_input=normalized_scope_input,
+        )
         cached = self._decision_cache_get(cache_key)
         if cached is not None:
             return cached
@@ -197,25 +205,32 @@ class MemoryBootstrapProbe:
         try:
             query_vector = self._embed_query(query_stripped)
             base_filter = _merge_filters(self._filter_builder(), scope_filter)
-            object_probe, anchor_probe, starting_point_probe = await asyncio.gather(
+            (
+                selected_filter,
+                selected_scope_source,
+                selected_scope_authoritative,
+                selected_scope_level,
+                selected_root_uris,
+                starting_point_records,
+                starting_point_latency_ms,
+            ) = await self._select_scope_bucket(
+                query=query_stripped,
+                query_vector=query_vector,
+                base_filter=base_filter,
+                scope_input=normalized_scope_input,
+            )
+            object_probe, anchor_probe = await asyncio.gather(
                 self._timed_probe(
                     self._object_probe(
                         query=query_stripped,
                         query_vector=query_vector,
-                        base_filter=base_filter,
+                        base_filter=selected_filter,
                     )
                 ),
                 self._timed_probe(
                     self._anchor_probe(
                         query=query_stripped,
-                        base_filter=base_filter,
-                    )
-                ),
-                self._timed_probe(
-                    self._starting_point_probe(
-                        query=query_stripped,
-                        query_vector=query_vector,
-                        base_filter=base_filter,
+                        base_filter=selected_filter,
                     )
                 ),
             )
@@ -223,11 +238,15 @@ class MemoryBootstrapProbe:
                 query=query_stripped,
                 object_records=object_probe[0],
                 anchor_records=anchor_probe[0],
-                starting_point_records=starting_point_probe[0],
+                starting_point_records=starting_point_records,
                 latency_ms=(time.perf_counter() - started) * 1000.0,
                 object_latency_ms=object_probe[1],
                 anchor_latency_ms=anchor_probe[1],
-                starting_point_latency_ms=starting_point_probe[1],
+                starting_point_latency_ms=starting_point_latency_ms,
+                scope_source=selected_scope_source,
+                scope_authoritative=selected_scope_authoritative,
+                selected_root_uris=selected_root_uris,
+                selected_scope_level=selected_scope_level,
             )
         except Exception as exc:
             logger.warning("[MemoryBootstrapProbe] probe failed: %s", exc)
@@ -242,6 +261,12 @@ class MemoryBootstrapProbe:
                     degrade_reason=str(exc),
                 ),
             )
+
+        if result.scope_authoritative and not result.candidate_entries and not result.anchor_hits:
+            result.should_recall = False
+            result.scoped_miss = True
+            result.fallback_ready = False
+            result.trace.scoped_miss = True
 
         self._last_probe_trace = result.trace.to_dict()
         self._decision_cache_put(cache_key, result, self._last_probe_trace)
@@ -363,6 +388,10 @@ class MemoryBootstrapProbe:
             if meta_layer == "immediate":
                 continue
 
+            # Skip anchor projection records — they are not containers
+            if record.get("retrieval_surface") == "anchor_projection":
+                continue
+
             if session_id:
                 starting_points.append(record)
                 continue
@@ -397,6 +426,152 @@ class MemoryBootstrapProbe:
                     break
         return deduped
 
+    async def _select_scope_bucket(
+        self,
+        *,
+        query: str,
+        query_vector: Optional[list[float]],
+        base_filter: Optional[Dict[str, Any]],
+        scope_input: ProbeScopeInput,
+    ) -> tuple[
+        Optional[Dict[str, Any]],
+        ProbeScopeSource,
+        bool,
+        ScopeLevel,
+        list[str],
+        list[Dict[str, Any]],
+        float,
+    ]:
+        """Select the active scope bucket before object/anchor retrieval."""
+        selected_filter = base_filter
+        selected_scope_source = scope_input.source
+        selected_scope_authoritative = bool(scope_input.authoritative)
+        selected_scope_level = ScopeLevel.GLOBAL
+        selected_root_uris: list[str] = []
+        starting_point_records: list[Dict[str, Any]] = []
+        starting_point_latency_ms = 0.0
+
+        if selected_scope_source == ProbeScopeSource.TARGET_URI:
+            selected_scope_level = ScopeLevel.CONTAINER_SCOPED
+            if scope_input.target_uri:
+                selected_root_uris = [scope_input.target_uri]
+            return (
+                selected_filter,
+                selected_scope_source,
+                selected_scope_authoritative,
+                selected_scope_level,
+                selected_root_uris,
+                starting_point_records,
+                starting_point_latency_ms,
+            )
+
+        if selected_scope_source in {
+            ProbeScopeSource.SESSION_ID,
+            ProbeScopeSource.SOURCE_DOC_ID,
+            ProbeScopeSource.GLOBAL_ROOT,
+        }:
+            starting_point_records, starting_point_latency_ms = await self._timed_probe(
+                self._starting_point_probe(
+                    query=query,
+                    query_vector=query_vector,
+                    base_filter=base_filter,
+                )
+            )
+
+        if selected_scope_source == ProbeScopeSource.SESSION_ID:
+            selected_scope_level = ScopeLevel.SESSION_ONLY
+            selected_root_uris = [
+                str(record.get("uri") or "")
+                for record in starting_point_records
+                if str(record.get("uri") or "").strip()
+            ][: self._top_k]
+            return (
+                selected_filter,
+                selected_scope_source,
+                selected_scope_authoritative,
+                selected_scope_level,
+                selected_root_uris,
+                starting_point_records,
+                starting_point_latency_ms,
+            )
+
+        if selected_scope_source == ProbeScopeSource.SOURCE_DOC_ID:
+            selected_scope_level = ScopeLevel.DOCUMENT_ONLY
+            selected_root_uris = [
+                str(record.get("uri") or "")
+                for record in starting_point_records
+                if str(record.get("uri") or "").strip()
+            ][: self._top_k]
+            return (
+                selected_filter,
+                selected_scope_source,
+                selected_scope_authoritative,
+                selected_scope_level,
+                selected_root_uris,
+                starting_point_records,
+                starting_point_latency_ms,
+            )
+
+        if selected_scope_source == ProbeScopeSource.CONTEXT_TYPE:
+            return (
+                selected_filter,
+                selected_scope_source,
+                selected_scope_authoritative,
+                selected_scope_level,
+                selected_root_uris,
+                starting_point_records,
+                starting_point_latency_ms,
+            )
+
+        if starting_point_records:
+            top_record = starting_point_records[0]
+            session_id = str(top_record.get("session_id") or "").strip()
+            source_doc_id = str(top_record.get("source_doc_id") or "").strip()
+            if session_id:
+                selected_scope_source = ProbeScopeSource.SESSION_ID
+                selected_scope_level = ScopeLevel.SESSION_ONLY
+                starting_point_records = [
+                    record
+                    for record in starting_point_records
+                    if str(record.get("session_id") or "").strip() == session_id
+                ][: self._top_k]
+                selected_root_uris = [
+                    str(record.get("uri") or "")
+                    for record in starting_point_records
+                    if str(record.get("uri") or "").strip()
+                ]
+                selected_filter = _merge_filters(
+                    base_filter,
+                    {"op": "must", "field": "session_id", "conds": [session_id]},
+                )
+            elif source_doc_id:
+                selected_scope_source = ProbeScopeSource.SOURCE_DOC_ID
+                selected_scope_level = ScopeLevel.DOCUMENT_ONLY
+                starting_point_records = [
+                    record
+                    for record in starting_point_records
+                    if str(record.get("source_doc_id") or "").strip() == source_doc_id
+                ][: self._top_k]
+                selected_root_uris = [
+                    str(record.get("uri") or "")
+                    for record in starting_point_records
+                    if str(record.get("uri") or "").strip()
+                ]
+                selected_filter = _merge_filters(
+                    base_filter,
+                    {"op": "must", "field": "source_doc_id", "conds": [source_doc_id]},
+                )
+
+        return (
+            selected_filter,
+            selected_scope_source,
+            selected_scope_authoritative,
+            selected_scope_level,
+            selected_root_uris,
+            starting_point_records,
+            starting_point_latency_ms,
+        )
+
     def _build_probe_result(
         self,
         *,
@@ -408,6 +583,10 @@ class MemoryBootstrapProbe:
         object_latency_ms: float,
         anchor_latency_ms: float,
         starting_point_latency_ms: float,
+        scope_source: ProbeScopeSource,
+        scope_authoritative: bool,
+        selected_root_uris: list[str],
+        selected_scope_level: ScopeLevel,
     ) -> SearchResult:
         candidate_entries_by_uri: Dict[str, SearchCandidate] = {}
         anchor_values: list[str] = []
@@ -557,8 +736,12 @@ class MemoryBootstrapProbe:
         elif ScopeLevel.DOCUMENT_ONLY in scope_levels:
             scope_level = ScopeLevel.DOCUMENT_ONLY
 
-        if not starting_points:
+        if not starting_points and selected_scope_level == ScopeLevel.GLOBAL:
             scope_level = ScopeLevel.GLOBAL
+        if selected_scope_level != ScopeLevel.GLOBAL:
+            scope_level = selected_scope_level
+
+        fallback_ready = False
 
         return SearchResult(
             should_recall=True,
@@ -568,6 +751,10 @@ class MemoryBootstrapProbe:
             query_entities=query_entities,
             starting_point_anchors=starting_point_anchors[:8],
             scope_level=scope_level,
+            scope_source=scope_source,
+            scope_authoritative=scope_authoritative,
+            selected_root_uris=selected_root_uris[: self._top_k],
+            fallback_ready=fallback_ready,
             evidence=SearchEvidence(
                 top_score=top_score,
                 score_gap=score_gap,
@@ -588,6 +775,10 @@ class MemoryBootstrapProbe:
                 starting_points=len(starting_points),
                 object_candidates=len(object_records),
                 anchor_candidates=len(anchor_records),
+                selected_bucket_source=scope_source,
+                scope_authoritative=scope_authoritative,
+                selected_root_uris=selected_root_uris[: self._top_k],
+                fallback_ready=fallback_ready,
             ),
         )
 
@@ -670,6 +861,8 @@ class MemoryBootstrapProbe:
             _add(match)
         for match in _CAPITALIZED_PHRASE_RE.findall(query):
             _add(match)
+        for match in re.findall(r"[\u4e00-\u9fff]{2,}", query):
+            _add(match)
         for match in _CJK_TOKEN_RE.findall(query):
             _add(match)
         for match in _PATH_SYMBOL_RE.findall(query):
@@ -697,11 +890,13 @@ class MemoryBootstrapProbe:
         *,
         query: str,
         scope_filter: Optional[Dict[str, Any]],
+        scope_input: ProbeScopeInput,
     ) -> str:
         return json.dumps(
             {
                 "query": query,
                 "scope_filter": scope_filter or {},
+                "scope_input": scope_input.to_dict(),
             },
             ensure_ascii=False,
             sort_keys=True,
