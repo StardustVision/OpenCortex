@@ -142,6 +142,45 @@ class TestBenchmarkMetrics(unittest.TestCase):
         )
         self.assertFalse(attribution["runtime"]["degrade"]["applied"])
 
+    def test_adapter_meta_can_expose_retrieval_contract(self):
+        from benchmarks.adapters.base import EvalAdapter
+
+        class _AdapterStub(EvalAdapter):
+            async def ingest(self, oc, **kwargs):
+                raise NotImplementedError
+
+            def build_qa_items(self, **kwargs):
+                raise NotImplementedError
+
+            def get_baseline_context(self, qa_item):
+                raise NotImplementedError
+
+            async def retrieve(self, oc, qa_item, top_k):
+                raise NotImplementedError
+
+        adapter = _AdapterStub()
+        adapter._retrieve_method = "recall"
+        adapter._set_last_retrieval_meta(
+            {
+                "memory_pipeline": {
+                    "probe": {"should_recall": True},
+                    "planner": {"retrieval_depth": "l1"},
+                    "runtime": {"trace": {}, "degrade": {"applied": False}},
+                }
+            },
+            endpoint="context_recall",
+            session_scope=True,
+        )
+
+        self.assertEqual(
+            adapter.pop_last_retrieval_meta()["retrieval_contract"],
+            {
+                "method": "recall",
+                "endpoint": "context_recall",
+                "session_scope": True,
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

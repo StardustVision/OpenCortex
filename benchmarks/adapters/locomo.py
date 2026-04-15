@@ -455,13 +455,19 @@ class LoCoMoBench(EvalAdapter):
         """Retrieve LoCoMo sessions through context recall and collapse per session."""
         started = time.perf_counter()
         conv_id = str(qa_item.meta.get("conv_id", ""))
+        session_id = self._conversation_session_id(conv_id)
         result = await oc.context_recall(
-            session_id=f"locomo-{conv_id}-eval",
+            session_id=session_id,
             turn_id="q-" + md5(qa_item.question.encode()).hexdigest()[:12],
             query=qa_item.question,
             limit=top_k,
+            session_scope=True,
         )
-        self._set_last_retrieval_meta(result)
+        self._set_last_retrieval_meta(
+            result,
+            endpoint="context_recall",
+            session_scope=True,
+        )
 
         raw_items = result.get("memory", [])
         deduped: List[Dict[str, Any]] = []

@@ -235,6 +235,12 @@ class TestEvalContract(unittest.TestCase):
                         "latency_ms"
                     ],
                 )
+                self.assertIn(
+                    "hydrate",
+                    data["intent"]["memory_pipeline"]["runtime"]["trace"][
+                        "latency_ms"
+                    ]["stages"],
+                )
 
         self._run(_test())
 

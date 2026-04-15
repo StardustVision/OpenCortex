@@ -50,7 +50,13 @@ class EvalAdapter(ABC):
         self._dataset: Any = None
         self._last_retrieval_meta: Dict[str, Any] = {}
 
-    def _set_last_retrieval_meta(self, payload: Any) -> None:
+    def _set_last_retrieval_meta(
+        self,
+        payload: Any,
+        *,
+        endpoint: str = "",
+        session_scope: bool = False,
+    ) -> None:
         """Persist raw retrieval attribution for the last adapter call."""
         if not isinstance(payload, dict):
             self._last_retrieval_meta = {}
@@ -71,6 +77,11 @@ class EvalAdapter(ABC):
             meta["intent"] = intent
         if memory_pipeline:
             meta["memory_pipeline"] = memory_pipeline
+        meta["retrieval_contract"] = {
+            "method": str(getattr(self, "_retrieve_method", "") or ""),
+            "endpoint": endpoint,
+            "session_scope": bool(session_scope),
+        }
         self._last_retrieval_meta = meta
 
     def pop_last_retrieval_meta(self) -> Dict[str, Any]:

@@ -289,6 +289,16 @@ class TestLoCoMoBench(unittest.IsolatedAsyncioTestCase):
             "l1",
         )
         self.assertNotIn("detail_level", oc.recall_calls[0])
+        self.assertTrue(oc.recall_calls[0]["session_scope"])
+        self.assertEqual(oc.recall_calls[0]["session_id"], "locomo-conv-1")
+        self.assertEqual(
+            retrieval_meta["retrieval_contract"],
+            {
+                "method": "recall",
+                "endpoint": "context_recall",
+                "session_scope": True,
+            },
+        )
 
 
 class TestBenchmarkAdapterRouting(unittest.TestCase):
