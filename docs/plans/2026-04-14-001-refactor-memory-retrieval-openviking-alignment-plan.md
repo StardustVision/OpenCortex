@@ -1,7 +1,7 @@
 ---
 title: refactor: rebuild memory retrieval around scoped object-first probe and layered execution
 type: refactor
-status: draft
+status: in_progress
 date: 2026-04-14
 origin:
   - docs/design/2026-04-14-opencortex-openviking-borrowable-retrieval-optimization.md
@@ -89,6 +89,30 @@ This refactor is successful when all of the following are true:
 - `L0/L1/L2` generation differs by mode where needed, but all modes land on the same durable contract.
 - the old broad leaf-first path is removed rather than kept alongside the new path.
 - benchmark traces can attribute failures to `probe`, `planner`, `executor`, or store quality.
+
+## Implementation Status Audit (2026-04-15)
+
+- Unit 1: complete
+  - The phase contract has been moved into `src/opencortex/intent/types.py`, and characterization coverage exists in `tests/test_memory_probe.py`, `tests/test_intent_planner_phase2.py`, and `tests/test_memory_runtime.py`.
+  - The old `router / recall_planner / memory_runtime` file split is gone from the main retrieval path.
+- Unit 2: complete
+  - Shared layered object projection is now centered on `.abstract.json`, `anchor_hits`, lineage, and `memory_kind`.
+  - `memory`, `conversation`, and `document` all persist through the same object contract, with conversation immediate/merge lifecycle covered by `tests/test_context_manager.py`, `tests/test_conversation_immediate.py`, and document projection covered by `tests/test_document_mode.py`.
+- Unit 3: complete
+  - The dual-surface probe exists (`object_probe` + `anchor_probe`) and conversation scope filtering is wired through probe filters.
+  - Fixed on 2026-04-15: probe now targets explicit retrieval surfaces (`retrieval_surface=l0_object` and `anchor_surface=true`) instead of relying only on the generic `is_leaf=True` leaf pool convention.
+  - Fixed on 2026-04-15: anchor projections are now materialized as dedicated derived records, probe hits are remapped back to source objects, and conversation merge/end cleanup removes immediate projection descendants together with their source entries.
+- Unit 4: complete
+  - Planner and executor now emit bounded depth, cap, rerank, and cone posture.
+  - Fixed on 2026-04-15: executor now keeps `bind_start_points` as a hard execution constraint whenever probe/planner produced start-point evidence, so execution no longer reopens a scoped broad-leaf fallback in those cases.
+  - Fixed on 2026-04-15: `L1` sufficiency arbitration now happens after inspecting retrieved `L1` evidence, and execution upgrades to `L2` only when overview coverage is insufficient.
+- Unit 5: partial
+  - Old top-level retrieval files are gone, and benchmark-side LoCoMo support plus investigation docs have landed.
+  - Fixed on 2026-04-15: benchmark adapters now emit a stable `retrieval_contract` describing endpoint, method, and whether session-scoped recall was enabled.
+  - Fixed on 2026-04-15: LoCoMo retrieval now explicitly enables session-scoped recall against the conversation session instead of relying on unscoped prepare defaults.
+  - Fixed on 2026-04-15: benchmark and HTTP contract tests now expect runtime phase attribution to include post-`L1` hydration and the `hydrate` timing stage.
+  - Remaining gap: the plan’s benchmark re-baseline requirement is not fully closed for PersonaMem / LongMemEval / QASPER on the post-cutover path only.
+  - Remaining gap: this plan originally referenced `benchmarks/adapters/personamem.py` and `benchmarks/adapters/longmemeval.py`, but the current repo uses `benchmarks/adapters/memory.py` and `benchmarks/adapters/conversation.py`.
 
 ## Scope Boundaries
 
@@ -178,7 +202,7 @@ flowchart LR
 
 ## Implementation Units
 
-- [ ] **Unit 1: Lock the new retrieval contract and characterization gates**
+- [x] **Unit 1: Lock the new retrieval contract and characterization gates**
 
 **Goal:** Define the final `probe -> planner -> executor` contract and characterization gates first, so the later cutover can happen without inventing a temporary half-compatible retrieval path.
 
@@ -215,7 +239,7 @@ flowchart LR
 - No remaining phase contract refers to legacy broad-search assumptions such as implicit widening by confidence.
 - Unit 1 ends with contracts and tests locked, not with a partially cut-over retrieval path.
 
-- [ ] **Unit 2: Upgrade the store contract so `L0/L1` become real retrieval surfaces**
+- [x] **Unit 2: Upgrade the store contract so `L0/L1` become real retrieval surfaces**
 
 **Goal:** Make the store write paths generate layered objects in a form that the new retrieval chain can actually use.
 
@@ -262,7 +286,7 @@ flowchart LR
 - `L0/L1` can be consumed as proper retrieval layers for every mode.
 - Conversation retrieval never sees both superseded and replacement objects at the same time.
 
-- [ ] **Unit 3: Rebuild Phase 1 probe as a scoped starting-point locator**
+- [x] **Unit 3: Rebuild Phase 1 probe as a scoped starting-point locator**
 
 **Goal:** Replace the current one-shot broad presearch with a real Phase 1 probe that finds objects and anchors inside a bounded scope.
 
@@ -297,7 +321,7 @@ flowchart LR
 - Probe no longer relies on “hit record first, then extract anchors” as its only anchor source.
 - Scoped datasets such as LoCoMo can no longer accidentally compete against the full benchmark corpus during Phase 1.
 
-- [ ] **Unit 4: Rebuild Phase 2 planner and Phase 3 executor as bounded object-first retrieval**
+- [x] **Unit 4: Rebuild Phase 2 planner and Phase 3 executor as bounded object-first retrieval**
 
 **Goal:** Make planning and execution operate inside the scope discovered by Phase 1, using `L0/L1` for arbitration and only using `L2` or cone when justified.
 
@@ -355,8 +379,8 @@ flowchart LR
 - Modify: `src/opencortex/orchestrator.py`
 - Modify: `src/opencortex/context/manager.py`
 - Modify: `benchmarks/adapters/locomo.py`
-- Modify: `benchmarks/adapters/personamem.py`
-- Modify: `benchmarks/adapters/longmemeval.py`
+- Modify: `benchmarks/adapters/memory.py`
+- Modify: `benchmarks/adapters/conversation.py`
 - Modify: `benchmarks/oc_client.py`
 - Test: `tests/test_locomo_bench.py`
 - Test: `tests/test_eval_contract.py`
