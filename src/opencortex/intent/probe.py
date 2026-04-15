@@ -35,6 +35,16 @@ _TIME_TOKEN_RE = re.compile(
 _CJK_TOKEN_RE = re.compile(r"[\u4e00-\u9fff]{2,}")
 _WHITESPACE_RE = re.compile(r"\s+")
 _LEAF_FILTER = {"op": "must", "field": "is_leaf", "conds": [True]}
+_OBJECT_SURFACE_FILTER = {
+    "op": "must",
+    "field": "retrieval_surface",
+    "conds": ["l0_object"],
+}
+_ANCHOR_SURFACE_FILTER = {
+    "op": "must",
+    "field": "anchor_surface",
+    "conds": [True],
+}
 _MAX_ANCHOR_TERMS = 6
 _MIN_ANCHOR_QUERY_LENGTH = 2
 _QUERY_STOPWORDS = {
@@ -240,7 +250,10 @@ class MemoryBootstrapProbe:
         query_vector: Optional[list[float]],
         base_filter: Optional[Dict[str, Any]],
     ) -> list[Dict[str, Any]]:
-        object_filter = _merge_filters(base_filter, _LEAF_FILTER)
+        object_filter = _merge_filters(
+            _merge_filters(base_filter, _LEAF_FILTER),
+            _OBJECT_SURFACE_FILTER,
+        )
         return await self._storage.search(
             collection=self._collection_resolver(),
             query_vector=query_vector,
@@ -263,7 +276,10 @@ class MemoryBootstrapProbe:
             self._storage.search(
                 collection=self._collection_resolver(),
                 filter=_merge_filters(
-                    _merge_filters(base_filter, _LEAF_FILTER),
+                    _merge_filters(
+                        base_filter,
+                        _ANCHOR_SURFACE_FILTER,
+                    ),
                     {"op": "must", "field": "anchor_hits", "conds": [term]},
                 ),
                 limit=self._top_k,
@@ -310,7 +326,9 @@ class MemoryBootstrapProbe:
         anchor_values: list[str] = []
 
         def _merge_record(record: Dict[str, Any], *, anchor_first: bool) -> None:
-            object_view = memory_object_view_from_record(record)
+            object_view = memory_object_view_from_record(
+                self._candidate_record_payload(record)
+            )
             normalized_score = self._record_score(record)
 
             anchors = self._candidate_anchors(
@@ -412,6 +430,29 @@ class MemoryBootstrapProbe:
                 anchor_candidates=len(anchor_records),
             ),
         )
+
+    @staticmethod
+    def _candidate_record_payload(record: Dict[str, Any]) -> Dict[str, Any]:
+        """Map anchor projection hits back to the source object payload."""
+        if record.get("retrieval_surface") != "anchor_projection":
+            return record
+
+        source_uri = (
+            str(record.get("projection_target_uri", "") or "")
+            or str(record.get("parent_uri", "") or "")
+            or str(record.get("uri", "") or "")
+        )
+        return {
+            "uri": source_uri,
+            "parent_uri": record.get("parent_uri", ""),
+            "category": record.get("category", ""),
+            "context_type": record.get("context_type", ""),
+            "abstract": record.get("projection_target_abstract", ""),
+            "overview": record.get("projection_target_overview", ""),
+            "content": record.get("projection_target_content", ""),
+            "entities": record.get("entities", []),
+            "meta": record.get("meta", {}),
+        }
 
     def _candidate_anchors(
         self,

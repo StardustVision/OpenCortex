@@ -46,6 +46,15 @@ class RetrievalDepth(str, Enum):
     L2 = "l2"
 
 
+class ScopeLevel(str, Enum):
+    """Probe-derived scope boundary for retrieval."""
+
+    CONTAINER_SCOPED = "container_scoped"
+    SESSION_ONLY = "session_only"
+    DOCUMENT_ONLY = "document_only"
+    GLOBAL = "global"
+
+
 class QueryAnchor(MemoryDomainModel):
     """Structured anchor extracted by planner."""
 
@@ -67,6 +76,18 @@ class MemorySearchProfile(MemoryDomainModel):
     recall_budget: float
     association_budget: float
     rerank: bool
+
+
+class StartingPoint(MemoryDomainModel):
+    """Session or document root used as a retrieval starting point."""
+
+    uri: str
+    session_id: Optional[str] = None
+    source_doc_id: Optional[str] = None
+    parent_uri: Optional[str] = None
+    entities: List[str] = Field(default_factory=list)
+    time_refs: List[str] = Field(default_factory=list)
+    score: float = 0.0
 
 
 class SearchCandidate(MemoryDomainModel):
@@ -106,6 +127,7 @@ class MemoryProbeTrace(MemoryDomainModel):
     anchor_latency_ms: Optional[float] = None
     object_candidates: int = 0
     anchor_candidates: int = 0
+    starting_points: int = 0
     degraded: bool = False
     degrade_reason: Optional[str] = None
 
@@ -135,6 +157,10 @@ class SearchResult(MemoryDomainModel):
     should_recall: bool
     anchor_hits: List[str] = Field(default_factory=list)
     candidate_entries: List[SearchCandidate] = Field(default_factory=list)
+    starting_points: List[StartingPoint] = Field(default_factory=list)
+    query_entities: List[str] = Field(default_factory=list)
+    starting_point_anchors: List[str] = Field(default_factory=list)
+    scope_level: ScopeLevel = ScopeLevel.GLOBAL
     evidence: SearchEvidence = Field(default_factory=SearchEvidence)
     trace: MemoryProbeTrace = Field(default_factory=MemoryProbeTrace)
 
@@ -143,6 +169,10 @@ class SearchResult(MemoryDomainModel):
         if not self.should_recall:
             self.anchor_hits = []
             self.candidate_entries = []
+            self.starting_points = []
+            self.query_entities = []
+            self.starting_point_anchors = []
+            self.scope_level = ScopeLevel.GLOBAL
             self.evidence = SearchEvidence()
         return self
 
@@ -154,6 +184,8 @@ class RetrievalPlan(MemoryDomainModel):
     query_plan: MemoryQueryPlan = Field(default_factory=MemoryQueryPlan)
     search_profile: MemorySearchProfile
     retrieval_depth: RetrievalDepth
+    scope_level: ScopeLevel = ScopeLevel.GLOBAL
+    session_scope: Optional[str] = None
     confidence: Optional[float] = None
     decision: str = ""
 
