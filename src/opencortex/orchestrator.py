@@ -66,14 +66,22 @@ from opencortex.http.request_context import (
 from opencortex.intent import (
     MemoryBootstrapProbe,
     MemoryExecutor,
-    ProbeScopeInput,
-    ProbeScopeSource,
     QueryAnchorKind,
     RecallPlanner,
     RetrievalDepth,
     RetrievalPlan,
     ScopeLevel,
     SearchResult,
+)
+from opencortex.intent.retrieval_support import (
+    anchor_rerank_bonus,
+    build_probe_scope_input,
+    build_scope_filter,
+    build_start_point_filter,
+    merge_filter_clauses,
+    probe_candidate_ranks as build_probe_candidate_ranks,
+    query_anchor_groups as build_query_anchor_groups,
+    record_anchor_groups,
 )
 from opencortex.intent.types import probe_confidence
 from opencortex.intent.timing import (
@@ -2108,13 +2116,13 @@ class MemoryOrchestrator:
         self._ensure_init()
         if self._memory_probe is None:
             raise RuntimeError("memory probe is not initialized")
-        scope_input = self._build_probe_scope_input(
+        scope_input = build_probe_scope_input(
             context_type=context_type,
             target_uri=target_uri,
             target_doc_id=target_doc_id,
             session_context=session_context,
         )
-        scope_filter = self._build_scope_filter(
+        scope_filter = build_scope_filter(
             context_type=context_type,
             target_uri=target_uri,
             target_doc_id=target_doc_id,
@@ -2314,334 +2322,6 @@ class MemoryOrchestrator:
         """Return the bounded Phase 1 probe filter."""
         return self._build_search_filter()
 
-    def _build_scope_filter(
-        self,
-        *,
-        context_type: Optional[ContextType],
-        target_uri: str,
-        target_doc_id: Optional[str],
-        session_context: Optional[Dict[str, Any]],
-        metadata_filter: Optional[Dict[str, Any]],
-    ) -> Optional[Dict[str, Any]]:
-        """Build shared scope clauses for probe and execution."""
-        type_filter = None
-        if context_type and context_type != ContextType.ANY:
-            type_filter = {
-                "op": "must",
-                "field": "context_type",
-                "conds": [context_type.value],
-            }
-
-        target_filter = None
-        if target_uri:
-            target_filter = {
-                "op": "prefix",
-                "field": "uri",
-                "prefix": target_uri,
-            }
-
-        doc_filter = None
-        if target_doc_id:
-            doc_filter = {
-                "op": "must",
-                "field": "source_doc_id",
-                "conds": [target_doc_id],
-            }
-
-        session_filter = None
-        scoped_session_id = str((session_context or {}).get("session_id", "") or "").strip()
-        if scoped_session_id:
-            session_filter = {
-                "op": "must",
-                "field": "session_id",
-                "conds": [scoped_session_id],
-            }
-
-        return self._merge_filter_clauses(
-            metadata_filter,
-            type_filter,
-            target_filter,
-            doc_filter,
-            session_filter,
-        )
-
-    @staticmethod
-    def _build_probe_scope_input(
-        *,
-        context_type: Optional[ContextType],
-        target_uri: str,
-        target_doc_id: Optional[str],
-        session_context: Optional[Dict[str, Any]],
-    ) -> ProbeScopeInput:
-        """Build structured probe scope inputs without flattening precedence."""
-        scoped_session_id = str((session_context or {}).get("session_id", "") or "").strip()
-        normalized_target_uri = str(target_uri or "").strip()
-        normalized_doc_id = str(target_doc_id or "").strip()
-        normalized_context_type = (
-            context_type.value
-            if context_type and context_type != ContextType.ANY
-            else None
-        )
-
-        if normalized_target_uri:
-            return ProbeScopeInput(
-                source=ProbeScopeSource.TARGET_URI,
-                authoritative=True,
-                target_uri=normalized_target_uri,
-                context_type=normalized_context_type,
-            )
-        if scoped_session_id:
-            return ProbeScopeInput(
-                source=ProbeScopeSource.SESSION_ID,
-                authoritative=True,
-                session_id=scoped_session_id,
-                context_type=normalized_context_type,
-            )
-        if normalized_doc_id:
-            return ProbeScopeInput(
-                source=ProbeScopeSource.SOURCE_DOC_ID,
-                authoritative=True,
-                source_doc_id=normalized_doc_id,
-                context_type=normalized_context_type,
-            )
-        if normalized_context_type:
-            return ProbeScopeInput(
-                source=ProbeScopeSource.CONTEXT_TYPE,
-                authoritative=False,
-                context_type=normalized_context_type,
-            )
-        return ProbeScopeInput(
-            source=ProbeScopeSource.GLOBAL_ROOT,
-            authoritative=False,
-        )
-
-    @staticmethod
-    def _merge_filter_clauses(
-        *filters: Optional[Dict[str, Any]],
-    ) -> Optional[Dict[str, Any]]:
-        """Merge non-empty filter clauses into one AND filter."""
-        clauses = [clause for clause in filters if clause]
-        if not clauses:
-            return None
-        if len(clauses) == 1:
-            return clauses[0]
-        return {"op": "and", "conds": clauses}
-
-    @staticmethod
-    def _normalize_anchor_value(value: Any) -> str:
-        """Normalize anchor text for cheap overlap scoring."""
-        return re.sub(r"\s+", " ", str(value or "").strip().lower())
-
-    @staticmethod
-    def _normalize_anchor_kind(value: Any) -> str:
-        """Normalize anchor kind strings into the active planner taxonomy."""
-        normalized = str(value or "").strip().lower()
-        if normalized in {"preference", "constraint", "relation"}:
-            return QueryAnchorKind.TOPIC.value
-        if normalized:
-            return normalized
-        return QueryAnchorKind.TOPIC.value
-
-    def _query_anchor_groups(
-        self,
-        retrieve_plan: Optional[RetrievalPlan],
-        probe_result: Optional[SearchResult],
-    ) -> Dict[str, set[str]]:
-        """Collect query anchors grouped by semantic kind."""
-        groups: Dict[str, set[str]] = {}
-
-        if retrieve_plan is not None:
-            for anchor in retrieve_plan.query_plan.anchors:
-                normalized = self._normalize_anchor_value(anchor.value)
-                if not normalized:
-                    continue
-                kind = self._normalize_anchor_kind(anchor.kind.value)
-                groups.setdefault(kind, set()).add(normalized)
-
-        if probe_result is not None:
-            topic_group = groups.setdefault(QueryAnchorKind.TOPIC.value, set())
-            for anchor in probe_result.anchor_hits:
-                normalized = self._normalize_anchor_value(anchor)
-                if normalized:
-                    topic_group.add(normalized)
-            time_group = groups.setdefault(QueryAnchorKind.TIME.value, set())
-            entity_group = groups.setdefault(QueryAnchorKind.ENTITY.value, set())
-            for value in probe_result.query_entities:
-                normalized = self._normalize_anchor_value(value)
-                if normalized:
-                    entity_group.add(normalized)
-            for starting_point in probe_result.starting_points:
-                for value in starting_point.entities:
-                    normalized = self._normalize_anchor_value(value)
-                    if normalized:
-                        entity_group.add(normalized)
-                for value in starting_point.time_refs:
-                    normalized = self._normalize_anchor_value(value)
-                    if normalized:
-                        time_group.add(normalized)
-            for value in probe_result.starting_point_anchors:
-                normalized = self._normalize_anchor_value(value)
-                if normalized:
-                    topic_group.add(normalized)
-
-        return groups
-
-    def _record_anchor_groups(self, record: Dict[str, Any]) -> Dict[str, set[str]]:
-        """Project record-side anchors into grouped normalized sets."""
-        groups: Dict[str, set[str]] = {}
-
-        abstract_json = record.get("abstract_json")
-        if isinstance(abstract_json, dict):
-            for anchor in abstract_json.get("anchors") or []:
-                if not isinstance(anchor, dict):
-                    continue
-                normalized = self._normalize_anchor_value(
-                    anchor.get("text") or anchor.get("value")
-                )
-                if not normalized:
-                    continue
-                kind = self._normalize_anchor_kind(anchor.get("anchor_type"))
-                groups.setdefault(kind, set()).add(normalized)
-
-        topic_group = groups.setdefault(QueryAnchorKind.TOPIC.value, set())
-        for value in record.get("anchor_hits") or []:
-            normalized = self._normalize_anchor_value(value)
-            if normalized:
-                topic_group.add(normalized)
-
-        return groups
-
-    @staticmethod
-    def _probe_candidate_ranks(
-        probe_result: Optional[SearchResult],
-    ) -> Dict[str, int]:
-        """Return a stable URI -> rank map from Phase 1 probe results."""
-        if probe_result is None:
-            return {}
-        return {
-            candidate.uri: rank
-            for rank, candidate in enumerate(probe_result.candidate_entries)
-            if candidate.uri
-        }
-
-    def _start_point_filter(
-        self,
-        *,
-        retrieve_plan: Optional[RetrievalPlan],
-        probe_result: Optional[SearchResult],
-        bound_plan: Optional[Dict[str, Any]],
-    ) -> Optional[Dict[str, Any]]:
-        """Build a bounded start-point filter from Phase 1 evidence."""
-        if probe_result is None:
-            return None
-        if retrieve_plan is None:
-            return None
-
-        plan = bound_plan or {}
-        bind_start_points = bool(plan.get("bind_start_points"))
-        if not bind_start_points:
-            return None
-        if retrieve_plan.scope_level != ScopeLevel.GLOBAL:
-            return None
-
-        uri_cap = int(plan.get("seed_uri_cap", 0) or 0)
-        if uri_cap <= 0:
-            uri_cap = 6
-        anchor_cap = int(plan.get("anchor_cap", 0) or 0)
-        if anchor_cap <= 0:
-            anchor_cap = 4
-        uri_values = [
-            sp.uri
-            for sp in (probe_result.starting_points or [])
-            if sp.uri
-        ] + [
-            candidate.uri
-            for candidate in probe_result.candidate_entries[:uri_cap]
-            if candidate.uri
-        ]
-        anchor_values: List[str] = []
-        if retrieve_plan is not None:
-            for anchor in retrieve_plan.query_plan.anchors:
-                normalized = str(anchor.value or "").strip()
-                if normalized and normalized not in anchor_values:
-                    anchor_values.append(normalized)
-                if len(anchor_values) >= anchor_cap:
-                    break
-        if not anchor_values:
-            for anchor in probe_result.anchor_hits:
-                normalized = str(anchor or "").strip()
-                if normalized and normalized not in anchor_values:
-                    anchor_values.append(normalized)
-                if len(anchor_values) >= anchor_cap:
-                    break
-
-        clauses: List[Dict[str, Any]] = []
-        if uri_values:
-            clauses.append({"op": "must", "field": "uri", "conds": uri_values})
-        if anchor_values:
-            clauses.append({"op": "must", "field": "anchor_hits", "conds": anchor_values})
-        if not clauses:
-            return None
-        if len(clauses) == 1:
-            return clauses[0]
-        return {"op": "or", "conds": clauses}
-
-    def _anchor_rerank_bonus(
-        self,
-        *,
-        query_anchor_groups: Dict[str, set[str]],
-        record_anchor_groups: Dict[str, set[str]],
-    ) -> tuple[float, List[str]]:
-        """Compute a cheap structured-anchor rerank bonus."""
-        weights = {
-            QueryAnchorKind.TIME.value: 0.18,
-            QueryAnchorKind.ENTITY.value: 0.14,
-            QueryAnchorKind.TOPIC.value: 0.08,
-            QueryAnchorKind.PROFILE.value: 0.06,
-        }
-        caps = {
-            QueryAnchorKind.TIME.value: 0.24,
-            QueryAnchorKind.ENTITY.value: 0.22,
-            QueryAnchorKind.TOPIC.value: 0.16,
-            QueryAnchorKind.PROFILE.value: 0.06,
-        }
-        all_record_values = set().union(*record_anchor_groups.values()) if record_anchor_groups else set()
-        bonus = 0.0
-        reasons: List[str] = []
-        overlap_counts: Dict[str, int] = {}
-
-        for kind, query_values in query_anchor_groups.items():
-            if not query_values:
-                continue
-            record_values = record_anchor_groups.get(kind, set())
-            if kind == QueryAnchorKind.TOPIC.value:
-                overlap = query_values & all_record_values
-            else:
-                overlap = query_values & record_values
-                if not overlap:
-                    overlap = query_values & all_record_values
-            if not overlap:
-                continue
-            overlap_count = len(overlap)
-            overlap_counts[kind] = overlap_count
-            bonus += min(caps.get(kind, 0.08), weights.get(kind, 0.08) * overlap_count)
-            reasons.append(f"anchor_{kind}")
-
-        if (
-            overlap_counts.get(QueryAnchorKind.TIME.value, 0) > 0
-            and overlap_counts.get(QueryAnchorKind.ENTITY.value, 0) > 0
-        ):
-            bonus += 0.12
-            reasons.append("anchor_combo")
-        elif (
-            overlap_counts.get(QueryAnchorKind.ENTITY.value, 0) > 0
-            and overlap_counts.get(QueryAnchorKind.TOPIC.value, 0) > 0
-        ):
-            bonus += 0.06
-            reasons.append("anchor_combo")
-
-        return min(0.55, bonus), reasons
-
     def _cone_query_entities(
         self,
         *,
@@ -2753,9 +2433,9 @@ class MemoryOrchestrator:
             score += 0.14 * (len(target_kinds) - kind_rank) / max(len(target_kinds), 1)
             reasons.append("kind")
 
-        anchor_bonus, anchor_reasons = self._anchor_rerank_bonus(
+        anchor_bonus, anchor_reasons = anchor_rerank_bonus(
             query_anchor_groups=query_anchor_groups,
-            record_anchor_groups=self._record_anchor_groups(record),
+            record_anchor_groups=record_anchor_groups(record),
         )
         if anchor_bonus > 0:
             score += anchor_bonus
@@ -2874,7 +2554,7 @@ class MemoryOrchestrator:
                 "conds": [kind.value for kind in retrieve_plan.target_memory_kinds],
             }
 
-        start_point_filter = self._start_point_filter(
+        start_point_filter = build_start_point_filter(
             retrieve_plan=retrieve_plan,
             probe_result=probe_result,
             bound_plan=bound_plan,
@@ -2928,14 +2608,14 @@ class MemoryOrchestrator:
         if leaf_filter is None:
             leaf_filter = {"op": "must", "field": "is_leaf", "conds": [True]}
 
-        final_filter = self._merge_filter_clauses(
+        final_filter = merge_filter_clauses(
             search_filter,
             kind_filter,
             leaf_filter,
             start_point_filter,
         )
 
-        query_anchor_groups = self._query_anchor_groups(retrieve_plan, probe_result)
+        query_anchor_groups = build_query_anchor_groups(retrieve_plan, probe_result)
         rerank_enabled = bool(query_anchor_groups) or bool(
             retrieve_plan is not None and retrieve_plan.search_profile.rerank
         )
@@ -2961,7 +2641,7 @@ class MemoryOrchestrator:
 
         rerank_started = search_finished
         frontier_waves = 0
-        probe_candidate_ranks = self._probe_candidate_ranks(probe_result)
+        probe_candidate_ranks = build_probe_candidate_ranks(probe_result)
         records, cone_used = await self._apply_cone_rerank(
             typed_query=typed_query,
             retrieve_plan=retrieve_plan,
@@ -3082,7 +2762,7 @@ class MemoryOrchestrator:
         detail_level_override = (
             detail_level_value if detail_level_value != DetailLevel.L1.value else None
         )
-        scope_filter = self._build_scope_filter(
+        scope_filter = build_scope_filter(
             context_type=context_type,
             target_uri=target_uri,
             target_doc_id=target_doc_id,

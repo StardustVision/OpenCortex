@@ -180,6 +180,29 @@ uv run --group dev pytest
 
 The MCP package under `plugins/opencortex-memory/` also carries its own Node.js test suite.
 
+## Python Style Gate
+
+OpenCortex uses a repo-level Python style gate based on `ruff`. The current
+enforced subset is the practical baseline for the Google Python Style Guide in
+this repo: imports, naming, public docstrings, public type annotations, TODO
+format, exception hygiene, and obvious simplification rules.
+
+The initial ratchet currently targets the transport-facing Python surface:
+
+- `src/opencortex/http/*.py`
+- `src/opencortex/skill_engine/http_routes.py`
+
+Run it locally before shipping Python changes:
+
+```bash
+uv run --group dev ruff format --check .
+uv run --group dev ruff check .
+```
+
+The gate intentionally starts on a bounded surface and uses a small set of
+temporary file-level ignores for legacy transition points. Both are debt to be
+burned down, not a safe place for new code.
+
 ## Tech Stack
 
 OpenCortex uses a Python/FastAPI backend, CortexFS plus embedded Qdrant for storage, a Node.js MCP package for client integration, and React/Vite for the optional console.

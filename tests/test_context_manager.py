@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from opencortex.config import CortexConfig, init_config
 from opencortex.context.manager import ConversationBuffer
+from opencortex.http.models import ContextPrepareResponse
 from opencortex.http.request_context import (
     reset_collection_name,
     reset_request_identity,
@@ -119,11 +120,13 @@ class TestContextManager(unittest.TestCase):
                 messages=[{"role": "user", "content": "What theme do I prefer?"}],
             )
         )
+        parsed = ContextPrepareResponse.model_validate(result)
 
         self.assertIn("memory_pipeline", result["intent"])
         self.assertIn("probe", result["intent"]["memory_pipeline"])
         self.assertIn("planner", result["intent"]["memory_pipeline"])
         self.assertIn("runtime", result["intent"]["memory_pipeline"])
+        self.assertEqual(parsed.turn_id, "t1")
         self.assertIn("probe_mode", result["intent"]["memory_pipeline"]["runtime"]["trace"])
         self.assertIn("probe_trace", result["intent"]["memory_pipeline"]["runtime"]["trace"])
         self.assertGreaterEqual(

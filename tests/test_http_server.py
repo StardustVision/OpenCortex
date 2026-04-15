@@ -24,6 +24,8 @@ import httpx
 from httpx import ASGITransport
 
 from opencortex.config import CortexConfig, init_config
+from opencortex.http.models import ContextPrepareResponse
+from opencortex.http.models import MemorySearchResponse
 from opencortex.models.embedder.base import DenseEmbedderBase, EmbedResult
 from opencortex.orchestrator import MemoryOrchestrator
 from opencortex.storage.storage_interface import (
@@ -453,9 +455,11 @@ class TestHTTPServer(unittest.TestCase):
                 })
                 self.assertEqual(resp.status_code, 200)
                 data = resp.json()
+                parsed = MemorySearchResponse.model_validate(data)
                 self.assertIn("results", data)
                 self.assertGreater(len(data["results"]), 0)
                 self.assertGreater(data["total"], 0)
+                self.assertEqual(parsed.total, data["total"])
                 self.assertIn("memory_pipeline", data)
                 self.assertIn("probe", data["memory_pipeline"])
                 self.assertIn("planner", data["memory_pipeline"])
@@ -577,6 +581,8 @@ class TestHTTPServer(unittest.TestCase):
                 })
                 self.assertEqual(resp.status_code, 200)
                 data = resp.json()
+                parsed = MemorySearchResponse.model_validate(data)
+                self.assertIsNotNone(parsed.memory_pipeline)
                 self.assertIn("memory_pipeline", data)
                 self.assertIn(
                     "scoped_miss",
@@ -620,6 +626,33 @@ class TestHTTPServer(unittest.TestCase):
                 data = resp.json()
                 self.assertEqual(data["status"], "ok")
                 self.assertEqual(data["uri"], uri)
+
+        self._run(check())
+
+    def test_04b_context_prepare_returns_typed_payload(self):
+        """POST `/api/v1/context` prepare keeps the typed response contract."""
+
+        async def check():
+            async with _test_app_context() as client:
+                await client.post("/api/v1/memory/store", json={
+                    "abstract": "User prefers dark theme in editors",
+                    "category": "general",
+                })
+                resp = await client.post("/api/v1/context", json={
+                    "session_id": "sess_ctx_01",
+                    "turn_id": "turn_01",
+                    "phase": "prepare",
+                    "messages": [
+                        {"role": "user", "content": "What theme do I prefer?"}
+                    ],
+                })
+                self.assertEqual(resp.status_code, 200)
+                data = resp.json()
+                parsed = ContextPrepareResponse.model_validate(data)
+                self.assertEqual(parsed.session_id, "sess_ctx_01")
+                self.assertEqual(parsed.turn_id, "turn_01")
+                self.assertIn("memory_pipeline", data["intent"])
+                self.assertIn("probe", data["intent"]["memory_pipeline"])
 
         self._run(check())
 

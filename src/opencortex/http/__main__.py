@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""
-CLI entry point for the OpenCortex HTTP Server.
+"""CLI entry point for the OpenCortex HTTP Server.
 
 Usage::
 
@@ -11,7 +10,8 @@ import argparse
 import logging
 
 
-def main():
+def main() -> None:
+    """Parse CLI arguments and start the HTTP server."""
     parser = argparse.ArgumentParser(
         prog="opencortex.http",
         description="OpenCortex HTTP Server (FastAPI)",
@@ -53,12 +53,14 @@ def main():
 
     # Initialize config before importing the app (so lifespan sees it)
     from opencortex.config import CortexConfig, init_config
+
     if not args.config:
         # Auto-create $HOME/.opencortex/server.json if it doesn't exist
         CortexConfig.ensure_default_config()
     init_config(path=args.config)
 
     import uvicorn
+
     uvicorn.run(
         "opencortex.http.server:create_app",
         factory=True,

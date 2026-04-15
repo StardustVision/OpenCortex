@@ -10,6 +10,14 @@ Install Python dependencies with `uv sync` and run the API locally with `uv run 
 ## Coding Style & Naming Conventions
 Python targets 3.10+ and should follow the [Google Python Style Guide](https://google.github.io/styleguide/pyguide.html): 4-space indentation, explicit type hints on public APIs, concise docstrings, and clear exception handling. Prefer simple functions over speculative abstractions. Use `snake_case` for modules, functions, and variables, `PascalCase` for classes, and keep FastAPI/Pydantic request-response models close to their transport layer. Match existing naming such as `SearchResult`, `RetrievalPlan`, and `ContextManager`.
 
+The repo enforces a practical Google-style subset through `ruff`. For Python changes, treat these checks as the default gate:
+
+- `uv run --group dev ruff format --check .`
+- `uv run --group dev ruff check .`
+
+The enforced subset currently covers imports, naming, public docstrings, public type annotations, TODO formatting, exception hygiene, and obvious simplification rules. Temporary file-level ignores on legacy hotspots are transition debt only; do not extend them unless the current task explicitly requires it.
+The first ratchet is intentionally scoped to the transport-facing Python surface under `src/opencortex/http/` plus `src/opencortex/skill_engine/http_routes.py`; expand it only as adjacent hotspots are actually cleaned up.
+
 ## Testing Guidelines
 Use `pytest` and add focused regression coverage with every behavior change. Name files `tests/test_<area>.py` and keep test names descriptive, for example `test_context_end_flushes_buffer()`. Retrieval, storage, and benchmark changes should include at least one targeted unit or adapter test; benchmark-facing changes should also record the command or sample dataset used.
 

@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""
-Async HTTP client for the OpenCortex HTTP Server.
+"""Async HTTP client for the OpenCortex HTTP Server.
 
 Provides :class:`OpenCortexClient` — a thin wrapper around ``httpx.AsyncClient``
 that mirrors the current REST API exposed by ``opencortex.http.server``.
@@ -17,6 +16,9 @@ import logging
 from typing import Any, Dict, List, Optional
 
 import httpx
+from pydantic import ValidationError
+
+from opencortex.http.models import ContextPrepareResponse, MemorySearchResponse
 
 logger = logging.getLogger(__name__)
 
@@ -130,9 +132,12 @@ class OpenCortexClient:
         meta: Optional[Dict[str, Any]] = None,
         embed_text: str = "",
     ) -> Dict[str, Any]:
+        """Store one memory-like item via the HTTP API."""
         payload: Dict[str, Any] = {
-            "abstract": abstract, "content": content,
-            "category": category, "context_type": context_type,
+            "abstract": abstract,
+            "content": content,
+            "category": category,
+            "context_type": context_type,
         }
         if overview:
             payload["overview"] = overview
@@ -150,6 +155,7 @@ class OpenCortexClient:
         source_path: str = "",
         scan_meta: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        """Store a batch of memory-like items via the HTTP API."""
         payload: Dict[str, Any] = {"items": items, "source_path": source_path}
         if scan_meta is not None:
             payload["scan_meta"] = scan_meta
@@ -160,9 +166,14 @@ class OpenCortexClient:
         uris: List[str],
         project_id: str,
     ) -> Dict[str, Any]:
-        return await self._post("/api/v1/memory/promote_to_shared", {
-            "uris": uris, "project_id": project_id,
-        })
+        """Promote private memory URIs into a shared project scope."""
+        return await self._post(
+            "/api/v1/memory/promote_to_shared",
+            {
+                "uris": uris,
+                "project_id": project_id,
+            },
+        )
 
     async def memory_search(
         self,
@@ -172,18 +183,34 @@ class OpenCortexClient:
         category: Optional[str] = None,
         detail_level: str = "l1",
     ) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {"query": query, "limit": limit, "detail_level": detail_level}
+        """Search memories and validate the typed transport payload."""
+        payload: Dict[str, Any] = {
+            "query": query,
+            "limit": limit,
+            "detail_level": detail_level,
+        }
         if context_type is not None:
             payload["context_type"] = context_type
         if category is not None:
             payload["category"] = category
-        return await self._post("/api/v1/memory/search", payload)
+        response = await self._post("/api/v1/memory/search", payload)
+        try:
+            parsed = MemorySearchResponse.model_validate(response)
+        except ValidationError as exc:
+            raise OpenCortexClientError(
+                f"Invalid memory/search response payload: {exc}"
+            ) from exc
+        return parsed.model_dump(exclude_none=True)
 
     async def memory_forget(self, uri: str = "", query: str = "") -> Dict[str, Any]:
+        """Delete a memory by URI or by top semantic match."""
         return await self._post("/api/v1/memory/forget", {"uri": uri, "query": query})
 
     async def memory_feedback(self, uri: str, reward: float) -> Dict[str, Any]:
-        return await self._post("/api/v1/memory/feedback", {"uri": uri, "reward": reward})
+        """Submit a reward signal for a stored memory."""
+        return await self._post(
+            "/api/v1/memory/feedback", {"uri": uri, "reward": reward}
+        )
 
     async def memory_list(
         self,
@@ -192,6 +219,7 @@ class OpenCortexClient:
         limit: int = 50,
         offset: int = 0,
     ) -> Dict[str, Any]:
+        """List memories visible to the current identity."""
         params: Dict[str, Any] = {"limit": limit, "offset": offset}
         if category is not None:
             params["category"] = category
@@ -200,12 +228,15 @@ class OpenCortexClient:
         return await self._get("/api/v1/memory/list", params=params)
 
     async def memory_stats(self) -> Dict[str, Any]:
+        """Fetch aggregate memory statistics."""
         return await self._get("/api/v1/memory/stats")
 
     async def memory_decay(self) -> Dict[str, Any]:
+        """Trigger memory decay across stored records."""
         return await self._post("/api/v1/memory/decay", {})
 
     async def memory_health(self) -> Dict[str, Any]:
+        """Fetch memory subsystem health status."""
         return await self._get("/api/v1/memory/health")
 
     # =====================================================================
@@ -213,20 +244,71 @@ class OpenCortexClient:
     # =====================================================================
 
     async def intent_should_recall(self, query: str) -> Dict[str, Any]:
+        """Run the phase-1 recall probe for a query."""
         return await self._post("/api/v1/intent/should_recall", {"query": query})
 
+    async def context_prepare(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        messages: List[Dict[str, Any]],
+        config: Optional[Dict[str, Any]] = None,
+        cited_uris: Optional[List[str]] = None,
+        tool_calls: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """Call `/api/v1/context` in prepare mode with response validation."""
+        payload: Dict[str, Any] = {
+            "session_id": session_id,
+            "turn_id": turn_id,
+            "phase": "prepare",
+            "messages": messages,
+        }
+        if config is not None:
+            payload["config"] = config
+        if cited_uris is not None:
+            payload["cited_uris"] = cited_uris
+        if tool_calls is not None:
+            payload["tool_calls"] = tool_calls
+
+        response = await self._post("/api/v1/context", payload)
+        try:
+            parsed = ContextPrepareResponse.model_validate(response)
+        except ValidationError as exc:
+            raise OpenCortexClientError(
+                f"Invalid context/prepare response payload: {exc}"
+            ) from exc
+        return parsed.model_dump(exclude_none=True)
+
     async def session_begin(self, session_id: str) -> Dict[str, Any]:
+        """Start a new session transcript."""
         return await self._post("/api/v1/session/begin", {"session_id": session_id})
 
-    async def session_message(self, session_id: str, role: str, content: str) -> Dict[str, Any]:
-        return await self._post("/api/v1/session/message", {
-            "session_id": session_id, "role": role, "content": content,
-        })
+    async def session_message(
+        self, session_id: str, role: str, content: str
+    ) -> Dict[str, Any]:
+        """Append one message to a tracked session."""
+        return await self._post(
+            "/api/v1/session/message",
+            {
+                "session_id": session_id,
+                "role": role,
+                "content": content,
+            },
+        )
 
-    async def session_end(self, session_id: str, quality_score: float = 0.5) -> Dict[str, Any]:
-        return await self._post("/api/v1/session/end", {
-            "session_id": session_id, "quality_score": quality_score,
-        })
+    async def session_end(
+        self, session_id: str, quality_score: float = 0.5
+    ) -> Dict[str, Any]:
+        """Close a session transcript and trigger post-processing."""
+        return await self._post(
+            "/api/v1/session/end",
+            {
+                "session_id": session_id,
+                "quality_score": quality_score,
+            },
+        )
 
     async def system_status(self, status_type: str = "doctor") -> Dict[str, Any]:
+        """Fetch the system status report for the requested mode."""
         return await self._get("/api/v1/system/status", params={"type": status_type})

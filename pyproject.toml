@@ -51,4 +51,49 @@ where = ["src"]
 [dependency-groups]
 dev = [
     "pytest>=9.0.2",
+    "ruff>=0.12.0",
 ]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+include = [
+    "src/opencortex/http/__main__.py",
+    "src/opencortex/http/client.py",
+    "src/opencortex/http/models.py",
+    "src/opencortex/http/request_context.py",
+    "src/opencortex/http/server.py",
+    "src/opencortex/skill_engine/http_routes.py",
+]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = [
+    "ANN",
+    "B",
+    "D",
+    "E",
+    "F",
+    "I",
+    "N",
+    "RET",
+    "RSE",
+    "SIM",
+    "TD",
+    "W",
+]
+ignore = [
+    "ANN401",
+    "D100",
+    "D104",
+    "D105",
+    "D107",
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"src/opencortex/skill_engine/http_routes.py" = ["ANN"]

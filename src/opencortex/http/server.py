@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""
-FastAPI HTTP Server for OpenCortex.
+"""FastAPI HTTP Server for OpenCortex.
 
 Hosts the MemoryOrchestrator and exposes all MCP tool capabilities as REST
 endpoints.  This is the primary deployment target — the MCP Server acts as
@@ -14,11 +13,11 @@ Usage::
 import logging
 import re
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, Optional
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 from opencortex.auth.token import (
     decode_token,
@@ -28,6 +27,27 @@ from opencortex.auth.token import (
     save_token_record,
 )
 from opencortex.config import get_config
+from opencortex.http.models import (
+    # Context Protocol
+    ContextPrepareResponse,
+    ContextRequest,
+    IntentShouldRecallRequest,
+    KnowledgeApproveRequest,
+    KnowledgeRejectRequest,
+    KnowledgeSearchRequest,
+    MemoryBatchStoreRequest,
+    MemoryFeedbackRequest,
+    MemoryForgetRequest,
+    MemorySearchRequest,
+    MemorySearchResponse,
+    MemoryStoreRequest,
+    PromoteToSharedRequest,
+    SessionBeginRequest,
+    SessionEndRequest,
+    SessionMessageRequest,
+    # Cortex Alpha
+    SessionMessagesRequest,
+)
 from opencortex.http.request_context import (
     reset_request_identity,
     reset_request_project_id,
@@ -36,25 +56,6 @@ from opencortex.http.request_context import (
     set_request_identity,
     set_request_project_id,
     set_request_role,
-)
-from opencortex.http.models import (
-    IntentShouldRecallRequest,
-    MemoryBatchStoreRequest,
-    MemoryFeedbackRequest,
-    MemoryForgetRequest,
-    MemorySearchRequest,
-    MemoryStoreRequest,
-    PromoteToSharedRequest,
-    SessionBeginRequest,
-    SessionEndRequest,
-    SessionMessageRequest,
-    # Cortex Alpha
-    SessionMessagesRequest,
-    KnowledgeSearchRequest,
-    KnowledgeApproveRequest,
-    KnowledgeRejectRequest,
-    # Context Protocol
-    ContextRequest,
 )
 from opencortex.orchestrator import MemoryOrchestrator
 from opencortex.retrieve.types import ContextType
@@ -88,7 +89,10 @@ def _check_store_warnings(abstract: str) -> list:
         warnings.append(
             {
                 "key": "abstract_too_short",
-                "message": "Memory abstract should be at least 10 characters for useful retrieval",
+                "message": (
+                    "Memory abstract should be at least 10 characters "
+                    "for useful retrieval"
+                ),
             }
         )
         return warnings
@@ -100,7 +104,10 @@ def _check_store_warnings(abstract: str) -> list:
             warnings.append(
                 {
                     "key": "code_snippet_detected",
-                    "message": "Consider storing a description of the code pattern rather than raw code",
+                    "message": (
+                        "Consider storing a description of the code pattern "
+                        "rather than raw code"
+                    ),
                 }
             )
     return warnings
@@ -119,7 +126,12 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
     extracted from the JWT claims (``tid``, ``uid``).
     """
 
-    async def dispatch(self, request: Request, call_next) -> Response:
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: RequestResponseEndpoint,
+    ) -> Response:
+        """Apply auth and request identity before forwarding the request."""
         path = request.url.path
 
         # Whitelisted paths bypass authentication
@@ -178,7 +190,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
 
 
 @asynccontextmanager
-async def _lifespan(app: FastAPI):
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Initialize and teardown the MemoryOrchestrator."""
     global _orchestrator, _jwt_secret
     config = get_config()
@@ -206,23 +218,26 @@ async def _lifespan(app: FastAPI):
     # Initialize insights components (optional feature)
     try:
         from opencortex.insights.agent import InsightsAgent
+        from opencortex.insights.api import create_insights_router
         from opencortex.insights.collector import InsightsCollector
         from opencortex.insights.report import ReportManager
-        from opencortex.insights.api import create_insights_router
         from opencortex.models.llm_factory import create_llm_completion
 
         if not _orchestrator._trace_store:
-            raise Exception("TraceStore not initialized; enable trace_splitter in cortex_alpha config")
+            raise Exception(
+                "TraceStore not initialized; enable trace_splitter in "
+                "cortex_alpha config"
+            )
 
         llm_callable = create_llm_completion(_orchestrator._config)
         if not llm_callable:
             raise Exception("LLM not configured; insights requires LLM API key")
 
         class LLMWrapper:
-            def __init__(self, callable_):
+            def __init__(self, callable_: Any) -> None:
                 self._callable = callable_
 
-            def generate(self, prompt: str, **kwargs) -> str:
+            def generate(self, prompt: str, **kwargs: Any) -> str:
                 import asyncio
 
                 loop = asyncio.new_event_loop()
@@ -253,6 +268,7 @@ async def _lifespan(app: FastAPI):
     # Skill Engine routes
     try:
         from opencortex.skill_engine.http_routes import router as skill_router
+
         app.include_router(skill_router)
         logger.info("[HTTP] Skill Engine routes registered")
     except Exception as e:
@@ -307,14 +323,14 @@ def create_app() -> FastAPI:
 
 def _register_routes(app: FastAPI) -> None:
     """Register all REST endpoints on *app*."""
-
     # =====================================================================
     # Core Memory
     # =====================================================================
 
     @app.post("/api/v1/memory/store")
     async def memory_store(req: MemoryStoreRequest) -> Dict[str, Any]:
-        # URI is always auto-generated by backend based on identity + context_type + category.
+        # URI is always auto-generated by backend based on identity,
+        # context_type, and category.
         # Client-provided uri is ignored to prevent malformed storage paths.
         warnings = _check_store_warnings(req.abstract)
         result = await _orchestrator.add(
@@ -357,10 +373,14 @@ def _register_routes(app: FastAPI) -> None:
             project_id=req.project_id,
         )
 
-    @app.post("/api/v1/memory/search")
+    @app.post(
+        "/api/v1/memory/search",
+        response_model=MemorySearchResponse,
+        response_model_exclude_none=True,
+    )
     async def memory_search(
         req: MemorySearchRequest, request: Request
-    ) -> Dict[str, Any]:
+    ) -> MemorySearchResponse:
         ct = ContextType(req.context_type) if req.context_type else None
         metadata_filter = None
         if req.category:
@@ -377,31 +397,7 @@ def _register_routes(app: FastAPI) -> None:
             metadata_filter=metadata_filter,
             detail_level=req.detail_level,
         )
-        items = []
-        for matched in result:
-            item: Dict[str, Any] = {
-                "uri": matched.uri,
-                "abstract": matched.abstract,
-                "context_type": str(matched.context_type),
-                "score": getattr(matched, "score", None),
-            }
-            if matched.overview is not None:
-                item["overview"] = matched.overview
-            if matched.content is not None:
-                item["content"] = matched.content
-            if matched.keywords:
-                item["keywords"] = matched.keywords
-            if getattr(matched, "source_doc_id", None):
-                item["source_doc_id"] = matched.source_doc_id
-            if getattr(matched, "source_doc_title", None):
-                item["source_doc_title"] = matched.source_doc_title
-            if getattr(matched, "source_section_path", None):
-                item["source_section_path"] = matched.source_section_path
-            items.append(item)
-        resp: Dict[str, Any] = {"results": items, "total": result.total}
-        memory_pipeline = result.memory_pipeline_dict()
-        if memory_pipeline:
-            resp["memory_pipeline"] = memory_pipeline
+        response_payload = result.to_memory_search_response()
         # v0.6: explain query param support
         explain_mode = request.query_params.get("explain")
         if (
@@ -411,7 +407,7 @@ def _register_routes(app: FastAPI) -> None:
         ):
             from dataclasses import asdict
 
-            resp["explain_summary"] = asdict(result.explain_summary)
+            response_payload["explain_summary"] = asdict(result.explain_summary)
         if (
             explain_mode == "detail"
             and hasattr(result, "query_results")
@@ -419,10 +415,10 @@ def _register_routes(app: FastAPI) -> None:
         ):
             from dataclasses import asdict
 
-            resp["explain_detail"] = [
+            response_payload["explain_detail"] = [
                 asdict(qr.explain) for qr in result.query_results if qr.explain
             ]
-        return resp
+        return MemorySearchResponse.model_validate(response_payload)
 
     @app.post("/api/v1/memory/feedback")
     async def memory_feedback(req: MemoryFeedbackRequest) -> Dict[str, str]:
@@ -468,15 +464,14 @@ def _register_routes(app: FastAPI) -> None:
         if req.uri:
             count = await _orchestrator.remove(req.uri)
             return {"status": "ok", "forgotten": count, "uri": req.uri}
-        elif req.query:
+        if req.query:
             results = await _orchestrator.search(query=req.query, limit=1)
             if not results:
                 return {"status": "not_found", "forgotten": 0}
             uri = results[0].uri
             count = await _orchestrator.remove(uri)
             return {"status": "ok", "forgotten": count, "uri": uri}
-        else:
-            raise HTTPException(400, "Either uri or query is required")
+        raise HTTPException(400, "Either uri or query is required")
 
     @app.post("/api/v1/memory/decay")
     async def memory_decay() -> Dict[str, Any]:
@@ -587,7 +582,7 @@ def _register_routes(app: FastAPI) -> None:
         from opencortex.http.request_context import get_effective_identity
 
         tid, uid = get_effective_identity()
-        return await _orchestrator._context_manager.handle(
+        response = await _orchestrator._context_manager.handle(
             session_id=req.session_id,
             phase=req.phase,
             tenant_id=tid,
@@ -600,6 +595,11 @@ def _register_routes(app: FastAPI) -> None:
             if req.tool_calls
             else None,
         )
+        if req.phase == "prepare":
+            return ContextPrepareResponse.model_validate(response).model_dump(
+                exclude_none=True
+            )
+        return response
 
     # =====================================================================
     # System Status

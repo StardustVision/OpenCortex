@@ -352,6 +352,28 @@ class MatchedContext:
 
     relations: List[RelatedContext] = field(default_factory=list)
 
+    def to_memory_search_result(self) -> Dict[str, Any]:
+        """Convert to the HTTP `memory/search` result item shape."""
+        item: Dict[str, Any] = {
+            "uri": self.uri,
+            "abstract": self.abstract,
+            "context_type": self.context_type.value,
+            "score": self.score,
+        }
+        if self.overview is not None:
+            item["overview"] = self.overview
+        if self.content is not None:
+            item["content"] = self.content
+        if self.keywords:
+            item["keywords"] = self.keywords
+        if self.source_doc_id:
+            item["source_doc_id"] = self.source_doc_id
+        if self.source_doc_title:
+            item["source_doc_title"] = self.source_doc_title
+        if self.source_section_path:
+            item["source_section_path"] = self.source_section_path
+        return item
+
 
 @dataclass
 class QueryResult:
@@ -442,6 +464,20 @@ class FindResult:
         if self.runtime_result is not None:
             pipeline["runtime"] = self.runtime_result.to_dict()
         return pipeline or None
+
+    def to_memory_search_response(self) -> Dict[str, Any]:
+        """Convert to the HTTP `memory/search` response shape."""
+        response: Dict[str, Any] = {
+            "results": [
+                matched.to_memory_search_result()
+                for matched in self
+            ],
+            "total": self.total,
+        }
+        memory_pipeline = self.memory_pipeline_dict()
+        if memory_pipeline:
+            response["memory_pipeline"] = memory_pipeline
+        return response
 
     def _context_to_dict(self, ctx: MatchedContext) -> Dict[str, Any]:
         """Convert MatchedContext to dict."""

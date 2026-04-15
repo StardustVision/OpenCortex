@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""
-Per-request identity via contextvars.
+"""Per-request identity via contextvars.
 
 In multi-tenant HTTP mode, each request carries its own identity derived
 from a JWT Bearer token.  The middleware decodes the token and sets
@@ -39,6 +38,7 @@ _request_project_id: ContextVar[Optional[str]] = ContextVar(
 # Identity API
 # ---------------------------------------------------------------------------
 
+
 def set_request_identity(
     tenant_id: str, user_id: str
 ) -> Tuple[Token[Optional[str]], Token[Optional[str]]]:
@@ -49,7 +49,7 @@ def set_request_identity(
 
 
 def reset_request_identity(
-    tokens: Tuple[Token[Optional[str]], Token[Optional[str]]]
+    tokens: Tuple[Token[Optional[str]], Token[Optional[str]]],
 ) -> None:
     """Reset contextvars using tokens from :func:`set_request_identity`."""
     _request_tenant_id.reset(tokens[0])
@@ -71,6 +71,7 @@ def get_effective_identity() -> Tuple[str, str]:
 # ---------------------------------------------------------------------------
 # Project ID API
 # ---------------------------------------------------------------------------
+
 
 def set_request_project_id(project_id: str) -> Token[Optional[str]]:
     """Set per-request project ID.  Returns token for later reset."""
@@ -121,9 +122,7 @@ def reset_collection_name(token: Token[Optional[str]]) -> None:
 # Role API
 # ---------------------------------------------------------------------------
 
-_request_role: ContextVar[Optional[str]] = ContextVar(
-    "_request_role", default=None
-)
+_request_role: ContextVar[Optional[str]] = ContextVar("_request_role", default=None)
 
 
 def set_request_role(role: str) -> Token[Optional[str]]:
