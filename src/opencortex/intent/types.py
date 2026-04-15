@@ -211,6 +211,26 @@ class SearchResult(MemoryDomainModel):
         return self
 
 
+def probe_confidence(probe_result: Optional[SearchResult]) -> float:
+    """Project bounded probe evidence into a cheap normalized confidence."""
+    if probe_result is None:
+        return 0.0
+    evidence = probe_result.evidence
+    top_score = evidence.top_score or 0.0
+    score_gap = evidence.score_gap or 0.0
+    object_top = evidence.object_top_score or 0.0
+    anchor_top = evidence.anchor_top_score or 0.0
+
+    confidence = top_score + min(score_gap, 0.18)
+    if object_top > 0.0 and anchor_top > 0.0:
+        confidence += 0.05 if abs(object_top - anchor_top) <= 0.15 else 0.02
+    if evidence.anchor_hit_count > 0:
+        confidence += min(0.08, evidence.anchor_hit_count * 0.02)
+    if evidence.candidate_count == 0:
+        confidence *= 0.45 if anchor_top <= 0.0 else 0.7
+    return round(max(0.0, min(1.0, confidence)), 4)
+
+
 class RetrievalPlan(MemoryDomainModel):
     """Phase 2 object-aware retrieval plan."""
 

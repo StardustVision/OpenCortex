@@ -19,6 +19,7 @@ from opencortex.intent.types import (
     RetrievalPlan,
     ScopeLevel,
     SearchResult,
+    probe_confidence,
 )
 from opencortex.memory import MemoryKind
 
@@ -100,7 +101,6 @@ class RecallPlanner:
         max_items: int,
         recall_mode: str,
         detail_level_override: Optional[str],
-        fallback_depth: Optional[RetrievalDepth] = None,
     ) -> Optional[RetrievalPlan]:
         """Build the Phase 2 planner output from bounded probe evidence."""
         if recall_mode == "never":
@@ -108,7 +108,7 @@ class RecallPlanner:
         if recall_mode == "auto" and not probe_result.should_recall:
             return None
 
-        confidence = self._probe_confidence(probe_result)
+        confidence = probe_confidence(probe_result)
         coarse_class = self._infer_class_prior(
             query=query,
             probe_result=probe_result,
@@ -121,7 +121,6 @@ class RecallPlanner:
             confidence=confidence,
             probe_result=probe_result,
             detail_level_override=detail_level_override,
-            fallback_depth=fallback_depth,
         )
 
         scope_level = probe_result.scope_level
@@ -390,30 +389,26 @@ class RecallPlanner:
         confidence: float,
         probe_result: SearchResult,
         detail_level_override: Optional[str],
-        fallback_depth: Optional[RetrievalDepth],
     ) -> RetrievalDepth:
         if detail_level_override:
             try:
                 return RetrievalDepth(detail_level_override)
             except ValueError:
-                if fallback_depth is not None:
-                    return fallback_depth
+                pass
 
         if _FULL_EVIDENCE_RE.search(query):
             return RetrievalDepth.L2
         if self._l0_is_sufficient(probe_result, confidence):
             return RetrievalDepth.L0
 
-        base_depth = fallback_depth
-        if base_depth is None:
-            if coarse_class in {
-                MemoryCoarseClass.PROFILE,
-                MemoryCoarseClass.EXPLORE,
-                MemoryCoarseClass.RELATIONAL,
-            }:
-                base_depth = RetrievalDepth.L1
-            else:
-                base_depth = RetrievalDepth.L0
+        if coarse_class in {
+            MemoryCoarseClass.PROFILE,
+            MemoryCoarseClass.EXPLORE,
+            MemoryCoarseClass.RELATIONAL,
+        }:
+            base_depth = RetrievalDepth.L1
+        else:
+            base_depth = RetrievalDepth.L0
 
         if (
             probe_result.evidence.object_candidate_count == 0
@@ -423,27 +418,6 @@ class RecallPlanner:
         if confidence < 0.4 and base_depth == RetrievalDepth.L0:
             return RetrievalDepth.L1
         return base_depth
-
-    @staticmethod
-    def _probe_confidence(probe_result: SearchResult) -> float:
-        evidence = probe_result.evidence
-        top_score = evidence.top_score or 0.0
-        score_gap = evidence.score_gap or 0.0
-        object_top = evidence.object_top_score or 0.0
-        anchor_top = evidence.anchor_top_score or 0.0
-
-        confidence = top_score + min(score_gap, 0.18)
-        if object_top > 0.0 and anchor_top > 0.0:
-            if abs(object_top - anchor_top) <= 0.15:
-                confidence += 0.05
-            else:
-                confidence += 0.02
-        if evidence.anchor_hit_count > 0:
-            confidence += min(0.08, evidence.anchor_hit_count * 0.02)
-        if evidence.candidate_count == 0:
-            confidence *= 0.45 if anchor_top <= 0.0 else 0.7
-
-        return round(max(0.0, min(1.0, confidence)), 4)
 
     @staticmethod
     def _l0_is_sufficient(

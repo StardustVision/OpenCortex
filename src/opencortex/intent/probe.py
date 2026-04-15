@@ -36,7 +36,6 @@ _TIME_TOKEN_RE = re.compile(
     r"\b(?:\d{4}-\d{2}-\d{2}|\d{4}|\d{1,2}:\d{2}|yesterday|today|tomorrow|last|next)\b",
     re.IGNORECASE,
 )
-_CJK_TOKEN_RE = re.compile(r"[\u4e00-\u9fff]")
 _WHITESPACE_RE = re.compile(r"\s+")
 _LEAF_FILTER = {"op": "must", "field": "is_leaf", "conds": [True]}
 _OBJECT_SURFACE_FILTER = {
@@ -265,7 +264,6 @@ class MemoryBootstrapProbe:
         if result.scope_authoritative and not result.candidate_entries and not result.anchor_hits:
             result.should_recall = False
             result.scoped_miss = True
-            result.fallback_ready = False
             result.trace.scoped_miss = True
 
         self._last_probe_trace = result.trace.to_dict()
@@ -455,17 +453,7 @@ class MemoryBootstrapProbe:
             selected_scope_level = ScopeLevel.CONTAINER_SCOPED
             if scope_input.target_uri:
                 selected_root_uris = [scope_input.target_uri]
-            return (
-                selected_filter,
-                selected_scope_source,
-                selected_scope_authoritative,
-                selected_scope_level,
-                selected_root_uris,
-                starting_point_records,
-                starting_point_latency_ms,
-            )
-
-        if selected_scope_source in {
+        elif selected_scope_source in {
             ProbeScopeSource.SESSION_ID,
             ProbeScopeSource.SOURCE_DOC_ID,
             ProbeScopeSource.GLOBAL_ROOT,
@@ -477,53 +465,16 @@ class MemoryBootstrapProbe:
                     base_filter=base_filter,
                 )
             )
-
         if selected_scope_source == ProbeScopeSource.SESSION_ID:
             selected_scope_level = ScopeLevel.SESSION_ONLY
-            selected_root_uris = [
-                str(record.get("uri") or "")
-                for record in starting_point_records
-                if str(record.get("uri") or "").strip()
-            ][: self._top_k]
-            return (
-                selected_filter,
-                selected_scope_source,
-                selected_scope_authoritative,
-                selected_scope_level,
-                selected_root_uris,
-                starting_point_records,
-                starting_point_latency_ms,
-            )
-
-        if selected_scope_source == ProbeScopeSource.SOURCE_DOC_ID:
+            selected_root_uris = self._record_uris(starting_point_records)
+        elif selected_scope_source == ProbeScopeSource.SOURCE_DOC_ID:
             selected_scope_level = ScopeLevel.DOCUMENT_ONLY
-            selected_root_uris = [
-                str(record.get("uri") or "")
-                for record in starting_point_records
-                if str(record.get("uri") or "").strip()
-            ][: self._top_k]
-            return (
-                selected_filter,
-                selected_scope_source,
-                selected_scope_authoritative,
-                selected_scope_level,
-                selected_root_uris,
-                starting_point_records,
-                starting_point_latency_ms,
-            )
-
-        if selected_scope_source == ProbeScopeSource.CONTEXT_TYPE:
-            return (
-                selected_filter,
-                selected_scope_source,
-                selected_scope_authoritative,
-                selected_scope_level,
-                selected_root_uris,
-                starting_point_records,
-                starting_point_latency_ms,
-            )
-
-        if starting_point_records:
+            selected_root_uris = self._record_uris(starting_point_records)
+        elif (
+            selected_scope_source == ProbeScopeSource.GLOBAL_ROOT
+            and starting_point_records
+        ):
             top_record = starting_point_records[0]
             session_id = str(top_record.get("session_id") or "").strip()
             source_doc_id = str(top_record.get("source_doc_id") or "").strip()
@@ -535,11 +486,7 @@ class MemoryBootstrapProbe:
                     for record in starting_point_records
                     if str(record.get("session_id") or "").strip() == session_id
                 ][: self._top_k]
-                selected_root_uris = [
-                    str(record.get("uri") or "")
-                    for record in starting_point_records
-                    if str(record.get("uri") or "").strip()
-                ]
+                selected_root_uris = self._record_uris(starting_point_records)
                 selected_filter = _merge_filters(
                     base_filter,
                     {"op": "must", "field": "session_id", "conds": [session_id]},
@@ -552,11 +499,7 @@ class MemoryBootstrapProbe:
                     for record in starting_point_records
                     if str(record.get("source_doc_id") or "").strip() == source_doc_id
                 ][: self._top_k]
-                selected_root_uris = [
-                    str(record.get("uri") or "")
-                    for record in starting_point_records
-                    if str(record.get("uri") or "").strip()
-                ]
+                selected_root_uris = self._record_uris(starting_point_records)
                 selected_filter = _merge_filters(
                     base_filter,
                     {"op": "must", "field": "source_doc_id", "conds": [source_doc_id]},
@@ -741,8 +684,6 @@ class MemoryBootstrapProbe:
         if selected_scope_level != ScopeLevel.GLOBAL:
             scope_level = selected_scope_level
 
-        fallback_ready = False
-
         return SearchResult(
             should_recall=True,
             anchor_hits=anchor_values[:8],
@@ -754,7 +695,6 @@ class MemoryBootstrapProbe:
             scope_source=scope_source,
             scope_authoritative=scope_authoritative,
             selected_root_uris=selected_root_uris[: self._top_k],
-            fallback_ready=fallback_ready,
             evidence=SearchEvidence(
                 top_score=top_score,
                 score_gap=score_gap,
@@ -778,7 +718,6 @@ class MemoryBootstrapProbe:
                 selected_bucket_source=scope_source,
                 scope_authoritative=scope_authoritative,
                 selected_root_uris=selected_root_uris[: self._top_k],
-                fallback_ready=fallback_ready,
             ),
         )
 
@@ -843,6 +782,13 @@ class MemoryBootstrapProbe:
                 return float(raw_value)
         return None
 
+    def _record_uris(self, records: list[Dict[str, Any]]) -> list[str]:
+        return [
+            str(record.get("uri") or "")
+            for record in records
+            if str(record.get("uri") or "").strip()
+        ][: self._top_k]
+
     def _query_anchor_terms(self, query: str) -> list[str]:
         values: list[str] = []
 
@@ -862,8 +808,6 @@ class MemoryBootstrapProbe:
         for match in _CAPITALIZED_PHRASE_RE.findall(query):
             _add(match)
         for match in re.findall(r"[\u4e00-\u9fff]{2,}", query):
-            _add(match)
-        for match in _CJK_TOKEN_RE.findall(query):
             _add(match)
         for match in _PATH_SYMBOL_RE.findall(query):
             _add(match)

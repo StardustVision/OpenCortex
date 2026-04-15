@@ -157,7 +157,6 @@ class MemoryExecutor:
         stage_timing_ms: Dict[str, int] | None = None,
         retrieve_breakdown_ms: Dict[str, float] | None = None,
         hydration_actions: List[Dict[str, Any]] | None = None,
-        fallback_actions: List[Dict[str, Any]] | None = None,
         early_stop: bool = False,
     ) -> ExecutionResult:
         """Emit runtime result facts for a completed execution."""
@@ -180,7 +179,6 @@ class MemoryExecutor:
                 "early_stop": early_stop,
             },
             hydration=list(hydration_actions or []),
-            fallback=list(fallback_actions or []),
             latency_ms={
                 "execution": latency_ms,
                 "stages": dict(stage_timing_ms or {}),

@@ -101,6 +101,8 @@ class ContextManager:
         self._pending_tasks: Set[asyncio.Task] = set()
         # Session-scoped memory owner ids recalled during prepare().
         self._session_memory_owner_ids: Dict[SessionKey, Set[str]] = {}
+        # Session-scoped flag for rare full immediate cleanup retries.
+        self._session_pending_immediate_cleanup: Dict[SessionKey, bool] = {}
         # Conversation buffers: per-session incremental chunking
         self._conversation_buffers: Dict[SessionKey, ConversationBuffer] = {}
         # Skill selection tracking: (session_key, turn_id) -> set of skill URIs
@@ -1035,7 +1037,7 @@ class ContextManager:
             )
 
     async def _list_immediate_uris(self, session_id: str) -> List[str]:
-        """Return current session immediate source URIs for prefix cleanup."""
+        """Return current session immediate source URIs for fallback cleanup."""
         records = await self._orchestrator._storage.filter(
             self._orchestrator._get_collection(),
             {
@@ -1072,6 +1074,7 @@ class ContextManager:
     ) -> None:
         """Merge accumulated buffer snapshots into durable merged records."""
         tokens_for_identity = None
+        self._session_pending_immediate_cleanup.pop(sk, None)
         try:
             while True:
                 snapshot = await self._take_merge_snapshot(
@@ -1115,6 +1118,7 @@ class ContextManager:
                     try:
                         await self._delete_immediate_families(snapshot.immediate_uris)
                     except Exception as exc:
+                        self._session_pending_immediate_cleanup[sk] = True
                         logger.warning(
                             "[ContextManager] Immediate cleanup after merge: %s", exc
                         )
@@ -1161,11 +1165,12 @@ class ContextManager:
                             exc,
                         )
 
-                try:
-                    immediate_uris = await self._list_immediate_uris(session_id)
-                    await self._delete_immediate_families(immediate_uris)
-                except Exception as exc:
-                    logger.warning("[ContextManager] End cleanup immediates: %s", exc)
+                if self._session_pending_immediate_cleanup.pop(sk, False):
+                    try:
+                        immediate_uris = await self._list_immediate_uris(session_id)
+                        await self._delete_immediate_families(immediate_uris)
+                    except Exception as exc:
+                        logger.warning("[ContextManager] End cleanup immediates: %s", exc)
 
                 start_time = time.monotonic()
                 status = "closed"
@@ -1290,6 +1295,7 @@ class ContextManager:
         self._conversation_buffers.pop(sk, None)
         self._session_project_ids.pop(sk, None)
         self._session_memory_owner_ids.pop(sk, None)
+        self._session_pending_immediate_cleanup.pop(sk, None)
         # Clean up turn-scoped skill selections for this session
         stale_keys = [k for k in self._selected_skill_uris if k[0] == sk]
         for k in stale_keys:

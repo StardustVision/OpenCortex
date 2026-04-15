@@ -77,9 +77,7 @@ class LongMemEvalBench(EvalAdapter):
     def __init__(self) -> None:
         super().__init__()
         self._retrieve_method = "search"
-        self._lme_session_map: Dict[str, Dict[str, Any]] = {}
         self._lme_session_to_uri: Dict[str, str] = {}
-        self._session_uris_by_key: Dict[Tuple[int, str], List[str]] = {}
 
     def load_dataset(self, dataset_path: str, **kwargs) -> None:
         with open(dataset_path, encoding="utf-8") as file_obj:
@@ -180,9 +178,7 @@ class LongMemEvalBench(EvalAdapter):
         if max_qa > 0:
             qa_items = qa_items[:max_qa]
 
-        self._lme_session_map = {}
         self._lme_session_to_uri = {}
-        self._session_uris_by_key = {}
         errors: List[str] = []
         ingested = 0
 
@@ -249,8 +245,6 @@ class LongMemEvalBench(EvalAdapter):
 
                 for session_index, session_id in enumerate(session_ids):
                     uris = session_uris_by_index.get(session_index, [])
-                    key = (item_index, session_id)
-                    self._session_uris_by_key[key] = list(uris)
                     if session_id not in self._lme_session_to_uri and uris:
                         self._lme_session_to_uri[session_id] = uris[0]
 

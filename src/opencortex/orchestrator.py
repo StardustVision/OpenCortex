@@ -75,6 +75,7 @@ from opencortex.intent import (
     ScopeLevel,
     SearchResult,
 )
+from opencortex.intent.types import probe_confidence
 from opencortex.intent.timing import (
     StageTimingCollector,
     measure_async,
@@ -2522,26 +2523,6 @@ class MemoryOrchestrator:
             for rank, candidate in enumerate(probe_result.candidate_entries)
             if candidate.uri
         }
-
-    @staticmethod
-    def _probe_confidence(probe_result: Optional[SearchResult]) -> float:
-        """Project the bounded probe evidence into a cheap confidence score."""
-        if probe_result is None:
-            return 0.0
-        evidence = probe_result.evidence
-        top_score = evidence.top_score or 0.0
-        score_gap = evidence.score_gap or 0.0
-        object_top = evidence.object_top_score or 0.0
-        anchor_top = evidence.anchor_top_score or 0.0
-
-        confidence = top_score + min(score_gap, 0.18)
-        if object_top > 0.0 and anchor_top > 0.0:
-            confidence += 0.05 if abs(object_top - anchor_top) <= 0.15 else 0.02
-        if evidence.anchor_hit_count > 0:
-            confidence += min(0.08, evidence.anchor_hit_count * 0.02)
-        if evidence.candidate_count == 0:
-            confidence *= 0.45 if anchor_top <= 0.0 else 0.7
-        return max(0.0, min(1.0, confidence))
 
     def _start_point_filter(
         self,
