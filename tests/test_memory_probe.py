@@ -5,6 +5,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from opencortex.intent import MemoryBootstrapProbe
+from opencortex.intent.types import ScopeLevel
 
 
 class _StorageStub:
@@ -99,30 +100,28 @@ class TestMemoryProbe(unittest.IsolatedAsyncioTestCase):
             scope_filter={"op": "must", "field": "session_id", "conds": ["sess-1"]},
         )
 
-        self.assertEqual(
-            storage.calls[0]["filter"],
-            {
-                "op": "and",
-                "conds": [
-                    {
-                        "op": "and",
-                        "conds": [
-                            {"op": "must", "field": "scope", "conds": ["private"]},
-                            {"op": "must", "field": "session_id", "conds": ["sess-1"]},
-                        ],
-                    },
-                    {"op": "must", "field": "is_leaf", "conds": [True]},
-                ],
-            },
-        )
+        first_filter = str(storage.calls[0]["filter"])
+        self.assertIn("scope", first_filter)
+        self.assertIn("session_id", first_filter)
+        self.assertIn("is_leaf", first_filter)
+        self.assertIn("retrieval_surface", first_filter)
+        self.assertIn("l0_object", first_filter)
         self.assertTrue(
             any(
                 str(call.get("filter", {})).find("anchor_hits") >= 0
                 for call in storage.calls[1:]
             )
         )
+        self.assertTrue(
+            any(
+                str(call.get("filter", {})).find("anchor_surface") >= 0
+                for call in storage.calls[1:]
+            )
+        )
 
     async def test_probe_can_return_anchor_only_hits(self):
+        source_uri = "opencortex://memory/events/source-1"
+
         def _results(**kwargs):
             filt = kwargs.get("filter") or {}
             conds = filt.get("conds", []) if filt.get("op") == "and" else []
@@ -133,25 +132,20 @@ class TestMemoryProbe(unittest.IsolatedAsyncioTestCase):
             ):
                 return [
                     {
-                        "uri": "opencortex://memory/events/anchor-only",
+                        "uri": f"{source_uri}/anchors/anchor-only",
+                        "parent_uri": source_uri,
                         "category": "event",
                         "context_type": "memory",
-                        "abstract": "下周二去杭州出差，住在西湖边。",
+                        "abstract": "",
+                        "overview": "杭州",
                         "_text_score": 0.67,
+                        "retrieval_surface": "anchor_projection",
                         "anchor_hits": ["杭州", "下周二", "西湖"],
-                        "abstract_json": {
-                            "memory_kind": "event",
-                            "summary": "下周二去杭州出差，住在西湖边。",
-                            "anchors": [
-                                {"anchor_type": "entity", "value": "杭州", "text": "杭州"},
-                                {"anchor_type": "time", "value": "下周二", "text": "下周二"},
-                            ],
-                            "slots": {
-                                "entities": ["杭州"],
-                                "time_refs": ["下周二"],
-                                "topics": ["西湖"],
-                            },
-                        },
+                        "projection_target_uri": source_uri,
+                        "projection_target_abstract": "下周二去杭州出差，住在西湖边。",
+                        "projection_target_overview": "杭州出差安排",
+                        "meta": {"anchor_type": "entity", "anchor_text": "杭州"},
+                        "entities": ["杭州"],
                     }
                 ]
             return []
@@ -171,9 +165,140 @@ class TestMemoryProbe(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.evidence.object_top_score, None)
         self.assertEqual(result.evidence.anchor_top_score, 0.67)
         self.assertGreaterEqual(result.evidence.anchor_hit_count, 2)
-        self.assertEqual(result.candidate_entries[0].uri, "opencortex://memory/events/anchor-only")
+        self.assertEqual(result.candidate_entries[0].uri, source_uri)
+        self.assertEqual(
+            result.candidate_entries[0].abstract,
+            "下周二去杭州出差，住在西湖边。",
+        )
         self.assertIn("杭州", result.anchor_hits)
         self.assertGreater(result.trace.anchor_candidates, 0)
+
+    async def test_starting_points_empty_for_global_query(self):
+        probe = MemoryBootstrapProbe(
+            storage=_StorageStub([]),
+            embedder=_EmbedderStub(),
+            collection_resolver=lambda: "context",
+            filter_builder=lambda: {"op": "and", "conds": []},
+        )
+
+        result = await probe.probe("What happened before launch?")
+
+        self.assertTrue(result.should_recall)
+        self.assertEqual(result.starting_points, [])
+        self.assertEqual(result.scope_level, ScopeLevel.GLOBAL)
+        self.assertIn("launch", result.query_entities)
+
+    async def test_starting_points_session_scoped(self):
+        storage = _StorageStub(
+            [
+                {
+                    "uri": "opencortex://t/u/memories/events/s1",
+                    "session_id": "s1",
+                    "parent_uri": "opencortex://t/u/memories/events",
+                    "is_leaf": False,
+                    "abstract": "Session root",
+                    "_score": 0.9,
+                    "structured_slots": {
+                        "entities": ["Alice"],
+                        "time_refs": ["2024-01-01"],
+                    },
+                },
+                {
+                    "uri": "opencortex://t/u/memories/events/s1/m1",
+                    "session_id": "s1",
+                    "parent_uri": "opencortex://t/u/memories/events/s1",
+                    "is_leaf": True,
+                    "abstract": "Immediate message",
+                    "_score": 0.8,
+                    "meta": {"layer": "immediate"},
+                },
+            ]
+        )
+        probe = MemoryBootstrapProbe(
+            storage=storage,
+            embedder=_EmbedderStub(),
+            collection_resolver=lambda: "context",
+            filter_builder=lambda: {"op": "and", "conds": []},
+        )
+
+        result = await probe.probe("What did Alice say?")
+
+        self.assertEqual(len(result.starting_points), 1)
+        self.assertEqual(result.starting_points[0].uri, "opencortex://t/u/memories/events/s1")
+        self.assertEqual(result.starting_points[0].session_id, "s1")
+        self.assertEqual(result.scope_level, ScopeLevel.SESSION_ONLY)
+        self.assertIn("Alice", result.starting_point_anchors)
+
+    async def test_starting_points_document_scoped(self):
+        storage = _StorageStub(
+            [
+                {
+                    "uri": "opencortex://t/u/resources/documents/doc-1",
+                    "source_doc_id": "doc-1",
+                    "parent_uri": "",
+                    "is_leaf": False,
+                    "abstract": "Document root",
+                    "_score": 0.85,
+                    "structured_slots": {
+                        "entities": ["Project X"],
+                    },
+                },
+                {
+                    "uri": "opencortex://t/u/resources/documents/doc-1/chunk-1",
+                    "source_doc_id": "doc-1",
+                    "parent_uri": "opencortex://t/u/resources/documents/doc-1",
+                    "is_leaf": True,
+                    "abstract": "Chunk",
+                    "_score": 0.75,
+                },
+            ]
+        )
+        probe = MemoryBootstrapProbe(
+            storage=storage,
+            embedder=_EmbedderStub(),
+            collection_resolver=lambda: "context",
+            filter_builder=lambda: {"op": "and", "conds": []},
+        )
+
+        result = await probe.probe("Tell me about Project X")
+
+        self.assertEqual(len(result.starting_points), 1)
+        self.assertEqual(result.starting_points[0].uri, "opencortex://t/u/resources/documents/doc-1")
+        self.assertEqual(result.starting_points[0].source_doc_id, "doc-1")
+        self.assertEqual(result.scope_level, ScopeLevel.DOCUMENT_ONLY)
+
+    async def test_starting_points_most_specific_scope_wins(self):
+        storage = _StorageStub(
+            [
+                {
+                    "uri": "opencortex://t/u/memories/events/s1",
+                    "session_id": "s1",
+                    "parent_uri": "opencortex://t/u/memories/events",
+                    "is_leaf": False,
+                    "abstract": "Session root",
+                    "_score": 0.9,
+                },
+                {
+                    "uri": "opencortex://t/u/memories/events/s1/nested/container",
+                    "session_id": "s1",
+                    "parent_uri": "opencortex://t/u/memories/events/s1/nested",
+                    "is_leaf": False,
+                    "abstract": "Nested container",
+                    "_score": 0.85,
+                },
+            ]
+        )
+        probe = MemoryBootstrapProbe(
+            storage=storage,
+            embedder=_EmbedderStub(),
+            collection_resolver=lambda: "context",
+            filter_builder=lambda: {"op": "and", "conds": []},
+        )
+
+        result = await probe.probe("Query")
+
+        self.assertEqual(len(result.starting_points), 2)
+        self.assertEqual(result.scope_level, ScopeLevel.CONTAINER_SCOPED)
 
 
 if __name__ == "__main__":

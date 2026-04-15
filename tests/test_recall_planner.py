@@ -31,6 +31,10 @@ class TestRecallPlanContracts(unittest.TestCase):
                 "should_recall": False,
                 "anchor_hits": [],
                 "candidate_entries": [],
+                "starting_points": [],
+                "query_entities": [],
+                "starting_point_anchors": [],
+                "scope_level": "global",
                 "evidence": {
                     "top_score": None,
                     "score_gap": None,
@@ -50,6 +54,7 @@ class TestRecallPlanContracts(unittest.TestCase):
                     "anchor_latency_ms": None,
                     "object_candidates": 0,
                     "anchor_candidates": 0,
+                    "starting_points": 0,
                     "degraded": False,
                     "degrade_reason": None,
                 },
@@ -209,6 +214,30 @@ class TestRecallPlannerIntegration(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.total, 1)
         self.assertEqual(result.memories[0].session_id, "sess-a")
+
+    async def test_search_upgrades_to_l2_when_l1_evidence_is_insufficient(self):
+        long_content = (
+            "用户在出差订酒店时总是优先选择安静、靠湖、步行可达会场的酒店，"
+            "并且明确避免夜生活区域和高噪音街区。"
+            * 20
+        )
+        await self.orch.add(
+            abstract="User prefers quiet hotels for work travel.",
+            content=long_content,
+            category="profile",
+            context_type="memory",
+        )
+
+        result = await self.orch.search(
+            "Based on my habits, what hotel would I likely pick on a work trip?",
+            limit=3,
+        )
+
+        payload = result.to_dict()["memory_pipeline"]["runtime"]
+        self.assertEqual(payload["trace"]["effective"]["retrieval_depth"], "l2")
+        self.assertEqual(payload["trace"]["hydration"][0]["decision"], "upgrade_l2")
+        self.assertTrue(result.memories)
+        self.assertIsNotNone(result.memories[0].content)
 
 
 if __name__ == "__main__":

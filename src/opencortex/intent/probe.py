@@ -14,9 +14,11 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 from opencortex.intent.types import (
     MemoryProbeTrace,
+    ScopeLevel,
     SearchCandidate,
     SearchEvidence,
     SearchResult,
+    StartingPoint,
 )
 from opencortex.memory import memory_object_view_from_record
 
@@ -195,7 +197,7 @@ class MemoryBootstrapProbe:
         try:
             query_vector = self._embed_query(query_stripped)
             base_filter = _merge_filters(self._filter_builder(), scope_filter)
-            object_probe, anchor_probe = await asyncio.gather(
+            object_probe, anchor_probe, starting_point_probe = await asyncio.gather(
                 self._timed_probe(
                     self._object_probe(
                         query=query_stripped,
@@ -209,13 +211,23 @@ class MemoryBootstrapProbe:
                         base_filter=base_filter,
                     )
                 ),
+                self._timed_probe(
+                    self._starting_point_probe(
+                        query=query_stripped,
+                        query_vector=query_vector,
+                        base_filter=base_filter,
+                    )
+                ),
             )
             result = self._build_probe_result(
+                query=query_stripped,
                 object_records=object_probe[0],
                 anchor_records=anchor_probe[0],
+                starting_point_records=starting_point_probe[0],
                 latency_ms=(time.perf_counter() - started) * 1000.0,
                 object_latency_ms=object_probe[1],
                 anchor_latency_ms=anchor_probe[1],
+                starting_point_latency_ms=starting_point_probe[1],
             )
         except Exception as exc:
             logger.warning("[MemoryBootstrapProbe] probe failed: %s", exc)
@@ -313,14 +325,89 @@ class MemoryBootstrapProbe:
         )
         return anchor_records[: max(self._top_k, 1)]
 
+    async def _starting_point_probe(
+        self,
+        *,
+        query: str,
+        query_vector: Optional[list[float]],
+        base_filter: Optional[Dict[str, Any]],
+    ) -> list[Dict[str, Any]]:
+        """Find session/document roots as starting points for scoped retrieval."""
+        immediate_exclude = {
+            "op": "must_not",
+            "field": "meta.layer",
+            "conds": ["immediate"],
+        }
+        sp_filter = _merge_filters(base_filter, immediate_exclude)
+
+        records = await self._storage.search(
+            collection=self._collection_resolver(),
+            query_vector=query_vector,
+            filter=sp_filter,
+            limit=max(self._top_k * 5, 5),
+            text_query=query,
+        )
+
+        starting_points: list[Dict[str, Any]] = []
+        for record in records:
+            session_id = str(record.get("session_id") or "").strip()
+            source_doc_id = str(record.get("source_doc_id") or "").strip()
+            parent_uri = str(record.get("parent_uri") or "").strip()
+            uri = str(record.get("uri") or "").strip()
+
+            if not session_id and not source_doc_id:
+                continue
+
+            # Defensive: skip per-message immediates that slipped through
+            meta_layer = (record.get("meta") or {}).get("layer")
+            if meta_layer == "immediate":
+                continue
+
+            if session_id:
+                starting_points.append(record)
+                continue
+
+            if source_doc_id:
+                is_doc_root = False
+                if not parent_uri:
+                    is_doc_root = True
+                else:
+                    uri_parts = uri.rstrip("/").split("/")
+                    if (
+                        len(uri_parts) >= 2
+                        and uri_parts[-1] == source_doc_id
+                        and uri_parts[-2] == "documents"
+                    ):
+                        is_doc_root = True
+                if is_doc_root:
+                    starting_points.append(record)
+
+        seen: set[str] = set()
+        deduped: list[Dict[str, Any]] = []
+        for record in sorted(
+            starting_points,
+            key=lambda r: self._record_score(r) or 0.0,
+            reverse=True,
+        ):
+            uri = str(record.get("uri") or "")
+            if uri and uri not in seen:
+                seen.add(uri)
+                deduped.append(record)
+                if len(deduped) >= self._top_k:
+                    break
+        return deduped
+
     def _build_probe_result(
         self,
         *,
+        query: str,
         object_records: list[Dict[str, Any]],
         anchor_records: list[Dict[str, Any]],
+        starting_point_records: list[Dict[str, Any]],
         latency_ms: float,
         object_latency_ms: float,
         anchor_latency_ms: float,
+        starting_point_latency_ms: float,
     ) -> SearchResult:
         candidate_entries_by_uri: Dict[str, SearchCandidate] = {}
         anchor_values: list[str] = []
@@ -405,10 +492,91 @@ class MemoryBootstrapProbe:
         if len(scores) >= 2:
             score_gap = round(scores[0] - scores[1], 4)
 
+        query_entities = self._query_anchor_terms(query)
+
+        starting_points: list[StartingPoint] = []
+        starting_point_anchors: list[str] = []
+        scope_levels: set[ScopeLevel] = set()
+
+        for record in starting_point_records:
+            session_id = str(record.get("session_id") or "").strip() or None
+            source_doc_id = str(record.get("source_doc_id") or "").strip() or None
+            parent_uri = str(record.get("parent_uri") or "").strip() or None
+            uri = str(record.get("uri") or "").strip()
+
+            structured_slots = record.get("structured_slots", {})
+            if not structured_slots and "entities" in record:
+                structured_slots = {
+                    "entities": record.get("entities", []),
+                    "time_refs": record.get("time_refs", []),
+                }
+            entities = [
+                str(v).strip()
+                for v in structured_slots.get("entities", [])
+                if str(v).strip()
+            ]
+            time_refs = [
+                str(v).strip()
+                for v in structured_slots.get("time_refs", [])
+                if str(v).strip()
+            ]
+            score = self._record_score(record) or 0.0
+
+            starting_points.append(
+                StartingPoint(
+                    uri=uri,
+                    session_id=session_id,
+                    source_doc_id=source_doc_id,
+                    parent_uri=parent_uri,
+                    entities=entities,
+                    time_refs=time_refs,
+                    score=score,
+                )
+            )
+
+            for value in entities + time_refs:
+                if value and value not in starting_point_anchors:
+                    starting_point_anchors.append(value)
+
+            if session_id and parent_uri:
+                # Session root or session-scoped roots are treated as SESSION_ONLY
+                # because conversation records currently hang directly off the
+                # session root; parent_uri traversal would miss them.
+                parent_norm = parent_uri.rstrip("/")
+                if (
+                    parent_norm.endswith(f"/events/{session_id}")
+                    or parent_norm.endswith("/events")
+                ):
+                    scope_levels.add(ScopeLevel.SESSION_ONLY)
+                else:
+                    scope_levels.add(ScopeLevel.CONTAINER_SCOPED)
+            elif session_id:
+                scope_levels.add(ScopeLevel.SESSION_ONLY)
+            elif source_doc_id:
+                scope_levels.add(ScopeLevel.DOCUMENT_ONLY)
+            else:
+                scope_levels.add(ScopeLevel.GLOBAL)
+
+        # Most specific scope level wins
+        scope_level = ScopeLevel.GLOBAL
+        if ScopeLevel.CONTAINER_SCOPED in scope_levels:
+            scope_level = ScopeLevel.CONTAINER_SCOPED
+        elif ScopeLevel.SESSION_ONLY in scope_levels:
+            scope_level = ScopeLevel.SESSION_ONLY
+        elif ScopeLevel.DOCUMENT_ONLY in scope_levels:
+            scope_level = ScopeLevel.DOCUMENT_ONLY
+
+        if not starting_points:
+            scope_level = ScopeLevel.GLOBAL
+
         return SearchResult(
             should_recall=True,
             anchor_hits=anchor_values[:8],
             candidate_entries=candidate_entries,
+            starting_points=starting_points,
+            query_entities=query_entities,
+            starting_point_anchors=starting_point_anchors[:8],
+            scope_level=scope_level,
             evidence=SearchEvidence(
                 top_score=top_score,
                 score_gap=score_gap,
@@ -426,6 +594,7 @@ class MemoryBootstrapProbe:
                 latency_ms=round(latency_ms, 4),
                 object_latency_ms=round(object_latency_ms, 4),
                 anchor_latency_ms=round(anchor_latency_ms, 4),
+                starting_points=len(starting_points),
                 object_candidates=len(object_records),
                 anchor_candidates=len(anchor_records),
             ),
