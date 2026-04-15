@@ -217,6 +217,12 @@ class RecallPlanner:
         for match in _TIME_RE.findall(query):
             _append_anchor(QueryAnchorKind.TIME, match)
 
+        for value in probe_result.query_entities:
+            kind = QueryAnchorKind.TIME if _TIME_RE.search(value) else QueryAnchorKind.ENTITY
+            _append_anchor(kind, value)
+            if len(anchors) >= 6:
+                return anchors[:6]
+
         for candidate in probe_result.candidate_entries:
             for value in candidate.anchors:
                 kind = QueryAnchorKind.TIME if _TIME_RE.search(value) else QueryAnchorKind.TOPIC

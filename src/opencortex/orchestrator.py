@@ -2401,6 +2401,15 @@ class MemoryOrchestrator:
                 normalized = self._normalize_anchor_value(anchor)
                 if normalized:
                     topic_group.add(normalized)
+            entity_group = groups.setdefault(QueryAnchorKind.ENTITY.value, set())
+            for value in probe_result.query_entities:
+                normalized = self._normalize_anchor_value(value)
+                if normalized:
+                    entity_group.add(normalized)
+            for value in probe_result.starting_point_anchors:
+                normalized = self._normalize_anchor_value(value)
+                if normalized:
+                    topic_group.add(normalized)
 
         return groups
 
