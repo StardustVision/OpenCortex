@@ -16,6 +16,7 @@ from opencortex.intent.types import (
     QueryRewriteMode,
     RetrievalDepth,
     RetrievalPlan,
+    ScopeLevel,
     SearchResult,
 )
 from opencortex.memory import MemoryKind
@@ -122,6 +123,18 @@ class RecallPlanner:
             fallback_depth=fallback_depth,
         )
 
+        # Enforce invariant: no starting points → scope must be global
+        scope_level = probe_result.scope_level
+        if not probe_result.starting_points:
+            scope_level = ScopeLevel.GLOBAL
+
+        session_scope = None
+        if probe_result.starting_points:
+            for sp in probe_result.starting_points:
+                if sp.session_id:
+                    session_scope = sp.session_id
+                    break
+
         return RetrievalPlan(
             target_memory_kinds=self._target_memory_kinds(
                 query=query,
@@ -145,6 +158,8 @@ class RecallPlanner:
                 probe_result=probe_result,
             ),
             retrieval_depth=retrieval_depth,
+            scope_level=scope_level,
+            session_scope=session_scope,
             confidence=confidence,
             decision=self._decision_for_depth(retrieval_depth),
         )
@@ -210,6 +225,12 @@ class RecallPlanner:
                     return anchors[:6]
 
         for value in probe_result.anchor_hits:
+            kind = QueryAnchorKind.TIME if _TIME_RE.search(value) else QueryAnchorKind.TOPIC
+            _append_anchor(kind, value)
+            if len(anchors) >= 6:
+                return anchors[:6]
+
+        for value in probe_result.starting_point_anchors:
             kind = QueryAnchorKind.TIME if _TIME_RE.search(value) else QueryAnchorKind.TOPIC
             _append_anchor(kind, value)
             if len(anchors) >= 6:
@@ -313,18 +334,25 @@ class RecallPlanner:
         recall_budget += min(max_items, 10) / 150.0
         recall_budget = round(max(0.15, min(0.75, recall_budget)), 4)
 
+        has_starting_points = bool(probe_result.starting_points)
+        has_starting_point_anchors = bool(probe_result.starting_point_anchors)
+
         association_budget = 0.0
         if self._cone_enabled:
-            association_budget = policy["association"]
-            if coarse_class == MemoryCoarseClass.RELATIONAL:
-                association_budget += 0.12
-                if evidence.anchor_hit_count > 0:
-                    association_budget += 0.08
-            elif coarse_class == MemoryCoarseClass.EXPLORE and evidence.anchor_hit_count > 1:
-                association_budget += 0.05
-            if confidence > 0.8 and coarse_class != MemoryCoarseClass.RELATIONAL:
-                association_budget -= 0.05
-            association_budget = round(max(0.0, min(0.85, association_budget)), 4)
+            if has_starting_points and not has_starting_point_anchors:
+                # Case 2: scope-constrained retrieval without cone expansion
+                association_budget = 0.0
+            else:
+                association_budget = policy["association"]
+                if coarse_class == MemoryCoarseClass.RELATIONAL:
+                    association_budget += 0.12
+                    if evidence.anchor_hit_count > 0:
+                        association_budget += 0.08
+                elif coarse_class == MemoryCoarseClass.EXPLORE and evidence.anchor_hit_count > 1:
+                    association_budget += 0.05
+                if confidence > 0.8 and coarse_class != MemoryCoarseClass.RELATIONAL:
+                    association_budget -= 0.05
+                association_budget = round(max(0.0, min(0.85, association_budget)), 4)
 
         rerank = bool(
             policy["rerank"]

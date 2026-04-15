@@ -6,7 +6,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 sys.path.insert(0, os.path.dirname(__file__))
 
 from opencortex.config import CortexConfig, init_config
-from opencortex.intent import ExecutionResult, RetrievalPlan, SearchResult
+from opencortex.intent import ExecutionResult, RecallPlanner, RetrievalPlan, SearchResult
+from opencortex.intent.types import ScopeLevel, StartingPoint
 from opencortex.memory import MemoryKind
 from opencortex.orchestrator import MemoryOrchestrator
 from opencortex.retrieve.types import FindResult
@@ -238,6 +239,155 @@ class TestRecallPlannerIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["trace"]["hydration"][0]["decision"], "upgrade_l2")
         self.assertTrue(result.memories)
         self.assertIsNotNone(result.memories[0].content)
+
+
+class TestRecallPlannerStartingPoints(unittest.TestCase):
+    def _make_probe(
+        self,
+        *,
+        starting_points=None,
+        starting_point_anchors=None,
+        query_entities=None,
+        scope_level=ScopeLevel.GLOBAL,
+    ):
+        return SearchResult(
+            should_recall=True,
+            evidence={"candidate_count": 1, "top_score": 0.8},
+            starting_points=starting_points or [],
+            starting_point_anchors=starting_point_anchors or [],
+            query_entities=query_entities or [],
+            scope_level=scope_level,
+        )
+
+    def test_case1_starting_points_with_anchors_enables_scope_and_cone(self):
+        probe = SearchResult(
+            should_recall=True,
+            evidence={
+                "candidate_count": 3,
+                "top_score": 0.8,
+                "anchor_hit_count": 2,
+            },
+            candidate_entries=[
+                {"uri": "opencortex://memory/1", "memory_kind": "event"},
+                {"uri": "opencortex://memory/2", "memory_kind": "event"},
+                {"uri": "opencortex://memory/3", "memory_kind": "summary"},
+            ],
+            starting_points=[
+                StartingPoint(
+                    uri="opencortex://t/u/memories/events/s1",
+                    session_id="s1",
+                    entities=["Alice"],
+                )
+            ],
+            starting_point_anchors=["Alice"],
+            query_entities=["Alice"],
+            scope_level=ScopeLevel.SESSION_ONLY,
+        )
+        planner = RecallPlanner(cone_enabled=True)
+        plan = planner.semantic_plan(
+            query="summarize everything Alice said",
+            probe_result=probe,
+            max_items=5,
+            recall_mode="auto",
+            detail_level_override=None,
+        )
+        assert plan is not None
+        self.assertEqual(plan.scope_level, ScopeLevel.SESSION_ONLY)
+        self.assertEqual(plan.session_scope, "s1")
+        self.assertGreater(plan.search_profile.association_budget, 0.0)
+        self.assertTrue(any(a.value == "Alice" for a in plan.query_plan.anchors))
+
+    def test_case2_starting_points_without_anchors_disables_cone(self):
+        probe = self._make_probe(
+            starting_points=[
+                StartingPoint(
+                    uri="opencortex://t/u/memories/events/s1",
+                    session_id="s1",
+                )
+            ],
+            starting_point_anchors=[],
+            query_entities=["what"],
+            scope_level=ScopeLevel.SESSION_ONLY,
+        )
+        planner = RecallPlanner(cone_enabled=True)
+        plan = planner.semantic_plan(
+            query="What happened?",
+            probe_result=probe,
+            max_items=5,
+            recall_mode="auto",
+            detail_level_override=None,
+        )
+        assert plan is not None
+        self.assertEqual(plan.scope_level, ScopeLevel.SESSION_ONLY)
+        self.assertEqual(plan.session_scope, "s1")
+        self.assertEqual(plan.search_profile.association_budget, 0.0)
+
+    def test_case3_no_starting_points_with_query_entities_enables_global_cone(self):
+        probe = self._make_probe(
+            starting_points=[],
+            starting_point_anchors=[],
+            query_entities=["Project X"],
+            scope_level=ScopeLevel.GLOBAL,
+        )
+        planner = RecallPlanner(cone_enabled=True)
+        plan = planner.semantic_plan(
+            query="Tell me about Project X",
+            probe_result=probe,
+            max_items=5,
+            recall_mode="auto",
+            detail_level_override=None,
+        )
+        assert plan is not None
+        self.assertEqual(plan.scope_level, ScopeLevel.GLOBAL)
+        self.assertIsNone(plan.session_scope)
+        # EXPLORE coarse class with anchor_hit_count=0 won't boost association,
+        # but base association for EXPLORE is 0.35
+        self.assertGreaterEqual(plan.search_profile.association_budget, 0.0)
+
+    def test_case4_no_starting_points_no_entities_fallback_global(self):
+        probe = self._make_probe(
+            starting_points=[],
+            starting_point_anchors=[],
+            query_entities=[],
+            scope_level=ScopeLevel.GLOBAL,
+        )
+        planner = RecallPlanner(cone_enabled=True)
+        plan = planner.semantic_plan(
+            query="What?",
+            probe_result=probe,
+            max_items=5,
+            recall_mode="auto",
+            detail_level_override=None,
+        )
+        assert plan is not None
+        self.assertEqual(plan.scope_level, ScopeLevel.GLOBAL)
+        self.assertEqual(plan.search_profile.association_budget, 0.0)
+
+    def test_most_specific_scope_level_wins(self):
+        probe = self._make_probe(
+            starting_points=[
+                StartingPoint(
+                    uri="opencortex://t/u/memories/events/s1",
+                    session_id="s1",
+                ),
+                StartingPoint(
+                    uri="opencortex://t/u/resources/documents/d1",
+                    source_doc_id="d1",
+                ),
+            ],
+            scope_level=ScopeLevel.SESSION_ONLY,  # probe already computed this
+        )
+        planner = RecallPlanner(cone_enabled=True)
+        plan = planner.semantic_plan(
+            query="Query",
+            probe_result=probe,
+            max_items=5,
+            recall_mode="auto",
+            detail_level_override=None,
+        )
+        assert plan is not None
+        # session_scope is extracted from starting points, overriding document
+        self.assertEqual(plan.session_scope, "s1")
 
 
 if __name__ == "__main__":
