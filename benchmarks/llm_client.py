@@ -59,8 +59,14 @@ class LLMClient:
                 await asyncio.sleep(min(2 ** attempt, 120))
             except httpx.HTTPStatusError as e:
                 if attempt >= retries or e.response.status_code not in (429, 500, 502, 503):
-                    raise
+                    body = e.response.text[:500]
+                    raise RuntimeError(f"LLM HTTP {e.response.status_code}: {body}") from e
                 await asyncio.sleep(min(2 ** attempt, 120))
+            except Exception as e:
+                if "JSONDecodeError" in type(e).__name__ or "Expecting value" in str(e):
+                    body = resp.text[:500] if "resp" in locals() else ""
+                    raise RuntimeError(f"LLM returned non-JSON (status {resp.status_code}): {body}") from e
+                raise
         return ""
 
     async def close(self):

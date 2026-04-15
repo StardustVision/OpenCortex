@@ -28,3 +28,6 @@ benchmark_*/
 mcp.json
 data_hotpotqa/
 .vite/
+docs/benchmark/*.json
+docs/benchmark/*.log
+docs/benchmark/*.md
