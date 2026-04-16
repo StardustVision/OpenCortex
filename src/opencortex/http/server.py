@@ -525,7 +525,11 @@ def _register_routes(app: FastAPI) -> None:
 
             tid, uid = get_effective_identity()
             _orchestrator._observer.record_batch(
-                session_id=req.session_id,
+                session_id=_orchestrator._observer_session_id(
+                    req.session_id,
+                    tenant_id=tid,
+                    user_id=uid,
+                ),
                 messages=req.messages,
                 tenant_id=tid,
                 user_id=uid,

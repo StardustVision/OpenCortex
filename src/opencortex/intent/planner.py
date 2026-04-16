@@ -197,6 +197,7 @@ class RecallPlanner:
         query: str,
         probe_result: SearchResult,
     ) -> list[QueryAnchor]:
+        """Extract query-derived anchors without feeding probe evidence back in."""
         anchors: list[QueryAnchor] = []
 
         def _append_anchor(kind: QueryAnchorKind, value: str) -> None:
@@ -215,35 +216,6 @@ class RecallPlanner:
 
         for value in probe_result.query_entities:
             kind = QueryAnchorKind.TIME if _TIME_RE.search(value) else QueryAnchorKind.ENTITY
-            _append_anchor(kind, value)
-            if len(anchors) >= 6:
-                return anchors[:6]
-
-        for starting_point in probe_result.starting_points:
-            for value in starting_point.time_refs:
-                _append_anchor(QueryAnchorKind.TIME, value)
-                if len(anchors) >= 6:
-                    return anchors[:6]
-            for value in starting_point.entities:
-                _append_anchor(QueryAnchorKind.ENTITY, value)
-                if len(anchors) >= 6:
-                    return anchors[:6]
-
-        for candidate in probe_result.candidate_entries:
-            for value in candidate.anchors:
-                kind = QueryAnchorKind.TIME if _TIME_RE.search(value) else QueryAnchorKind.TOPIC
-                _append_anchor(kind, value)
-                if len(anchors) >= 6:
-                    return anchors[:6]
-
-        for value in probe_result.anchor_hits:
-            kind = QueryAnchorKind.TIME if _TIME_RE.search(value) else QueryAnchorKind.TOPIC
-            _append_anchor(kind, value)
-            if len(anchors) >= 6:
-                return anchors[:6]
-
-        for value in probe_result.starting_point_anchors:
-            kind = QueryAnchorKind.TIME if _TIME_RE.search(value) else QueryAnchorKind.TOPIC
             _append_anchor(kind, value)
             if len(anchors) >= 6:
                 return anchors[:6]

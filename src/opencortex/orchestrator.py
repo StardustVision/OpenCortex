@@ -240,6 +240,27 @@ class MemoryOrchestrator:
 
         return get_collection_name() or _CONTEXT_COLLECTION
 
+    def _observer_session_id(
+        self,
+        session_id: str,
+        *,
+        tenant_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> str:
+        """Return one observer-only session key scoped by collection and identity."""
+        resolved_tenant_id = tenant_id
+        resolved_user_id = user_id
+        if resolved_tenant_id is None or resolved_user_id is None:
+            resolved_tenant_id, resolved_user_id = get_effective_identity()
+        return "::".join(
+            (
+                self._get_collection(),
+                resolved_tenant_id,
+                resolved_user_id,
+                session_id,
+            )
+        )
+
     # =========================================================================
     # Initialization
     # =========================================================================
@@ -1228,7 +1249,7 @@ class MemoryOrchestrator:
                         prompt_builder=lambda chunk: build_layer_derivation_prompt(
                             chunk, user_abstract
                         ),
-                        llm_fn=self._llm_completion,
+                        llm_fn=self._derive_layers_llm_completion,
                         parse_fn=parse_json_from_response,
                         max_chars_per_chunk=4000,
                     )
@@ -1252,14 +1273,18 @@ class MemoryOrchestrator:
                         ][:6]
                     else:
                         anchor_handles = []
+                    resolved_overview = self._fallback_overview_from_content(
+                        user_overview=user_overview or llm_overview,
+                        content=content,
+                    )
                     derived_abstract = self._derive_abstract_from_overview(
                         user_abstract=user_abstract,
-                        overview=(user_overview or llm_overview),
+                        overview=resolved_overview,
                         content=content,
                     )
                     return {
                         "abstract": derived_abstract,
-                        "overview": user_overview or llm_overview,
+                        "overview": resolved_overview,
                         "keywords": keywords,
                         "entities": entities,
                         "anchor_handles": anchor_handles,
@@ -1270,7 +1295,7 @@ class MemoryOrchestrator:
                     )
             prompt = build_layer_derivation_prompt(content, user_abstract)
             try:
-                response = await self._llm_completion(prompt)
+                response = await self._derive_layers_llm_completion(prompt)
                 data = parse_json_from_response(response)
                 if isinstance(data, dict):
                     llm_overview = (data.get("overview") or "").strip()
@@ -1293,14 +1318,18 @@ class MemoryOrchestrator:
                         ][:6]
                     else:
                         anchor_handles = []
+                    resolved_overview = self._fallback_overview_from_content(
+                        user_overview=user_overview or llm_overview,
+                        content=content,
+                    )
                     derived_abstract = self._derive_abstract_from_overview(
                         user_abstract=user_abstract,
-                        overview=(user_overview or llm_overview),
+                        overview=resolved_overview,
                         content=content,
                     )
                     return {
                         "abstract": derived_abstract,
-                        "overview": user_overview or llm_overview,
+                        "overview": resolved_overview,
                         "keywords": keywords,
                         "entities": entities,
                         "anchor_handles": anchor_handles,
@@ -1309,9 +1338,10 @@ class MemoryOrchestrator:
                 logger.warning("[Orchestrator] _derive_layers LLM failed: %s", e)
 
         # No-LLM fallback
-        overview = user_overview
-        if not overview and content and len(content) <= 500:
-            overview = content
+        overview = self._fallback_overview_from_content(
+            user_overview=user_overview,
+            content=content,
+        )
         abstract = self._derive_abstract_from_overview(
             user_abstract=user_abstract,
             overview=overview,
@@ -1328,6 +1358,64 @@ class MemoryOrchestrator:
             "entities": [],
             "anchor_handles": [],
         }
+
+    @staticmethod
+    def _fallback_overview_from_content(
+        *,
+        user_overview: str,
+        content: str,
+    ) -> str:
+        """Build a deterministic overview fallback when LLM output is absent."""
+        if user_overview:
+            return user_overview
+
+        normalized_content = str(content or "").strip()
+        if not normalized_content:
+            return ""
+
+        max_chars = min(max(len(normalized_content), 1), 1200)
+        overview = smart_truncate(normalized_content, max_chars).strip()
+        return overview or normalized_content[:max_chars].strip()
+
+    @staticmethod
+    def _is_retryable_layer_derivation_error(exc: Exception) -> bool:
+        """Return whether one layer-derivation LLM failure is transient."""
+        try:
+            import httpx
+        except ImportError:
+            return False
+
+        if isinstance(exc, (httpx.TimeoutException, httpx.TransportError)):
+            return True
+        if isinstance(exc, httpx.HTTPStatusError):
+            return exc.response.status_code == 429 or exc.response.status_code >= 500
+        return False
+
+    async def _derive_layers_llm_completion(self, prompt: str) -> str:
+        """Call layer-derivation LLM with a small bounded retry budget."""
+        if self._llm_completion is None:
+            raise RuntimeError("LLM completion unavailable")
+
+        retry_delays = (0.0, 0.35, 0.8)
+        for attempt, delay in enumerate(retry_delays, start=1):
+            if delay > 0.0:
+                await asyncio.sleep(delay)
+            try:
+                return await self._llm_completion(prompt)
+            except Exception as exc:
+                if (
+                    not self._is_retryable_layer_derivation_error(exc)
+                    or attempt == len(retry_delays)
+                ):
+                    raise
+                logger.warning(
+                    "[Orchestrator] _derive_layers transient LLM failure attempt=%d/%d: %s",
+                    attempt,
+                    len(retry_delays),
+                    exc,
+                )
+
+        raise RuntimeError("unreachable")
 
     @staticmethod
     def _derive_abstract_from_overview(
@@ -1629,6 +1717,9 @@ class MemoryOrchestrator:
         if not uri:
             uri = self._auto_uri(context_type or "memory", category, abstract=abstract)
             uri = await self._resolve_unique_uri(uri)
+            existing_record = None
+        else:
+            existing_record = await self._get_record_by_uri(uri)
 
         # Build parent URI if not provided
         if not parent_uri:
@@ -1689,6 +1780,11 @@ class MemoryOrchestrator:
             meta=meta,
             session_id=session_id,
             user=effective_user,
+            id=(
+                str(existing_record.get("id", "") or "")
+                if existing_record is not None
+                else None
+            ),
         )
 
         # Override vectorization text.
@@ -3533,6 +3629,7 @@ class MemoryOrchestrator:
                 "created_at": record.get("created_at", ""),
             }
             if include_payload:
+                meta = dict(record.get("meta") or {})
                 item.update(
                     {
                         "meta": record.get("meta", {}),
@@ -3540,6 +3637,10 @@ class MemoryOrchestrator:
                         "session_id": record.get("session_id", ""),
                         "speaker": record.get("speaker", ""),
                         "event_date": record.get("event_date", ""),
+                        "overview": record.get("overview", ""),
+                        "msg_range": meta.get("msg_range"),
+                        "recomposition_stage": meta.get("recomposition_stage"),
+                        "source_uri": meta.get("source_uri"),
                     }
                 )
             items.append(item)
@@ -3929,7 +4030,11 @@ class MemoryOrchestrator:
         tid, uid = get_effective_identity()
         if self._observer:
             self._observer.begin_session(
-                session_id=session_id,
+                session_id=self._observer_session_id(
+                    session_id,
+                    tenant_id=tid,
+                    user_id=uid,
+                ),
                 tenant_id=tid,
                 user_id=uid,
                 meta=meta,
@@ -3966,15 +4071,20 @@ class MemoryOrchestrator:
         tid, uid = get_effective_identity()
         message_count = 0
         if self._observer:
+            observer_session_id = self._observer_session_id(
+                session_id,
+                tenant_id=tid,
+                user_id=uid,
+            )
             self._observer.record_message(
-                session_id=session_id,
+                session_id=observer_session_id,
                 role=role,
                 content=content,
                 tenant_id=tid,
                 user_id=uid,
                 meta=meta,
             )
-            message_count = len(self._observer.get_transcript(session_id))
+            message_count = len(self._observer.get_transcript(observer_session_id))
         return {
             "added": True,
             "message_count": message_count,
@@ -4003,7 +4113,13 @@ class MemoryOrchestrator:
         alpha_traces_count = 0
         if self._observer:
             tid, uid = get_effective_identity()
-            transcript = self._observer.flush(session_id)
+            transcript = self._observer.flush(
+                self._observer_session_id(
+                    session_id,
+                    tenant_id=tid,
+                    user_id=uid,
+                )
+            )
             if transcript and self._trace_splitter and self._trace_store:
                 try:
                     traces = await self._trace_splitter.split(

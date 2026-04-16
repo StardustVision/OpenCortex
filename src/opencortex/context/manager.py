@@ -11,6 +11,8 @@ Design doc: docs/memory-context-protocol.md v1.2
 import asyncio
 import contextlib
 from copy import deepcopy
+import hashlib
+import re
 import logging
 import orjson as json
 import time
@@ -42,10 +44,16 @@ _SEGMENT_MAX_TOKENS = 1200
 _SEGMENT_MIN_MESSAGES = 2
 _RECOMPOSE_TAIL_MAX_MERGED_LEAVES = 6
 _RECOMPOSE_TAIL_MAX_MESSAGES = 24
+_COARSE_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_COARSE_HUMAN_DATE_RE = re.compile(r"^\d{1,2}\s+[A-Za-z]+,\s+\d{4}$")
+_COARSE_WEEKDAY_RE = re.compile(
+    r"^(?:周[一二三四五六日天]|星期[一二三四五六日天]|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)$",
+    re.IGNORECASE,
+)
 
-# Type aliases — all internal state keyed by these to prevent cross-tenant collision
-SessionKey = Tuple[str, str, str]      # (tenant_id, user_id, session_id)
-CacheKey = Tuple[str, str, str, str]   # (tenant_id, user_id, session_id, turn_id)
+# Type aliases — all internal state keyed by these to prevent cross-collection collision
+SessionKey = Tuple[str, str, str, str]         # (collection, tenant_id, user_id, session_id)
+CacheKey = Tuple[str, str, str, str, str]      # (collection, tenant_id, user_id, session_id, turn_id)
 
 
 @dataclass
@@ -119,7 +127,7 @@ class ContextManager:
         self._orchestrator = orchestrator
         self._observer = observer
 
-        # Prepare cache: {(tid, uid, sid, turn_id): (result, timestamp)}
+        # Prepare cache: {(collection, tid, uid, sid, turn_id): (result, timestamp)}
         self._prepare_cache: Dict[CacheKey, Tuple[Dict, float]] = {}
         # Reverse index: {session_key: set(cache_key)} — for end cleanup
         self._session_cache_keys: Dict[SessionKey, Set[CacheKey]] = {}
@@ -317,9 +325,18 @@ class ContextManager:
         self._touch_session(sk)
         self._remember_session_project(sk)
         lock = self._session_locks.setdefault(sk, asyncio.Lock())
+        observer_session_id = self._observer_session_id(
+            session_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
         async with lock:
-            if session_id not in self._observer.active_sessions():
-                self._observer.begin_session(session_id, tenant_id, user_id)
+            if observer_session_id not in self._observer.active_sessions():
+                self._observer.begin_session(
+                    observer_session_id,
+                    tenant_id,
+                    user_id,
+                )
 
     async def _plan_prepare_recall(
         self,
@@ -692,7 +709,12 @@ class ContextManager:
         stage_timings = StageTimingCollector()
 
         # 1. Idempotent: cache hit → return directly
-        cache_key: CacheKey = (tenant_id, user_id, session_id, turn_id)
+        cache_key = self._make_cache_key(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            session_id=session_id,
+            turn_id=turn_id,
+        )
         cached = self._get_cached_prepare(cache_key)
         if cached is not None:
             cached_result = deepcopy(cached)
@@ -857,6 +879,28 @@ class ContextManager:
             "source",
         )
 
+    @staticmethod
+    def _merged_leaf_uri(
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+        msg_range: List[int],
+    ) -> str:
+        """Return one stable merged-leaf URI for a session message span."""
+        from opencortex.utils.uri import CortexURI
+
+        start = int(msg_range[0])
+        end = int(msg_range[1])
+        session_hash = hashlib.md5(session_id.encode("utf-8")).hexdigest()[:12]
+        node_name = f"conversation-{session_hash}-{start:06d}-{end:06d}"
+        return CortexURI.build_private(
+            tenant_id,
+            user_id,
+            "memories",
+            "events",
+            node_name,
+        )
+
     @classmethod
     def _render_conversation_source(
         cls,
@@ -883,7 +927,13 @@ class ContextManager:
         user_id: str,
     ) -> Optional[str]:
         """Persist the stable transcript source for a session if transcript exists."""
-        transcript = self._observer.get_transcript(session_id)
+        transcript = self._observer.get_transcript(
+            self._observer_session_id(
+                session_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+            )
+        )
         if not transcript:
             return None
 
@@ -1077,6 +1127,32 @@ class ContextManager:
             )
         )
 
+    @classmethod
+    def _is_coarse_time_ref(cls, value: str) -> bool:
+        """Return whether one time ref is too coarse to force two events together."""
+        normalized = str(value or "").strip()
+        if not normalized:
+            return False
+        return bool(
+            _COARSE_ISO_DATE_RE.fullmatch(normalized)
+            or _COARSE_HUMAN_DATE_RE.fullmatch(normalized)
+            or _COARSE_WEEKDAY_RE.fullmatch(normalized)
+        )
+
+    @classmethod
+    def _time_refs_overlap(cls, left: Set[str], right: Set[str]) -> bool:
+        """Return whether two time-ref sets meaningfully overlap for segmentation."""
+        shared = set(left).intersection(right)
+        if not shared:
+            return False
+
+        left_specific = {value for value in left if not cls._is_coarse_time_ref(value)}
+        right_specific = {value for value in right if not cls._is_coarse_time_ref(value)}
+        if not left_specific or not right_specific:
+            return True
+
+        return bool(left_specific.intersection(right_specific))
+
     async def _aggregate_records_metadata(
         self,
         records: List[Dict[str, Any]],
@@ -1247,7 +1323,10 @@ class ContextManager:
                     current_messages >= _SEGMENT_MIN_MESSAGES
                     and current_time_refs
                     and entry["time_refs"]
-                    and not current_time_refs.intersection(entry["time_refs"])
+                    and not self._time_refs_overlap(
+                        current_time_refs,
+                        entry["time_refs"],
+                    )
                 ):
                     should_split = True
 
@@ -1325,7 +1404,11 @@ class ContextManager:
             observer_ok = True
             try:
                 self._observer.record_batch(
-                    session_id,
+                    self._observer_session_id(
+                        session_id,
+                        tenant_id=tenant_id,
+                        user_id=user_id,
+                    ),
                     messages,
                     tenant_id,
                     user_id,
@@ -1584,6 +1667,12 @@ class ContextManager:
                     segment["source_records"]
                 )
                 merged_context = await self._orchestrator.add(
+                    uri=self._merged_leaf_uri(
+                        tenant_id,
+                        user_id,
+                        session_id,
+                        segment["msg_range"],
+                    ),
                     abstract="",
                     content=combined,
                     category="events",
@@ -1609,6 +1698,11 @@ class ContextManager:
                     for segment in segments
                 ]
             )
+            superseded_merged_uris = [
+                uri
+                for uri in superseded_merged_uris
+                if uri not in created_merged_uris
+            ]
             if superseded_merged_uris:
                 await self._delete_immediate_families(superseded_merged_uris)
         except Exception as exc:
@@ -1767,6 +1861,12 @@ class ContextManager:
                         segment["source_records"]
                     )
                     merged_context = await self._orchestrator.add(
+                        uri=self._merged_leaf_uri(
+                            tenant_id,
+                            user_id,
+                            session_id,
+                            segment["msg_range"],
+                        ),
                         abstract="",
                         content=combined,
                         category="events",
@@ -1792,6 +1892,11 @@ class ContextManager:
                         for segment in segments
                     ]
                 )
+                superseded_merged_uris = [
+                    uri
+                    for uri in superseded_merged_uris
+                    if uri not in created_merged_uris
+                ]
                 if superseded_merged_uris:
                     try:
                         await self._delete_immediate_families(superseded_merged_uris)
@@ -1977,10 +2082,50 @@ class ContextManager:
     # Session state helpers
     # =========================================================================
 
+    def _current_collection_name(self) -> str:
+        """Return the active storage collection for the current request context."""
+        return self._orchestrator._get_collection()
+
     def _make_session_key(
         self, tenant_id: str, user_id: str, session_id: str,
     ) -> SessionKey:
-        return (tenant_id, user_id, session_id)
+        return (
+            self._current_collection_name(),
+            tenant_id,
+            user_id,
+            session_id,
+        )
+
+    def _make_cache_key(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+        turn_id: str,
+    ) -> CacheKey:
+        """Build one prepare cache key scoped to the active collection."""
+        return (
+            self._current_collection_name(),
+            tenant_id,
+            user_id,
+            session_id,
+            turn_id,
+        )
+
+    def _observer_session_id(
+        self,
+        session_id: str,
+        *,
+        tenant_id: str,
+        user_id: str,
+    ) -> str:
+        """Return the observer-only session namespace for the active collection."""
+        return self._orchestrator._observer_session_id(
+            session_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
 
     def _touch_session(self, sk: SessionKey) -> None:
         self._session_activity[sk] = time.time()
@@ -2041,10 +2186,10 @@ class ContextManager:
                 if now - ts > self._session_idle_ttl
             ]
             for sk in expired:
-                tid, uid, sid = sk
+                collection, tid, uid, sid = sk
                 logger.info(
-                    "[ContextManager] idle-close sid=%s (tenant=%s, user=%s)",
-                    sid, tid, uid,
+                    "[ContextManager] idle-close sid=%s (collection=%s tenant=%s, user=%s)",
+                    sid, collection, tid, uid,
                 )
                 try:
                     # Set contextvars for orchestrator.session_end()

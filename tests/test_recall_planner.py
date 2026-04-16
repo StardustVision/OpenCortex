@@ -262,7 +262,7 @@ class TestRecallPlannerIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("planner", payload)
         self.assertNotIn("runtime", payload)
 
-    async def test_search_upgrades_to_l2_when_l1_evidence_is_insufficient(self):
+    async def test_search_stays_l1_when_fallback_overview_is_sufficient(self):
         long_content = (
             "用户在出差订酒店时总是优先选择安静、靠湖、步行可达会场的酒店，"
             "并且明确避免夜生活区域和高噪音街区。"
@@ -281,10 +281,11 @@ class TestRecallPlannerIntegration(unittest.IsolatedAsyncioTestCase):
         )
 
         payload = result.to_dict()["memory_pipeline"]["runtime"]
-        self.assertEqual(payload["trace"]["effective"]["retrieval_depth"], "l2")
-        self.assertEqual(payload["trace"]["hydration"][0]["decision"], "upgrade_l2")
+        self.assertEqual(payload["trace"]["effective"]["retrieval_depth"], "l1")
+        self.assertEqual(payload["trace"]["hydration"][0]["decision"], "stay_l1")
         self.assertTrue(result.memories)
-        self.assertIsNotNone(result.memories[0].content)
+        self.assertIsNone(result.memories[0].content)
+        self.assertTrue(result.memories[0].overview)
 
 
 class TestRecallPlannerStartingPoints(unittest.TestCase):
@@ -408,6 +409,47 @@ class TestRecallPlannerStartingPoints(unittest.TestCase):
         assert plan is not None
         self.assertEqual(plan.scope_level, ScopeLevel.GLOBAL)
         self.assertEqual(plan.search_profile.association_budget, 0.0)
+
+    def test_query_plan_anchors_do_not_absorb_probe_candidate_metadata(self):
+        probe = SearchResult(
+            should_recall=True,
+            candidate_entries=[
+                {
+                    "uri": "opencortex://memory/1",
+                    "memory_kind": "event",
+                    "anchors": ["perseid meteor shower"],
+                }
+            ],
+            starting_points=[
+                StartingPoint(
+                    uri="opencortex://t/u/memories/events/s1",
+                    session_id="s1",
+                    entities=["Caroline"],
+                    time_refs=["20 July, 2023"],
+                )
+            ],
+            starting_point_anchors=["connected lgbtq activists"],
+            anchor_hits=["perseid meteor shower", "20 July, 2023"],
+            query_entities=["Melanie", "paint", "sunrise"],
+            evidence={"candidate_count": 1, "top_score": 0.8, "anchor_hit_count": 3},
+            scope_level=ScopeLevel.SESSION_ONLY,
+        )
+        planner = RecallPlanner(cone_enabled=True)
+        plan = planner.semantic_plan(
+            query="When did Melanie paint a sunrise?",
+            probe_result=probe,
+            max_items=5,
+            recall_mode="auto",
+            detail_level_override=None,
+        )
+
+        assert plan is not None
+        anchor_values = {anchor.value for anchor in plan.query_plan.anchors}
+        self.assertTrue({"Melanie", "paint", "sunrise"}.issubset(anchor_values))
+        self.assertNotIn("Caroline", anchor_values)
+        self.assertNotIn("20 July, 2023", anchor_values)
+        self.assertNotIn("perseid meteor shower", anchor_values)
+        self.assertNotIn("connected lgbtq activists", anchor_values)
 
     def test_target_uri_bucket_without_starting_points_preserves_container_scope(self):
         probe = SearchResult(

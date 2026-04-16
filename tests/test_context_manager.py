@@ -1,6 +1,7 @@
 """Tests for the probe-first memory ContextManager flow."""
 
 import asyncio
+import httpx
 import os
 import shutil
 import sys
@@ -120,6 +121,125 @@ class TestContextManager(unittest.TestCase):
             cache_trace["stage_timing_ms"]["total"],
         )
         self.assertTrue(cache_trace["cache_hit"])
+
+        self._run(orch.close())
+
+    def test_prepare_cache_isolated_by_collection(self):
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        self._run(
+            self.storage.create_collection(
+                "bench_ctx_a", {"vector_dim": MockEmbedder.DIMENSION}
+            )
+        )
+        self._run(
+            self.storage.create_collection(
+                "bench_ctx_b", {"vector_dim": MockEmbedder.DIMENSION}
+            )
+        )
+        cm = orch._context_manager
+
+        collection_token = set_collection_name("bench_ctx_a")
+        try:
+            self._run(
+                orch.add(
+                    abstract="alpha-cache-token-hangzhou",
+                    category="general",
+                )
+            )
+            first = self._run(
+                cm.handle(
+                    session_id="shared-prepare-session",
+                    phase="prepare",
+                    tenant_id="testteam",
+                    user_id="alice",
+                    turn_id="shared-turn",
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": "alpha-cache-token-hangzhou",
+                        }
+                    ],
+                )
+            )
+        finally:
+            reset_collection_name(collection_token)
+
+        collection_token = set_collection_name("bench_ctx_b")
+        try:
+            self._run(
+                orch.add(
+                    abstract="beta-cache-token-beijing",
+                    category="general",
+                )
+            )
+            second = self._run(
+                cm.handle(
+                    session_id="shared-prepare-session",
+                    phase="prepare",
+                    tenant_id="testteam",
+                    user_id="alice",
+                    turn_id="shared-turn",
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": "beta-cache-token-beijing",
+                        }
+                    ],
+                )
+            )
+        finally:
+            reset_collection_name(collection_token)
+
+        self.assertGreaterEqual(len(first["memory"]), 1)
+        self.assertGreaterEqual(len(second["memory"]), 1)
+        self.assertEqual(first["memory"][0]["abstract"], "alpha-cache-token-hangzhou")
+        self.assertEqual(second["memory"][0]["abstract"], "beta-cache-token-beijing")
+        self.assertFalse(
+            first["intent"]["memory_pipeline"]["runtime"]["trace"].get(
+                "cache_hit", False
+            )
+        )
+        self.assertFalse(
+            second["intent"]["memory_pipeline"]["runtime"]["trace"].get(
+                "cache_hit", False
+            )
+        )
+
+        self._run(orch.close())
+
+    def test_idle_auto_close_supports_collection_scoped_session_key(self):
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        cm = orch._context_manager
+        cm._session_idle_ttl = 0.0
+        cm._idle_check_interval = 0.01
+
+        session_key = ("bench_ctx_idle", "testteam", "alice", "sess_idle_001")
+        cm._session_activity[session_key] = 0.0
+        closed_calls = []
+
+        async def fake_end(session_id, tenant_id, user_id):
+            closed_calls.append((session_id, tenant_id, user_id))
+            cm._session_activity.pop(session_key, None)
+            return {"status": "closed"}
+
+        cm._end = AsyncMock(side_effect=fake_end)
+
+        async def _case():
+            await cm.start()
+            try:
+                await asyncio.sleep(0.05)
+            finally:
+                await cm.close()
+
+        self._run(_case())
+
+        self.assertEqual(
+            closed_calls,
+            [("sess_idle_001", "testteam", "alice")],
+        )
+        self.assertNotIn(session_key, cm._session_activity)
 
         self._run(orch.close())
 
@@ -402,6 +522,114 @@ class TestContextManager(unittest.TestCase):
 
         self._run(orch.close())
 
+    def test_merge_buffer_splits_same_day_distinct_specific_time_refs(self):
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        cm = orch._context_manager
+        session_id = "sess_merge_same_day_split_001"
+        sk = cm._make_session_key("testteam", "alice", session_id)
+
+        items = [
+            (
+                0,
+                "[2023-05-01] [Alice]: 周三下午三点我和 Caroline 在阿里西溪园区开会。",
+                {
+                    "speaker": "Alice",
+                    "event_date": "2023-05-01",
+                    "time_refs": [
+                        "2023-05-01",
+                        "2023-05-01 afternoon meeting",
+                        "周三下午三点",
+                    ],
+                    "entities": ["Caroline", "阿里西溪园区"],
+                    "topics": ["会议"],
+                },
+            ),
+            (
+                1,
+                "[2023-05-01] [Bob]: 好的，周三下午三点在阿里西溪园区开会。",
+                {
+                    "speaker": "Bob",
+                    "event_date": "2023-05-01",
+                    "time_refs": [
+                        "2023-05-01",
+                        "2023-05-01 afternoon meeting",
+                        "周三下午三点",
+                    ],
+                    "entities": ["Caroline", "阿里西溪园区"],
+                    "topics": ["会议"],
+                },
+            ),
+            (
+                2,
+                "[2023-05-01] [Alice]: 周三晚上 Melanie 和我在湖滨银泰吃饭。",
+                {
+                    "speaker": "Alice",
+                    "event_date": "2023-05-01",
+                    "time_refs": [
+                        "2023-05-01",
+                        "2023-05-01 evening dinner",
+                        "周三晚上",
+                    ],
+                    "entities": ["Melanie", "湖滨银泰"],
+                    "topics": ["晚饭"],
+                },
+            ),
+            (
+                3,
+                "[2023-05-01] [Bob]: 记住了，周三晚上在湖滨银泰吃饭。",
+                {
+                    "speaker": "Bob",
+                    "event_date": "2023-05-01",
+                    "time_refs": [
+                        "2023-05-01",
+                        "2023-05-01 evening dinner",
+                        "周三晚上",
+                    ],
+                    "entities": ["Melanie", "湖滨银泰"],
+                    "topics": ["晚饭"],
+                },
+            ),
+        ]
+
+        buffer = cm._conversation_buffers.setdefault(sk, ConversationBuffer())
+        for msg_index, text, meta in items:
+            uri = self._run(
+                orch._write_immediate(
+                    session_id=session_id,
+                    msg_index=msg_index,
+                    text=text,
+                    meta=meta,
+                )
+            )
+            buffer.messages.append(text)
+            buffer.immediate_uris.append(uri)
+            buffer.token_count += 300
+
+        self._run(
+            cm._merge_buffer(
+                sk,
+                session_id,
+                "testteam",
+                "alice",
+                flush_all=True,
+            )
+        )
+
+        merged_records = sorted(
+            [
+                record
+                for record in self.storage._records.get("context", {}).values()
+                if record.get("meta", {}).get("layer") == "merged"
+            ],
+            key=lambda record: record.get("meta", {}).get("msg_range", [999, 999])[0],
+        )
+        self.assertEqual(len(merged_records), 2)
+        self.assertEqual(merged_records[0]["meta"]["msg_range"], [0, 1])
+        self.assertEqual(merged_records[1]["meta"]["msg_range"], [2, 3])
+
+        self._run(orch.close())
+
     def test_merge_buffer_recomposes_tail_and_replaces_superseded_merged_leaf(self):
         orch = self._make_orchestrator()
         self._run(orch.init())
@@ -564,6 +792,87 @@ class TestContextManager(unittest.TestCase):
 
         self._run(orch.close())
 
+    def test_full_session_recomposition_reuses_stable_uri_without_self_deletion(self):
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        cm = orch._context_manager
+        session_id = "sess_full_recompose_stable_uri_001"
+        source_uri = cm._conversation_source_uri("testteam", "alice", session_id)
+        first_uri = cm._merged_leaf_uri("testteam", "alice", session_id, [0, 1])
+        second_uri = cm._merged_leaf_uri("testteam", "alice", session_id, [2, 3])
+
+        self._run(
+            orch.add(
+                uri=first_uri,
+                abstract="",
+                content="第一段对话：我搬到了杭州。\n\n补充：我住在西湖边。",
+                category="events",
+                context_type="memory",
+                session_id=session_id,
+                meta={
+                    "layer": "merged",
+                    "ingest_mode": "memory",
+                    "msg_range": [0, 1],
+                    "source_uri": source_uri,
+                    "session_id": session_id,
+                    "recomposition_stage": "online_tail",
+                    "time_refs": ["2023-05-01"],
+                    "entities": ["杭州"],
+                },
+            )
+        )
+        self._run(
+            orch.add(
+                uri=second_uri,
+                abstract="",
+                content="第二段对话：我下周三去上海。\n\n补充：我要住在浦东。",
+                category="events",
+                context_type="memory",
+                session_id=session_id,
+                meta={
+                    "layer": "merged",
+                    "ingest_mode": "memory",
+                    "msg_range": [2, 3],
+                    "source_uri": source_uri,
+                    "session_id": session_id,
+                    "recomposition_stage": "online_tail",
+                    "time_refs": ["2023-05-03"],
+                    "entities": ["上海"],
+                },
+            )
+        )
+
+        self._run(
+            cm._run_full_session_recomposition(
+                session_id=session_id,
+                tenant_id="testteam",
+                user_id="alice",
+                source_uri=source_uri,
+            )
+        )
+
+        merged_records = sorted(
+            [
+                record
+                for record in self.storage._records.get("context", {}).values()
+                if record.get("meta", {}).get("layer") == "merged"
+                and record.get("session_id") == session_id
+            ],
+            key=lambda record: record.get("meta", {}).get("msg_range", [999, 999])[0],
+        )
+        self.assertEqual(
+            [record.get("uri") for record in merged_records],
+            [first_uri, second_uri],
+        )
+        self.assertTrue(
+            all(
+                record.get("meta", {}).get("recomposition_stage") == "final_full"
+                for record in merged_records
+            )
+        )
+
+        self._run(orch.close())
+
     def test_end_persists_conversation_source_and_links_merged_leaf(self):
         orch = self._make_orchestrator()
         self._run(orch.init())
@@ -629,6 +938,28 @@ class TestContextManager(unittest.TestCase):
         self.assertEqual(merged_records[0]["meta"]["source_uri"], source_uri)
         self.assertEqual(merged_records[0]["meta"]["msg_range"], [0, 1])
 
+        items = self._run(
+            orch.list_memories(
+                category="events",
+                context_type="memory",
+                limit=10,
+                offset=0,
+                include_payload=True,
+            )
+        )
+        merged_item = next(
+            item
+            for item in items
+            if item.get("source_uri") == source_uri and item.get("msg_range") == [0, 1]
+        )
+        self.assertIn("overview", merged_item)
+        self.assertEqual(merged_item["source_uri"], source_uri)
+        self.assertEqual(merged_item["msg_range"], [0, 1])
+        self.assertIn(
+            merged_item["recomposition_stage"],
+            {"online_tail", "final_full"},
+        )
+
         self._run(orch.close())
 
     def test_end_returns_partial_when_source_persistence_fails(self):
@@ -671,7 +1002,107 @@ class TestContextManager(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], "partial")
-        self.assertGreater(len(orch._observer.get_transcript(session_id)), 0)
+        self.assertGreater(
+            len(
+                orch._observer.get_transcript(
+                    orch._observer_session_id(
+                        session_id,
+                        tenant_id="testteam",
+                        user_id="alice",
+                    )
+                )
+            ),
+            0,
+        )
+
+        self._run(orch.close())
+
+    def test_commit_and_transcript_are_isolated_by_collection(self):
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        self._run(
+            self.storage.create_collection(
+                "bench_ctx_a", {"vector_dim": MockEmbedder.DIMENSION}
+            )
+        )
+        self._run(
+            self.storage.create_collection(
+                "bench_ctx_b", {"vector_dim": MockEmbedder.DIMENSION}
+            )
+        )
+        cm = orch._context_manager
+        session_id = "shared-collection-session"
+
+        collection_token = set_collection_name("bench_ctx_a")
+        try:
+            result_a = self._run(
+                cm.handle(
+                    session_id=session_id,
+                    phase="commit",
+                    tenant_id="testteam",
+                    user_id="alice",
+                    turn_id="shared-turn",
+                    messages=[
+                        {"role": "user", "content": "alpha transcript only"},
+                        {"role": "assistant", "content": "记住 alpha"},
+                    ],
+                )
+            )
+            sk_a = cm._make_session_key("testteam", "alice", session_id)
+            source_uri_a = self._run(
+                cm._persist_conversation_source(
+                    session_id=session_id,
+                    tenant_id="testteam",
+                    user_id="alice",
+                )
+            )
+        finally:
+            reset_collection_name(collection_token)
+
+        collection_token = set_collection_name("bench_ctx_b")
+        try:
+            result_b = self._run(
+                cm.handle(
+                    session_id=session_id,
+                    phase="commit",
+                    tenant_id="testteam",
+                    user_id="alice",
+                    turn_id="shared-turn",
+                    messages=[
+                        {"role": "user", "content": "beta transcript only"},
+                        {"role": "assistant", "content": "记住 beta"},
+                    ],
+                )
+            )
+            sk_b = cm._make_session_key("testteam", "alice", session_id)
+        finally:
+            reset_collection_name(collection_token)
+
+        source_records = self._run(
+            self.storage.filter(
+                "bench_ctx_a",
+                {"op": "must", "field": "uri", "conds": [source_uri_a]},
+                limit=1,
+            )
+        )
+        rendered_source = self._run(orch._fs.read_file(f"{source_uri_a}/content.md"))
+
+        self.assertEqual(result_a["write_status"], "ok")
+        self.assertEqual(result_b["write_status"], "ok")
+        self.assertEqual(result_a["session_turns"], 1)
+        self.assertEqual(result_b["session_turns"], 1)
+        self.assertNotEqual(sk_a, sk_b)
+        self.assertEqual(cm._committed_turns[sk_a], {"shared-turn"})
+        self.assertEqual(cm._committed_turns[sk_b], {"shared-turn"})
+        self.assertEqual(len(cm._conversation_buffers[sk_a].messages), 2)
+        self.assertEqual(len(cm._conversation_buffers[sk_b].messages), 2)
+        self.assertEqual(len(source_records), 1)
+        self.assertEqual(
+            source_records[0].get("meta", {}).get("layer"),
+            "conversation_source",
+        )
+        self.assertIn("alpha transcript only", rendered_source)
+        self.assertNotIn("beta transcript only", rendered_source)
 
         self._run(orch.close())
 
@@ -800,8 +1231,107 @@ class TestContextManager(unittest.TestCase):
 
         layers = self._run(orch._derive_layers("", long_content))
 
-        self.assertEqual(layers["abstract"], long_content)
-        self.assertEqual(layers["overview"], "")
+        self.assertTrue(layers["overview"].startswith("杭州出差，住在西湖边。"))
+        self.assertLess(len(layers["overview"]), len(long_content))
+        self.assertEqual(layers["abstract"], "杭州出差，住在西湖边。")
+        self._run(orch.close())
+
+    def test_derive_layers_retries_transient_503_for_direct_path(self):
+        request = httpx.Request("POST", "http://llm.test/chat/completions")
+        attempts = 0
+
+        async def flaky_llm(prompt: str) -> str:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                response = httpx.Response(
+                    503,
+                    request=request,
+                    json={
+                        "error": {
+                            "message": "Service temporarily unavailable",
+                            "type": "api_error",
+                        }
+                    },
+                )
+                raise httpx.HTTPStatusError(
+                    "503 Service Unavailable",
+                    request=request,
+                    response=response,
+                )
+            return (
+                '{"overview":"Alice moved to Hangzhou and plans a West Lake visit.",'
+                '"keywords":["Hangzhou"],"entities":["Alice","Hangzhou"],'
+                '"anchor_handles":["Hangzhou","West Lake"]}'
+            )
+
+        orch = self._make_orchestrator(llm_completion=flaky_llm)
+        self._run(orch.init())
+
+        layers = self._run(
+            orch._derive_layers(
+                "",
+                "Alice moved to Hangzhou and plans a West Lake visit.",
+            )
+        )
+
+        self.assertEqual(attempts, 2)
+        self.assertEqual(
+            layers["overview"],
+            "Alice moved to Hangzhou and plans a West Lake visit.",
+        )
+        self.assertEqual(
+            layers["abstract"],
+            "Alice moved to Hangzhou and plans a West Lake visit.",
+        )
+        self._run(orch.close())
+
+    def test_derive_layers_retries_transient_503_for_chunked_path(self):
+        request = httpx.Request("POST", "http://llm.test/chat/completions")
+        attempts = 0
+
+        async def flaky_llm(prompt: str) -> str:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                response = httpx.Response(
+                    503,
+                    request=request,
+                    json={
+                        "error": {
+                            "message": "Service temporarily unavailable",
+                            "type": "api_error",
+                        }
+                    },
+                )
+                raise httpx.HTTPStatusError(
+                    "503 Service Unavailable",
+                    request=request,
+                    response=response,
+                )
+            if "Compress the following multiple overview sections" in prompt:
+                return "Alice moved to Hangzhou and plans a West Lake visit."
+            return (
+                '{"overview":"Alice moved to Hangzhou and plans a West Lake visit.",'
+                '"keywords":["Hangzhou"],"entities":["Alice","Hangzhou"],'
+                '"anchor_handles":["Hangzhou","West Lake"]}'
+            )
+
+        orch = self._make_orchestrator(llm_completion=flaky_llm)
+        self._run(orch.init())
+        long_content = ("Alice moved to Hangzhou and plans a West Lake visit.\n" * 300).strip()
+
+        layers = self._run(orch._derive_layers("", long_content))
+
+        self.assertGreaterEqual(attempts, 3)
+        self.assertEqual(
+            layers["overview"],
+            "Alice moved to Hangzhou and plans a West Lake visit.",
+        )
+        self.assertEqual(
+            layers["abstract"],
+            "Alice moved to Hangzhou and plans a West Lake visit.",
+        )
         self._run(orch.close())
 
     def test_end_keeps_merged_record_visible_in_memory_list_when_llm_returns_blank(self):
@@ -851,7 +1381,6 @@ class TestContextManager(unittest.TestCase):
         session_items = [
             item for item in items if item.get("session_id") == "sess_merge_list_001"
         ]
-
         self.assertGreaterEqual(len(session_items), 1)
         self.assertTrue(
             any(item.get("abstract", "").startswith("我下周二要去杭州出差") for item in session_items)
