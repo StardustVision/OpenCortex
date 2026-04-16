@@ -39,7 +39,6 @@ class TestRecallPlanContracts(unittest.TestCase):
                 "scope_source": "global_root",
                 "scope_authoritative": False,
                 "selected_root_uris": [],
-                "fallback_ready": False,
                 "scoped_miss": False,
                 "evidence": {
                     "top_score": None,
@@ -64,7 +63,6 @@ class TestRecallPlanContracts(unittest.TestCase):
                     "selected_bucket_source": None,
                     "scope_authoritative": False,
                     "selected_root_uris": [],
-                    "fallback_ready": False,
                     "scoped_miss": False,
                     "degraded": False,
                     "degrade_reason": None,
@@ -94,7 +92,6 @@ class TestRecallPlanContracts(unittest.TestCase):
                 "planner": retrieve_plan.to_dict(),
                 "effective": {"sources": ["memory"], "retrieval_depth": "l0"},
                 "hydration": [],
-                "fallback": [],
                 "latency_ms": {"execution": 12},
             },
             degrade={"applied": False, "reasons": [], "actions": []},
@@ -261,7 +258,6 @@ class TestRecallPlannerIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["probe"]["scope_source"], ProbeScopeSource.TARGET_URI.value)
         self.assertTrue(payload["probe"]["scope_authoritative"])
         self.assertTrue(payload["probe"]["scoped_miss"])
-        self.assertFalse(payload["probe"]["fallback_ready"])
         self.assertEqual(payload["probe"]["selected_root_uris"], ["opencortex://memory/missing-scope"])
         self.assertNotIn("planner", payload)
         self.assertNotIn("runtime", payload)

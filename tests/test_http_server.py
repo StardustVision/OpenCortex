@@ -521,7 +521,16 @@ class TestHTTPServer(unittest.TestCase):
                         ]["stages"
                         ].keys()
                     ),
-                    ["aggregate", "bind", "hydrate", "plan", "probe", "retrieve", "total"],
+                    [
+                        "aggregate",
+                        "bind",
+                        "hydrate",
+                        "overhead",
+                        "plan",
+                        "probe",
+                        "retrieve",
+                        "total",
+                    ],
                 )
                 self.assertEqual(
                     sorted(
@@ -587,23 +596,10 @@ class TestHTTPServer(unittest.TestCase):
                     "scoped_miss",
                     data["memory_pipeline"]["probe"],
                 )
-                self.assertIn(
-                    "fallback_ready",
-                    data["memory_pipeline"]["probe"],
-                )
-                self.assertFalse(data["memory_pipeline"]["probe"]["fallback_ready"])
                 self.assertIn("runtime", data["memory_pipeline"])
-                self.assertIn(
-                    "fallback",
-                    data["memory_pipeline"]["runtime"]["trace"],
-                )
                 self.assertEqual(
                     data["memory_pipeline"]["planner"]["query_plan"]["rewrite_mode"],
                     "none",
-                )
-                self.assertEqual(
-                    data["memory_pipeline"]["runtime"]["trace"]["fallback"],
-                    [],
                 )
 
         self._run(check())
@@ -656,6 +652,46 @@ class TestHTTPServer(unittest.TestCase):
                 self.assertEqual(parsed.turn_id, "turn_01")
                 self.assertIn("memory_pipeline", data["intent"])
                 self.assertIn("probe", data["intent"]["memory_pipeline"])
+
+        self._run(check())
+
+    def test_04c_context_prepare_exposes_conversation_traceability_fields(self):
+        """POST `/api/v1/context` prepare includes source_uri and msg_range."""
+
+        async def check():
+            async with _test_app_context() as client:
+                await client.post("/api/v1/context", json={
+                    "session_id": "sess_ctx_trace_01",
+                    "turn_id": "turn_commit_01",
+                    "phase": "commit",
+                    "messages": [
+                        {"role": "user", "content": "trace-token-hangzhou-001"},
+                        {"role": "assistant", "content": "记住了 trace-token-hangzhou-001"},
+                    ],
+                })
+                await client.post("/api/v1/context", json={
+                    "session_id": "sess_ctx_trace_01",
+                    "phase": "end",
+                })
+
+                resp = await client.post("/api/v1/context", json={
+                    "session_id": "sess_ctx_trace_query_01",
+                    "turn_id": "turn_query_01",
+                    "phase": "prepare",
+                    "messages": [
+                        {"role": "user", "content": "trace-token-hangzhou-001"}
+                    ],
+                })
+                self.assertEqual(resp.status_code, 200)
+                data = resp.json()
+                parsed = ContextPrepareResponse.model_validate(data)
+                self.assertGreaterEqual(len(parsed.memory), 1)
+                first = parsed.memory[0]
+                self.assertIsNotNone(first.source_uri)
+                self.assertEqual(first.msg_range, [0, 1])
+                self.assertIn(first.recomposition_stage, {"online_tail", "final_full"})
+                self.assertIsInstance(first.cone_used, bool)
+                self.assertIsInstance(first.matched_anchors, list)
 
         self._run(check())
 

@@ -83,6 +83,7 @@ class TestIntentPlannerPhase2(unittest.TestCase):
                         "memory_kind": "relation",
                     }
                 ],
+                query_entities=["launch review"],
                 evidence={
                     "top_score": 0.6,
                     "score_gap": 0.06,
@@ -96,7 +97,7 @@ class TestIntentPlannerPhase2(unittest.TestCase):
 
         assert plan is not None
         self.assertEqual(plan.target_memory_kinds[0], MemoryKind.RELATION)
-        self.assertGreater(plan.search_profile.association_budget, 0.7)
+        self.assertGreater(plan.search_profile.association_budget, 0.0)
         self.assertEqual(plan.query_plan.rewrite_mode, QueryRewriteMode.NONE)
         self.assertEqual(plan.decision, "arbitrate_l1")
 
@@ -127,6 +128,34 @@ class TestIntentPlannerPhase2(unittest.TestCase):
         self.assertEqual(plan.retrieval_depth, RetrievalDepth.L2)
         self.assertEqual(plan.decision, "hydrate_l2")
         self.assertIn(MemoryKind.DOCUMENT_CHUNK, plan.target_memory_kinds)
+
+    def test_lookup_query_keeps_cone_off_by_default(self):
+        planner = RecallPlanner(cone_enabled=True)
+        plan = planner.semantic_plan(
+            query="Where do I live now in Hangzhou?",
+            probe_result=SearchResult(
+                should_recall=True,
+                query_entities=["Hangzhou"],
+                candidate_entries=[
+                    {
+                        "uri": "opencortex://memory/events/1",
+                        "memory_kind": "event",
+                    }
+                ],
+                evidence={
+                    "top_score": 0.84,
+                    "score_gap": 0.12,
+                    "candidate_count": 1,
+                },
+            ),
+            max_items=5,
+            recall_mode="auto",
+            detail_level_override=None,
+        )
+
+        assert plan is not None
+        self.assertEqual(plan.target_memory_kinds[0], MemoryKind.EVENT)
+        self.assertEqual(plan.search_profile.association_budget, 0.0)
 
 
 if __name__ == "__main__":

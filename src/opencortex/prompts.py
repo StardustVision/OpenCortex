@@ -167,7 +167,7 @@ Return JSON: {{"abstract": "1-2 sentence summary", "overview": "1 paragraph over
 # =========================================================================
 
 def build_layer_derivation_prompt(content: str, user_abstract: str = "") -> str:
-    """Build prompt for parallel L0/L1/keywords derivation from L2 content.
+    """Build prompt for overview-first derivation from L2 content.
 
     Args:
         content: Content text (caller handles chunking for oversized content).
@@ -177,7 +177,7 @@ def build_layer_derivation_prompt(content: str, user_abstract: str = "") -> str:
     if user_abstract:
         user_hint = (
             f"\nThe user described this memory as: \"{user_abstract}\"\n"
-            "Use this as the abstract verbatim and generate the overview and keywords to complement it.\n"
+            "Do not generate another abstract. Keep this text in mind while generating overview and anchors.\n"
         )
     return f"""Analyze the following content and produce a structured summary for a memory system.
 {user_hint}
@@ -186,7 +186,6 @@ Content:
 
 Return a JSON object with exactly these fields:
 {{
-  "abstract": "1-2 sentence standalone summary, max 200 chars",
   "overview": "3-8 sentence overview covering key facts, decisions, and actionable details",
   "keywords": ["term1", "term2", "..."],
   "entities": ["entity1", "entity2", "..."],
@@ -194,8 +193,7 @@ Return a JSON object with exactly these fields:
 }}
 
 Rules:
-- abstract: A concise, self-contained summary. If user description is provided above, use it as-is.
-- overview: Covers the main points, decisions, and context. Do NOT repeat the abstract verbatim.
+- overview: This is the primary semantic surface. Lead with concrete facts (entities, events, times, places, decisions, constraints).
 - keywords: 3-15 key terms (names, tools, technologies, concepts) that aid search. No generic words.
 - entities: Named entities only — people, systems, tools, organizations, places. NOT generic concepts. Max 10.
 - anchor_handles: 0-6 short retrieval handles. Prefer concrete entities, numbers, paths, module names, operations, or compact noun phrases. No paragraphs or generic labels.

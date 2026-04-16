@@ -118,14 +118,14 @@ class TestLoCoMoBench(unittest.IsolatedAsyncioTestCase):
                     {
                         "uri": "opencortex://m/session1",
                         "session_id": "locomo-conv-1",
-                        "meta": {"msg_range": [0, 1]},
+                        "msg_range": [0, 1],
                         "abstract_json": {"slots": {"time_refs": ["1 May, 2023"]}},
                         "event_date": "2023-05-01T09:00:00Z",
                     },
                     {
                         "uri": "opencortex://m/session2",
                         "session_id": "locomo-conv-1",
-                        "meta": {"msg_range": [2, 2]},
+                        "msg_range": [2, 2],
                         "abstract_json": {"slots": {"time_refs": ["3 May, 2023"]}},
                         "event_date": "2023-05-03T10:00:00Z",
                     },
@@ -175,21 +175,21 @@ class TestLoCoMoBench(unittest.IsolatedAsyncioTestCase):
                     {
                         "uri": "opencortex://m/cumulative",
                         "session_id": "locomo-conv-1",
-                        "meta": {"msg_range": [0, 2]},
+                        "msg_range": [0, 2],
                         "abstract_json": {"slots": {"time_refs": ["1 May, 2023"]}},
                         "event_date": "2023-05-01T09:00:00Z",
                     },
                     {
                         "uri": "opencortex://m/session1-tight",
                         "session_id": "locomo-conv-1",
-                        "meta": {"msg_range": [0, 1]},
+                        "msg_range": [0, 1],
                         "abstract_json": {"slots": {"time_refs": ["1 May, 2023"]}},
                         "event_date": "2023-05-01T09:00:00Z",
                     },
                     {
                         "uri": "opencortex://m/session2-tight",
                         "session_id": "locomo-conv-1",
-                        "meta": {"msg_range": [2, 2]},
+                        "msg_range": [2, 2],
                         "abstract_json": {"slots": {"time_refs": ["3 May, 2023"]}},
                         "event_date": "2023-05-03T10:00:00Z",
                     },
@@ -203,6 +203,78 @@ class TestLoCoMoBench(unittest.IsolatedAsyncioTestCase):
         items = bench.build_qa_items()
         self.assertEqual(items[0].expected_uris, ["opencortex://m/session1-tight"])
         self.assertEqual(items[1].expected_uris, ["opencortex://m/session2-tight"])
+
+    async def test_build_qa_items_prefers_question_matching_leaf_within_session(self):
+        fixture = [
+            {
+                "sample_id": "conv-match",
+                "conversation": {
+                    "speaker_a": "Alice",
+                    "speaker_b": "Bob",
+                    "session_1_date_time": "9:00 am on 1 May, 2023",
+                    "session_1": [
+                        {"speaker": "Alice", "text": "The LGBTQ support group helped me."},
+                        {"speaker": "Bob", "text": "Glad it helped."},
+                    ],
+                },
+                "qa": [
+                    {
+                        "question": "When did Alice go to the LGBTQ support group?",
+                        "answer": "1 May 2023",
+                        "category": "2",
+                        "evidence": ["D1:1"],
+                    }
+                ],
+            }
+        ]
+        dataset_path = os.path.join(self.temp_dir.name, "locomo-match.json")
+        with open(dataset_path, "w", encoding="utf-8") as file_obj:
+            json.dump(fixture, file_obj)
+        bench = LoCoMoBench()
+        bench.load_dataset(dataset_path)
+        oc = _OCStub()
+        oc.list_results = [
+            {"results": [], "total": 0},
+            {
+                "results": [
+                    {
+                        "uri": "opencortex://m/session1-generic",
+                        "session_id": "locomo-conv-match",
+                        "msg_range": [0, 1],
+                        "abstract": "Alice and Bob agree to relax before the weekend.",
+                        "overview": "They talk about work, family, and doing more research later.",
+                        "abstract_json": {
+                            "anchors": [
+                                {"anchor_type": "entity", "value": "Alice"},
+                                {"anchor_type": "time", "value": "1 May, 2023"},
+                            ]
+                        },
+                        "event_date": "2023-05-01T09:00:00Z",
+                    },
+                    {
+                        "uri": "opencortex://m/session1-specific",
+                        "session_id": "locomo-conv-match",
+                        "msg_range": [0, 1],
+                        "abstract": "Alice says the LGBTQ support group made her feel accepted.",
+                        "overview": "She describes the support group and what she learned there.",
+                        "abstract_json": {
+                            "anchors": [
+                                {"anchor_type": "entity", "value": "Alice"},
+                                {"anchor_type": "entity", "value": "LGBTQ support group"},
+                                {"anchor_type": "time", "value": "1 May, 2023"},
+                            ]
+                        },
+                        "event_date": "2023-05-01T09:00:00Z",
+                    },
+                ],
+                "total": 2,
+            },
+        ]
+
+        await bench.ingest(oc)
+        items = bench.build_qa_items()
+
+        self.assertEqual(items[0].expected_uris, ["opencortex://m/session1-specific"])
 
     async def test_ingest_falls_back_to_time_refs_when_msg_range_is_missing(self):
         bench = LoCoMoBench()
@@ -288,7 +360,7 @@ class TestLoCoMoBench(unittest.IsolatedAsyncioTestCase):
             retrieval_meta["memory_pipeline"]["planner"]["retrieval_depth"],
             "l1",
         )
-        self.assertNotIn("detail_level", oc.recall_calls[0])
+        self.assertEqual(oc.recall_calls[0]["detail_level"], "l2")
         self.assertTrue(oc.recall_calls[0]["session_scope"])
         self.assertEqual(oc.recall_calls[0]["session_id"], "locomo-conv-1")
         self.assertEqual(
@@ -342,14 +414,14 @@ class TestLongMemEvalBench(unittest.IsolatedAsyncioTestCase):
                     {
                         "uri": "opencortex://m/lme-session1",
                         "session_id": "lme-item-0",
-                        "meta": {"msg_range": [0, 1]},
+                        "msg_range": [0, 1],
                         "abstract_json": {"slots": {"time_refs": ["2023-05-01"]}},
                         "event_date": "2023-05-01T00:00:00Z",
                     },
                     {
                         "uri": "opencortex://m/lme-session2",
                         "session_id": "lme-item-0",
-                        "meta": {"msg_range": [2, 2]},
+                        "msg_range": [2, 2],
                         "abstract_json": {"slots": {"time_refs": ["2023-05-03"]}},
                         "event_date": "2023-05-03T00:00:00Z",
                     },

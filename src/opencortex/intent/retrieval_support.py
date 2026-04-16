@@ -145,7 +145,13 @@ def query_anchor_groups(
     retrieve_plan: Optional[RetrievalPlan],
     probe_result: Optional[SearchResult],
 ) -> Dict[str, set[str]]:
-    """Collect query anchors grouped by semantic kind."""
+    """Collect query-derived anchors grouped by semantic kind.
+
+    Probe candidates may carry rich starting-point metadata, but that metadata is
+    evidence about likely matches, not ground truth about the user's intent. If
+    we fold candidate-side anchors back into the query, rerank starts rewarding
+    whatever the probe already preferred, which amplifies early mistakes.
+    """
     groups: Dict[str, set[str]] = {}
 
     if retrieve_plan is not None:
@@ -157,30 +163,11 @@ def query_anchor_groups(
             groups.setdefault(kind, set()).add(normalized)
 
     if probe_result is not None:
-        topic_group = groups.setdefault(QueryAnchorKind.TOPIC.value, set())
-        for anchor in probe_result.anchor_hits:
-            normalized = _normalize_anchor_value(anchor)
-            if normalized:
-                topic_group.add(normalized)
-        time_group = groups.setdefault(QueryAnchorKind.TIME.value, set())
         entity_group = groups.setdefault(QueryAnchorKind.ENTITY.value, set())
         for value in probe_result.query_entities:
             normalized = _normalize_anchor_value(value)
             if normalized:
                 entity_group.add(normalized)
-        for starting_point in probe_result.starting_points:
-            for value in starting_point.entities:
-                normalized = _normalize_anchor_value(value)
-                if normalized:
-                    entity_group.add(normalized)
-            for value in starting_point.time_refs:
-                normalized = _normalize_anchor_value(value)
-                if normalized:
-                    time_group.add(normalized)
-        for value in probe_result.starting_point_anchors:
-            normalized = _normalize_anchor_value(value)
-            if normalized:
-                topic_group.add(normalized)
 
     return groups
 

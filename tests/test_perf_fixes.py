@@ -1,6 +1,7 @@
 # tests/test_perf_fixes.py
 import asyncio
 import sys
+import time
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -94,6 +95,58 @@ class TestColdStartNonBlocking(unittest.IsolatedAsyncioTestCase):
 
         assert oc._initialized is True
         assert elapsed < 1.0, f"init() took {elapsed:.2f}s — maintenance leaked into init"
+
+
+class TestProbeNonBlocking(unittest.IsolatedAsyncioTestCase):
+    async def test_probe_embedding_runs_off_event_loop(self):
+        from opencortex.intent import MemoryBootstrapProbe, ProbeScopeSource, ScopeLevel
+
+        class SlowEmbedder:
+            is_available = True
+            model_name = "slow-probe-embedder"
+
+            def embed_query(self, query: str):
+                time.sleep(0.05)
+                return MagicMock(dense_vector=[0.1, 0.2, 0.3])
+
+        probe = MemoryBootstrapProbe(
+            storage=MagicMock(),
+            embedder=SlowEmbedder(),
+            collection_resolver=lambda: "context",
+            filter_builder=lambda: {},
+        )
+        probe._select_scope_bucket = AsyncMock(
+            return_value=(
+                None,
+                ProbeScopeSource.GLOBAL_ROOT,
+                False,
+                ScopeLevel.GLOBAL,
+                [],
+                [],
+                0.0,
+            )
+        )
+        probe._object_probe = AsyncMock(return_value=[])
+        probe._anchor_probe = AsyncMock(return_value=[])
+
+        ticks = 0
+        done = asyncio.Event()
+
+        async def ticker():
+            nonlocal ticks
+            while not done.is_set():
+                ticks += 1
+                await asyncio.sleep(0.005)
+
+        ticker_task = asyncio.create_task(ticker())
+        try:
+            result = await probe.probe("What happened before launch?")
+            self.assertIsNotNone(result)
+        finally:
+            done.set()
+            await ticker_task
+
+        self.assertGreaterEqual(ticks, 5)
 
 
 class TestAutophagySweeperLifecycle(unittest.IsolatedAsyncioTestCase):
@@ -251,8 +304,8 @@ class TestAutophagySweeperLifecycle(unittest.IsolatedAsyncioTestCase):
 
 
 class TestRecallBookkeepingAsync(unittest.IsolatedAsyncioTestCase):
-    async def test_search_does_not_await_recall_bookkeeping(self):
-        """search() should return before slow recall bookkeeping finishes."""
+    async def test_search_skips_recall_bookkeeping_side_effects(self):
+        """search() should skip recall bookkeeping side effects on the hot path."""
         from opencortex.config import CortexConfig
         from opencortex.intent import SearchResult
         from opencortex.orchestrator import MemoryOrchestrator
@@ -319,19 +372,8 @@ class TestRecallBookkeepingAsync(unittest.IsolatedAsyncioTestCase):
         oc._aggregate_results = MagicMock(
             return_value=FindResult(memories=[memory], resources=[], skills=[])
         )
-        oc._resolve_memory_owner_ids = AsyncMock(return_value=["owner-1"])
-
-        started = asyncio.Event()
-        release = asyncio.Event()
-
-        async def slow_apply_recall_outcome(**_kwargs):
-            started.set()
-            await release.wait()
-
         oc._autophagy_kernel = MagicMock()
-        oc._autophagy_kernel.apply_recall_outcome = AsyncMock(
-            side_effect=slow_apply_recall_outcome
-        )
+        oc._autophagy_kernel.apply_recall_outcome = AsyncMock()
 
         probe_result = SearchResult(should_recall=True)
         retrieve_plan = MagicMock()
@@ -350,13 +392,9 @@ class TestRecallBookkeepingAsync(unittest.IsolatedAsyncioTestCase):
             0.5,
             f"search() blocked on recall bookkeeping for {elapsed:.3f}s",
         )
-
-        await asyncio.wait_for(started.wait(), timeout=1.0)
-        self.assertEqual(len(oc._recall_bookkeeping_tasks_set()), 1)
-
-        release.set()
         await oc.close()
-        oc._autophagy_kernel.apply_recall_outcome.assert_awaited_once()
+        oc._resolve_and_update_access_stats.assert_not_awaited()
+        oc._autophagy_kernel.apply_recall_outcome.assert_not_awaited()
         self.assertEqual(len(oc._recall_bookkeeping_tasks_set()), 0)
 
     async def test_search_no_longer_calls_hyde_rewrite(self):

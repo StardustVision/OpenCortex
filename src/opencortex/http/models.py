@@ -82,6 +82,11 @@ class MemorySearchResultItem(BaseModel):
     source_doc_id: Optional[str] = None
     source_doc_title: Optional[str] = None
     source_section_path: Optional[str] = None
+    source_uri: Optional[str] = None
+    msg_range: Optional[List[int]] = None
+    recomposition_stage: Optional[str] = None
+    matched_anchors: Optional[List[str]] = None
+    cone_used: Optional[bool] = None
 
 
 class MemorySearchPipeline(BaseModel):
@@ -298,6 +303,11 @@ class ContextPrepareMemoryItem(BaseModel):
     context_type: str
     category: str
     session_id: Optional[str] = None
+    source_uri: Optional[str] = None
+    msg_range: Optional[List[int]] = None
+    recomposition_stage: Optional[str] = None
+    matched_anchors: Optional[List[str]] = None
+    cone_used: Optional[bool] = None
     overview: Optional[str] = None
     content: Optional[str] = None
 

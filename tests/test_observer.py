@@ -19,7 +19,7 @@ class TestObserver(unittest.IsolatedAsyncioTestCase):
 
     async def test_record_batch(self):
         messages = [
-            {"role": "user", "content": "hello"},
+            {"role": "user", "content": "hello", "meta": {"speaker": "Alice"}},
             {"role": "assistant", "content": "hi"},
         ]
         self.observer.record_batch(
@@ -28,6 +28,7 @@ class TestObserver(unittest.IsolatedAsyncioTestCase):
         )
         transcript = self.observer.get_transcript("s1")
         self.assertEqual(len(transcript), 2)
+        self.assertEqual(transcript[0]["meta"]["speaker"], "Alice")
 
     async def test_multiple_sessions(self):
         self.observer.record_message("s1", "user", "a", "t", "u1")

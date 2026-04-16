@@ -202,7 +202,7 @@ class MemoryBootstrapProbe:
 
         started = time.perf_counter()
         try:
-            query_vector = self._embed_query(query_stripped)
+            query_vector = await self._embed_query(query_stripped)
             base_filter = _merge_filters(self._filter_builder(), scope_filter)
             (
                 selected_filter,
@@ -539,6 +539,28 @@ class MemoryBootstrapProbe:
                 self._candidate_record_payload(record)
             )
             normalized_score = self._record_score(record)
+            matched_anchor_terms: list[str] = []
+            if record.get("retrieval_surface") == "anchor_projection":
+                meta = dict(record.get("meta") or {})
+                for value in (
+                    meta.get("anchor_text"),
+                    meta.get("anchor_value"),
+                    record.get("overview"),
+                ):
+                    normalized = str(value or "").strip()
+                    if normalized and normalized not in matched_anchor_terms:
+                        matched_anchor_terms.append(normalized)
+                if (
+                    normalized_score is not None
+                    and anchor_first
+                    and matched_anchor_terms
+                ):
+                    normalized_score += 0.06
+            else:
+                for value in record.get("_anchor_terms") or []:
+                    normalized = str(value).strip()
+                    if normalized and normalized not in matched_anchor_terms:
+                        matched_anchor_terms.append(normalized)
 
             anchors = self._candidate_anchors(
                 object_view,
@@ -559,6 +581,7 @@ class MemoryBootstrapProbe:
                     abstract=object_view.abstract,
                     overview=object_view.overview,
                     anchors=anchors,
+                    matched_anchors=matched_anchor_terms[:6],
                 )
                 return
             existing.score = max(
@@ -571,15 +594,20 @@ class MemoryBootstrapProbe:
                 if anchor not in merged_anchors:
                     merged_anchors.append(anchor)
             existing.anchors = merged_anchors[:8]
+            merged_matched = list(existing.matched_anchors)
+            for anchor in matched_anchor_terms:
+                if anchor not in merged_matched:
+                    merged_matched.append(anchor)
+            existing.matched_anchors = merged_matched[:6]
             if not existing.abstract and object_view.abstract:
                 existing.abstract = object_view.abstract
             if existing.overview is None and object_view.overview:
                 existing.overview = object_view.overview
 
-        for record in object_records:
-            _merge_record(record, anchor_first=False)
         for record in anchor_records:
             _merge_record(record, anchor_first=True)
+        for record in object_records:
+            _merge_record(record, anchor_first=False)
 
         candidate_entries = list(candidate_entries_by_uri.values())
         candidate_entries.sort(key=lambda candidate: candidate.score or 0.0, reverse=True)
@@ -818,12 +846,13 @@ class MemoryBootstrapProbe:
 
         return values[:_MAX_ANCHOR_TERMS]
 
-    def _embed_query(self, query: str) -> Optional[list[float]]:
+    async def _embed_query(self, query: str) -> Optional[list[float]]:
         if self._embedder is None:
             return None
         if hasattr(self._embedder, "is_available") and not self._embedder.is_available:
             return None
-        result = self._embedder.embed_query(query)
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, self._embedder.embed_query, query)
         return getattr(result, "dense_vector", None)
 
     def _model_name(self) -> Optional[str]:

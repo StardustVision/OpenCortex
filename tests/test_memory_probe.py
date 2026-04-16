@@ -176,7 +176,6 @@ class TestMemoryProbe(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.should_recall)
         self.assertEqual(result.scope_source, ProbeScopeSource.CONTEXT_TYPE)
         self.assertFalse(result.scope_authoritative)
-        self.assertFalse(result.fallback_ready)
         self.assertEqual(result.selected_root_uris, [])
 
     async def test_probe_cache_key_includes_scope_input(self):
@@ -256,6 +255,7 @@ class TestMemoryProbe(unittest.IsolatedAsyncioTestCase):
             result.candidate_entries[0].abstract,
             "下周二去杭州出差，住在西湖边。",
         )
+        self.assertIn("杭州", result.candidate_entries[0].matched_anchors)
         self.assertIn("杭州", result.anchor_hits)
         self.assertGreater(result.trace.anchor_candidates, 0)
 

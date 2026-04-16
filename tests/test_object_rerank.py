@@ -98,7 +98,7 @@ class TestObjectRerank(unittest.IsolatedAsyncioTestCase):
                     {"kind": "time", "value": "下周二"},
                     {"kind": "topic", "value": "西湖"},
                 ],
-                "rewrite_mode": "light",
+                "rewrite_mode": "none",
             },
             search_profile={
                 "recall_budget": 0.5,

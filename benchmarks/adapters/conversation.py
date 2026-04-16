@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import time
 from hashlib import md5
-from typing import Any, Dict, Iterable, List, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from benchmarks.adapters.base import EvalAdapter, IngestResult, QAItem
 
@@ -31,11 +31,8 @@ def _normalize_text_set(values: Iterable[Any]) -> Set[str]:
 
 
 def _message_span(record: Dict[str, Any]) -> Optional[Tuple[int, int]]:
-    """Return a record's message span if the payload exposes ``meta.msg_range``."""
-    meta = record.get("meta")
-    if not isinstance(meta, dict):
-        return None
-    raw_range = meta.get("msg_range")
+    """Return a record's message span from the top-level ``msg_range`` contract."""
+    raw_range = record.get("msg_range")
     if not isinstance(raw_range, list) or len(raw_range) != 2:
         return None
     try:
@@ -51,6 +48,13 @@ def _message_span(record: Dict[str, Any]) -> Optional[Tuple[int, int]]:
 def _ranges_overlap(left: Tuple[int, int], right: Tuple[int, int]) -> bool:
     """Return whether two inclusive ranges overlap."""
     return max(left[0], right[0]) <= min(left[1], right[1])
+
+
+def _overlap_width(left: Tuple[int, int], right: Tuple[int, int]) -> int:
+    """Return inclusive overlap width for two spans."""
+    if not _ranges_overlap(left, right):
+        return 0
+    return min(left[1], right[1]) - max(left[0], right[0]) + 1
 
 
 def _record_time_refs(record: Dict[str, Any]) -> Set[str]:
@@ -134,7 +138,7 @@ class LongMemEvalBench(EvalAdapter):
                 continue
             relevant_records[uri] = record
 
-        mapped: Dict[int, List[Tuple[str, int]]] = {
+        mapped: Dict[int, List[Tuple[str, int, int, int]]] = {
             session_num: [] for session_num in session_spans
         }
         unmatched_records: Dict[str, Dict[str, Any]] = {}
@@ -148,7 +152,9 @@ class LongMemEvalBench(EvalAdapter):
             for session_num, session_span in session_spans.items():
                 if not _ranges_overlap(span, session_span):
                     continue
-                mapped[session_num].append((uri, width))
+                mapped[session_num].append(
+                    (uri, width, _overlap_width(span, session_span), span[0])
+                )
 
         if unmatched_records:
             for session_num, time_refs in session_time_refs.items():
@@ -158,17 +164,18 @@ class LongMemEvalBench(EvalAdapter):
                     if time_refs.intersection(_record_time_refs(record)):
                         span = _message_span(record)
                         width = span[1] - span[0] if span is not None else 10**9
-                        mapped[session_num].append((uri, width))
+                        mapped[session_num].append((uri, width, 0, span[0] if span else 10**9))
 
         result: Dict[int, List[str]] = {}
         for session_num, candidates in mapped.items():
             if not candidates:
                 result[session_num] = []
                 continue
-            min_width = min(width for _, width in candidates)
-            result[session_num] = sorted(
-                {uri for uri, width in candidates if width == min_width}
-            )
+            best_uri, _, _, _ = sorted(
+                candidates,
+                key=lambda item: (-item[2], item[1], item[3], item[0]),
+            )[0]
+            result[session_num] = [best_uri]
         return result
 
     async def ingest(self, oc: Any, **kwargs) -> IngestResult:

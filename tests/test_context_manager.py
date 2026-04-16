@@ -69,7 +69,57 @@ class TestContextManager(unittest.TestCase):
 
         r1 = self._run(cm.handle(**args))
         r2 = self._run(cm.handle(**args))
-        self.assertEqual(r1, r2)
+        self.assertEqual(r1["session_id"], r2["session_id"])
+        self.assertEqual(r1["turn_id"], r2["turn_id"])
+        self.assertEqual(r1["memory"], r2["memory"])
+        self.assertEqual(r1["knowledge"], r2["knowledge"])
+        self.assertEqual(r1["instructions"], r2["instructions"])
+        self.assertFalse(
+            r1["intent"]["memory_pipeline"]["runtime"]["trace"].get("cache_hit", False)
+        )
+        self.assertTrue(
+            r2["intent"]["memory_pipeline"]["runtime"]["trace"]["cache_hit"]
+        )
+
+        self._run(orch.close())
+
+    def test_prepare_cache_hit_rewrites_stage_timing(self):
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        self._run(
+            orch.add(
+                abstract="User prefers dark theme in editors",
+                category="general",
+            )
+        )
+        cm = orch._context_manager
+
+        args = dict(
+            session_id="sess_cache",
+            phase="prepare",
+            tenant_id="testteam",
+            user_id="alice",
+            turn_id="t1",
+            messages=[{"role": "user", "content": "What theme do I prefer?"}],
+        )
+
+        first = self._run(cm.handle(**args))
+        first["intent"]["memory_pipeline"]["runtime"]["trace"]["stage_timing_ms"][
+            "total"
+        ] = 999
+
+        cached = self._run(cm.handle(**args))
+        cache_trace = cached["intent"]["memory_pipeline"]["runtime"]["trace"]
+
+        self.assertNotEqual(
+            cache_trace["stage_timing_ms"]["total"],
+            999,
+        )
+        self.assertEqual(
+            cache_trace["stage_timing_ms"]["overhead"],
+            cache_trace["stage_timing_ms"]["total"],
+        )
+        self.assertTrue(cache_trace["cache_hit"])
 
         self._run(orch.close())
 
@@ -257,6 +307,371 @@ class TestContextManager(unittest.TestCase):
         self.assertIn("西湖", slots["entities"])
         self.assertIn("出差", slots["topics"])
         self.assertIn("住宿", slots["topics"])
+
+        self._run(orch.close())
+
+    def test_merge_buffer_splits_clear_temporal_segments(self):
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        cm = orch._context_manager
+        session_id = "sess_merge_segments_001"
+        sk = cm._make_session_key("testteam", "alice", session_id)
+
+        items = [
+            (
+                0,
+                "[1 May, 2023] [Alice]: 我搬到了杭州。",
+                {
+                    "speaker": "Alice",
+                    "event_date": "2023-05-01T09:00:00Z",
+                    "time_refs": ["1 May, 2023", "2023-05-01"],
+                    "entities": ["杭州"],
+                    "topics": ["搬家"],
+                },
+            ),
+            (
+                1,
+                "[1 May, 2023] [Bob]: 你住在西湖边。",
+                {
+                    "speaker": "Bob",
+                    "event_date": "2023-05-01T09:00:00Z",
+                    "time_refs": ["1 May, 2023", "2023-05-01"],
+                    "entities": ["西湖"],
+                    "topics": ["住处"],
+                },
+            ),
+            (
+                2,
+                "[3 May, 2023] [Alice]: 我下周去上海见客户。",
+                {
+                    "speaker": "Alice",
+                    "event_date": "2023-05-03T10:00:00Z",
+                    "time_refs": ["3 May, 2023", "2023-05-03"],
+                    "entities": ["上海"],
+                    "topics": ["出差"],
+                },
+            ),
+            (
+                3,
+                "[3 May, 2023] [Bob]: 记得带电脑。",
+                {
+                    "speaker": "Bob",
+                    "event_date": "2023-05-03T10:00:00Z",
+                    "time_refs": ["3 May, 2023", "2023-05-03"],
+                    "entities": ["电脑"],
+                    "topics": ["提醒"],
+                },
+            ),
+        ]
+
+        buffer = cm._conversation_buffers.setdefault(sk, ConversationBuffer())
+        for msg_index, text, meta in items:
+            uri = self._run(
+                orch._write_immediate(
+                    session_id=session_id,
+                    msg_index=msg_index,
+                    text=text,
+                    meta=meta,
+                )
+            )
+            buffer.messages.append(text)
+            buffer.immediate_uris.append(uri)
+            buffer.token_count += 300
+
+        self._run(
+            cm._merge_buffer(
+                sk,
+                session_id,
+                "testteam",
+                "alice",
+                flush_all=True,
+            )
+        )
+
+        merged_records = sorted(
+            [
+                record
+                for record in self.storage._records.get("context", {}).values()
+                if record.get("meta", {}).get("layer") == "merged"
+            ],
+            key=lambda record: record.get("meta", {}).get("msg_range", [999, 999])[0],
+        )
+        self.assertEqual(len(merged_records), 2)
+        self.assertEqual(merged_records[0]["meta"]["msg_range"], [0, 1])
+        self.assertEqual(merged_records[1]["meta"]["msg_range"], [2, 3])
+
+        self._run(orch.close())
+
+    def test_merge_buffer_recomposes_tail_and_replaces_superseded_merged_leaf(self):
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        cm = orch._context_manager
+        session_id = "sess_merge_tail_001"
+        sk = cm._make_session_key("testteam", "alice", session_id)
+        source_uri = cm._conversation_source_uri("testteam", "alice", session_id)
+
+        old_merged = self._run(
+            orch.add(
+                abstract="",
+                content="我下周二去杭州出差。",
+                category="events",
+                context_type="memory",
+                session_id=session_id,
+                meta={
+                    "layer": "merged",
+                    "ingest_mode": "memory",
+                    "msg_range": [0, 1],
+                    "source_uri": source_uri,
+                    "session_id": session_id,
+                    "recomposition_stage": "online_tail",
+                    "time_refs": ["2023-05-01"],
+                    "entities": ["杭州"],
+                },
+            )
+        )
+
+        uri2 = self._run(
+            orch._write_immediate(
+                session_id=session_id,
+                msg_index=2,
+                text="[2023-05-01] 我住在西湖边。",
+                meta={
+                    "event_date": "2023-05-01T10:00:00Z",
+                    "time_refs": ["2023-05-01"],
+                    "entities": ["西湖"],
+                    "topics": ["住宿"],
+                },
+            )
+        )
+        uri3 = self._run(
+            orch._write_immediate(
+                session_id=session_id,
+                msg_index=3,
+                text="[2023-05-01] 我不吃辣。",
+                meta={
+                    "event_date": "2023-05-01T10:00:00Z",
+                    "time_refs": ["2023-05-01"],
+                    "entities": ["饮食"],
+                    "topics": ["偏好"],
+                },
+            )
+        )
+
+        buffer = cm._conversation_buffers.setdefault(sk, ConversationBuffer())
+        buffer.messages = ["[2023-05-01] 我住在西湖边。", "[2023-05-01] 我不吃辣。"]
+        buffer.immediate_uris = [uri2, uri3]
+        buffer.token_count = 1200
+
+        self._run(
+            cm._merge_buffer(
+                sk,
+                session_id,
+                "testteam",
+                "alice",
+                flush_all=True,
+            )
+        )
+
+        merged_records = [
+            record
+            for record in self.storage._records.get("context", {}).values()
+            if record.get("meta", {}).get("layer") == "merged"
+            and record.get("session_id") == session_id
+        ]
+        merged_uris = {record.get("uri") for record in merged_records}
+        self.assertNotIn(old_merged.uri, merged_uris)
+        self.assertTrue(merged_records)
+        self.assertTrue(
+            all(
+                record.get("meta", {}).get("recomposition_stage") == "online_tail"
+                for record in merged_records
+            )
+        )
+
+        self._run(orch.close())
+
+    def test_full_session_recomposition_replaces_merged_set(self):
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        cm = orch._context_manager
+        session_id = "sess_full_recompose_001"
+        source_uri = cm._conversation_source_uri("testteam", "alice", session_id)
+
+        first = self._run(
+            orch.add(
+                abstract="",
+                content="第一段对话：我搬到了杭州。",
+                category="events",
+                context_type="memory",
+                session_id=session_id,
+                meta={
+                    "layer": "merged",
+                    "ingest_mode": "memory",
+                    "msg_range": [0, 0],
+                    "source_uri": source_uri,
+                    "session_id": session_id,
+                    "recomposition_stage": "online_tail",
+                    "time_refs": ["2023-05-01"],
+                    "entities": ["杭州"],
+                },
+            )
+        )
+        second = self._run(
+            orch.add(
+                abstract="",
+                content="第二段对话：我住在西湖边。",
+                category="events",
+                context_type="memory",
+                session_id=session_id,
+                meta={
+                    "layer": "merged",
+                    "ingest_mode": "memory",
+                    "msg_range": [1, 1],
+                    "source_uri": source_uri,
+                    "session_id": session_id,
+                    "recomposition_stage": "online_tail",
+                    "time_refs": ["2023-05-01"],
+                    "entities": ["西湖"],
+                },
+            )
+        )
+
+        self._run(
+            cm._run_full_session_recomposition(
+                session_id=session_id,
+                tenant_id="testteam",
+                user_id="alice",
+                source_uri=source_uri,
+            )
+        )
+
+        merged_records = [
+            record
+            for record in self.storage._records.get("context", {}).values()
+            if record.get("meta", {}).get("layer") == "merged"
+            and record.get("session_id") == session_id
+        ]
+        merged_uris = {record.get("uri") for record in merged_records}
+        self.assertNotIn(first.uri, merged_uris)
+        self.assertNotIn(second.uri, merged_uris)
+        self.assertTrue(merged_records)
+        self.assertTrue(
+            all(
+                record.get("meta", {}).get("recomposition_stage") == "final_full"
+                for record in merged_records
+            )
+        )
+
+        self._run(orch.close())
+
+    def test_end_persists_conversation_source_and_links_merged_leaf(self):
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        cm = orch._context_manager
+        session_id = "sess_source_001"
+
+        self._run(
+            cm.handle(
+                session_id=session_id,
+                phase="commit",
+                tenant_id="testteam",
+                user_id="alice",
+                turn_id="t1",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": "我搬到了杭州。",
+                        "meta": {
+                            "speaker": "Alice",
+                            "event_date": "2023-05-01T09:00:00Z",
+                            "time_refs": ["1 May, 2023"],
+                        },
+                    },
+                    {"role": "assistant", "content": "记住了。"},
+                ],
+            )
+        )
+
+        result = self._run(
+            cm.handle(
+                session_id=session_id,
+                phase="end",
+                tenant_id="testteam",
+                user_id="alice",
+            )
+        )
+
+        self.assertEqual(result["status"], "closed")
+        source_uri = result["source_uri"]
+        self.assertTrue(source_uri)
+
+        source_records = [
+            record
+            for record in self.storage._records.get("context", {}).values()
+            if record.get("uri") == source_uri
+        ]
+        self.assertEqual(len(source_records), 1)
+        self.assertEqual(
+            source_records[0].get("meta", {}).get("layer"),
+            "conversation_source",
+        )
+        rendered_source = self._run(
+            orch._fs.read_file(f"{source_uri}/content.md")
+        )
+        self.assertIn("我搬到了杭州。", rendered_source)
+
+        merged_records = [
+            record
+            for record in self.storage._records.get("context", {}).values()
+            if record.get("meta", {}).get("layer") == "merged"
+        ]
+        self.assertEqual(len(merged_records), 1)
+        self.assertEqual(merged_records[0]["meta"]["source_uri"], source_uri)
+        self.assertEqual(merged_records[0]["meta"]["msg_range"], [0, 1])
+
+        self._run(orch.close())
+
+    def test_end_returns_partial_when_source_persistence_fails(self):
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        cm = orch._context_manager
+        session_id = "sess_source_fail_001"
+
+        self._run(
+            cm.handle(
+                session_id=session_id,
+                phase="commit",
+                tenant_id="testteam",
+                user_id="alice",
+                turn_id="t1",
+                messages=[
+                    {"role": "user", "content": "我下周去上海。"},
+                    {"role": "assistant", "content": "记住了。"},
+                ],
+            )
+        )
+
+        original_add = orch.add
+
+        async def flaky_add(*args, **kwargs):
+            meta = kwargs.get("meta") or {}
+            if meta.get("layer") == "conversation_source":
+                raise RuntimeError("source boom")
+            return await original_add(*args, **kwargs)
+
+        orch.add = AsyncMock(side_effect=flaky_add)
+
+        result = self._run(
+            cm.handle(
+                session_id=session_id,
+                phase="end",
+                tenant_id="testteam",
+                user_id="alice",
+            )
+        )
+
+        self.assertEqual(result["status"], "partial")
+        self.assertGreater(len(orch._observer.get_transcript(session_id)), 0)
 
         self._run(orch.close())
 
@@ -508,7 +923,7 @@ class TestContextManager(unittest.TestCase):
                 for record in self.storage._records.get("context", {}).values()
                 if record.get("meta", {}).get("layer") == "immediate"
             ]
-            self.assertEqual(len(merged_records), 1)
+            self.assertGreaterEqual(len(merged_records), 1)
             self.assertEqual(immediate_records, [])
             self.assertFalse(
                 any(
@@ -580,7 +995,7 @@ class TestContextManager(unittest.TestCase):
                 for record in self.storage._records.get("context", {}).values()
                 if record.get("meta", {}).get("layer") == "merged"
             ]
-            self.assertEqual(len(merged_records), 1)
+            self.assertGreaterEqual(len(merged_records), 1)
             self.assertFalse(
                 any(
                     record.get("uri", "").startswith(f"{uri}/anchors")

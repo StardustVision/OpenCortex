@@ -324,6 +324,7 @@ class MemoryOrchestrator:
             embedder=self._embedder,
             collection_resolver=self._get_collection,
             filter_builder=self._build_probe_filter,
+            top_k=6,
         )
 
         # 8. Background maintenance: text indexes, migrations, re-embed
@@ -1231,7 +1232,6 @@ class MemoryOrchestrator:
                         parse_fn=parse_json_from_response,
                         max_chars_per_chunk=4000,
                     )
-                    llm_abstract = str(result.get("abstract") or "").strip()
                     llm_overview = str(result.get("overview") or "").strip()
                     keywords_list = result.get("keywords", [])
                     if isinstance(keywords_list, list):
@@ -1252,8 +1252,13 @@ class MemoryOrchestrator:
                         ][:6]
                     else:
                         anchor_handles = []
+                    derived_abstract = self._derive_abstract_from_overview(
+                        user_abstract=user_abstract,
+                        overview=(user_overview or llm_overview),
+                        content=content,
+                    )
                     return {
-                        "abstract": user_abstract or llm_abstract or content,
+                        "abstract": derived_abstract,
                         "overview": user_overview or llm_overview,
                         "keywords": keywords,
                         "entities": entities,
@@ -1268,7 +1273,6 @@ class MemoryOrchestrator:
                 response = await self._llm_completion(prompt)
                 data = parse_json_from_response(response)
                 if isinstance(data, dict):
-                    llm_abstract = (data.get("abstract") or "").strip()
                     llm_overview = (data.get("overview") or "").strip()
                     keywords_list = data.get("keywords") or []
                     if isinstance(keywords_list, list):
@@ -1289,8 +1293,13 @@ class MemoryOrchestrator:
                         ][:6]
                     else:
                         anchor_handles = []
+                    derived_abstract = self._derive_abstract_from_overview(
+                        user_abstract=user_abstract,
+                        overview=(user_overview or llm_overview),
+                        content=content,
+                    )
                     return {
-                        "abstract": user_abstract or llm_abstract or content,
+                        "abstract": derived_abstract,
                         "overview": user_overview or llm_overview,
                         "keywords": keywords,
                         "entities": entities,
@@ -1300,10 +1309,14 @@ class MemoryOrchestrator:
                 logger.warning("[Orchestrator] _derive_layers LLM failed: %s", e)
 
         # No-LLM fallback
-        abstract = user_abstract or content
         overview = user_overview
         if not overview and content and len(content) <= 500:
             overview = content
+        abstract = self._derive_abstract_from_overview(
+            user_abstract=user_abstract,
+            overview=overview,
+            content=content,
+        )
         if not user_abstract and not self._llm_completion:
             logger.warning(
                 "[Orchestrator] No LLM configured — abstract uses raw content"
@@ -1315,6 +1328,29 @@ class MemoryOrchestrator:
             "entities": [],
             "anchor_handles": [],
         }
+
+    @staticmethod
+    def _derive_abstract_from_overview(
+        *,
+        user_abstract: str,
+        overview: str,
+        content: str,
+    ) -> str:
+        """Derive a short abstract from a richer overview."""
+        if user_abstract:
+            return user_abstract
+
+        overview_text = str(overview or "").strip()
+        if overview_text:
+            first_line = overview_text.splitlines()[0].strip()
+            first_sentence = re.split(r"(?<=[.!?。！？])\s+", first_line)[0].strip()
+            candidate = first_sentence or first_line
+            if len(candidate) > 200:
+                candidate = smart_truncate(candidate, 200).strip()
+            if candidate:
+                return candidate
+
+        return str(content or "").strip()
 
     def _build_abstract_json(
         self,
@@ -2560,6 +2596,24 @@ class MemoryOrchestrator:
 
         return score, ",".join(reasons) or "semantic"
 
+    @staticmethod
+    def _matched_record_anchors(
+        *,
+        record: Dict[str, Any],
+        query_anchor_groups: Dict[str, set[str]],
+    ) -> List[str]:
+        """Return normalized query anchors that concretely matched this record."""
+        if not query_anchor_groups:
+            return []
+        matched: List[str] = []
+        record_groups = record_anchor_groups(record)
+        for kind, query_values in query_anchor_groups.items():
+            record_values = record_groups.get(kind, set())
+            for value in sorted(query_values.intersection(record_values)):
+                if value not in matched:
+                    matched.append(value)
+        return matched[:8]
+
     async def _records_to_matched_contexts(
         self,
         *,
@@ -2606,6 +2660,23 @@ class MemoryOrchestrator:
                 source_doc_id=record.get("source_doc_id"),
                 source_doc_title=record.get("source_doc_title"),
                 source_section_path=record.get("source_section_path"),
+                source_uri=(
+                    dict(record.get("meta") or {}).get("source_uri")
+                    if isinstance(record.get("meta"), dict)
+                    else None
+                ),
+                msg_range=(
+                    dict(record.get("meta") or {}).get("msg_range")
+                    if isinstance(record.get("meta"), dict)
+                    else None
+                ),
+                recomposition_stage=(
+                    dict(record.get("meta") or {}).get("recomposition_stage")
+                    if isinstance(record.get("meta"), dict)
+                    else None
+                ),
+                matched_anchors=list(record.get("_matched_anchors", []) or []),
+                cone_used=bool(record.get("_cone_used", False)),
                 relations=[],
             )
 
@@ -2755,6 +2826,11 @@ class MemoryOrchestrator:
             rescored_record = dict(record)
             rescored_record["_final_score"] = final_score
             rescored_record["_match_reason"] = match_reason
+            rescored_record["_matched_anchors"] = self._matched_record_anchors(
+                record=record,
+                query_anchor_groups=query_anchor_groups,
+            )
+            rescored_record["_cone_used"] = bool(cone_used)
             rescored.append(rescored_record)
         rescored.sort(key=lambda record: record.get("_final_score", 0.0), reverse=True)
         rerank_finished = time.perf_counter()
@@ -3002,26 +3078,18 @@ class MemoryOrchestrator:
         result.resources = [m for m in result.resources if m.is_leaf]
         result.skills = [m for m in result.skills if m.is_leaf]
 
-        self._schedule_recall_bookkeeping(
-            memories=result.memories,
-            query=query,
-            tenant_id=tid,
-            user_id=uid,
-        )
-
         # Fire-and-forget: resolve URIs → record IDs → update access stats
         all_matched = result.memories + result.resources + result.skills
-        if all_matched:
-            uris = [mc.uri for mc in all_matched]
-            asyncio.create_task(self._resolve_and_update_access_stats(uris))
 
-        total_ms = int((asyncio.get_running_loop().time() - search_started) * 1000)
         stage_timings.record_elapsed("aggregate", aggregate_started)
+        total_ms = int((asyncio.get_running_loop().time() - search_started) * 1000)
         stage_timings.record_ms("total", total_ms)
+        timing_snapshot = stage_timings.snapshot()
         retrieval_latency_ms = (
-            max(stage_timings.snapshot()["retrieve"], 0)
-            + max(stage_timings.snapshot().get("hydrate", 0), 0)
+            max(timing_snapshot["retrieve"], 0)
+            + max(timing_snapshot.get("hydrate", 0), 0)
         )
+        overhead_ms = timing_snapshot["overhead"]
         if runtime_bound_plan is not None:
             runtime_items = [
                 {
@@ -3035,14 +3103,14 @@ class MemoryOrchestrator:
                 bound_plan=runtime_bound_plan,
                 items=runtime_items,
                 latency_ms=retrieval_latency_ms,
-                stage_timing_ms=stage_timings.snapshot(),
+                stage_timing_ms=timing_snapshot,
                 retrieve_breakdown_ms=retrieve_breakdown_ms,
                 hydration_actions=hydration_actions,
                 early_stop=early_stop,
             )
         logger.info(
             "[search] tenant=%s user=%s probe_candidates=%d queries=%d results=%d "
-            "timing_ms(total=%d intent=%d retrieval=%d)",
+            "timing_ms(total=%d intent=%d retrieval=%d overhead=%d)",
             tid,
             uid,
             probe_result.evidence.candidate_count,
@@ -3051,6 +3119,7 @@ class MemoryOrchestrator:
             total_ms,
             intent_ms,
             retrieval_latency_ms,
+            overhead_ms,
         )
 
         # v0.6: Build SearchExplainSummary

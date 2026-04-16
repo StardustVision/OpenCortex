@@ -63,6 +63,8 @@ class Observer:
                 "content": msg["content"],
                 "timestamp": msg.get("timestamp", time.time()),
             }
+            if isinstance(msg.get("meta"), dict) and msg.get("meta"):
+                entry["meta"] = dict(msg["meta"])
             if msg["role"] == "assistant" and tool_calls:
                 entry["tool_calls"] = tool_calls
             self._transcripts[session_id].append(entry)

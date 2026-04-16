@@ -16,6 +16,52 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from benchmarks.adapters.base import EvalAdapter, IngestResult, QAItem
 
+_QUESTION_STOPWORDS = {
+    "a",
+    "an",
+    "the",
+    "and",
+    "or",
+    "to",
+    "of",
+    "in",
+    "on",
+    "at",
+    "for",
+    "from",
+    "with",
+    "did",
+    "does",
+    "do",
+    "is",
+    "was",
+    "were",
+    "what",
+    "when",
+    "where",
+    "who",
+    "why",
+    "how",
+    "would",
+    "could",
+    "should",
+    "be",
+    "been",
+    "has",
+    "have",
+    "had",
+    "will",
+    "i",
+    "me",
+    "my",
+    "you",
+    "your",
+    "her",
+    "his",
+    "their",
+    "they",
+}
+
 
 def _parse_locomo_sessions(conv: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Parse LoCoMo sessions sorted chronologically."""
@@ -130,12 +176,71 @@ def _normalize_text_set(values: Iterable[Any]) -> Set[str]:
     return normalized
 
 
-def _message_span(record: Dict[str, Any]) -> Optional[Tuple[int, int]]:
-    """Return a record's message span if the payload exposes ``meta.msg_range``."""
+def _question_terms(question: str) -> List[str]:
+    """Extract lightweight lexical terms from a QA question."""
+    terms: List[str] = []
+    for raw in str(question or "").lower().replace("?", " ").split():
+        token = "".join(ch for ch in raw if ch.isalnum() or ch in {"-", "+"}).strip("-+")
+        if len(token) < 3 or token in _QUESTION_STOPWORDS:
+            continue
+        if token not in terms:
+            terms.append(token)
+    return terms
+
+
+def _question_phrases(question: str) -> List[str]:
+    """Build simple multi-token phrases for lexical tie-breaking."""
+    terms = _question_terms(question)
+    phrases: List[str] = []
+    for size in (3, 2):
+        for index in range(len(terms) - size + 1):
+            phrase = " ".join(terms[index : index + size])
+            if phrase not in phrases:
+                phrases.append(phrase)
+    return phrases
+
+
+def _record_match_text(record: Dict[str, Any]) -> str:
+    """Flatten record text used for benchmark-side QA/leaf matching."""
+    parts: List[str] = []
+    for key in ("abstract", "overview", "content"):
+        value = str(record.get(key, "") or "").strip()
+        if value:
+            parts.append(value.lower())
+
     meta = record.get("meta")
-    if not isinstance(meta, dict):
-        return None
-    raw_range = meta.get("msg_range")
+    if isinstance(meta, dict):
+        for value in meta.get("time_refs") or []:
+            normalized = str(value or "").strip().lower()
+            if normalized:
+                parts.append(normalized)
+
+    abstract_json = record.get("abstract_json")
+    if isinstance(abstract_json, dict):
+        summary = str(abstract_json.get("summary", "") or "").strip().lower()
+        if summary:
+            parts.append(summary)
+        for anchor in abstract_json.get("anchors") or []:
+            if not isinstance(anchor, dict):
+                continue
+            normalized = str(anchor.get("text") or anchor.get("value") or "").strip().lower()
+            if normalized:
+                parts.append(normalized)
+
+    return "\n".join(parts)
+
+
+def _question_record_score(question: str, record: Dict[str, Any]) -> Tuple[int, int]:
+    """Return lexical match score between QA question and one merged leaf."""
+    haystack = _record_match_text(record)
+    phrase_hits = sum(1 for phrase in _question_phrases(question) if phrase in haystack)
+    term_hits = sum(1 for term in _question_terms(question) if term in haystack)
+    return phrase_hits, term_hits
+
+
+def _message_span(record: Dict[str, Any]) -> Optional[Tuple[int, int]]:
+    """Return a record's message span from the top-level ``msg_range`` contract."""
+    raw_range = record.get("msg_range")
     if not isinstance(raw_range, list) or len(raw_range) != 2:
         return None
     try:
@@ -151,6 +256,13 @@ def _message_span(record: Dict[str, Any]) -> Optional[Tuple[int, int]]:
 def _ranges_overlap(left: Tuple[int, int], right: Tuple[int, int]) -> bool:
     """Return whether two inclusive ranges overlap."""
     return max(left[0], right[0]) <= min(left[1], right[1])
+
+
+def _overlap_width(left: Tuple[int, int], right: Tuple[int, int]) -> int:
+    """Return inclusive overlap width for two spans."""
+    if not _ranges_overlap(left, right):
+        return 0
+    return min(left[1], right[1]) - max(left[0], right[0]) + 1
 
 
 def _record_time_refs(record: Dict[str, Any]) -> Set[str]:
@@ -180,6 +292,7 @@ class LoCoMoBench(EvalAdapter):
         self._conversation_uris_by_id: Dict[str, List[str]] = {}
         self._conversation_by_id: Dict[str, Dict[str, Any]] = {}
         self._session_uris_by_key: Dict[Tuple[str, int], List[str]] = {}
+        self._session_candidates_by_key: Dict[Tuple[str, int], List[Dict[str, Any]]] = {}
 
     def load_dataset(self, dataset_path: str, **kwargs) -> None:
         with open(dataset_path, encoding="utf-8") as file_obj:
@@ -193,6 +306,7 @@ class LoCoMoBench(EvalAdapter):
             str(conv.get("sample_id", index)): conv
             for index, conv in enumerate(self._dataset)
         }
+        self._session_candidates_by_key = {}
 
     @staticmethod
     def _conversation_session_id(conv_id: str) -> str:
@@ -264,7 +378,7 @@ class LoCoMoBench(EvalAdapter):
                 continue
             relevant_records[uri] = record
 
-        mapped: Dict[int, List[Tuple[str, int]]] = {
+        mapped: Dict[int, List[Tuple[str, int, int, int]]] = {
             session_num: [] for session_num in session_spans
         }
         unmatched_records: Dict[str, Dict[str, Any]] = {}
@@ -278,7 +392,9 @@ class LoCoMoBench(EvalAdapter):
             for session_num, session_span in session_spans.items():
                 if not _ranges_overlap(span, session_span):
                     continue
-                mapped[session_num].append((uri, width))
+                mapped[session_num].append(
+                    (uri, width, _overlap_width(span, session_span), span[0])
+                )
 
         if unmatched_records:
             for session_num, time_refs in session_time_refs.items():
@@ -288,18 +404,42 @@ class LoCoMoBench(EvalAdapter):
                     if time_refs.intersection(_record_time_refs(record)):
                         span = _message_span(record)
                         width = span[1] - span[0] if span is not None else 10**9
-                        mapped[session_num].append((uri, width))
+                        mapped[session_num].append((uri, width, 0, span[0] if span else 10**9))
 
         result: Dict[int, List[str]] = {}
         for session_num, candidates in mapped.items():
             if not candidates:
                 result[session_num] = []
                 continue
-            min_width = min(width for _, width in candidates)
-            result[session_num] = sorted(
-                {uri for uri, width in candidates if width == min_width}
+            ordered = sorted(
+                candidates,
+                key=lambda item: (-item[2], item[1], item[3], item[0]),
             )
+            result[session_num] = [uri for uri, _, _, _ in ordered]
         return result
+
+    @staticmethod
+    def _select_best_session_uri(
+        question: str,
+        candidates: List[Dict[str, Any]],
+    ) -> List[str]:
+        """Choose one session leaf using question-aware lexical tie-breaking."""
+        if not candidates:
+            return []
+
+        scored = [
+            (_question_record_score(question, record), index, record)
+            for index, record in enumerate(candidates)
+        ]
+        scored.sort(
+            key=lambda record: (
+                -record[0][0],
+                -record[0][1],
+                record[1],
+            ),
+        )
+        best_uri = str(scored[0][2].get("uri", "") or "")
+        return [best_uri] if best_uri else []
 
     async def ingest(self, oc: Any, **kwargs) -> IngestResult:
         """Ingest LoCoMo conversations via one session lifecycle each."""
@@ -309,6 +449,7 @@ class LoCoMoBench(EvalAdapter):
         )
         self._conversation_uris_by_id = {}
         self._session_uris_by_key = {}
+        self._session_candidates_by_key = {}
 
         total = len(conversations)
         ingested = 0
@@ -386,6 +527,11 @@ class LoCoMoBench(EvalAdapter):
                 )
                 for session_num, uris in session_uris_by_num.items():
                     self._session_uris_by_key[(conv_id, session_num)] = list(uris)
+                    self._session_candidates_by_key[(conv_id, session_num)] = [
+                        dict(new_records[uri])
+                        for uri in uris
+                        if uri in new_records
+                    ]
                 ingested += 1
             except Exception as exc:
                 errors.append(f"conv={conv_id}: {exc}")
@@ -409,8 +555,13 @@ class LoCoMoBench(EvalAdapter):
                 evidence_sessions = _evidence_session_numbers(qa)
                 expected_uris: List[str] = []
                 for session_num in evidence_sessions:
+                    session_candidates = self._session_candidates_by_key.get(
+                        (conv_id, session_num),
+                        [],
+                    )
                     expected_uris.extend(
-                        self._session_uris_by_key.get((conv_id, session_num), [])
+                        self._select_best_session_uri(qa.get("question", ""), session_candidates)
+                        or self._session_uris_by_key.get((conv_id, session_num), [])
                     )
                 if not expected_uris:
                     expected_uris = self._conversation_uris_by_id.get(conv_id) or [
@@ -461,6 +612,7 @@ class LoCoMoBench(EvalAdapter):
             turn_id="q-" + md5(qa_item.question.encode()).hexdigest()[:12],
             query=qa_item.question,
             limit=top_k,
+            detail_level="l2",
             session_scope=True,
         )
         self._set_last_retrieval_meta(

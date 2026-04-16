@@ -27,7 +27,7 @@ class StageTimingCollector:
 
     def snapshot(self) -> Dict[str, int]:
         """Return a stable phase-timing payload."""
-        return {
+        stages = {
             "probe": self._timings.get("probe", self._timings.get("route", 0)),
             "plan": self._timings.get("plan", 0),
             "bind": self._timings.get("bind", 0),
@@ -36,6 +36,16 @@ class StageTimingCollector:
             "aggregate": self._timings.get("aggregate", 0),
             "total": self._timings.get("total", 0),
         }
+        accounted_ms = (
+            stages["probe"]
+            + stages["plan"]
+            + stages["bind"]
+            + stages["retrieve"]
+            + stages["hydrate"]
+            + stages["aggregate"]
+        )
+        stages["overhead"] = max(0, stages["total"] - accounted_ms)
+        return stages
 
 
 async def measure_async(

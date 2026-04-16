@@ -116,7 +116,7 @@ class TestObjectCone(unittest.IsolatedAsyncioTestCase):
             target_memory_kinds=["event", "relation"],
             query_plan={
                 "anchors": [{"kind": "entity", "value": "redis"}],
-                "rewrite_mode": "light",
+                "rewrite_mode": "none",
             },
             search_profile={
                 "recall_budget": 0.5,

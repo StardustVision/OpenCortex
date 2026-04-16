@@ -9,6 +9,8 @@ Design doc: docs/memory-context-protocol.md v1.2
 """
 
 import asyncio
+import contextlib
+from copy import deepcopy
 import logging
 import orjson as json
 import time
@@ -26,12 +28,6 @@ from opencortex.http.request_context import (
     set_request_project_id,
 )
 from opencortex.intent import RetrievalPlan, SearchResult
-from opencortex.intent.types import (
-    MemoryQueryPlan,
-    MemoryRuntimeDegrade,
-    MemorySearchProfile,
-    RetrievalDepth,
-)
 from opencortex.intent.timing import StageTimingCollector, measure_async, measure_sync
 from opencortex.utils.text import smart_truncate
 from opencortex.retrieve.types import (
@@ -40,6 +36,12 @@ from opencortex.retrieve.types import (
 )
 
 logger = logging.getLogger(__name__)
+
+_SEGMENT_MAX_MESSAGES = 16
+_SEGMENT_MAX_TOKENS = 1200
+_SEGMENT_MIN_MESSAGES = 2
+_RECOMPOSE_TAIL_MAX_MERGED_LEAVES = 6
+_RECOMPOSE_TAIL_MAX_MESSAGES = 24
 
 # Type aliases — all internal state keyed by these to prevent cross-tenant collision
 SessionKey = Tuple[str, str, str]      # (tenant_id, user_id, session_id)
@@ -131,6 +133,8 @@ class ContextManager:
         self._session_merge_locks: Dict[SessionKey, asyncio.Lock] = {}
         # At most one background merge worker per session.
         self._session_merge_tasks: Dict[SessionKey, asyncio.Task] = {}
+        # At most one background full-session recomposition worker per session.
+        self._session_full_recompose_tasks: Dict[SessionKey, asyncio.Task] = {}
         # Session project id snapshot for explicit/idle/background end flows.
         self._session_project_ids: Dict[SessionKey, str] = {}
         # Pending async tasks (cited_uris reward, etc.)
@@ -246,83 +250,6 @@ class ContextManager:
         except (TypeError, ValueError):
             return default
 
-    def _build_fallback_memory_pipeline(
-        self,
-        *,
-        recall_mode: str,
-        max_items: int,
-        include_knowledge: bool,
-        detail_level_override: Optional[str],
-    ) -> tuple[SearchResult, Optional[RetrievalPlan], Dict[str, Any]]:
-        """Build a local fallback memory pipeline when planning is skipped or fails."""
-        if recall_mode == "never":
-            probe_result = SearchResult(should_recall=False)
-            return (
-                probe_result,
-                None,
-                {
-                    "probe": probe_result.to_dict(),
-                    "planner": None,
-                    "sources": [],
-                    "context_types": [],
-                    "category_filter": [],
-                    "memory_limit": 0,
-                    "knowledge_limit": 0,
-                    "planned_depth": self._safe_detail_level(detail_level_override).value,
-                    "effective_depth": self._safe_detail_level(detail_level_override).value,
-                    "association_mode": "off",
-                    "rerank": False,
-                    "hydration_allowed": False,
-                    "scope": {},
-                    "degrade": MemoryRuntimeDegrade().to_dict(),
-                },
-            )
-
-        detail_level = self._safe_detail_level(detail_level_override)
-        probe_result = SearchResult(should_recall=recall_mode == "always")
-        retrieve_plan: Optional[RetrievalPlan] = None
-        if probe_result.should_recall:
-            retrieve_plan = RetrievalPlan(
-                target_memory_kinds=["event", "summary"],
-                query_plan=MemoryQueryPlan(),
-                search_profile=MemorySearchProfile(
-                    recall_budget=min(1.0, max_items / 10.0),
-                    association_budget=0.0,
-                    rerank=False,
-                ),
-                retrieval_depth=RetrievalDepth(detail_level.value),
-            )
-
-        runtime_bound = {
-            "probe": probe_result.to_dict(),
-            "planner": retrieve_plan.to_dict() if retrieve_plan else None,
-            "sources": (
-                ["memory", "knowledge"]
-                if probe_result.should_recall and include_knowledge
-                else (["memory"] if probe_result.should_recall else [])
-            ),
-            "context_types": ["memory"],
-            "category_filter": ["event", "events", "summary", "summaries"],
-            "memory_limit": max_items if probe_result.should_recall else 0,
-            "knowledge_limit": (
-                min(3, max_items)
-                if probe_result.should_recall and include_knowledge
-                else 0
-            ),
-            "planned_depth": detail_level.value,
-            "effective_depth": detail_level.value,
-            "association_mode": "off",
-            "rerank": False,
-            "hydration_allowed": detail_level != DetailLevel.L2,
-            "scope": {},
-            "degrade": MemoryRuntimeDegrade().to_dict(),
-        }
-        return (
-            probe_result,
-            retrieve_plan,
-            runtime_bound,
-        )
-
     @staticmethod
     def _extract_skill_uris(skills: Any) -> List[str]:
         """Best-effort skill URI extraction that ignores malformed items."""
@@ -405,15 +332,26 @@ class ContextManager:
         options: PrepareOptions,
         stage_timings: StageTimingCollector,
     ) -> PreparePlanningState:
-        """Run fallback initialization plus probe/planner/runtime bind."""
-        probe_result, retrieve_plan, runtime_bound = (
-            self._build_fallback_memory_pipeline(
-                recall_mode=options.recall_mode,
-                max_items=options.max_items,
-                include_knowledge=options.include_knowledge,
-                detail_level_override=options.detail_level_override,
-            )
-        )
+        """Run probe/planner/runtime bind and keep no-recall baseline on failures."""
+        detail_level = self._safe_detail_level(options.detail_level_override)
+        probe_result = SearchResult(should_recall=False)
+        retrieve_plan: Optional[RetrievalPlan] = None
+        runtime_bound: Dict[str, Any] = {
+            "probe": probe_result.to_dict(),
+            "planner": None,
+            "sources": [],
+            "context_types": [],
+            "category_filter": [],
+            "memory_limit": 0,
+            "knowledge_limit": 0,
+            "planned_depth": detail_level.value,
+            "effective_depth": detail_level.value,
+            "association_mode": "off",
+            "rerank": False,
+            "hydration_allowed": detail_level != DetailLevel.L2,
+            "scope": {},
+            "degrade": {"applied": False, "reasons": [], "actions": []},
+        }
         if options.recall_mode != "never":
             try:
                 probe_result = await asyncio.wait_for(
@@ -452,6 +390,7 @@ class ContextManager:
                         include_knowledge=options.include_knowledge,
                     )
             except asyncio.TimeoutError:
+                retrieve_plan = None
                 logger.warning(
                     "[ContextManager] Recall planning timeout sid=%s turn=%s tenant=%s user=%s",
                     session_id,
@@ -460,6 +399,7 @@ class ContextManager:
                     user_id,
                 )
             except Exception as exc:
+                retrieve_plan = None
                 logger.warning(
                     "[ContextManager] Recall planning failed sid=%s turn=%s tenant=%s user=%s: %s",
                     session_id,
@@ -468,10 +408,11 @@ class ContextManager:
                     user_id,
                     exc,
                 )
+        intent_timings = stage_timings.snapshot()
         intent_ms = (
-            stage_timings.snapshot()["probe"]
-            + stage_timings.snapshot()["plan"]
-            + stage_timings.snapshot()["bind"]
+            intent_timings["probe"]
+            + intent_timings["plan"]
+            + intent_timings["bind"]
         )
         return PreparePlanningState(
             query=query,
@@ -708,9 +649,6 @@ class ContextManager:
                     "hydration": list(
                         retrieval.memory_runtime_trace.get("hydration", [])
                     ),
-                    "fallback": list(
-                        retrieval.memory_runtime_trace.get("fallback", [])
-                    ),
                     "latency_ms": dict(
                         retrieval.memory_runtime_trace.get(
                             "latency_ms",
@@ -757,12 +695,25 @@ class ContextManager:
         cache_key: CacheKey = (tenant_id, user_id, session_id, turn_id)
         cached = self._get_cached_prepare(cache_key)
         if cached is not None:
+            cached_result = deepcopy(cached)
             self._touch_session(sk)
+            cache_total_ms = int((time.monotonic() - prepare_started) * 1000)
+            runtime_trace = (
+                cached_result.get("intent", {})
+                .get("memory_pipeline", {})
+                .get("runtime", {})
+                .get("trace")
+            )
+            if isinstance(runtime_trace, dict):
+                cache_stage_timings = StageTimingCollector()
+                cache_stage_timings.record_ms("total", cache_total_ms)
+                runtime_trace["cache_hit"] = True
+                runtime_trace["stage_timing_ms"] = cache_stage_timings.snapshot()
             logger.debug(
                 "[ContextManager] prepare CACHE_HIT sid=%s turn=%s tenant=%s user=%s",
                 session_id, turn_id, tenant_id, user_id,
             )
-            return cached
+            return cached_result
 
         # 2. Session auto-create (session-level lock prevents concurrent begin)
         await self._ensure_prepare_session(
@@ -888,19 +839,251 @@ class ContextManager:
             return text
         return f"[{first_ref}] {text}"
 
-    async def _aggregate_immediate_metadata(
+    @staticmethod
+    def _conversation_source_uri(
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+    ) -> str:
+        """Return the stable transcript source URI for one conversation session."""
+        from opencortex.utils.uri import CortexURI
+
+        return CortexURI.build_private(
+            tenant_id,
+            user_id,
+            "session",
+            "conversations",
+            session_id,
+            "source",
+        )
+
+    @classmethod
+    def _render_conversation_source(
+        cls,
+        transcript: List[Dict[str, Any]],
+    ) -> str:
+        """Render a readable transcript source from observer messages."""
+        lines: List[str] = []
+        for message in transcript:
+            role = str(message.get("role", "") or "").strip() or "unknown"
+            content = str(message.get("content", "") or "").strip()
+            if not content:
+                continue
+            meta = message.get("meta")
+            if isinstance(meta, dict):
+                content = cls._decorate_message_text(content, meta)
+            lines.append(f"[{role}] {content}")
+        return "\n".join(lines)
+
+    async def _persist_conversation_source(
+        self,
+        *,
+        session_id: str,
+        tenant_id: str,
+        user_id: str,
+    ) -> Optional[str]:
+        """Persist the stable transcript source for a session if transcript exists."""
+        transcript = self._observer.get_transcript(session_id)
+        if not transcript:
+            return None
+
+        source_uri = self._conversation_source_uri(tenant_id, user_id, session_id)
+        existing = await self._orchestrator._get_record_by_uri(source_uri)
+        if existing:
+            return source_uri
+
+        content = self._render_conversation_source(transcript)
+        if not content:
+            return None
+
+        await self._orchestrator.add(
+            uri=source_uri,
+            abstract=f"Conversation transcript for {session_id}",
+            content=content,
+            category="documents",
+            context_type="resource",
+            is_leaf=False,
+            session_id=session_id,
+            meta={
+                "layer": "conversation_source",
+                "session_id": session_id,
+                "message_count": len(transcript),
+            },
+        )
+        if getattr(self._orchestrator, "_fs", None) is not None:
+            await self._orchestrator._fs.write_context(
+                uri=source_uri,
+                content=content,
+                abstract=f"Conversation transcript for {session_id}",
+                abstract_json={},
+                is_leaf=False,
+            )
+        return source_uri
+
+    async def _load_immediate_records(
         self,
         immediate_uris: List[str],
-    ) -> Dict[str, Any]:
-        """Collect anchor metadata from immediate records before merge cleanup."""
+    ) -> List[Dict[str, Any]]:
+        """Load immediate records and return them ordered by message index."""
         if not immediate_uris:
-            return {}
-
+            return []
         records = await self._orchestrator._storage.filter(
             self._orchestrator._get_collection(),
             {"op": "must", "field": "uri", "conds": immediate_uris},
             limit=max(len(immediate_uris), 1),
         )
+        by_uri = {
+            str(record.get("uri", "")).strip(): record
+            for record in records
+            if str(record.get("uri", "")).strip()
+        }
+        ordered: List[Dict[str, Any]] = []
+        for uri in immediate_uris:
+            record = by_uri.get(str(uri).strip())
+            if record is not None:
+                ordered.append(record)
+        return ordered
+
+    @staticmethod
+    def _record_msg_range(record: Dict[str, Any]) -> Optional[Tuple[int, int]]:
+        """Extract one normalized inclusive ``msg_range`` from a record payload."""
+        meta = dict(record.get("meta") or {})
+        raw_range = meta.get("msg_range", record.get("msg_range"))
+        if not isinstance(raw_range, list) or len(raw_range) != 2:
+            msg_index = meta.get("msg_index")
+            try:
+                index = int(msg_index)
+            except (TypeError, ValueError):
+                return None
+            return index, index
+        try:
+            start = int(raw_range[0])
+            end = int(raw_range[1])
+        except (TypeError, ValueError):
+            return None
+        if start > end:
+            return None
+        return start, end
+
+    @staticmethod
+    def _record_text(record: Dict[str, Any]) -> str:
+        """Choose the best available record text for recomposition input."""
+        for key in ("content", "overview", "abstract"):
+            value = str(record.get(key, "") or "").strip()
+            if value:
+                return value
+        return ""
+
+    async def _load_session_merged_records(
+        self,
+        *,
+        session_id: str,
+        source_uri: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Load merged conversation leaves for one session in msg-range order."""
+        conds: List[Dict[str, Any]] = [
+            {"op": "must", "field": "session_id", "conds": [session_id]},
+        ]
+        records = await self._orchestrator._storage.filter(
+            self._orchestrator._get_collection(),
+            {"op": "and", "conds": conds},
+            limit=10000,
+        )
+        sortable: List[Tuple[int, int, Dict[str, Any]]] = []
+        for record in records:
+            meta = dict(record.get("meta") or {})
+            if str(meta.get("layer", "") or "") != "merged":
+                continue
+            if source_uri:
+                if str(meta.get("source_uri", "") or "") != source_uri:
+                    continue
+            msg_range = self._record_msg_range(record)
+            if msg_range is None:
+                continue
+            sortable.append((msg_range[0], msg_range[1], record))
+        sortable.sort(key=lambda item: (item[0], item[1]))
+        return [record for _, _, record in sortable]
+
+    async def _select_tail_merged_records(
+        self,
+        *,
+        session_id: str,
+        source_uri: str,
+    ) -> List[Dict[str, Any]]:
+        """Select a bounded recent merged-tail window for online recomposition."""
+        merged_records = await self._load_session_merged_records(
+            session_id=session_id,
+            source_uri=source_uri,
+        )
+        if not merged_records:
+            return []
+
+        selected: List[Dict[str, Any]] = []
+        selected_message_count = 0
+        for record in reversed(merged_records):
+            msg_range = self._record_msg_range(record)
+            if msg_range is None:
+                continue
+            width = (msg_range[1] - msg_range[0]) + 1
+            if len(selected) >= _RECOMPOSE_TAIL_MAX_MERGED_LEAVES:
+                break
+            if (
+                selected
+                and (selected_message_count + width) > _RECOMPOSE_TAIL_MAX_MESSAGES
+            ):
+                break
+            selected.append(record)
+            selected_message_count += width
+        selected.reverse()
+        return selected
+
+    @classmethod
+    def _segment_anchor_terms(cls, record: Dict[str, Any]) -> Set[str]:
+        """Extract coarse anchor terms used for sequential merge boundaries."""
+        meta = dict(record.get("meta") or {})
+        abstract_json = record.get("abstract_json")
+        slots = (
+            abstract_json.get("slots", {})
+            if isinstance(abstract_json, dict)
+            else {}
+        )
+        return set(
+            cls._merge_unique_strings(
+                record.get("entities"),
+                meta.get("entities"),
+                slots.get("entities"),
+                cls._split_topic_values(record.get("keywords")),
+                cls._split_topic_values(meta.get("topics")),
+                cls._split_topic_values(slots.get("topics")),
+            )
+        )
+
+    @classmethod
+    def _segment_time_refs(cls, record: Dict[str, Any]) -> Set[str]:
+        """Extract normalized time references used for sequential merge boundaries."""
+        meta = dict(record.get("meta") or {})
+        abstract_json = record.get("abstract_json")
+        slots = (
+            abstract_json.get("slots", {})
+            if isinstance(abstract_json, dict)
+            else {}
+        )
+        return set(
+            cls._merge_unique_strings(
+                meta.get("time_refs"),
+                slots.get("time_refs"),
+                record.get("event_date"),
+                meta.get("event_date"),
+            )
+        )
+
+    async def _aggregate_records_metadata(
+        self,
+        records: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Collect anchor metadata from already loaded immediate records."""
+        if not records:
+            return {}
 
         entities: List[str] = []
         time_refs: List[str] = []
@@ -952,6 +1135,165 @@ class ContextManager:
         if event_date:
             merged_meta["event_date"] = event_date
         return merged_meta
+
+    def _build_recomposition_entries(
+        self,
+        *,
+        snapshot: ConversationBuffer,
+        immediate_records: List[Dict[str, Any]],
+        tail_records: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Build ordered recomposition entries from merged-tail + immediates."""
+        entries: List[Dict[str, Any]] = []
+
+        for record in tail_records:
+            msg_range = self._record_msg_range(record)
+            if msg_range is None:
+                continue
+            text = self._record_text(record)
+            if not text:
+                continue
+            uri = str(record.get("uri", "") or "").strip()
+            entries.append(
+                {
+                    "text": text,
+                    "uri": uri,
+                    "msg_start": msg_range[0],
+                    "msg_end": msg_range[1],
+                    "token_count": max(self._estimate_tokens(text), 1),
+                    "anchor_terms": self._segment_anchor_terms(record),
+                    "time_refs": self._segment_time_refs(record),
+                    "source_record": record,
+                    "immediate_uris": [],
+                    "superseded_merged_uris": ([uri] if uri else []),
+                }
+            )
+
+        by_uri = {
+            str(record.get("uri", "")).strip(): record
+            for record in immediate_records
+            if str(record.get("uri", "")).strip()
+        }
+        for offset, text in enumerate(snapshot.messages):
+            uri = (
+                snapshot.immediate_uris[offset]
+                if offset < len(snapshot.immediate_uris)
+                else ""
+            )
+            normalized_uri = str(uri or "").strip()
+            record = by_uri.get(normalized_uri)
+            if record is None:
+                fallback_index = snapshot.start_msg_index + offset
+                record = {
+                    "uri": normalized_uri,
+                    "abstract": text,
+                    "meta": {"msg_index": fallback_index},
+                    "keywords": "",
+                    "entities": [],
+                }
+            msg_range = self._record_msg_range(record)
+            if msg_range is None:
+                msg_index = snapshot.start_msg_index + offset
+                msg_range = (msg_index, msg_index)
+            entries.append(
+                {
+                    "text": str(text),
+                    "uri": normalized_uri,
+                    "msg_start": msg_range[0],
+                    "msg_end": msg_range[1],
+                    "token_count": max(self._estimate_tokens(text), 1),
+                    "anchor_terms": self._segment_anchor_terms(record),
+                    "time_refs": self._segment_time_refs(record),
+                    "source_record": record,
+                    "immediate_uris": ([normalized_uri] if normalized_uri else []),
+                    "superseded_merged_uris": [],
+                }
+            )
+
+        entries.sort(
+            key=lambda entry: (
+                int(entry["msg_start"]),
+                int(entry["msg_end"]),
+                str(entry["uri"]),
+            )
+        )
+        return entries
+
+    def _build_recomposition_segments(
+        self,
+        entries: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Split ordered recomposition entries into bounded semantic segments."""
+        if not entries:
+            return []
+
+        segments: List[Dict[str, Any]] = []
+        current: List[Dict[str, Any]] = []
+        current_tokens = 0
+        current_messages = 0
+
+        for entry in entries:
+            entry_messages = (int(entry["msg_end"]) - int(entry["msg_start"])) + 1
+            should_split = False
+            if current:
+                current_time_refs: Set[str] = set()
+                for item in current:
+                    current_time_refs.update(item["time_refs"])
+                if current_messages >= _SEGMENT_MAX_MESSAGES:
+                    should_split = True
+                elif current_tokens + int(entry["token_count"]) > _SEGMENT_MAX_TOKENS:
+                    should_split = True
+                elif (
+                    current_messages >= _SEGMENT_MIN_MESSAGES
+                    and current_time_refs
+                    and entry["time_refs"]
+                    and not current_time_refs.intersection(entry["time_refs"])
+                ):
+                    should_split = True
+
+            if should_split:
+                segments.append(self._finalize_recomposition_segment(current))
+                current = []
+                current_tokens = 0
+                current_messages = 0
+
+            current.append(entry)
+            current_tokens += int(entry["token_count"])
+            current_messages += max(entry_messages, 1)
+
+        if current:
+            segments.append(self._finalize_recomposition_segment(current))
+
+        return segments
+
+    def _finalize_recomposition_segment(
+        self,
+        entries: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Materialize one recomposition segment payload."""
+        msg_starts = [int(entry["msg_start"]) for entry in entries]
+        msg_ends = [int(entry["msg_end"]) for entry in entries]
+        source_records: List[Dict[str, Any]] = []
+        source_uris: Set[str] = set()
+        for entry in entries:
+            record = entry.get("source_record") or {}
+            uri = str(record.get("uri", "") or "")
+            if uri and uri in source_uris:
+                continue
+            if uri:
+                source_uris.add(uri)
+            source_records.append(record)
+        return {
+            "messages": [str(entry["text"]) for entry in entries if str(entry["text"]).strip()],
+            "immediate_uris": self._merge_unique_strings(
+                *[entry.get("immediate_uris", []) for entry in entries]
+            ),
+            "superseded_merged_uris": self._merge_unique_strings(
+                *[entry.get("superseded_merged_uris", []) for entry in entries]
+            ),
+            "msg_range": [min(msg_starts), max(msg_ends)],
+            "source_records": source_records,
+        }
 
     async def _commit(
         self,
@@ -1148,6 +1490,141 @@ class ContextManager:
 
         task.add_done_callback(_cleanup)
 
+    def _spawn_full_recompose_task(
+        self,
+        sk: SessionKey,
+        *,
+        session_id: str,
+        tenant_id: str,
+        user_id: str,
+        source_uri: Optional[str],
+    ) -> None:
+        """Start one async full-session recomposition worker per session."""
+        existing_task = self._session_full_recompose_tasks.get(sk)
+        if existing_task and not existing_task.done():
+            return
+
+        task = asyncio.create_task(
+            self._run_full_session_recomposition(
+                session_id=session_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                source_uri=source_uri,
+            )
+        )
+        self._session_full_recompose_tasks[sk] = task
+        self._pending_tasks.add(task)
+
+        def _cleanup(done_task: asyncio.Task) -> None:
+            self._pending_tasks.discard(done_task)
+            if self._session_full_recompose_tasks.get(sk) is done_task:
+                self._session_full_recompose_tasks.pop(sk, None)
+
+        task.add_done_callback(_cleanup)
+
+    async def _run_full_session_recomposition(
+        self,
+        *,
+        session_id: str,
+        tenant_id: str,
+        user_id: str,
+        source_uri: Optional[str],
+    ) -> None:
+        """Run one asynchronous full-session merged-leaf convergence pass."""
+        tokens_for_identity = set_request_identity(tenant_id, user_id)
+        created_merged_uris: List[str] = []
+        try:
+            merged_records = await self._load_session_merged_records(
+                session_id=session_id,
+                source_uri=source_uri,
+            )
+            if len(merged_records) <= 1:
+                return
+
+            entries: List[Dict[str, Any]] = []
+            for record in merged_records:
+                msg_range = self._record_msg_range(record)
+                if msg_range is None:
+                    continue
+                text = self._record_text(record)
+                if not text:
+                    continue
+                uri = str(record.get("uri", "") or "").strip()
+                entries.append(
+                    {
+                        "text": text,
+                        "uri": uri,
+                        "msg_start": msg_range[0],
+                        "msg_end": msg_range[1],
+                        "token_count": max(self._estimate_tokens(text), 1),
+                        "anchor_terms": self._segment_anchor_terms(record),
+                        "time_refs": self._segment_time_refs(record),
+                        "source_record": record,
+                        "immediate_uris": [],
+                        "superseded_merged_uris": ([uri] if uri else []),
+                    }
+                )
+
+            segments = self._build_recomposition_segments(entries)
+            if not segments:
+                return
+
+            all_tool_calls: List[Dict[str, Any]] = []
+            for record in merged_records:
+                meta = dict(record.get("meta") or {})
+                for call in meta.get("tool_calls", []) or []:
+                    if isinstance(call, dict):
+                        all_tool_calls.append(call)
+
+            for segment in segments:
+                if not segment["messages"]:
+                    continue
+                combined = "\n\n".join(segment["messages"])
+                aggregated_meta = await self._aggregate_records_metadata(
+                    segment["source_records"]
+                )
+                merged_context = await self._orchestrator.add(
+                    abstract="",
+                    content=combined,
+                    category="events",
+                    context_type="memory",
+                    embed_text=combined,
+                    meta={
+                        **aggregated_meta,
+                        "layer": "merged",
+                        "ingest_mode": "memory",
+                        "msg_range": list(segment["msg_range"]),
+                        "source_uri": source_uri or "",
+                        "session_id": session_id,
+                        "recomposition_stage": "final_full",
+                        "tool_calls": all_tool_calls if all_tool_calls else [],
+                    },
+                    session_id=session_id,
+                )
+                created_merged_uris.append(merged_context.uri)
+
+            superseded_merged_uris = self._merge_unique_strings(
+                *[
+                    segment.get("superseded_merged_uris", [])
+                    for segment in segments
+                ]
+            )
+            if superseded_merged_uris:
+                await self._delete_immediate_families(superseded_merged_uris)
+        except Exception as exc:
+            logger.warning(
+                "[ContextManager] Full-session recomposition failed sid=%s tenant=%s user=%s: %s",
+                session_id,
+                tenant_id,
+                user_id,
+                exc,
+            )
+            if created_merged_uris:
+                with contextlib.suppress(Exception):
+                    await self._delete_immediate_families(created_merged_uris)
+        finally:
+            reset_request_identity(tokens_for_identity)
+
     async def _wait_for_merge_task(self, sk: SessionKey) -> None:
         """Wait until any in-flight background merge for the session finishes."""
         task = self._session_merge_tasks.get(sk)
@@ -1225,27 +1702,16 @@ class ContextManager:
         """Return current session immediate source URIs for fallback cleanup."""
         records = await self._orchestrator._storage.filter(
             self._orchestrator._get_collection(),
-            {
-                "op": "and",
-                "conds": [
-                    {
-                        "op": "must",
-                        "field": "session_id",
-                        "conds": [session_id],
-                    },
-                    {
-                        "op": "must",
-                        "field": "meta.layer",
-                        "conds": ["immediate"],
-                    },
-                ],
-            },
+            {"op": "must", "field": "session_id", "conds": [session_id]},
             limit=10000,
         )
         return [
             str(record.get("uri", "")).strip()
             for record in records
-            if str(record.get("uri", "")).strip()
+            if (
+                str(record.get("uri", "")).strip()
+                and str((record.get("meta") or {}).get("layer", "") or "") == "immediate"
+            )
         ]
 
     async def _merge_buffer(
@@ -1269,10 +1735,22 @@ class ContextManager:
                 if snapshot is None:
                     return
 
-                combined = "\n\n".join(snapshot.messages)
-                aggregated_meta = await self._aggregate_immediate_metadata(
-                    snapshot.immediate_uris
+                records = await self._load_immediate_records(snapshot.immediate_uris)
+                source_uri = self._conversation_source_uri(
+                    tenant_id,
+                    user_id,
+                    session_id,
                 )
+                tail_records = await self._select_tail_merged_records(
+                    session_id=session_id,
+                    source_uri=source_uri,
+                )
+                entries = self._build_recomposition_entries(
+                    snapshot=snapshot,
+                    immediate_records=records,
+                    tail_records=tail_records,
+                )
+                segments = self._build_recomposition_segments(entries)
 
                 all_tool_calls = []
                 for tc_list in snapshot.tool_calls_per_turn:
@@ -1280,24 +1758,48 @@ class ContextManager:
 
                 if tokens_for_identity is None:
                     tokens_for_identity = set_request_identity(tenant_id, user_id)
-                await self._orchestrator.add(
-                    abstract="",
-                    content=combined,
-                    category="events",
-                    context_type="memory",
-                    meta={
-                        **aggregated_meta,
-                        "layer": "merged",
-                        "ingest_mode": "memory",
-                        "msg_range": [
-                            snapshot.start_msg_index,
-                            snapshot.start_msg_index + len(snapshot.messages) - 1,
-                        ],
-                        "session_id": session_id,
-                        "tool_calls": all_tool_calls if all_tool_calls else [],
-                    },
-                    session_id=session_id,
+                created_merged_uris: List[str] = []
+                for segment in segments:
+                    if not segment["messages"]:
+                        continue
+                    combined = "\n\n".join(segment["messages"])
+                    aggregated_meta = await self._aggregate_records_metadata(
+                        segment["source_records"]
+                    )
+                    merged_context = await self._orchestrator.add(
+                        abstract="",
+                        content=combined,
+                        category="events",
+                        context_type="memory",
+                        embed_text=combined,
+                        meta={
+                            **aggregated_meta,
+                            "layer": "merged",
+                            "ingest_mode": "memory",
+                            "msg_range": list(segment["msg_range"]),
+                            "source_uri": source_uri,
+                            "session_id": session_id,
+                            "recomposition_stage": "online_tail",
+                            "tool_calls": all_tool_calls if all_tool_calls else [],
+                        },
+                        session_id=session_id,
+                    )
+                    created_merged_uris.append(merged_context.uri)
+
+                superseded_merged_uris = self._merge_unique_strings(
+                    *[
+                        segment.get("superseded_merged_uris", [])
+                        for segment in segments
+                    ]
                 )
+                if superseded_merged_uris:
+                    try:
+                        await self._delete_immediate_families(superseded_merged_uris)
+                    except Exception as exc:
+                        logger.warning(
+                            "[ContextManager] Superseded merged cleanup after merge: %s",
+                            exc,
+                        )
 
                 if snapshot.immediate_uris:
                     try:
@@ -1309,6 +1811,9 @@ class ContextManager:
                         )
         except Exception as exc:
             logger.error("[ContextManager] Merge failed: %s", exc)
+            if "created_merged_uris" in locals() and created_merged_uris:
+                with contextlib.suppress(Exception):
+                    await self._delete_immediate_families(created_merged_uris)
             if "snapshot" in locals() and snapshot is not None:
                 await self._restore_merge_snapshot(sk, snapshot)
         finally:
@@ -1364,8 +1869,14 @@ class ContextManager:
                 session_owner_ids = sorted(
                     self._session_memory_owner_ids.get(sk, set())
                 )
+                source_uri = None
 
                 try:
+                    source_uri = await self._persist_conversation_source(
+                        session_id=session_id,
+                        tenant_id=tenant_id,
+                        user_id=user_id,
+                    )
                     result = await self._orchestrator.session_end(
                         session_id=session_id,
                         quality_score=0.5,
@@ -1397,6 +1908,15 @@ class ContextManager:
                     self._pending_tasks.add(task)
                     task.add_done_callback(self._pending_tasks.discard)
 
+                # Full-session recomposition runs asynchronously after closeout.
+                self._spawn_full_recompose_task(
+                    sk,
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    source_uri=source_uri,
+                )
+
                 duration_ms = int((time.monotonic() - start_time) * 1000)
                 self._cleanup_session(sk)
 
@@ -1417,6 +1937,7 @@ class ContextManager:
                     "traces": traces,
                     "knowledge_candidates": knowledge_candidates,
                     "duration_ms": duration_ms,
+                    "source_uri": source_uri,
                 }
         finally:
             reset_request_project_id(project_token)
@@ -1579,6 +2100,17 @@ class ContextManager:
             }
             if getattr(matched, "session_id", ""):
                 item["session_id"] = matched.session_id
+            if getattr(matched, "msg_range", None) is not None:
+                item["msg_range"] = list(matched.msg_range)
+            if getattr(matched, "source_uri", None):
+                item["source_uri"] = matched.source_uri
+            if getattr(matched, "recomposition_stage", None):
+                item["recomposition_stage"] = matched.recomposition_stage
+            item["matched_anchors"] = list(
+                getattr(matched, "matched_anchors", []) or []
+            )
+            if getattr(matched, "cone_used", None) is not None:
+                item["cone_used"] = bool(matched.cone_used)
             if detail_level in ("l1", "l2") and matched.overview:
                 item["overview"] = self._clamp(matched.overview)
             if detail_level == "l2" and matched.content:

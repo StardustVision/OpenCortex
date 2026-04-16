@@ -31,11 +31,9 @@ class QueryAnchorKind(str, Enum):
 
 
 class QueryRewriteMode(str, Enum):
-    """Bounded planner rewrite modes."""
+    """Planner rewrite mode (single-mode contract)."""
 
     NONE = "none"
-    LIGHT = "light"
-    DECOMPOSE = "decompose"
 
 
 class RetrievalDepth(str, Enum):
@@ -111,6 +109,7 @@ class SearchCandidate(MemoryDomainModel):
     abstract: str = ""
     overview: Optional[str] = None
     anchors: List[str] = Field(default_factory=list)
+    matched_anchors: List[str] = Field(default_factory=list)
 
 
 class SearchEvidence(MemoryDomainModel):
@@ -141,8 +140,6 @@ class MemoryProbeTrace(MemoryDomainModel):
     selected_bucket_source: Optional[ProbeScopeSource] = None
     scope_authoritative: bool = False
     selected_root_uris: List[str] = Field(default_factory=list)
-    # Compatibility field: retained in the DTO, inactive in the current path.
-    fallback_ready: bool = False
     scoped_miss: bool = False
     degraded: bool = False
     degrade_reason: Optional[str] = None
@@ -166,8 +163,6 @@ class ExecutionTrace(MemoryDomainModel):
     planner: Dict[str, Any] = Field(default_factory=dict)
     effective: Dict[str, Any] = Field(default_factory=dict)
     hydration: List[Dict[str, Any]] = Field(default_factory=list)
-    # Compatibility field: preserved for contract stability, stays empty.
-    fallback: List[Dict[str, Any]] = Field(default_factory=list)
     latency_ms: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -192,8 +187,6 @@ class SearchResult(MemoryDomainModel):
     scope_source: ProbeScopeSource = ProbeScopeSource.GLOBAL_ROOT
     scope_authoritative: bool = False
     selected_root_uris: List[str] = Field(default_factory=list)
-    # Compatibility field: retained in the public contract, never set true now.
-    fallback_ready: bool = False
     scoped_miss: bool = False
     evidence: SearchEvidence = Field(default_factory=SearchEvidence)
     trace: MemoryProbeTrace = Field(default_factory=MemoryProbeTrace)

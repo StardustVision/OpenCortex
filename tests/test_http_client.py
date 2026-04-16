@@ -39,7 +39,7 @@ class TestOpenCortexClient(unittest.IsolatedAsyncioTestCase):
                             "scope_source": "global_root",
                         },
                         "planner": {"retrieval_depth": "l1"},
-                        "runtime": {"trace": {"fallback": []}},
+                        "runtime": {"trace": {"hydration": []}},
                     },
                 },
             )
@@ -97,7 +97,7 @@ class TestOpenCortexClient(unittest.IsolatedAsyncioTestCase):
                         "memory_pipeline": {
                             "probe": {"should_recall": True},
                             "planner": {"retrieval_depth": "l1"},
-                            "runtime": {"trace": {"fallback": []}},
+                            "runtime": {"trace": {"hydration": []}},
                         },
                     },
                     "memory": [

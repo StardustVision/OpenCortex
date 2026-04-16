@@ -348,6 +348,11 @@ class MatchedContext:
     source_doc_id: Optional[str] = None
     source_doc_title: Optional[str] = None
     source_section_path: Optional[str] = None
+    source_uri: Optional[str] = None
+    msg_range: Optional[List[int]] = None
+    recomposition_stage: Optional[str] = None
+    matched_anchors: List[str] = field(default_factory=list)
+    cone_used: Optional[bool] = None
 
     relations: List[RelatedContext] = field(default_factory=list)
 
@@ -371,6 +376,16 @@ class MatchedContext:
             item["source_doc_title"] = self.source_doc_title
         if self.source_section_path:
             item["source_section_path"] = self.source_section_path
+        if self.source_uri:
+            item["source_uri"] = self.source_uri
+        if self.msg_range is not None:
+            item["msg_range"] = list(self.msg_range)
+        if self.recomposition_stage:
+            item["recomposition_stage"] = self.recomposition_stage
+        if self.matched_anchors:
+            item["matched_anchors"] = list(self.matched_anchors)
+        if self.cone_used is not None:
+            item["cone_used"] = bool(self.cone_used)
         return item
 
 
@@ -495,6 +510,16 @@ class FindResult:
             d["session_id"] = ctx.session_id
         if ctx.content is not None:
             d["content"] = ctx.content
+        if ctx.source_uri:
+            d["source_uri"] = ctx.source_uri
+        if ctx.msg_range is not None:
+            d["msg_range"] = list(ctx.msg_range)
+        if ctx.recomposition_stage:
+            d["recomposition_stage"] = ctx.recomposition_stage
+        if ctx.matched_anchors:
+            d["matched_anchors"] = list(ctx.matched_anchors)
+        if ctx.cone_used is not None:
+            d["cone_used"] = bool(ctx.cone_used)
         return d
 
     def _query_to_dict(self, q: TypedQuery) -> Dict[str, Any]:
@@ -523,6 +548,11 @@ class FindResult:
                 score=d.get("score", 0.0),
                 match_reason=d.get("match_reason", ""),
                 session_id=d.get("session_id", ""),
+                source_uri=d.get("source_uri"),
+                msg_range=d.get("msg_range"),
+                recomposition_stage=d.get("recomposition_stage"),
+                matched_anchors=d.get("matched_anchors", []),
+                cone_used=d.get("cone_used"),
                 relations=[
                     RelatedContext(uri=r.get("uri", ""), abstract=r.get("abstract", ""))
                     for r in d.get("relations", [])

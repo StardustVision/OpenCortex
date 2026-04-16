@@ -144,18 +144,14 @@ class RecallPlanner:
             ),
             query_plan=MemoryQueryPlan(
                 anchors=anchors,
-                rewrite_mode=self._rewrite_mode(
-                    coarse_class=coarse_class,
-                    anchors=anchors,
-                    probe_result=probe_result,
-                    max_items=max_items,
-                ),
+                rewrite_mode=QueryRewriteMode.NONE,
             ),
             search_profile=self._search_profile(
                 coarse_class=coarse_class,
                 confidence=confidence,
                 max_items=max_items,
                 probe_result=probe_result,
+                anchors=anchors,
             ),
             retrieval_depth=retrieval_depth,
             scope_level=scope_level,
@@ -272,17 +268,6 @@ class RecallPlanner:
 
         return anchors[:6]
 
-    @staticmethod
-    def _rewrite_mode(
-        *,
-        coarse_class: MemoryCoarseClass,
-        anchors: list[QueryAnchor],
-        probe_result: SearchResult,
-        max_items: int,
-    ) -> QueryRewriteMode:
-        del coarse_class, anchors, probe_result, max_items
-        return QueryRewriteMode.NONE
-
     def _target_memory_kinds(
         self,
         *,
@@ -321,6 +306,7 @@ class RecallPlanner:
         confidence: float,
         max_items: int,
         probe_result: SearchResult,
+        anchors: list[QueryAnchor],
     ) -> MemorySearchProfile:
         evidence = probe_result.evidence
         policy = _BASE_SEARCH_PROFILE[coarse_class]
@@ -340,23 +326,28 @@ class RecallPlanner:
 
         has_starting_points = bool(probe_result.starting_points)
         has_starting_point_anchors = bool(probe_result.starting_point_anchors)
+        strong_entity_anchor = bool(
+            any(anchor.kind == QueryAnchorKind.ENTITY for anchor in anchors)
+            or any(starting_point.entities for starting_point in probe_result.starting_points)
+        )
 
         association_budget = 0.0
-        if self._cone_enabled:
+        if (
+            self._cone_enabled
+            and strong_entity_anchor
+            and coarse_class in {MemoryCoarseClass.RELATIONAL, MemoryCoarseClass.EXPLORE}
+        ):
             if has_starting_points and not has_starting_point_anchors:
-                # Case 2: scope-constrained retrieval without cone expansion
                 association_budget = 0.0
             else:
-                association_budget = policy["association"]
+                association_budget = 0.24
                 if coarse_class == MemoryCoarseClass.RELATIONAL:
                     association_budget += 0.12
-                    if evidence.anchor_hit_count > 0:
-                        association_budget += 0.08
-                elif coarse_class == MemoryCoarseClass.EXPLORE and evidence.anchor_hit_count > 1:
-                    association_budget += 0.05
-                if confidence > 0.8 and coarse_class != MemoryCoarseClass.RELATIONAL:
-                    association_budget -= 0.05
-                association_budget = round(max(0.0, min(0.85, association_budget)), 4)
+                if evidence.anchor_hit_count > 0:
+                    association_budget += min(0.16, evidence.anchor_hit_count * 0.04)
+                if confidence > 0.8 and coarse_class == MemoryCoarseClass.EXPLORE:
+                    association_budget -= 0.04
+                association_budget = round(max(0.0, min(0.65, association_budget)), 4)
 
         rerank = bool(
             policy["rerank"]
