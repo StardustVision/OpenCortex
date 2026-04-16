@@ -105,8 +105,6 @@ class RecallPlanner:
         """Build the Phase 2 planner output from bounded probe evidence."""
         if recall_mode == "never":
             return None
-        if recall_mode == "auto" and not probe_result.should_recall:
-            return None
 
         confidence = probe_confidence(probe_result)
         coarse_class = self._infer_class_prior(

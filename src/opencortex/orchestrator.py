@@ -3065,6 +3065,13 @@ class MemoryOrchestrator:
             )
         else:
             stage_timings.record_ms("probe", 0)
+        if probe_result is not None and probe_result.scoped_miss:
+            return FindResult(
+                memories=[],
+                resources=[],
+                skills=[],
+                probe_result=probe_result,
+            )
         if retrieve_plan is None:
             retrieve_plan = measure_sync(
                 stage_timings,

@@ -476,6 +476,22 @@ class TestRecallPlannerStartingPoints(unittest.TestCase):
         self.assertEqual(plan.scope_level, ScopeLevel.CONTAINER_SCOPED)
         self.assertIsNone(plan.session_scope)
 
+    def test_auto_mode_should_recall_false_still_returns_plan(self):
+        """recall_mode='auto' no longer gates on should_recall — planner always returns a plan."""
+        probe = SearchResult(
+            should_recall=False,
+            evidence={"candidate_count": 0, "top_score": None},
+        )
+        planner = RecallPlanner(cone_enabled=False)
+        plan = planner.semantic_plan(
+            query="What happened yesterday?",
+            probe_result=probe,
+            max_items=5,
+            recall_mode="auto",
+            detail_level_override=None,
+        )
+        self.assertIsNotNone(plan)
+
     def test_most_specific_scope_level_wins(self):
         probe = self._make_probe(
             starting_points=[
