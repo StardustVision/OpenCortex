@@ -2524,5 +2524,306 @@ class TestContextManager(unittest.TestCase):
         self._run(orch.close())
 
 
+    # -------------------------------------------------------------------------
+    # Unit 7: Lifecycle cascade + trace field verification
+    # -------------------------------------------------------------------------
+
+    def test_delete_leaf_cascades_to_fact_points(self):
+        """orchestrator.remove(leaf_uri) must delete all /fact_points/* children."""
+        source_uri = "opencortex://testteam/alice/memory/events/cascade_fp_test"
+        source_record = {
+            "uri": source_uri,
+            "is_leaf": True,
+            "scope": "private",
+            "source_tenant_id": "testteam",
+            "source_user_id": "alice",
+            "session_id": "sess_cascade_fp",
+            "project_id": "",
+            "source_doc_id": "",
+            "memory_kind": "event",
+            "abstract": "cascade test",
+            "overview": "cascade test",
+        }
+        abstract_json = {
+            "memory_kind": "event",
+            "anchors": [],
+            "slots": {},
+            "overview": "cascade test",
+            "fact_points": ["Alice moved to Hangzhou on May 1", "Batch size is 500 records"],
+        }
+
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+
+        # Write leaf + fact_point children
+        self._run(self.storage.upsert("context", {
+            "id": source_uri,
+            "uri": source_uri,
+            "is_leaf": True,
+            "abstract": "cascade test",
+            "vector": self.embedder._text_to_vector("cascade test"),
+            "retrieval_surface": "l0_object",
+            "scope": "private",
+            "source_tenant_id": "testteam",
+            "source_user_id": "alice",
+        }))
+        self._run(orch._sync_anchor_projection_records(
+            source_record=source_record,
+            abstract_json=abstract_json,
+        ))
+
+        # Verify fact_points were written
+        fp_before = [
+            r for r in self.storage._records.get("context", {}).values()
+            if r.get("retrieval_surface") == "fact_point"
+            and r.get("uri", "").startswith(source_uri)
+        ]
+        self.assertGreaterEqual(len(fp_before), 1)
+
+        # Delete the leaf via orchestrator.remove()
+        self._run(orch.remove(source_uri))
+
+        # All fact_point children must be gone
+        fp_after = [
+            r for r in self.storage._records.get("context", {}).values()
+            if r.get("uri", "").startswith(source_uri)
+        ]
+        self.assertEqual(
+            fp_after, [],
+            f"Expected all children deleted, but found: {[r.get('uri') for r in fp_after]}",
+        )
+
+        self._run(orch.close())
+
+    def test_delete_leaf_cascades_to_anchor_projections(self):
+        """orchestrator.remove(leaf_uri) must delete all /anchors/* children."""
+        source_uri = "opencortex://testteam/alice/memory/events/cascade_anchor_test"
+        source_record = {
+            "uri": source_uri,
+            "is_leaf": True,
+            "scope": "private",
+            "source_tenant_id": "testteam",
+            "source_user_id": "alice",
+            "session_id": "sess_cascade_anchor",
+            "project_id": "",
+            "source_doc_id": "",
+            "memory_kind": "event",
+            "abstract": "cascade anchor test",
+            "overview": "cascade anchor test",
+        }
+        abstract_json = {
+            "memory_kind": "event",
+            "anchors": [
+                {"anchor_type": "entity", "text": "Alice", "value": "Alice"},
+                {"anchor_type": "location", "text": "Hangzhou", "value": "Hangzhou"},
+            ],
+            "slots": {"entities": ["Alice", "Hangzhou"]},
+            "overview": "cascade anchor test",
+            "fact_points": [],
+        }
+
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+
+        # Write leaf record
+        self._run(self.storage.upsert("context", {
+            "id": source_uri,
+            "uri": source_uri,
+            "is_leaf": True,
+            "abstract": "cascade anchor test",
+            "vector": self.embedder._text_to_vector("cascade anchor test"),
+            "retrieval_surface": "l0_object",
+            "scope": "private",
+            "source_tenant_id": "testteam",
+            "source_user_id": "alice",
+        }))
+        self._run(orch._sync_anchor_projection_records(
+            source_record=source_record,
+            abstract_json=abstract_json,
+        ))
+
+        # Verify anchor projections were written
+        anchors_before = [
+            r for r in self.storage._records.get("context", {}).values()
+            if r.get("retrieval_surface") == "anchor_projection"
+            and r.get("uri", "").startswith(source_uri)
+        ]
+        self.assertGreaterEqual(len(anchors_before), 1)
+
+        # Delete leaf
+        self._run(orch.remove(source_uri))
+
+        # All anchor_projection children must be gone
+        remaining = [
+            r for r in self.storage._records.get("context", {}).values()
+            if r.get("uri", "").startswith(source_uri)
+        ]
+        self.assertEqual(
+            remaining, [],
+            f"Expected no children, but found: {[r.get('uri') for r in remaining]}",
+        )
+
+        self._run(orch.close())
+
+    def test_recomposition_cleans_up_old_fact_points(self):
+        """When recomposition supersedes old merged leaves, old fact_points are deleted."""
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        cm = orch._context_manager
+        session_id = "sess_recompose_fp_cleanup"
+        source_uri = cm._conversation_source_uri("testteam", "alice", session_id)
+
+        # Build two old merged leaves with synthetic URIs
+        old_uri_1 = cm._merged_leaf_uri("testteam", "alice", session_id, [0, 0])
+        old_uri_2 = cm._merged_leaf_uri("testteam", "alice", session_id, [1, 1])
+
+        # Write old leaves to storage
+        for old_uri, content, msg_range in [
+            (old_uri_1, "第一段：我搬到了杭州。", [0, 0]),
+            (old_uri_2, "第二段：我住在西湖边。", [1, 1]),
+        ]:
+            self._run(
+                orch.add(
+                    uri=old_uri,
+                    abstract="",
+                    content=content,
+                    category="events",
+                    context_type="memory",
+                    session_id=session_id,
+                    meta={
+                        "layer": "merged",
+                        "ingest_mode": "memory",
+                        "msg_range": msg_range,
+                        "source_uri": source_uri,
+                        "session_id": session_id,
+                        "recomposition_stage": "online_tail",
+                        "entities": [],
+                    },
+                )
+            )
+
+        # Manually write fake fact_point children under old leaves
+        for old_uri in [old_uri_1, old_uri_2]:
+            self._run(self.storage.upsert("context", {
+                "id": f"{old_uri}/fact_points/fake001",
+                "uri": f"{old_uri}/fact_points/fake001",
+                "retrieval_surface": "fact_point",
+                "is_leaf": False,
+                "projection_target_uri": old_uri,
+                "meta": {"projection_target_uri": old_uri},
+                "abstract": "fake fact",
+                "overview": "fake fact point for cascade test",
+                "scope": "private",
+                "source_tenant_id": "testteam",
+                "source_user_id": "alice",
+            }))
+
+        # Confirm fact_points are present before recomposition
+        fp_before = [
+            r for r in self.storage._records.get("context", {}).values()
+            if r.get("retrieval_surface") == "fact_point"
+            and (r.get("uri", "").startswith(old_uri_1) or r.get("uri", "").startswith(old_uri_2))
+        ]
+        self.assertEqual(len(fp_before), 2)
+
+        # Run full session recomposition (creates new merged leaves, deletes old ones)
+        self._run(
+            cm._run_full_session_recomposition(
+                session_id=session_id,
+                tenant_id="testteam",
+                user_id="alice",
+                source_uri=source_uri,
+            )
+        )
+
+        # Old leaf URIs should be gone (superseded by recomposition)
+        for old_uri in [old_uri_1, old_uri_2]:
+            old_still_present = any(
+                r.get("uri") == old_uri
+                for r in self.storage._records.get("context", {}).values()
+            )
+            if old_still_present:
+                # If old leaf is still present with same URI (stable reuse), skip cascade check
+                # In this case both old_uri_1 and old_uri_2 may be combined into a new leaf
+                # with a different URI, so the old fact_points should be cleaned up regardless
+                pass
+
+        # Fact_points under old_uri_1 and old_uri_2 must be deleted
+        fp_after = [
+            r for r in self.storage._records.get("context", {}).values()
+            if r.get("retrieval_surface") == "fact_point"
+            and (r.get("uri", "").startswith(old_uri_1) or r.get("uri", "").startswith(old_uri_2))
+        ]
+        self.assertEqual(
+            fp_after, [],
+            f"Old fact_points must be cleaned up after recomposition supersede, "
+            f"found: {[r.get('uri') for r in fp_after]}",
+        )
+
+        self._run(orch.close())
+
+    def test_trace_fields_in_search_result(self):
+        """Search results must include path_source and path_cost when a fact_point path is used."""
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+
+        query_text = "Alice moved to Hangzhou on May 1"
+        query_vec = self.embedder._text_to_vector(query_text)
+
+        leaf_uri = "opencortex://testteam/alice/memory/events/trace_test_leaf"
+        fp_uri = f"{leaf_uri}/fact_points/tracetest001"
+
+        # Insert leaf with unrelated vector (will be discovered via fp path)
+        unrelated_vec = self.embedder._text_to_vector("completely unrelated content")
+        self._insert_leaf(orch, leaf_uri, "Leaf for trace test", unrelated_vec)
+        # Insert fact_point with query-aligned vector
+        self._insert_fact_point(orch, fp_uri, leaf_uri, "Alice moved to Hangzhou on May 1", query_vec)
+
+        result = self._run(orch.search(query_text, limit=5))
+
+        # Leaf must appear in results (via fp path)
+        uris = [ctx.uri for ctx in result.memories]
+        self.assertIn(leaf_uri, uris)
+
+        # Retrieve the matched context for this leaf
+        ctx = next(c for c in result.memories if c.uri == leaf_uri)
+
+        # path_source and path_cost must be populated
+        self.assertIsNotNone(ctx.path_source, "path_source must not be None when fp path used")
+        self.assertIn(
+            ctx.path_source,
+            ("fact_point", "anchor", "direct"),
+            f"path_source must be a known value, got: {ctx.path_source}",
+        )
+        self.assertIsNotNone(ctx.path_cost, "path_cost must not be None")
+        self.assertIsInstance(ctx.path_cost, float)
+
+        # Verify trace fields surface through to_memory_search_result() and _context_to_dict()
+        search_result_dict = ctx.to_memory_search_result()
+        if ctx.path_source is not None:
+            self.assertIn("path_source", search_result_dict)
+            self.assertEqual(search_result_dict["path_source"], ctx.path_source)
+        if ctx.path_cost is not None:
+            self.assertIn("path_cost", search_result_dict)
+            self.assertEqual(search_result_dict["path_cost"], ctx.path_cost)
+
+        # Verify backward compat: a leaf with no path trace produces no path keys
+        plain_leaf_uri = "opencortex://testteam/alice/memory/events/plain_no_trace"
+        from opencortex.retrieve.types import ContextType, MatchedContext
+        plain_ctx = MatchedContext(
+            uri=plain_leaf_uri,
+            abstract="plain",
+            score=0.5,
+            context_type=ContextType.MEMORY,
+            # path_source, path_cost, path_breakdown left as None
+        )
+        plain_dict = plain_ctx.to_memory_search_result()
+        self.assertNotIn("path_source", plain_dict)
+        self.assertNotIn("path_cost", plain_dict)
+        self.assertNotIn("path_breakdown", plain_dict)
+
+        self._run(orch.close())
+
+
 if __name__ == "__main__":
     unittest.main()
