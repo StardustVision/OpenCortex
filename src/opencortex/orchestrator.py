@@ -1522,6 +1522,91 @@ class MemoryOrchestrator:
         """Return the reserved child prefix for derived fact point records."""
         return f"{uri}/fact_points"
 
+    @staticmethod
+    def _is_valid_fact_point(text: str) -> bool:
+        """Quality gate: return True only if text is a short, concrete atomic fact.
+
+        Rejects: too short (<8), too long (>80), multiline (paragraph-style),
+        or generic text lacking any concrete signal.
+        Accepts: text containing digits, CamelCase, ALLCAPS, paths, CJK sequences.
+        """
+        if not text or len(text) < 8 or len(text) > 80:
+            return False
+        if "\n" in text:
+            return False
+        # Must contain at least one concrete signal:
+        # digits, CamelCase, ALL_CAPS, paths, or 2+ consecutive CJK characters
+        concrete_signal = re.compile(
+            r"[\d]"                     # digit
+            r"|[A-Z][a-z]+[A-Z]"        # CamelCase
+            r"|[A-Z]{2,}"               # ALLCAPS (2+ uppercase)
+            r"|[\u4e00-\u9fa5].*[\d]"   # CJK text with digit
+            r"|[/\\.]"                  # path separator
+            r"|[\u4e00-\u9fa5]{2,}"     # 2+ consecutive CJK chars (Chinese proper nouns)
+        )
+        return bool(concrete_signal.search(text))
+
+    def _fact_point_records(
+        self,
+        *,
+        source_record: Dict[str, Any],
+        fact_points_list: List[str],
+    ) -> List[Dict[str, Any]]:
+        """Build fact_point projection records for one leaf object.
+
+        Applies quality gate and caps at 8 records.
+        """
+        source_uri = str(source_record.get("uri", "") or "")
+        if not source_uri:
+            return []
+
+        prefix = self._fact_point_prefix(source_uri)
+        records: List[Dict[str, Any]] = []
+
+        for text in fact_points_list:
+            if len(records) >= 8:
+                break
+            if not self._is_valid_fact_point(text):
+                continue
+            digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
+            fp_record = {
+                "id": uuid4().hex,
+                "uri": f"{prefix}/{digest}",
+                "parent_uri": source_uri,
+                "is_leaf": False,
+                "abstract": "",
+                "overview": text,
+                "content": "",
+                "retrieval_surface": "fact_point",
+                "anchor_surface": False,
+                "meta": {
+                    "derived": True,
+                    "derived_kind": "fact_point",
+                    "projection_target_uri": source_uri,
+                },
+                "projection_target_uri": source_uri,
+                # Inherit access control from source leaf
+                "context_type": source_record.get("context_type", ""),
+                "category": source_record.get("category", ""),
+                "scope": source_record.get("scope", ""),
+                "source_user_id": source_record.get("source_user_id", ""),
+                "source_tenant_id": source_record.get("source_tenant_id", ""),
+                "session_id": source_record.get("session_id", ""),
+                "project_id": source_record.get("project_id", ""),
+                "memory_kind": source_record.get("memory_kind", ""),
+                "source_doc_id": source_record.get("source_doc_id", ""),
+                "source_doc_title": source_record.get("source_doc_title", ""),
+                "source_section_path": source_record.get("source_section_path", ""),
+                "keywords": text,
+                "entities": source_record.get("entities", []),
+                "mergeable": False,
+                "merge_signature": "",
+                "anchor_hits": "",
+            }
+            records.append(fp_record)
+
+        return records
+
     def _anchor_projection_records(
         self,
         *,
@@ -1599,13 +1684,55 @@ class MemoryOrchestrator:
 
         return projection_records
 
+    async def _delete_derived_stale(
+        self,
+        collection: str,
+        prefix: str,
+        keep_uris: set,
+    ) -> None:
+        """Delete derived records under *prefix* whose URIs are not in *keep_uris*.
+
+        This implements the write-then-delete contract: caller writes new records
+        first, then calls this to remove only the records that were NOT just written.
+        Records with matching URIs (same content → same digest) are kept.
+        """
+        try:
+            old_records = await self._storage.filter(
+                collection,
+                {"op": "prefix", "field": "uri", "prefix": prefix},
+                limit=50,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[Orchestrator] _delete_derived_stale filter failed prefix=%s: %s",
+                prefix, exc,
+            )
+            return
+        stale_ids = [
+            str(r["id"])
+            for r in old_records
+            if r.get("uri", "") not in keep_uris
+        ]
+        if stale_ids:
+            try:
+                await self._storage.delete(collection, stale_ids)
+            except Exception as exc:
+                logger.warning(
+                    "[Orchestrator] _delete_derived_stale delete failed: %s", exc
+                )
+
     async def _sync_anchor_projection_records(
         self,
         *,
         source_record: Dict[str, Any],
         abstract_json: Dict[str, Any],
     ) -> None:
-        """Replace derived anchor projection records for one leaf object."""
+        """Replace derived anchor and fact_point records for one leaf object.
+
+        Ordering: write-new-then-delete-old (R25).
+        Both anchor projections and fact_points are embedded in a single
+        embed_batch() call for efficiency.
+        """
         if not bool(source_record.get("is_leaf", False)):
             return
 
@@ -1613,32 +1740,53 @@ class MemoryOrchestrator:
         if not source_uri:
             return
 
-        prefix = self._anchor_projection_prefix(source_uri)
-        await self._storage.remove_by_uri(self._get_collection(), prefix)
+        anchor_prefix = self._anchor_projection_prefix(source_uri)
+        fp_prefix = self._fact_point_prefix(source_uri)
 
-        projection_records = self._anchor_projection_records(
+        # Build new anchor records
+        anchor_records = self._anchor_projection_records(
             source_record=source_record,
             abstract_json=abstract_json,
         )
 
-        if projection_records and self._embedder:
-            texts = [r["overview"] for r in projection_records]
+        # Build new fact_point records from abstract_json
+        raw_fact_points = abstract_json.get("fact_points") or []
+        if not isinstance(raw_fact_points, list):
+            raw_fact_points = []
+        fp_records = self._fact_point_records(
+            source_record=source_record,
+            fact_points_list=raw_fact_points,
+        )
+
+        all_new_records = anchor_records + fp_records
+
+        # Embed all texts in a single batch call
+        if all_new_records and self._embedder:
+            texts = [r["overview"] for r in all_new_records]
             loop = asyncio.get_running_loop()
             try:
                 embed_results = await asyncio.wait_for(
                     loop.run_in_executor(None, self._embedder.embed_batch, texts),
                     timeout=5.0,
                 )
-                for record, embed_result in zip(projection_records, embed_results):
+                for record, embed_result in zip(all_new_records, embed_results):
                     if embed_result.dense_vector:
                         record["vector"] = embed_result.dense_vector
                     if getattr(embed_result, "sparse_vector", None):
                         record["sparse_vector"] = embed_result.sparse_vector
             except Exception as exc:
-                logger.warning("[Orchestrator] anchor embed_batch failed: %s", exc)
+                logger.warning("[Orchestrator] derived records embed_batch failed: %s", exc)
 
-        for projection_record in projection_records:
-            await self._storage.upsert(self._get_collection(), projection_record)
+        # Write new records FIRST (write-then-delete)
+        for new_record in all_new_records:
+            await self._storage.upsert(self._get_collection(), new_record)
+
+        # Only THEN delete stale records (those NOT in the new set)
+        new_anchor_uris = {r["uri"] for r in anchor_records}
+        new_fp_uris = {r["uri"] for r in fp_records}
+        collection = self._get_collection()
+        await self._delete_derived_stale(collection, anchor_prefix, new_anchor_uris)
+        await self._delete_derived_stale(collection, fp_prefix, new_fp_uris)
 
     def _ensure_init(self) -> None:
         """Raise if not initialized."""
@@ -1861,6 +2009,10 @@ class MemoryOrchestrator:
             parent_uri=parent_uri,
             session_id=session_id,
         )
+        # Inject fact_points from LLM derivation so _sync_anchor_projection_records
+        # can generate fact_point records. Only present when content+is_leaf path ran.
+        if content and is_leaf:
+            abstract_json["fact_points"] = layers.get("fact_points", [])
         object_payload = self._memory_object_payload(abstract_json, is_leaf=is_leaf)
         memory_kind = MemoryKind(object_payload["memory_kind"])
         merge_signature = str(object_payload["merge_signature"])

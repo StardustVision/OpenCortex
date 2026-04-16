@@ -1834,5 +1834,453 @@ class TestContextManager(unittest.TestCase):
         self._run(orch.close())
 
 
+    # -------------------------------------------------------------------------
+    # Unit 3: Fact point generation + quality gate + sync tests
+    # -------------------------------------------------------------------------
+
+    def test_is_valid_fact_point_rejects_generic(self):
+        """Generic descriptions without concrete signals must be rejected."""
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        self.assertFalse(orch._is_valid_fact_point("discussed the plan"))
+        self.assertFalse(orch._is_valid_fact_point("some changes were made"))
+        self.assertFalse(orch._is_valid_fact_point("the system was updated"))
+        self._run(orch.close())
+
+    def test_is_valid_fact_point_accepts_specific(self):
+        """Statements with concrete entities/dates/numbers must pass."""
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        self.assertTrue(orch._is_valid_fact_point("Alice moved to Hangzhou on May 1"))
+        self.assertTrue(orch._is_valid_fact_point("Migration uses batch size 500 to avoid downtime"))
+        self._run(orch.close())
+
+    def test_is_valid_fact_point_rejects_short(self):
+        """Texts shorter than 8 characters must be rejected."""
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        self.assertFalse(orch._is_valid_fact_point("todo"))
+        self.assertFalse(orch._is_valid_fact_point("ok"))
+        self.assertFalse(orch._is_valid_fact_point(""))
+        self._run(orch.close())
+
+    def test_is_valid_fact_point_rejects_long(self):
+        """Texts longer than 80 characters must be rejected."""
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        long_text = "Alice moved to Hangzhou on May 1 and also planned a very detailed trip with many stops"
+        self.assertGreater(len(long_text), 80)
+        self.assertFalse(orch._is_valid_fact_point(long_text))
+        self._run(orch.close())
+
+    def test_is_valid_fact_point_rejects_multiline(self):
+        """Paragraph-style text with newlines must be rejected."""
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        self.assertFalse(orch._is_valid_fact_point("Alice moved to Hangzhou.\nBob stayed in Beijing."))
+        self.assertFalse(orch._is_valid_fact_point("line1\nline2"))
+        self._run(orch.close())
+
+    def test_is_valid_fact_point_accepts_chinese(self):
+        """Chinese text with 2+ consecutive CJK characters must be accepted."""
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        self.assertTrue(orch._is_valid_fact_point("北京有三百万人口"))
+        self.assertTrue(orch._is_valid_fact_point("Alice搬到了杭州"))
+        self._run(orch.close())
+
+    def test_fact_point_records_written_after_add(self):
+        """After orchestrator.add() with LLM returning fact_points, records appear in storage."""
+        async def fp_llm(prompt: str) -> str:
+            return (
+                '{"overview":"Alice relocated to Hangzhou on May 1",'
+                '"keywords":["Alice","Hangzhou"],'
+                '"entities":["Alice","Hangzhou"],'
+                '"anchor_handles":["Alice","Hangzhou"],'
+                '"fact_points":["Alice moved to Hangzhou on May 1","Batch size is 500 records"]}'
+            )
+
+        orch = self._make_orchestrator(llm_completion=fp_llm)
+        self._run(orch.init())
+
+        self._run(
+            orch.add(
+                abstract="",
+                content="Alice relocated to Hangzhou on May 1. The migration uses batch size 500.",
+                category="events",
+            )
+        )
+
+        fp_records = [
+            r for r in self.storage._records.get("context", {}).values()
+            if r.get("retrieval_surface") == "fact_point"
+        ]
+        self.assertGreaterEqual(len(fp_records), 1)
+        for record in fp_records:
+            self.assertEqual(record.get("retrieval_surface"), "fact_point")
+            self.assertFalse(record.get("is_leaf", True))
+            self.assertFalse(record.get("anchor_surface", True))
+
+        self._run(orch.close())
+
+    def test_fact_point_inherits_access_control(self):
+        """Fact point records must inherit scope/tenant/user from source leaf."""
+        async def fp_llm(prompt: str) -> str:
+            return (
+                '{"overview":"Alice moved to Hangzhou on May 1",'
+                '"keywords":["Alice"],'
+                '"entities":["Alice"],'
+                '"anchor_handles":["Alice"],'
+                '"fact_points":["Alice moved to Hangzhou on May 1"]}'
+            )
+
+        orch = self._make_orchestrator(llm_completion=fp_llm)
+        self._run(orch.init())
+
+        result = self._run(
+            orch.add(
+                abstract="",
+                content="Alice moved to Hangzhou on May 1.",
+                category="events",
+            )
+        )
+
+        fp_records = [
+            r for r in self.storage._records.get("context", {}).values()
+            if r.get("retrieval_surface") == "fact_point"
+        ]
+        self.assertGreaterEqual(len(fp_records), 1)
+        for record in fp_records:
+            self.assertEqual(record.get("source_tenant_id"), "testteam")
+            self.assertEqual(record.get("source_user_id"), "alice")
+            self.assertEqual(record.get("scope"), "private")
+
+        self._run(orch.close())
+
+    def test_fact_point_projection_target_uri_points_to_leaf(self):
+        """fact_point meta.projection_target_uri must equal source leaf URI."""
+        async def fp_llm(prompt: str) -> str:
+            return (
+                '{"overview":"Alice moved to Hangzhou on May 1",'
+                '"keywords":["Alice"],'
+                '"entities":["Alice"],'
+                '"anchor_handles":["Alice"],'
+                '"fact_points":["Alice moved to Hangzhou on May 1"]}'
+            )
+
+        orch = self._make_orchestrator(llm_completion=fp_llm)
+        self._run(orch.init())
+
+        result = self._run(
+            orch.add(
+                abstract="",
+                content="Alice moved to Hangzhou on May 1.",
+                category="events",
+            )
+        )
+        leaf_uri = result.uri
+
+        fp_records = [
+            r for r in self.storage._records.get("context", {}).values()
+            if r.get("retrieval_surface") == "fact_point"
+        ]
+        self.assertGreaterEqual(len(fp_records), 1)
+        for record in fp_records:
+            self.assertEqual(record.get("meta", {}).get("projection_target_uri"), leaf_uri)
+            self.assertEqual(record.get("projection_target_uri"), leaf_uri)
+
+        self._run(orch.close())
+
+    def test_write_then_delete_ordering(self):
+        """New records must be written before stale old records are deleted.
+
+        When content changes (new fact_points), old URIs must still exist when
+        new URIs are being written. Only stale (old) records are deleted after.
+        """
+        source_uri = "opencortex://testteam/alice/memory/events/ordering_test"
+        source_record = {
+            "uri": source_uri,
+            "is_leaf": True,
+            "scope": "private",
+            "source_tenant_id": "testteam",
+            "source_user_id": "alice",
+            "session_id": "sess_order",
+            "project_id": "",
+            "source_doc_id": "",
+            "memory_kind": "event",
+            "abstract": "test",
+            "overview": "test",
+        }
+        abstract_json_v1 = {
+            "memory_kind": "event",
+            "anchors": [],
+            "slots": {},
+            "overview": "Alice test",
+            "fact_points": ["Alice moved to Hangzhou on May 1"],
+        }
+        abstract_json_v2 = {
+            "memory_kind": "event",
+            "anchors": [],
+            "slots": {},
+            "overview": "Alice test v2",
+            # Different fact_point — different SHA1 → different URI
+            "fact_points": ["Alice relocated to Shanghai on June 10"],
+        }
+
+        # Track delete calls and storage state at each delete
+        delete_calls = []
+        original_delete = self.storage.delete
+
+        async def tracking_delete(collection, ids):
+            # Capture all URIs currently in storage at delete time
+            all_uris = {
+                r.get("uri", "") for r in self.storage._records.get(collection, {}).values()
+            }
+            delete_calls.append(frozenset(all_uris))
+            return await original_delete(collection, ids)
+
+        self.storage.delete = tracking_delete
+
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+
+        # First sync: creates v1 records
+        self._run(orch._sync_anchor_projection_records(
+            source_record=source_record,
+            abstract_json=abstract_json_v1,
+        ))
+
+        v1_fp_records = [
+            r for r in self.storage._records.get("context", {}).values()
+            if r.get("retrieval_surface") == "fact_point"
+               and r.get("uri", "").startswith(source_uri)
+        ]
+        self.assertEqual(len(v1_fp_records), 1)
+        v1_fp_uri = v1_fp_records[0]["uri"]
+
+        # Second sync with different fact_points (v2) — v1 records become stale
+        self._run(orch._sync_anchor_projection_records(
+            source_record=source_record,
+            abstract_json=abstract_json_v2,
+        ))
+
+        # At the time delete was called, both v1 AND v2 URIs must have been present
+        # (write-then-delete: v2 written first, then v1 deleted)
+        self.assertGreaterEqual(len(delete_calls), 1)
+        v2_fp_records = [
+            r for r in self.storage._records.get("context", {}).values()
+            if r.get("retrieval_surface") == "fact_point"
+               and r.get("uri", "").startswith(source_uri)
+        ]
+        # Only v2 should remain (v1 was stale and got deleted)
+        self.assertEqual(len(v2_fp_records), 1)
+        v2_fp_uri = v2_fp_records[0]["uri"]
+        self.assertNotEqual(v1_fp_uri, v2_fp_uri)
+        # v1 must NOT be present (was deleted as stale)
+        remaining_uris = {
+            r.get("uri", "") for r in self.storage._records.get("context", {}).values()
+        }
+        self.assertNotIn(v1_fp_uri, remaining_uris)
+
+        # The delete snapshot must have contained v2 URI (written before delete)
+        self.assertTrue(
+            any(v2_fp_uri in snapshot for snapshot in delete_calls),
+            "v2 URI must be present in storage when v1 was deleted (write-then-delete)",
+        )
+
+        self._run(orch.close())
+
+    def test_quality_gate_filters_all_bad_fact_points(self):
+        """When all fact_points fail the quality gate, no fp records are written."""
+        source_uri = "opencortex://testteam/alice/memory/events/allbad_test"
+        source_record = {
+            "uri": source_uri,
+            "is_leaf": True,
+            "scope": "private",
+            "source_tenant_id": "testteam",
+            "source_user_id": "alice",
+            "session_id": "sess_allbad",
+            "project_id": "",
+            "source_doc_id": "",
+            "memory_kind": "event",
+            "abstract": "test",
+            "overview": "test",
+        }
+        abstract_json = {
+            "memory_kind": "event",
+            "anchors": [
+                {"anchor_type": "entity", "text": "Alice", "value": "Alice"},
+            ],
+            "slots": {},
+            "overview": "Alice test",
+            # All fact_points are generic (no concrete signals)
+            "fact_points": ["discussed the plan", "some changes", "ok"],
+        }
+
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+
+        self._run(orch._sync_anchor_projection_records(
+            source_record=source_record,
+            abstract_json=abstract_json,
+        ))
+
+        fp_records = [
+            r for r in self.storage._records.get("context", {}).values()
+            if r.get("retrieval_surface") == "fact_point"
+               and r.get("uri", "").startswith(source_uri)
+        ]
+        # All bad → no fact_point records written
+        self.assertEqual(fp_records, [])
+        # But anchor records should still be written (leaf degrades to anchor-only)
+        anchor_records = [
+            r for r in self.storage._records.get("context", {}).values()
+            if r.get("retrieval_surface") == "anchor_projection"
+               and r.get("uri", "").startswith(source_uri)
+        ]
+        self.assertGreaterEqual(len(anchor_records), 1)
+
+        self._run(orch.close())
+
+    def test_fact_point_cap_at_eight(self):
+        """More than 8 valid fact_points are capped at 8."""
+        source_uri = "opencortex://testteam/alice/memory/events/cap_test"
+        source_record = {
+            "uri": source_uri,
+            "is_leaf": True,
+            "scope": "private",
+            "source_tenant_id": "testteam",
+            "source_user_id": "alice",
+            "session_id": "sess_cap",
+            "project_id": "",
+            "source_doc_id": "",
+            "memory_kind": "event",
+            "abstract": "",
+            "overview": "",
+        }
+        # Build 10 distinct valid fact_points (all pass quality gate)
+        fact_points = [
+            f"Alice visited city {i} on day {i}" for i in range(1, 11)
+        ]
+        abstract_json = {
+            "memory_kind": "event",
+            "anchors": [],
+            "slots": {},
+            "overview": "Alice travels",
+            "fact_points": fact_points,
+        }
+
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+
+        self._run(orch._sync_anchor_projection_records(
+            source_record=source_record,
+            abstract_json=abstract_json,
+        ))
+
+        fp_records = [
+            r for r in self.storage._records.get("context", {}).values()
+            if r.get("retrieval_surface") == "fact_point"
+               and r.get("uri", "").startswith(source_uri)
+        ]
+        self.assertLessEqual(len(fp_records), 8)
+
+        self._run(orch.close())
+
+    def test_fact_point_records_have_non_zero_vectors(self):
+        """Fact point records must carry non-zero embedded vectors."""
+        source_uri = "opencortex://testteam/alice/memory/events/fpvec_test"
+        source_record = {
+            "uri": source_uri,
+            "is_leaf": True,
+            "scope": "private",
+            "source_tenant_id": "testteam",
+            "source_user_id": "alice",
+            "session_id": "sess_fpvec",
+            "project_id": "",
+            "source_doc_id": "",
+            "memory_kind": "event",
+            "abstract": "Alice moved",
+            "overview": "Alice moved to Hangzhou",
+        }
+        abstract_json = {
+            "memory_kind": "event",
+            "anchors": [],
+            "slots": {},
+            "overview": "Alice moved",
+            "fact_points": ["Alice moved to Hangzhou on May 1"],
+        }
+
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+
+        self._run(orch._sync_anchor_projection_records(
+            source_record=source_record,
+            abstract_json=abstract_json,
+        ))
+
+        fp_records = [
+            r for r in self.storage._records.get("context", {}).values()
+            if r.get("retrieval_surface") == "fact_point"
+               and r.get("uri", "").startswith(source_uri)
+        ]
+        self.assertEqual(len(fp_records), 1)
+        vec = fp_records[0].get("vector")
+        self.assertIsNotNone(vec)
+        self.assertIsInstance(vec, list)
+        self.assertGreater(sum(abs(v) for v in vec), 0.0)
+
+        self._run(orch.close())
+
+    def test_fact_point_embed_failure_falls_back_gracefully(self):
+        """If embed_batch fails, fact_point records are still written (no vector key)."""
+        def failing_embed_batch(texts):
+            raise RuntimeError("embed failure")
+
+        self.embedder.embed_batch = failing_embed_batch
+
+        source_uri = "opencortex://testteam/alice/memory/events/fpembfail_test"
+        source_record = {
+            "uri": source_uri,
+            "is_leaf": True,
+            "scope": "private",
+            "source_tenant_id": "testteam",
+            "source_user_id": "alice",
+            "session_id": "sess_fpembfail",
+            "project_id": "",
+            "source_doc_id": "",
+            "memory_kind": "event",
+            "abstract": "",
+            "overview": "",
+        }
+        abstract_json = {
+            "memory_kind": "event",
+            "anchors": [{"anchor_type": "entity", "text": "Alice", "value": "Alice"}],
+            "slots": {},
+            "overview": "Alice test",
+            "fact_points": ["Alice moved to Hangzhou on May 1"],
+        }
+
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+
+        # Should not raise
+        self._run(orch._sync_anchor_projection_records(
+            source_record=source_record,
+            abstract_json=abstract_json,
+        ))
+
+        fp_records = [
+            r for r in self.storage._records.get("context", {}).values()
+            if r.get("retrieval_surface") == "fact_point"
+               and r.get("uri", "").startswith(source_uri)
+        ]
+        # Record still written (zero vector fallback)
+        self.assertEqual(len(fp_records), 1)
+        self.assertNotIn("vector", fp_records[0])
+
+        self._run(orch.close())
+
+
 if __name__ == "__main__":
     unittest.main()
