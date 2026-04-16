@@ -1239,6 +1239,7 @@ class MemoryOrchestrator:
                 "keywords": "",
                 "entities": [],
                 "anchor_handles": [],
+                "fact_points": [],
             }
 
         if self._llm_completion:
@@ -1273,6 +1274,15 @@ class MemoryOrchestrator:
                         ][:6]
                     else:
                         anchor_handles = []
+                    fact_points_list = result.get("fact_points", [])
+                    if isinstance(fact_points_list, list):
+                        fact_points = [
+                            str(fp).strip()
+                            for fp in fact_points_list
+                            if str(fp).strip()
+                        ][:8]
+                    else:
+                        fact_points = []
                     resolved_overview = self._fallback_overview_from_content(
                         user_overview=user_overview or llm_overview,
                         content=content,
@@ -1288,6 +1298,7 @@ class MemoryOrchestrator:
                         "keywords": keywords,
                         "entities": entities,
                         "anchor_handles": anchor_handles,
+                        "fact_points": fact_points,
                     }
                 except Exception as e:
                     logger.warning(
@@ -1318,6 +1329,15 @@ class MemoryOrchestrator:
                         ][:6]
                     else:
                         anchor_handles = []
+                    fact_points_list = data.get("fact_points", [])
+                    if isinstance(fact_points_list, list):
+                        fact_points = [
+                            str(fp).strip()
+                            for fp in fact_points_list
+                            if str(fp).strip()
+                        ][:8]
+                    else:
+                        fact_points = []
                     resolved_overview = self._fallback_overview_from_content(
                         user_overview=user_overview or llm_overview,
                         content=content,
@@ -1333,6 +1353,7 @@ class MemoryOrchestrator:
                         "keywords": keywords,
                         "entities": entities,
                         "anchor_handles": anchor_handles,
+                        "fact_points": fact_points,
                     }
             except Exception as e:
                 logger.warning("[Orchestrator] _derive_layers LLM failed: %s", e)
@@ -1357,6 +1378,7 @@ class MemoryOrchestrator:
             "keywords": "",
             "entities": [],
             "anchor_handles": [],
+            "fact_points": [],
         }
 
     @staticmethod
@@ -1494,6 +1516,11 @@ class MemoryOrchestrator:
     def _anchor_projection_prefix(uri: str) -> str:
         """Return the reserved child prefix for derived anchor projection records."""
         return f"{uri}/anchors"
+
+    @staticmethod
+    def _fact_point_prefix(uri: str) -> str:
+        """Return the reserved child prefix for derived fact point records."""
+        return f"{uri}/fact_points"
 
     def _anchor_projection_records(
         self,

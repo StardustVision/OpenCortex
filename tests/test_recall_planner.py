@@ -503,5 +503,148 @@ class TestRecallPlannerStartingPoints(unittest.TestCase):
         self.assertEqual(plan.session_scope, "s1")
 
 
+class TestFactPointsPromptAndParsing(unittest.TestCase):
+    def test_prompt_includes_fact_points_field(self):
+        from opencortex.prompts import build_layer_derivation_prompt
+
+        prompt = build_layer_derivation_prompt("Alice relocated to Hangzhou on May 1.")
+        self.assertIn("fact_points", prompt)
+
+    def test_fact_point_prefix_scheme(self):
+        uri = "opencortex://team/user/memories/events/abc123"
+        prefix = MemoryOrchestrator._fact_point_prefix(uri)
+        self.assertEqual(prefix, f"{uri}/fact_points")
+
+
+class TestDeriveLayersFactPoints(unittest.IsolatedAsyncioTestCase):
+    def _make_orchestrator(self, llm_response=None):
+        config = CortexConfig(
+            data_root=os.path.join(os.getcwd(), ".tmp-test-fact-points"),
+            embedding_dimension=MockEmbedder.DIMENSION,
+            rerank_provider="disabled",
+        )
+        init_config(config)
+        orch = MemoryOrchestrator(
+            config=config,
+            storage=InMemoryStorage(),
+            embedder=MockEmbedder(),
+        )
+        if llm_response is not None:
+            import json as _json
+
+            async def _mock_llm(prompt):
+                return _json.dumps(llm_response)
+
+            orch._llm_completion = _mock_llm
+            orch._derive_layers_llm_completion = _mock_llm
+        return orch
+
+    async def test_llm_path_returns_fact_points_list(self):
+        llm_data = {
+            "overview": "Alice moved to Hangzhou.",
+            "keywords": ["Alice", "Hangzhou"],
+            "entities": ["Alice", "Hangzhou"],
+            "anchor_handles": ["Alice"],
+            "fact_points": [
+                "Alice moved to Hangzhou on May 1",
+                "Migration uses batch size 500 to avoid downtime",
+            ],
+        }
+        orch = self._make_orchestrator(llm_response=llm_data)
+        await orch.init()
+        try:
+            result = await orch._derive_layers(
+                user_abstract="", content="Alice moved to Hangzhou on May 1."
+            )
+            self.assertIn("fact_points", result)
+            self.assertIsInstance(result["fact_points"], list)
+            self.assertEqual(len(result["fact_points"]), 2)
+            self.assertEqual(result["fact_points"][0], "Alice moved to Hangzhou on May 1")
+        finally:
+            await orch.close()
+
+    async def test_llm_path_omits_fact_points_returns_empty_list(self):
+        llm_data = {
+            "overview": "Some event occurred.",
+            "keywords": ["event"],
+            "entities": [],
+            "anchor_handles": [],
+            # fact_points key absent
+        }
+        orch = self._make_orchestrator(llm_response=llm_data)
+        await orch.init()
+        try:
+            result = await orch._derive_layers(
+                user_abstract="", content="Some event occurred."
+            )
+            self.assertIn("fact_points", result)
+            self.assertEqual(result["fact_points"], [])
+        finally:
+            await orch.close()
+
+    async def test_llm_path_non_list_fact_points_returns_empty_list(self):
+        llm_data = {
+            "overview": "Some event occurred.",
+            "keywords": [],
+            "entities": [],
+            "anchor_handles": [],
+            "fact_points": "not a list",
+        }
+        orch = self._make_orchestrator(llm_response=llm_data)
+        await orch.init()
+        try:
+            result = await orch._derive_layers(
+                user_abstract="", content="Some event occurred."
+            )
+            self.assertIn("fact_points", result)
+            self.assertEqual(result["fact_points"], [])
+        finally:
+            await orch.close()
+
+    async def test_llm_path_caps_fact_points_at_eight(self):
+        llm_data = {
+            "overview": "Ten facts.",
+            "keywords": [],
+            "entities": [],
+            "anchor_handles": [],
+            "fact_points": [f"Fact number {i}" for i in range(10)],
+        }
+        orch = self._make_orchestrator(llm_response=llm_data)
+        await orch.init()
+        try:
+            result = await orch._derive_layers(user_abstract="", content="Ten facts.")
+            self.assertIn("fact_points", result)
+            self.assertLessEqual(len(result["fact_points"]), 8)
+        finally:
+            await orch.close()
+
+    async def test_fast_path_returns_empty_fact_points(self):
+        orch = self._make_orchestrator()
+        await orch.init()
+        try:
+            result = await orch._derive_layers(
+                user_abstract="My abstract",
+                content="content",
+                user_overview="My overview",
+            )
+            self.assertIn("fact_points", result)
+            self.assertEqual(result["fact_points"], [])
+        finally:
+            await orch.close()
+
+    async def test_no_llm_fallback_returns_empty_fact_points(self):
+        # No llm_response → no LLM configured → fallback path
+        orch = self._make_orchestrator(llm_response=None)
+        await orch.init()
+        try:
+            result = await orch._derive_layers(
+                user_abstract="", content="Some content."
+            )
+            self.assertIn("fact_points", result)
+            self.assertEqual(result["fact_points"], [])
+        finally:
+            await orch.close()
+
+
 if __name__ == "__main__":
     unittest.main()

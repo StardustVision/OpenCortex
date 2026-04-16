@@ -189,7 +189,8 @@ Return a JSON object with exactly these fields:
   "overview": "3-8 sentence overview covering key facts, decisions, and actionable details",
   "keywords": ["term1", "term2", "..."],
   "entities": ["entity1", "entity2", "..."],
-  "anchor_handles": ["handle1", "handle2", "..."]
+  "anchor_handles": ["handle1", "handle2", "..."],
+  "fact_points": ["atomic fact 1", "atomic fact 2", "..."]
 }}
 
 Rules:
@@ -197,6 +198,7 @@ Rules:
 - keywords: 3-15 key terms (names, tools, technologies, concepts) that aid search. No generic words.
 - entities: Named entities only — people, systems, tools, organizations, places. NOT generic concepts. Max 10.
 - anchor_handles: 0-6 short retrieval handles. Prefer concrete entities, numbers, paths, module names, operations, or compact noun phrases. No paragraphs or generic labels.
+- fact_points: 0-8 atomic fact statements extracted from the content. Each must be a complete, self-contained statement under 80 characters. Must contain at least one concrete signal: entity name, number, date, file path, or technical term. Good: "Alice moved to Hangzhou on May 1", "Migration uses batch size 500 to avoid downtime". Bad: "discussed the plan", "some changes were made", "the system was updated". Reject generic descriptions, paragraph-style text, and statements that require surrounding context to understand.
 - Return ONLY the JSON object, no other text."""
 
 
