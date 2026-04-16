@@ -95,13 +95,19 @@ class CachedEmbedder(EmbedderBase):
 
         if miss_texts:
             batch_results = self._inner.embed_batch(miss_texts)
-            for i, (orig_idx, result) in enumerate(zip(miss_indices, batch_results)):
+            for orig_idx, result in zip(miss_indices, batch_results):
                 self._evict()
                 key = keys[orig_idx]
                 self._cache[key] = (result, now)
                 results[orig_idx] = result
 
-        return [r for r in results if r is not None]
+        # Fill any remaining None positions with a zero-vector placeholder so
+        # the output length always matches the input length. This preserves
+        # positional alignment for downstream zip(records, embed_results) even
+        # when the inner embedder returns fewer results than requested.
+        dim = self._inner.get_dimension()
+        zero_placeholder = EmbedResult(dense_vector=[0.0] * dim)
+        return [r if r is not None else zero_placeholder for r in results]
 
     def get_dimension(self) -> int:
         return self._inner.get_dimension()

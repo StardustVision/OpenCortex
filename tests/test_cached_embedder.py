@@ -205,6 +205,82 @@ class TestCachedEmbedderBatch(unittest.TestCase):
         self.assertEqual(cached.embed_batch([]), [])
         self.assertEqual(inner.batch_call_count, 0)
 
+    def test_embed_batch_length_matches_input_on_inner_short_return(self):
+        """If inner.embed_batch returns fewer results than requested,
+        output still has len == len(input); missing positions filled with zero placeholder.
+        """
+
+        class ShortInner(FakeEmbedder):
+            def embed_batch(self, texts: List[str]) -> List[EmbedResult]:
+                self.batch_call_count += 1
+                # Return only the first 2 results, dropping the last
+                return [self.embed(t) for t in texts[:2]]
+
+        inner = ShortInner()
+        cached = CachedEmbedder(inner, max_size=100, ttl_seconds=3600)
+        results = cached.embed_batch(["a", "b", "c"])
+        self.assertEqual(len(results), 3)
+        # First two positions populated from inner
+        self.assertEqual(len(results[0].dense_vector), inner.get_dimension())
+        self.assertEqual(len(results[1].dense_vector), inner.get_dimension())
+        # Third is the zero-vector placeholder
+        self.assertEqual(results[2].dense_vector, [0.0] * inner.get_dimension())
+
+    def test_embed_batch_length_matches_input_on_inner_empty_return(self):
+        """If inner.embed_batch returns an empty list, all positions become zero placeholders."""
+
+        class EmptyInner(FakeEmbedder):
+            def embed_batch(self, texts: List[str]) -> List[EmbedResult]:
+                self.batch_call_count += 1
+                return []
+
+        inner = EmptyInner()
+        cached = CachedEmbedder(inner, max_size=100, ttl_seconds=3600)
+        results = cached.embed_batch(["a", "b", "c"])
+        self.assertEqual(len(results), 3)
+        zero_vec = [0.0] * inner.get_dimension()
+        for r in results:
+            self.assertEqual(r.dense_vector, zero_vec)
+
+    def test_embed_batch_partial_cache_hit_with_inner_short_return(self):
+        """Cache hit for 'a', inner returns only 1 of 2 misses.
+        Output preserves positional alignment with input.
+        """
+
+        class ShortInner(FakeEmbedder):
+            def embed_batch(self, texts: List[str]) -> List[EmbedResult]:
+                self.batch_call_count += 1
+                # Only embed the first miss text, drop the rest
+                return [self.embed(texts[0])] if texts else []
+
+        inner = ShortInner()
+        cached = CachedEmbedder(inner, max_size=100, ttl_seconds=3600)
+
+        # Pre-warm "a"
+        a_cached = cached.embed("a")
+
+        results = cached.embed_batch(["a", "b", "c"])
+        self.assertEqual(len(results), 3)
+        # Position 0: cached "a"
+        self.assertEqual(results[0].dense_vector, a_cached.dense_vector)
+        # Position 1: inner-embedded "b"
+        self.assertEqual(results[1].dense_vector, inner.embed("b").dense_vector)
+        # Position 2: zero-vector placeholder (inner dropped it)
+        self.assertEqual(results[2].dense_vector, [0.0] * inner.get_dimension())
+
+    def test_embed_batch_zero_placeholder_has_correct_dimension(self):
+        """Zero placeholder's dense_vector length matches inner.get_dimension()."""
+
+        class EmptyInner(FakeEmbedder):
+            def embed_batch(self, texts: List[str]) -> List[EmbedResult]:
+                return []
+
+        inner = EmptyInner()
+        cached = CachedEmbedder(inner, max_size=100, ttl_seconds=3600)
+        results = cached.embed_batch(["x"])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(len(results[0].dense_vector), inner.get_dimension())
+
 
 class TestCachedEmbedderClose(unittest.TestCase):
 
