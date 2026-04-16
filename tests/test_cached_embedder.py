@@ -2,6 +2,7 @@
 
 import time
 import unittest
+from typing import List
 from unittest.mock import MagicMock, patch
 
 from opencortex.models.embedder.base import EmbedderBase, EmbedResult
@@ -14,6 +15,7 @@ class FakeEmbedder(EmbedderBase):
     def __init__(self):
         super().__init__(model_name="fake")
         self.call_count = 0
+        self.batch_call_count = 0
         self._dim = 4
 
     def embed(self, text: str) -> EmbedResult:
@@ -21,6 +23,10 @@ class FakeEmbedder(EmbedderBase):
         vec = [float(ord(c) % 10) / 10 for c in text[:self._dim]]
         vec += [0.0] * (self._dim - len(vec))
         return EmbedResult(dense_vector=vec)
+
+    def embed_batch(self, texts: List[str]) -> List[EmbedResult]:
+        self.batch_call_count += 1
+        return [self.embed(t) for t in texts]
 
     def get_dimension(self) -> int:
         return self._dim
@@ -137,20 +143,67 @@ class TestCachedEmbedderTTL(unittest.TestCase):
 
 class TestCachedEmbedderBatch(unittest.TestCase):
 
-    def test_embed_batch(self):
-        """embed_batch caches individual texts."""
+    def test_embed_batch_returns_correct_count(self):
+        """embed_batch returns one result per input text."""
+        inner = FakeEmbedder()
+        cached = CachedEmbedder(inner, max_size=100, ttl_seconds=3600)
+        results = cached.embed_batch(["a", "b", "c"])
+        self.assertEqual(len(results), 3)
+
+    def test_embed_batch_uses_single_inner_call_for_misses(self):
+        """All cache misses go to inner.embed_batch() in one call, not N separate embed() calls."""
         inner = FakeEmbedder()
         cached = CachedEmbedder(inner, max_size=100, ttl_seconds=3600)
 
+        cached.embed_batch(["a", "b", "c"])
+
+        # Must use embed_batch on inner once, not embed() three times
+        self.assertEqual(inner.batch_call_count, 1)
+
+    def test_embed_batch_partial_cache_hit(self):
+        """Cache hits are served from cache; only misses go to inner.embed_batch()."""
+        inner = FakeEmbedder()
+        cached = CachedEmbedder(inner, max_size=100, ttl_seconds=3600)
+
+        # Pre-warm "a" into cache
+        cached.embed("a")
+        self.assertEqual(inner.batch_call_count, 0)
+
+        # Now batch with "a" (hit) + "b", "c" (miss)
         results = cached.embed_batch(["a", "b", "c"])
         self.assertEqual(len(results), 3)
-        self.assertEqual(inner.call_count, 3)
+        # Inner embed_batch called once for the 2 misses only
+        self.assertEqual(inner.batch_call_count, 1)
 
-        # Re-embedding same batch should all be hits
-        results2 = cached.embed_batch(["a", "b", "c"])
-        self.assertEqual(inner.call_count, 3)  # no new calls
-        for r1, r2 in zip(results, results2):
-            self.assertEqual(r1.dense_vector, r2.dense_vector)
+    def test_embed_batch_full_cache_hit_no_inner_call(self):
+        """When all texts are cached, inner.embed_batch() is never called."""
+        inner = FakeEmbedder()
+        cached = CachedEmbedder(inner, max_size=100, ttl_seconds=3600)
+
+        cached.embed_batch(["a", "b", "c"])  # primes cache
+        cached.embed_batch(["a", "b", "c"])  # all hits
+
+        # embed_batch called once for initial priming, not for the second call
+        self.assertEqual(inner.batch_call_count, 1)
+
+    def test_embed_batch_result_order_matches_input(self):
+        """Results are returned in the same order as input texts."""
+        inner = FakeEmbedder()
+        cached = CachedEmbedder(inner, max_size=100, ttl_seconds=3600)
+
+        texts = ["alpha", "beta", "gamma"]
+        results = cached.embed_batch(texts)
+        individual = [cached.embed(t) for t in texts]
+
+        for r, ind in zip(results, individual):
+            self.assertEqual(r.dense_vector, ind.dense_vector)
+
+    def test_embed_batch_empty(self):
+        """Empty input returns empty list without calling inner."""
+        inner = FakeEmbedder()
+        cached = CachedEmbedder(inner, max_size=100, ttl_seconds=3600)
+        self.assertEqual(cached.embed_batch([]), [])
+        self.assertEqual(inner.batch_call_count, 0)
 
 
 class TestCachedEmbedderClose(unittest.TestCase):

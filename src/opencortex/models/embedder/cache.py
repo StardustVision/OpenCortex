@@ -72,7 +72,36 @@ class CachedEmbedder(EmbedderBase):
         return result
 
     def embed_batch(self, texts: List[str]) -> List[EmbedResult]:
-        return [self.embed(t) for t in texts]
+        if not texts:
+            return []
+
+        keys = [self._key(t) for t in texts]
+        now = time.time()
+
+        # Collect cache hits and miss positions
+        results: List[Optional[EmbedResult]] = [None] * len(texts)
+        miss_indices: List[int] = []
+        miss_texts: List[str] = []
+
+        for i, (key, text) in enumerate(zip(keys, texts)):
+            if key in self._cache and not self._expired(key):
+                self._hits += 1
+                self._cache.move_to_end(key)
+                results[i] = self._cache[key][0]
+            else:
+                self._misses += 1
+                miss_indices.append(i)
+                miss_texts.append(text)
+
+        if miss_texts:
+            batch_results = self._inner.embed_batch(miss_texts)
+            for i, (orig_idx, result) in enumerate(zip(miss_indices, batch_results)):
+                self._evict()
+                key = keys[orig_idx]
+                self._cache[key] = (result, now)
+                results[orig_idx] = result
+
+        return [r for r in results if r is not None]
 
     def get_dimension(self) -> int:
         return self._inner.get_dimension()
