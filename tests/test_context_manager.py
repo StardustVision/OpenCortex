@@ -21,6 +21,7 @@ from opencortex.http.request_context import (
     set_collection_name,
     set_request_identity,
 )
+from opencortex.intent.types import ScopeLevel as ScopeLevelImport
 from opencortex.orchestrator import MemoryOrchestrator
 from test_e2e_phase1 import InMemoryStorage, MockEmbedder
 
@@ -3014,6 +3015,471 @@ class TestContextManager(unittest.TestCase):
         self.assertNotIn("path_source", plain_dict)
         self.assertNotIn("path_cost", plain_dict)
         self.assertNotIn("path_breakdown", plain_dict)
+
+        self._run(orch.close())
+
+
+# =============================================================================
+# ADV-002 regression: scope filter must cover anchor / fp search + batch load
+# =============================================================================
+
+
+class TestScopeFilterAppliesToDerivedSurfaces(unittest.TestCase):
+    """ADV-002: CONTAINER_SCOPED / SESSION_ONLY / DOCUMENT_ONLY must filter
+    anchor_projection and fact_point searches AND the missing_uris batch load.
+
+    Before the fix: only leaf search was scope-gated. An fp/anchor in an
+    out-of-scope container could project its leaf back in via URI projection
+    and the unscoped batch load, leaking cross-container / cross-session /
+    cross-document leaves into results.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp(prefix="opencortex_scope_")
+        self.config = CortexConfig(
+            data_root=self.temp_dir,
+            embedding_dimension=MockEmbedder.DIMENSION,
+            rerank_provider="disabled",
+            merged_event_ttl_hours=48,
+        )
+        init_config(self.config)
+        self._identity_tokens = set_request_identity("testteam", "alice")
+        self.storage = InMemoryStorage()
+        self.embedder = MockEmbedder()
+
+    def tearDown(self):
+        reset_request_identity(self._identity_tokens)
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def _make_orchestrator(self):
+        return MemoryOrchestrator(
+            config=self.config,
+            storage=self.storage,
+            embedder=self.embedder,
+            llm_completion=None,
+        )
+
+    def _insert_leaf(
+        self,
+        leaf_uri,
+        abstract,
+        vector,
+        *,
+        parent_uri="",
+        session_id="sess_default",
+        source_doc_id="",
+    ):
+        record = {
+            "id": leaf_uri,
+            "uri": leaf_uri,
+            "parent_uri": parent_uri,
+            "abstract": abstract,
+            "overview": abstract,
+            "keywords": abstract,
+            "context_type": "memory",
+            "category": "events",
+            "is_leaf": True,
+            "anchor_surface": True,
+            "retrieval_surface": "l0_object",
+            "memory_kind": "event",
+            "scope": "private",
+            "source_tenant_id": "testteam",
+            "source_user_id": "alice",
+            "project_id": "",
+            "session_id": session_id,
+            "source_doc_id": source_doc_id,
+            "vector": vector,
+        }
+        return self._run(self.storage.upsert("context", record))
+
+    def _insert_fact_point(
+        self,
+        fp_uri,
+        leaf_uri,
+        text,
+        vector,
+        *,
+        parent_uri=None,
+        session_id="sess_default",
+        source_doc_id="",
+    ):
+        record = {
+            "id": fp_uri,
+            "uri": fp_uri,
+            # fact_point inherits scope fields from source leaf; tests set them explicitly
+            "parent_uri": parent_uri if parent_uri is not None else leaf_uri,
+            "abstract": text,
+            "overview": text,
+            "retrieval_surface": "fact_point",
+            "is_leaf": False,
+            "anchor_surface": False,
+            "scope": "private",
+            "source_tenant_id": "testteam",
+            "source_user_id": "alice",
+            "project_id": "",
+            "session_id": session_id,
+            "source_doc_id": source_doc_id,
+            "projection_target_uri": leaf_uri,
+            "meta": {
+                "projection_target_uri": leaf_uri,
+                "derived": True,
+                "derived_kind": "fact_point",
+            },
+            "vector": vector,
+        }
+        return self._run(self.storage.upsert("context", record))
+
+    def _insert_anchor(
+        self,
+        anchor_uri,
+        leaf_uri,
+        text,
+        vector,
+        *,
+        parent_uri=None,
+        session_id="sess_default",
+        source_doc_id="",
+    ):
+        record = {
+            "id": anchor_uri,
+            "uri": anchor_uri,
+            "parent_uri": parent_uri if parent_uri is not None else leaf_uri,
+            "abstract": text,
+            "overview": text,
+            "retrieval_surface": "anchor_projection",
+            "is_leaf": False,
+            "anchor_surface": False,
+            "scope": "private",
+            "source_tenant_id": "testteam",
+            "source_user_id": "alice",
+            "project_id": "",
+            "session_id": session_id,
+            "source_doc_id": source_doc_id,
+            "projection_target_uri": leaf_uri,
+            "meta": {
+                "projection_target_uri": leaf_uri,
+                "derived": True,
+                "derived_kind": "anchor_projection",
+            },
+            "vector": vector,
+        }
+        return self._run(self.storage.upsert("context", record))
+
+    def _build_plan_and_probe(self, *, scope_level, starting_points):
+        """Fabricate RetrievalPlan + SearchResult with requested scope_level."""
+        from opencortex.intent.types import (
+            MemoryQueryPlan,
+            MemorySearchProfile,
+            RetrievalDepth,
+            RetrievalPlan,
+            SearchResult,
+            StartingPoint,
+        )
+
+        plan = RetrievalPlan(
+            target_memory_kinds=[],
+            query_plan=MemoryQueryPlan(),
+            search_profile=MemorySearchProfile(
+                recall_budget=0.4,
+                association_budget=0.2,
+                rerank=False,
+            ),
+            retrieval_depth=RetrievalDepth.L1,
+            scope_level=scope_level,
+        )
+        probe = SearchResult(
+            should_recall=True,
+            starting_points=[StartingPoint(**sp) for sp in starting_points],
+            scope_level=scope_level,
+        )
+        return plan, probe
+
+    def _make_typed_query(self, query_text):
+        from opencortex.retrieve.types import ContextType, TypedQuery
+
+        return TypedQuery(query=query_text, context_type=ContextType.MEMORY, intent="")
+
+    # -------------------------------------------------------------------------
+    # CONTAINER_SCOPED
+    # -------------------------------------------------------------------------
+
+    def test_container_scoped_blocks_out_of_scope_fact_point(self):
+        """CONTAINER_SCOPED: fp living under an out-of-scope container must NOT
+        pull its leaf into results via URI projection.
+        """
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+
+        query_text = "specific fact query"
+        query_vec = self.embedder._text_to_vector(query_text)
+        unrelated_vec = self.embedder._text_to_vector("something else entirely")
+
+        container_a = "opencortex://testteam/alice/memory/events/container_a"
+        container_b = "opencortex://testteam/alice/memory/events/container_b"
+
+        leaf_in = f"{container_a}/leaf_in"
+        leaf_out = f"{container_b}/leaf_out"
+        fp_out = f"{leaf_out}/fact_points/fpout001"
+
+        # In-scope leaf: unrelated vector (only leaf search surface)
+        self._insert_leaf(leaf_in, "in scope leaf", unrelated_vec, parent_uri=container_a)
+        # Out-of-scope leaf: unrelated vector (would only surface via fp projection)
+        self._insert_leaf(leaf_out, "out of scope leaf", unrelated_vec, parent_uri=container_b)
+        # Out-of-scope fp: high relevance to query (tempting projection target)
+        self._insert_fact_point(fp_out, leaf_out, "Alice moved to Hangzhou", query_vec, parent_uri=container_b)
+
+        plan, probe = self._build_plan_and_probe(
+            scope_level=ScopeLevelImport.CONTAINER_SCOPED,
+            starting_points=[{"uri": container_a}],
+        )
+        result = self._run(
+            orch._execute_object_query(
+                typed_query=self._make_typed_query(query_text),
+                limit=10,
+                score_threshold=None,
+                search_filter=None,
+                retrieve_plan=plan,
+                probe_result=probe,
+                bound_plan=None,
+            )
+        )
+        uris = [mc.uri for mc in result.matched_contexts]
+        self.assertNotIn(
+            leaf_out, uris,
+            "Out-of-scope leaf must not leak in via its fact_point projection",
+        )
+
+        self._run(orch.close())
+
+    def test_container_scoped_blocks_out_of_scope_anchor(self):
+        """CONTAINER_SCOPED: anchor living under an out-of-scope container must
+        NOT pull its leaf into results.
+        """
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+
+        query_text = "anchor discovery"
+        query_vec = self.embedder._text_to_vector(query_text)
+        unrelated_vec = self.embedder._text_to_vector("something else entirely")
+
+        container_a = "opencortex://testteam/alice/memory/events/container_ax"
+        container_b = "opencortex://testteam/alice/memory/events/container_bx"
+
+        leaf_out = f"{container_b}/leaf_oa"
+        anchor_out = f"{leaf_out}/anchors/aout001"
+
+        self._insert_leaf(leaf_out, "out of scope leaf", unrelated_vec, parent_uri=container_b)
+        self._insert_anchor(anchor_out, leaf_out, "anchor phrase matching query", query_vec, parent_uri=container_b)
+
+        plan, probe = self._build_plan_and_probe(
+            scope_level=ScopeLevelImport.CONTAINER_SCOPED,
+            starting_points=[{"uri": container_a}],
+        )
+        result = self._run(
+            orch._execute_object_query(
+                typed_query=self._make_typed_query(query_text),
+                limit=10,
+                score_threshold=None,
+                search_filter=None,
+                retrieve_plan=plan,
+                probe_result=probe,
+                bound_plan=None,
+            )
+        )
+        uris = [mc.uri for mc in result.matched_contexts]
+        self.assertNotIn(
+            leaf_out, uris,
+            "Out-of-scope leaf must not leak in via its anchor projection",
+        )
+
+        self._run(orch.close())
+
+    # -------------------------------------------------------------------------
+    # SESSION_ONLY
+    # -------------------------------------------------------------------------
+
+    def test_session_only_blocks_other_session_fact_point(self):
+        """SESSION_ONLY: fp from session B must not pull its leaf into results
+        when query is scoped to session A.
+        """
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+
+        query_text = "session scoped query"
+        query_vec = self.embedder._text_to_vector(query_text)
+        unrelated_vec = self.embedder._text_to_vector("unrelated content")
+
+        leaf_b = "opencortex://testteam/alice/memory/events/leaf_session_b"
+        fp_b = f"{leaf_b}/fact_points/fpsb001"
+
+        self._insert_leaf(leaf_b, "leaf in session B", unrelated_vec, session_id="sess_B")
+        self._insert_fact_point(
+            fp_b, leaf_b, "Alice moved to Hangzhou", query_vec, session_id="sess_B"
+        )
+
+        plan, probe = self._build_plan_and_probe(
+            scope_level=ScopeLevelImport.SESSION_ONLY,
+            starting_points=[
+                {"uri": "opencortex://testteam/alice/memory/events/sp_a", "session_id": "sess_A"},
+            ],
+        )
+        result = self._run(
+            orch._execute_object_query(
+                typed_query=self._make_typed_query(query_text),
+                limit=10,
+                score_threshold=None,
+                search_filter=None,
+                retrieve_plan=plan,
+                probe_result=probe,
+                bound_plan=None,
+            )
+        )
+        uris = [mc.uri for mc in result.matched_contexts]
+        self.assertNotIn(
+            leaf_b, uris,
+            "Session-B leaf must not leak into session-A query via its fp",
+        )
+
+        self._run(orch.close())
+
+    # -------------------------------------------------------------------------
+    # DOCUMENT_ONLY
+    # -------------------------------------------------------------------------
+
+    def test_document_only_blocks_other_doc_fact_point(self):
+        """DOCUMENT_ONLY: fp from a different document must not pull its leaf in."""
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+
+        query_text = "document scoped query"
+        query_vec = self.embedder._text_to_vector(query_text)
+        unrelated_vec = self.embedder._text_to_vector("something else entirely")
+
+        leaf_y = "opencortex://testteam/alice/memory/events/leaf_doc_y"
+        fp_y = f"{leaf_y}/fact_points/fpdy001"
+
+        self._insert_leaf(leaf_y, "leaf in doc Y", unrelated_vec, source_doc_id="doc_Y")
+        self._insert_fact_point(
+            fp_y, leaf_y, "Alice moved to Hangzhou", query_vec, source_doc_id="doc_Y"
+        )
+
+        plan, probe = self._build_plan_and_probe(
+            scope_level=ScopeLevelImport.DOCUMENT_ONLY,
+            starting_points=[
+                {
+                    "uri": "opencortex://testteam/alice/memory/events/sp_x",
+                    "source_doc_id": "doc_X",
+                },
+            ],
+        )
+        result = self._run(
+            orch._execute_object_query(
+                typed_query=self._make_typed_query(query_text),
+                limit=10,
+                score_threshold=None,
+                search_filter=None,
+                retrieve_plan=plan,
+                probe_result=probe,
+                bound_plan=None,
+            )
+        )
+        uris = [mc.uri for mc in result.matched_contexts]
+        self.assertNotIn(
+            leaf_y, uris,
+            "Doc-Y leaf must not leak into doc-X-scoped query via its fp",
+        )
+
+        self._run(orch.close())
+
+    # -------------------------------------------------------------------------
+    # GLOBAL scope: no filter, existing behavior preserved
+    # -------------------------------------------------------------------------
+
+    def test_global_scope_finds_leaf_via_fp_projection(self):
+        """GLOBAL scope: fp anywhere may project its leaf in (no scope filter)."""
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+
+        query_text = "global fp path query"
+        query_vec = self.embedder._text_to_vector(query_text)
+        unrelated_vec = self.embedder._text_to_vector("unrelated content")
+
+        leaf_uri = "opencortex://testteam/alice/memory/events/leaf_global_fp"
+        fp_uri = f"{leaf_uri}/fact_points/fpg001"
+
+        self._insert_leaf(leaf_uri, "global leaf", unrelated_vec, session_id="sess_any")
+        self._insert_fact_point(
+            fp_uri, leaf_uri, "Alice moved to Hangzhou", query_vec, session_id="sess_any"
+        )
+
+        plan, probe = self._build_plan_and_probe(
+            scope_level=ScopeLevelImport.GLOBAL,
+            starting_points=[],
+        )
+        result = self._run(
+            orch._execute_object_query(
+                typed_query=self._make_typed_query(query_text),
+                limit=10,
+                score_threshold=None,
+                search_filter=None,
+                retrieve_plan=plan,
+                probe_result=probe,
+                bound_plan=None,
+            )
+        )
+        uris = [mc.uri for mc in result.matched_contexts]
+        self.assertIn(
+            leaf_uri, uris,
+            "GLOBAL scope must still allow fp projection to surface its leaf",
+        )
+
+        self._run(orch.close())
+
+    # -------------------------------------------------------------------------
+    # CONTAINER_SCOPED keeps the in-scope leaf reachable via fp
+    # -------------------------------------------------------------------------
+
+    def test_container_scoped_keeps_in_scope_fact_point_path(self):
+        """In-scope fp must still be able to surface its leaf (fp path works inside scope)."""
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+
+        query_text = "in-scope fp query"
+        query_vec = self.embedder._text_to_vector(query_text)
+        unrelated_vec = self.embedder._text_to_vector("unrelated filler content")
+
+        container_a = "opencortex://testteam/alice/memory/events/container_cs_in"
+        leaf_in = f"{container_a}/leaf_cs_in"
+        fp_in = f"{leaf_in}/fact_points/fpin001"
+
+        self._insert_leaf(leaf_in, "in-scope leaf", unrelated_vec, parent_uri=container_a)
+        self._insert_fact_point(
+            fp_in, leaf_in, "Alice moved to Hangzhou", query_vec, parent_uri=container_a
+        )
+
+        plan, probe = self._build_plan_and_probe(
+            scope_level=ScopeLevelImport.CONTAINER_SCOPED,
+            starting_points=[{"uri": container_a}],
+        )
+        result = self._run(
+            orch._execute_object_query(
+                typed_query=self._make_typed_query(query_text),
+                limit=10,
+                score_threshold=None,
+                search_filter=None,
+                retrieve_plan=plan,
+                probe_result=probe,
+                bound_plan=None,
+            )
+        )
+        uris = [mc.uri for mc in result.matched_contexts]
+        self.assertIn(
+            leaf_in, uris,
+            "In-scope fp must still surface its leaf when parent_uri matches",
+        )
 
         self._run(orch.close())
 

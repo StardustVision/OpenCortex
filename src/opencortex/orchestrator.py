@@ -3060,8 +3060,15 @@ class MemoryOrchestrator:
             bound_plan=bound_plan,
         )
 
-        # Scope-aware leaf filter (R3/R6)
-        leaf_filter: Optional[Dict[str, Any]] = None
+        # Scope-aware filter (R3/R6).
+        # ADV-002 fix: scope_only_filter (parent_uri / session_id / source_doc_id)
+        # must apply to all three surface searches AND the missing_uris batch load,
+        # because anchor_projection and fact_point records inherit these fields
+        # from their source leaf (see _anchor_projection_records / _fact_point_records).
+        # Without this, out-of-scope fact_points or anchors would project leaves back
+        # into results, violating CONTAINER_SCOPED / SESSION_ONLY / DOCUMENT_ONLY.
+        # is_leaf=True stays only on the leaf search (anchor/fp records are non-leaf).
+        scope_only_filter: Optional[Dict[str, Any]] = None
         if retrieve_plan is not None:
             if retrieve_plan.scope_level == ScopeLevel.CONTAINER_SCOPED:
                 if probe_result and probe_result.starting_points:
@@ -3069,7 +3076,7 @@ class MemoryOrchestrator:
                         sp.uri for sp in probe_result.starting_points if sp.uri
                     ]
                     if parent_uris:
-                        leaf_filter = {
+                        scope_only_filter = {
                             "op": "must",
                             "field": "parent_uri",
                             "conds": parent_uris,
@@ -3084,7 +3091,7 @@ class MemoryOrchestrator:
                         }
                     )
                     if session_ids:
-                        leaf_filter = {
+                        scope_only_filter = {
                             "op": "must",
                             "field": "session_id",
                             "conds": session_ids,
@@ -3099,32 +3106,34 @@ class MemoryOrchestrator:
                         }
                     )
                     if doc_ids:
-                        leaf_filter = {
+                        scope_only_filter = {
                             "op": "must",
                             "field": "source_doc_id",
                             "conds": doc_ids,
                         }
 
-        if leaf_filter is None:
-            leaf_filter = {"op": "must", "field": "is_leaf", "conds": [True]}
+        is_leaf_filter = {"op": "must", "field": "is_leaf", "conds": [True]}
 
-        # Leaf filter: scope-aware leaf selection + kind + start_point
+        # Leaf filter: scope + kind + is_leaf + start_point
         leaf_filter_merged = merge_filter_clauses(
             search_filter,
             kind_filter,
-            leaf_filter,
+            scope_only_filter,
+            is_leaf_filter,
             start_point_filter,
         )
-        # Anchor filter: same scope base + retrieval_surface=anchor_projection
+        # Anchor filter: scope + start_point + retrieval_surface=anchor_projection
         anchor_filter_merged = merge_filter_clauses(
             search_filter,
             start_point_filter,
+            scope_only_filter,
             {"op": "must", "field": "retrieval_surface", "conds": ["anchor_projection"]},
         )
-        # Fact-point filter: same scope base + retrieval_surface=fact_point
+        # Fact-point filter: scope + start_point + retrieval_surface=fact_point
         fp_filter_merged = merge_filter_clauses(
             search_filter,
             start_point_filter,
+            scope_only_filter,
             {"op": "must", "field": "retrieval_surface", "conds": ["fact_point"]},
         )
 
@@ -3207,12 +3216,16 @@ class MemoryOrchestrator:
         missing_uris = [u for u in projected_uris if u and u not in known_leaf_uris]
 
         # Batch load missing projected leaves (R22)
+        # ADV-002 fix: apply scope_only_filter + is_leaf to the batch load so an
+        # out-of-scope fact_point / anchor cannot pull its leaf back in via URI projection.
         if missing_uris:
             try:
                 tid, uid = get_effective_identity()
                 project_id = get_effective_project_id()
                 missing_filter = merge_filter_clauses(
                     search_filter,
+                    scope_only_filter,
+                    is_leaf_filter,
                     {"op": "must", "field": "uri", "conds": missing_uris},
                 )
                 loaded = await self._storage.search(
