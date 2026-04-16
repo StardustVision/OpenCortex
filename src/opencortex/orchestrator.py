@@ -113,6 +113,7 @@ from opencortex.retrieve.types import (
     SearchExplain,
     TypedQuery,
 )
+from opencortex.retrieve.uri_path_scorer import compute_uri_path_scores
 from opencortex.storage.collection_schemas import init_context_collection
 from opencortex.storage.cortex_fs import CortexFS, init_cortex_fs
 from opencortex.storage.storage_interface import StorageInterface
@@ -2833,9 +2834,14 @@ class MemoryOrchestrator:
         query_anchor_groups: Dict[str, set[str]],
         probe_candidate_ranks: Dict[str, int],
         cone_weight: float,
+        uri_path_costs: Optional[Dict[str, float]] = None,
     ) -> tuple[float, str]:
-        """Fuse vector score with object-aware boosts."""
-        score = float(record.get("_score", record.get("score", 0.0)) or 0.0)
+        """Fuse URI path score (primary) with object-aware boosts."""
+        leaf_uri = str(record.get("uri", "") or "")
+        if uri_path_costs is not None and leaf_uri in uri_path_costs:
+            score = 1.0 - uri_path_costs[leaf_uri]
+        else:
+            score = float(record.get("_score", record.get("score", 0.0)) or 0.0)
         reasons: List[str] = []
         target_kinds = (
             [kind.value for kind in retrieve_plan.target_memory_kinds]
@@ -2890,6 +2896,24 @@ class MemoryOrchestrator:
             reasons.append("cone")
 
         return score, ",".join(reasons) or "semantic"
+
+    @staticmethod
+    def _record_passes_acl(
+        record: Dict[str, Any],
+        tenant_id: str,
+        user_id: str,
+        project_id: str,
+    ) -> bool:
+        """Return True if record passes tenant/scope/project access control."""
+        r_tenant = str(record.get("source_tenant_id", "") or "")
+        if tenant_id and r_tenant and r_tenant != tenant_id:
+            return False
+        if record.get("scope") == "private" and record.get("source_user_id") != user_id:
+            return False
+        r_project = str(record.get("project_id", "") or "")
+        if project_id and project_id != "public" and r_project not in (project_id, "public", ""):
+            return False
+        return True
 
     @staticmethod
     def _matched_record_anchors(
@@ -2972,6 +2996,13 @@ class MemoryOrchestrator:
                 ),
                 matched_anchors=list(record.get("_matched_anchors", []) or []),
                 cone_used=bool(record.get("_cone_used", False)),
+                path_source=record.get("_path_source") or None,
+                path_cost=(
+                    float(record["_path_cost"])
+                    if record.get("_path_cost") is not None
+                    else None
+                ),
+                path_breakdown=record.get("_path_breakdown") or None,
                 relations=[],
             )
 
@@ -2988,7 +3019,7 @@ class MemoryOrchestrator:
         probe_result: Optional[SearchResult],
         bound_plan: Optional[Dict[str, Any]] = None,
     ) -> QueryResult:
-        """Execute one object-aware retrieval query without the legacy retriever."""
+        """Execute one object-aware retrieval query with three-layer parallel search."""
         started = time.perf_counter()
         embed_started = started
         query_vector = await self._embed_retrieval_query(typed_query.query)
@@ -3056,11 +3087,24 @@ class MemoryOrchestrator:
         if leaf_filter is None:
             leaf_filter = {"op": "must", "field": "is_leaf", "conds": [True]}
 
-        final_filter = merge_filter_clauses(
+        # Leaf filter: scope-aware leaf selection + kind + start_point
+        leaf_filter_merged = merge_filter_clauses(
             search_filter,
             kind_filter,
             leaf_filter,
             start_point_filter,
+        )
+        # Anchor filter: same scope base + retrieval_surface=anchor_projection
+        anchor_filter_merged = merge_filter_clauses(
+            search_filter,
+            start_point_filter,
+            {"op": "must", "field": "retrieval_surface", "conds": ["anchor_projection"]},
+        )
+        # Fact-point filter: same scope base + retrieval_surface=fact_point
+        fp_filter_merged = merge_filter_clauses(
+            search_filter,
+            start_point_filter,
+            {"op": "must", "field": "retrieval_surface", "conds": ["fact_point"]},
         )
 
         query_anchor_groups = build_query_anchor_groups(retrieve_plan, probe_result)
@@ -3078,23 +3122,144 @@ class MemoryOrchestrator:
             if rerank_enabled:
                 candidate_limit = min(64, candidate_limit + 8)
 
-        records = await self._storage.search(
-            self._get_collection(),
-            query_vector=query_vector,
-            filter=final_filter,
-            limit=candidate_limit,
-            text_query=typed_query.query,
+        # Three-layer parallel search (R14, R20)
+        leaf_limit = candidate_limit
+        anchor_limit = min(64, candidate_limit * 2)
+        fp_limit = min(96, candidate_limit * 3)
+
+        _search_results = await asyncio.gather(
+            self._storage.search(
+                self._get_collection(),
+                query_vector=query_vector,
+                filter=leaf_filter_merged,
+                limit=leaf_limit,
+                text_query=typed_query.query,
+            ),
+            self._storage.search(
+                self._get_collection(),
+                query_vector=query_vector,
+                filter=anchor_filter_merged,
+                limit=anchor_limit,
+                text_query=None,  # derived records: no lexical search
+            ),
+            self._storage.search(
+                self._get_collection(),
+                query_vector=query_vector,
+                filter=fp_filter_merged,
+                limit=fp_limit,
+                text_query=None,  # derived records: no lexical search
+            ),
+            return_exceptions=True,
         )
+        leaf_hits: List[Dict[str, Any]] = (
+            _search_results[0] if not isinstance(_search_results[0], Exception) else []
+        )
+        anchor_hits: List[Dict[str, Any]] = (
+            _search_results[1] if not isinstance(_search_results[1], Exception) else []
+        )
+        fp_hits: List[Dict[str, Any]] = (
+            _search_results[2] if not isinstance(_search_results[2], Exception) else []
+        )
+        if isinstance(_search_results[0], Exception):
+            logger.debug("[Orchestrator] leaf search failed: %s", _search_results[0])
+        if isinstance(_search_results[1], Exception):
+            logger.debug("[Orchestrator] anchor search failed: %s", _search_results[1])
+        if isinstance(_search_results[2], Exception):
+            logger.debug("[Orchestrator] fp search failed: %s", _search_results[2])
+
         search_finished = time.perf_counter()
+
+        # URI projection: collect leaves referenced by anchor/fp hits (R21)
+        def _get_target_uri(hit: Dict[str, Any]) -> str:
+            return str(
+                hit.get("projection_target_uri")
+                or (hit.get("meta") or {}).get("projection_target_uri", "")
+                or ""
+            )
+
+        known_leaf_uris = {str(r.get("uri", "")) for r in leaf_hits if r.get("uri")}
+        projected_uris = {
+            _get_target_uri(h)
+            for h in anchor_hits + fp_hits
+            if _get_target_uri(h)
+        }
+        missing_uris = [u for u in projected_uris if u and u not in known_leaf_uris]
+
+        # Batch load missing projected leaves (R22)
+        if missing_uris:
+            try:
+                tid, uid = get_effective_identity()
+                project_id = get_effective_project_id()
+                missing_filter = merge_filter_clauses(
+                    search_filter,
+                    {"op": "must", "field": "uri", "conds": missing_uris},
+                )
+                loaded = await self._storage.search(
+                    self._get_collection(),
+                    query_vector=None,
+                    filter=missing_filter,
+                    limit=len(missing_uris) + 5,
+                )
+                for r in loaded:
+                    if self._record_passes_acl(r, tid, uid, project_id):
+                        leaf_hits.append(r)
+                        known_leaf_uris.add(str(r.get("uri", "") or ""))
+            except Exception as exc:
+                logger.debug("[Orchestrator] batch URI load failed: %s", exc)
+
+        # URI path scoring (R12, R15-R19)
+        uri_path_costs = compute_uri_path_scores(leaf_hits, anchor_hits, fp_hits)
+
+        # Determine path_source per leaf (for trace)
+        from opencortex.retrieve.uri_path_scorer import (
+            URI_HOP_COST as _URI_HOP_COST,
+            HIGH_CONFIDENCE_THRESHOLD as _HIGH_CONF_THRESHOLD,
+            HIGH_CONFIDENCE_DISCOUNT as _HIGH_CONF_DISCOUNT,
+        )
+
+        def _determine_path_source(leaf_uri: str) -> tuple[str, Optional[float]]:
+            """Return (path_source, path_cost) for a leaf URI."""
+            if leaf_uri not in uri_path_costs:
+                return "direct", None
+            cost = uri_path_costs[leaf_uri]
+            # Check if best path comes from fp
+            best_fp_cost = None
+            for h in fp_hits:
+                t = _get_target_uri(h)
+                if t != leaf_uri:
+                    continue
+                s = max(0.0, min(1.0, float(h.get("_score", 0.0))))
+                d = 1.0 - s
+                hop = _URI_HOP_COST * _HIGH_CONF_DISCOUNT if d < _HIGH_CONF_THRESHOLD else _URI_HOP_COST
+                fp_c = d + hop
+                if best_fp_cost is None or fp_c < best_fp_cost:
+                    best_fp_cost = fp_c
+            if best_fp_cost is not None and abs(best_fp_cost - cost) < 1e-9:
+                return "fact_point", cost
+            # Check anchor
+            best_anchor_cost = None
+            for h in anchor_hits:
+                t = _get_target_uri(h)
+                if t != leaf_uri:
+                    continue
+                s = max(0.0, min(1.0, float(h.get("_score", 0.0))))
+                anchor_c = (1.0 - s) + _URI_HOP_COST
+                if best_anchor_cost is None or anchor_c < best_anchor_cost:
+                    best_anchor_cost = anchor_c
+            if best_anchor_cost is not None and abs(best_anchor_cost - cost) < 1e-9:
+                return "anchor", cost
+            return "direct", cost
 
         rerank_started = search_finished
         frontier_waves = 0
         probe_candidate_ranks = build_probe_candidate_ranks(probe_result)
+
+        # Cone expansion operates on leaf_hits (independent of URI scoring, R391)
         records, cone_used = await self._apply_cone_rerank(
             typed_query=typed_query,
             retrieve_plan=retrieve_plan,
             query_anchor_groups=query_anchor_groups,
-            records=records,
+            records=leaf_hits,
         )
         if cone_used:
             frontier_waves = 1
@@ -3106,8 +3271,10 @@ class MemoryOrchestrator:
                 0.24,
                 self._config.cone_weight * (0.6 + 0.8 * association_budget),
             )
+
         rescored: List[Dict[str, Any]] = []
         for record in records:
+            leaf_uri = str(record.get("uri", "") or "")
             final_score, match_reason = self._score_object_record(
                 record=record,
                 typed_query=typed_query,
@@ -3115,9 +3282,11 @@ class MemoryOrchestrator:
                 query_anchor_groups=query_anchor_groups,
                 probe_candidate_ranks=probe_candidate_ranks,
                 cone_weight=cone_weight,
+                uri_path_costs=uri_path_costs,
             )
             if score_threshold is not None and final_score < score_threshold:
                 continue
+            path_src, path_cst = _determine_path_source(leaf_uri)
             rescored_record = dict(record)
             rescored_record["_final_score"] = final_score
             rescored_record["_match_reason"] = match_reason
@@ -3126,6 +3295,12 @@ class MemoryOrchestrator:
                 query_anchor_groups=query_anchor_groups,
             )
             rescored_record["_cone_used"] = bool(cone_used)
+            rescored_record["_path_source"] = path_src
+            rescored_record["_path_cost"] = path_cst
+            rescored_record["_path_breakdown"] = (
+                {"uri_path_cost": path_cst, "path_source": path_src}
+                if path_cst is not None else None
+            )
             rescored.append(rescored_record)
         rescored.sort(key=lambda record: record.get("_final_score", 0.0), reverse=True)
         rerank_finished = time.perf_counter()

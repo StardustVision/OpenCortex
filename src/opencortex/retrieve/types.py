@@ -354,6 +354,11 @@ class MatchedContext:
     matched_anchors: List[str] = field(default_factory=list)
     cone_used: Optional[bool] = None
 
+    # URI path trace fields (Unit 5)
+    path_source: Optional[str] = None          # "fact_point", "anchor", or "direct"
+    path_cost: Optional[float] = None
+    path_breakdown: Optional[Dict[str, Any]] = None
+
     relations: List[RelatedContext] = field(default_factory=list)
 
     def to_memory_search_result(self) -> Dict[str, Any]:
@@ -386,6 +391,12 @@ class MatchedContext:
             item["matched_anchors"] = list(self.matched_anchors)
         if self.cone_used is not None:
             item["cone_used"] = bool(self.cone_used)
+        if self.path_source is not None:
+            item["path_source"] = self.path_source
+        if self.path_cost is not None:
+            item["path_cost"] = self.path_cost
+        if self.path_breakdown is not None:
+            item["path_breakdown"] = self.path_breakdown
         return item
 
 
@@ -520,6 +531,12 @@ class FindResult:
             d["matched_anchors"] = list(ctx.matched_anchors)
         if ctx.cone_used is not None:
             d["cone_used"] = bool(ctx.cone_used)
+        if ctx.path_source is not None:
+            d["path_source"] = ctx.path_source
+        if ctx.path_cost is not None:
+            d["path_cost"] = ctx.path_cost
+        if ctx.path_breakdown is not None:
+            d["path_breakdown"] = ctx.path_breakdown
         return d
 
     def _query_to_dict(self, q: TypedQuery) -> Dict[str, Any]:
