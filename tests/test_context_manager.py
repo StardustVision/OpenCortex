@@ -2281,6 +2281,199 @@ class TestContextManager(unittest.TestCase):
 
         self._run(orch.close())
 
+    # -------------------------------------------------------------------------
+    # ADV-001 regression: update() and _merge_into() must preserve fact_points
+    # -------------------------------------------------------------------------
+
+    def test_update_regenerates_fact_points_after_content_change(self):
+        """update(uri, content=new_content) must re-derive and persist fact_points.
+
+        Regression: prior bug — update() dropped fact_points from _derive_layers
+        result, so _sync_anchor_projection_records received empty fact_points
+        and _delete_derived_stale wiped all prior fact_points on every update.
+        """
+        call_count = {"n": 0}
+
+        async def fp_llm(prompt: str) -> str:
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return (
+                    '{"overview":"Alice relocated to Hangzhou on May 1",'
+                    '"keywords":["Alice","Hangzhou"],'
+                    '"entities":["Alice","Hangzhou"],'
+                    '"anchor_handles":["Alice","Hangzhou"],'
+                    '"fact_points":["Alice moved to Hangzhou on May 1"]}'
+                )
+            return (
+                '{"overview":"Alice later relocated to Shanghai on June 10",'
+                '"keywords":["Alice","Shanghai"],'
+                '"entities":["Alice","Shanghai"],'
+                '"anchor_handles":["Alice","Shanghai"],'
+                '"fact_points":["Alice relocated to Shanghai on June 10"]}'
+            )
+
+        orch = self._make_orchestrator(llm_completion=fp_llm)
+        self._run(orch.init())
+
+        ctx = self._run(
+            orch.add(
+                abstract="",
+                content="Alice moved to Hangzhou on May 1.",
+                category="events",
+            )
+        )
+        leaf_uri = ctx.uri
+
+        fp_before = [
+            r for r in self.storage._records.get("context", {}).values()
+            if r.get("retrieval_surface") == "fact_point"
+            and r.get("parent_uri") == leaf_uri
+        ]
+        self.assertGreaterEqual(
+            len(fp_before), 1,
+            "Setup failed: fact_points should be created on add()",
+        )
+        before_uris = {r["uri"] for r in fp_before}
+
+        # Update leaf with new content → should re-derive new fact_points
+        self._run(
+            orch.update(
+                leaf_uri,
+                content="Alice relocated to Shanghai on June 10.",
+            )
+        )
+
+        fp_after = [
+            r for r in self.storage._records.get("context", {}).values()
+            if r.get("retrieval_surface") == "fact_point"
+            and r.get("parent_uri") == leaf_uri
+        ]
+        self.assertGreaterEqual(
+            len(fp_after), 1,
+            "BUG: update() dropped fact_points; _sync_anchor_projection_records "
+            "wiped them via _delete_derived_stale",
+        )
+        # Content changed → derived URIs (sha1 of text) should differ
+        after_uris = {r["uri"] for r in fp_after}
+        self.assertNotEqual(
+            before_uris, after_uris,
+            "fact_point URIs should reflect new content digest after update()",
+        )
+        # Verify payload content matches newly-derived fact_point text
+        overviews = {r.get("overview", "") for r in fp_after}
+        self.assertIn(
+            "Alice relocated to Shanghai on June 10",
+            overviews,
+            "Newly-derived fact_point text should appear in storage after update()",
+        )
+
+        self._run(orch.close())
+
+    def test_update_fast_path_does_not_touch_fact_points(self):
+        """update(uri) with neither abstract nor content should not invoke derivation.
+
+        fast path: no abstract and no content → no re-derive → fact_points remain intact.
+        """
+        async def fp_llm(prompt: str) -> str:
+            return (
+                '{"overview":"Alice moved to Hangzhou on May 1",'
+                '"keywords":["Alice"],'
+                '"entities":["Alice"],'
+                '"anchor_handles":["Alice"],'
+                '"fact_points":["Alice moved to Hangzhou on May 1"]}'
+            )
+
+        orch = self._make_orchestrator(llm_completion=fp_llm)
+        self._run(orch.init())
+
+        ctx = self._run(
+            orch.add(
+                abstract="",
+                content="Alice moved to Hangzhou on May 1.",
+                category="events",
+            )
+        )
+        leaf_uri = ctx.uri
+
+        fp_before = [
+            r for r in self.storage._records.get("context", {}).values()
+            if r.get("retrieval_surface") == "fact_point"
+            and r.get("parent_uri") == leaf_uri
+        ]
+        self.assertGreaterEqual(len(fp_before), 1)
+        before_uris = {r["uri"] for r in fp_before}
+
+        # Update with only meta → no derivation, no sync
+        self._run(orch.update(leaf_uri, meta={"note": "meta-only update"}))
+
+        fp_after = [
+            r for r in self.storage._records.get("context", {}).values()
+            if r.get("retrieval_surface") == "fact_point"
+            and r.get("parent_uri") == leaf_uri
+        ]
+        after_uris = {r["uri"] for r in fp_after}
+        self.assertEqual(
+            before_uris, after_uris,
+            "fast-path update() (meta only) must not delete or change fact_points",
+        )
+
+        self._run(orch.close())
+
+    def test_merge_into_preserves_fact_points(self):
+        """_merge_into() delegates to update(); merged leaf must retain fact_points."""
+        call_count = {"n": 0}
+
+        async def fp_llm(prompt: str) -> str:
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return (
+                    '{"overview":"Alice moved to Hangzhou on May 1",'
+                    '"keywords":["Alice","Hangzhou"],'
+                    '"entities":["Alice","Hangzhou"],'
+                    '"anchor_handles":["Alice","Hangzhou"],'
+                    '"fact_points":["Alice moved to Hangzhou on May 1"]}'
+                )
+            return (
+                '{"overview":"Alice moved to Hangzhou then Shanghai",'
+                '"keywords":["Alice","Shanghai"],'
+                '"entities":["Alice","Shanghai"],'
+                '"anchor_handles":["Alice","Shanghai"],'
+                '"fact_points":["Alice moved to Shanghai on June 10"]}'
+            )
+
+        orch = self._make_orchestrator(llm_completion=fp_llm)
+        self._run(orch.init())
+
+        ctx = self._run(
+            orch.add(
+                abstract="Alice in Hangzhou",
+                content="Alice moved to Hangzhou on May 1.",
+                category="events",
+            )
+        )
+        leaf_uri = ctx.uri
+
+        # Invoke _merge_into directly to simulate the merge path
+        self._run(
+            orch._merge_into(
+                leaf_uri,
+                new_abstract="Alice moved again",
+                new_content="Alice relocated to Shanghai on June 10.",
+            )
+        )
+
+        fp_after = [
+            r for r in self.storage._records.get("context", {}).values()
+            if r.get("retrieval_surface") == "fact_point"
+            and r.get("parent_uri") == leaf_uri
+        ]
+        self.assertGreaterEqual(
+            len(fp_after), 1,
+            "BUG: _merge_into() dropped fact_points via update() path",
+        )
+
+        self._run(orch.close())
+
 
     # -------------------------------------------------------------------------
     # Unit 5: Three-layer parallel search + URI path scoring tests

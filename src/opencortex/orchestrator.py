@@ -2366,11 +2366,16 @@ class MemoryOrchestrator:
             next_meta.get("topics"),
             _split_keyword_string(record.get("keywords", "")),
         )
+        derived_fact_points: Optional[List[str]] = None
         if next_content and (abstract is not None or content is not None):
+            # When content changed, force full LLM re-derivation so fact_points
+            # are regenerated (ADV-001). Passing non-empty user_overview would
+            # hit _derive_layers' fast-path which returns empty fact_points.
+            derive_user_overview = "" if content is not None else next_overview
             derive_result = await self._derive_layers(
                 user_abstract=next_abstract,
                 content=next_content,
-                user_overview=next_overview,
+                user_overview=derive_user_overview,
             )
             next_entities = _merge_unique_strings(
                 derive_result.get("entities", []),
@@ -2386,6 +2391,10 @@ class MemoryOrchestrator:
             )
             if next_anchor_handles:
                 next_meta["anchor_handles"] = next_anchor_handles
+            # ADV-001 fix: capture fact_points so _sync_anchor_projection_records
+            # regenerates fp records instead of wiping them.
+            raw_fps = derive_result.get("fact_points", [])
+            derived_fact_points = [str(fp) for fp in raw_fps] if isinstance(raw_fps, list) else []
         if next_keywords_list:
             next_meta["topics"] = _merge_unique_strings(
                 next_meta.get("topics"),
@@ -2420,6 +2429,18 @@ class MemoryOrchestrator:
             parent_uri=record.get("parent_uri", ""),
             session_id=record.get("session_id", ""),
         )
+        # ADV-001 fix: inject fact_points symmetric to add() (line ~2013-2016).
+        # If _derive_layers ran, use its fact_points. Otherwise (fast path),
+        # preserve existing fact_points from the stored abstract_json so
+        # _sync_anchor_projection_records does not wipe them.
+        if derived_fact_points is not None:
+            abstract_json["fact_points"] = derived_fact_points
+        else:
+            prior_abstract_json = record.get("abstract_json")
+            if isinstance(prior_abstract_json, dict):
+                prior_fps = prior_abstract_json.get("fact_points") or []
+                if isinstance(prior_fps, list):
+                    abstract_json["fact_points"] = [str(fp) for fp in prior_fps]
         update_data.update(
             self._memory_object_payload(
                 abstract_json,
