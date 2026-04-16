@@ -184,5 +184,83 @@ class TestComputeUriPathScoresEdgeCases(unittest.TestCase):
         self.assertNotIn(leaf_meta, result)
 
 
+class TestUriPathScoreOffsetLock(unittest.TestCase):
+    """Lock the exact score offset vs raw cosine _score.
+
+    If a future change shifts URI_DIRECT_PENALTY, URI_HOP_COST,
+    HIGH_CONFIDENCE_THRESHOLD, or HIGH_CONFIDENCE_DISCOUNT, these tests fail
+    loudly so the reviewer is forced to re-evaluate every caller that passes
+    a fixed ``score_threshold``.
+
+    URI path score (as consumed by _score_object_record) = 1.0 - min_cost.
+    """
+
+    EPSILON = 1e-9
+
+    def test_direct_path_score_offset_matches_penalty(self):
+        """Direct leaf cosine=0.82 → URI path score = 0.82 - 0.15 = 0.67."""
+        leaf_uri = "oc://t/u/memory/cat/leaf_direct"
+        leaf_hits = [{"uri": leaf_uri, "_score": 0.82}]
+        costs = compute_uri_path_scores(leaf_hits, [], [])
+        uri_path_score = 1.0 - costs[leaf_uri]
+        self.assertAlmostEqual(uri_path_score, 0.67, delta=self.EPSILON)
+        # Offset relative to cosine must equal -URI_DIRECT_PENALTY.
+        self.assertAlmostEqual(uri_path_score - 0.82, -URI_DIRECT_PENALTY, delta=self.EPSILON)
+
+    def test_anchor_path_score_offset_matches_hop(self):
+        """Anchor cosine=0.80 → URI path score = 0.80 - 0.05 = 0.75."""
+        leaf_uri = "oc://t/u/memory/cat/leaf_anchor"
+        anchor_hits = [{
+            "uri": "oc://t/u/memory/cat/leaf_anchor/anchors/a",
+            "_score": 0.80,
+            "projection_target_uri": leaf_uri,
+        }]
+        costs = compute_uri_path_scores([], anchor_hits, [])
+        uri_path_score = 1.0 - costs[leaf_uri]
+        self.assertAlmostEqual(uri_path_score, 0.75, delta=self.EPSILON)
+        self.assertAlmostEqual(uri_path_score - 0.80, -URI_HOP_COST, delta=self.EPSILON)
+
+    def test_fp_path_normal_offset(self):
+        """fp cosine=0.80 (dist=0.20 > HIGH_CONFIDENCE_THRESHOLD): offset = -URI_HOP_COST."""
+        leaf_uri = "oc://t/u/memory/cat/leaf_fp_normal"
+        fp_hits = [{
+            "uri": "oc://t/u/memory/cat/leaf_fp_normal/fact_points/p",
+            "_score": 0.80,
+            "projection_target_uri": leaf_uri,
+        }]
+        costs = compute_uri_path_scores([], [], fp_hits)
+        uri_path_score = 1.0 - costs[leaf_uri]
+        self.assertAlmostEqual(uri_path_score, 0.75, delta=self.EPSILON)
+        self.assertAlmostEqual(uri_path_score - 0.80, -URI_HOP_COST, delta=self.EPSILON)
+
+    def test_fp_path_high_confidence_offset(self):
+        """fp cosine=0.95 (dist=0.05 < 0.10): offset = -URI_HOP_COST * 0.5 = -0.025."""
+        leaf_uri = "oc://t/u/memory/cat/leaf_fp_hc"
+        fp_hits = [{
+            "uri": "oc://t/u/memory/cat/leaf_fp_hc/fact_points/q",
+            "_score": 0.95,
+            "projection_target_uri": leaf_uri,
+        }]
+        costs = compute_uri_path_scores([], [], fp_hits)
+        uri_path_score = 1.0 - costs[leaf_uri]
+        expected_offset = -(URI_HOP_COST * HIGH_CONFIDENCE_DISCOUNT)
+        self.assertAlmostEqual(uri_path_score, 0.95 + expected_offset, delta=self.EPSILON)
+        self.assertAlmostEqual(uri_path_score - 0.95, expected_offset, delta=self.EPSILON)
+        # Lock the literal value: 0.95 - 0.025 = 0.925
+        self.assertAlmostEqual(uri_path_score, 0.925, delta=self.EPSILON)
+
+    def test_offset_constants_locked(self):
+        """Lock the four offset constants. Any change forces re-review of callers.
+
+        Changing these values silently shifts the score distribution for every
+        caller that passes a fixed ``score_threshold``. If this test needs to
+        be updated, confirm that downstream thresholds have been recalibrated.
+        """
+        self.assertEqual(URI_DIRECT_PENALTY, 0.15)
+        self.assertEqual(URI_HOP_COST, 0.05)
+        self.assertEqual(HIGH_CONFIDENCE_THRESHOLD, 0.10)
+        self.assertEqual(HIGH_CONFIDENCE_DISCOUNT, 0.5)
+
+
 if __name__ == "__main__":
     unittest.main()

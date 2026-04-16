@@ -1717,10 +1717,13 @@ class MemoryOrchestrator:
                 prefix, exc,
             )
             return
+        descendant_prefix = prefix if prefix.endswith("/") else prefix + "/"
         stale_ids = [
             str(r["id"])
             for r in old_records
-            if r.get("uri", "") not in keep_uris
+            if isinstance(r.get("uri"), str)
+            and (r["uri"] == prefix or r["uri"].startswith(descendant_prefix))
+            and r["uri"] not in keep_uris
         ]
         if stale_ids:
             try:
@@ -2868,6 +2871,15 @@ class MemoryOrchestrator:
         """Fuse URI path score (primary) with object-aware boosts."""
         leaf_uri = str(record.get("uri", "") or "")
         if uri_path_costs is not None and leaf_uri in uri_path_costs:
+            # URI path score replaces raw cosine _score as the base. Note this
+            # introduces a score offset vs the original vector similarity:
+            #   direct path:    score = cosine - URI_DIRECT_PENALTY (-0.15)
+            #   anchor path:    score = cosine - URI_HOP_COST       (-0.05)
+            #   fp path:        score = cosine - URI_HOP_COST       (-0.05)
+            #   fp high-conf:   score = cosine - URI_HOP_COST * 0.5 (-0.025)
+            # Callers passing a fixed score_threshold should account for this
+            # shift (e.g. a 0.80 cosine threshold becomes ~0.65 for direct hits).
+            # See uri_path_scorer.py module docstring for full semantics.
             score = 1.0 - uri_path_costs[leaf_uri]
         else:
             score = float(record.get("_score", record.get("score", 0.0)) or 0.0)

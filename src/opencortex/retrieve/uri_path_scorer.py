@@ -14,6 +14,33 @@ Cost model:
                         else URI_HOP_COST
 
 Per leaf: final_cost = min(all paths reaching that leaf)
+
+Score offset semantics (vs raw cosine similarity)
+--------------------------------------------------
+The final URI path score exposed to callers is ``1.0 - min_cost`` and is
+therefore offset relative to the raw cosine ``_score`` that would come out
+of a direct vector search:
+
+  - direct leaf hit:       score = 1.0 - (1.0 - cosine) - URI_DIRECT_PENALTY
+                                  = cosine - 0.15
+  - anchor → leaf path:    score = cosine_anchor - URI_HOP_COST
+                                  = cosine_anchor - 0.05
+  - fp → leaf path:        score = cosine_fp - URI_HOP_COST
+                                  = cosine_fp - 0.05
+  - fp → leaf (high conf): score = cosine_fp - URI_HOP_COST * 0.5
+                                  = cosine_fp - 0.025
+                           (triggered when fp_distance < HIGH_CONFIDENCE_THRESHOLD,
+                            i.e. cosine_fp > 0.90)
+
+Callers using a fixed ``score_threshold`` should expect a score-distribution
+shift. Direct-hit-dominant workloads are shifted DOWN by up to 0.15: a leaf
+with cosine=0.82 that previously passed a threshold of 0.80 now emerges with
+URI path score 0.67 and gets dropped. Consider lowering ``score_threshold``
+by the expected penalty, or run a benchmark to recalibrate.
+
+URI_DIRECT_PENALTY starts at 0.15 (conservative) and will ramp to 0.30 after
+fact_point coverage is well-established. Existing thresholds will need
+re-tuning at that time.
 """
 
 from typing import Dict, List
