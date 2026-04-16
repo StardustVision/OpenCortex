@@ -1546,6 +1546,9 @@ class MemoryOrchestrator:
             anchor_type = str(anchor.get("anchor_type") or "topic").strip() or "topic"
             if not anchor_text:
                 continue
+            # R11: skip anchors that are too short to be meaningful
+            if len(anchor_text) < 4:
+                continue
 
             digest = hashlib.sha1(
                 f"{anchor_type}:{anchor_value}:{index}".encode("utf-8")
@@ -1557,7 +1560,7 @@ class MemoryOrchestrator:
                 "parent_uri": source_uri,
                 "is_leaf": False,
                 "abstract": "",
-                "overview": anchor_text,
+                "overview": anchor_text if len(anchor_text) >= 15 else f"{anchor_type}: {anchor_text}",
                 "content": "",
                 "context_type": source_record.get("context_type", ""),
                 "category": source_record.get("category", ""),
@@ -1617,6 +1620,23 @@ class MemoryOrchestrator:
             source_record=source_record,
             abstract_json=abstract_json,
         )
+
+        if projection_records and self._embedder:
+            texts = [r["overview"] for r in projection_records]
+            loop = asyncio.get_running_loop()
+            try:
+                embed_results = await asyncio.wait_for(
+                    loop.run_in_executor(None, self._embedder.embed_batch, texts),
+                    timeout=5.0,
+                )
+                for record, embed_result in zip(projection_records, embed_results):
+                    if embed_result.dense_vector:
+                        record["vector"] = embed_result.dense_vector
+                    if getattr(embed_result, "sparse_vector", None):
+                        record["sparse_vector"] = embed_result.sparse_vector
+            except Exception as exc:
+                logger.warning("[Orchestrator] anchor embed_batch failed: %s", exc)
+
         for projection_record in projection_records:
             await self._storage.upsert(self._get_collection(), projection_record)
 

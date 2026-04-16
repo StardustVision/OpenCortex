@@ -1539,5 +1539,300 @@ class TestContextManager(unittest.TestCase):
         self._run(_case())
 
 
+    # -------------------------------------------------------------------------
+    # Unit 2: Anchor embedding fix + phrase upgrade tests
+    # -------------------------------------------------------------------------
+
+    def test_anchor_projection_overview_phrase_format_for_short_anchors(self):
+        """Short single-word anchors get '{type}: {text}' overview format."""
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+
+        source_record = {
+            "uri": "opencortex://testteam/alice/memory/events/abc123",
+            "is_leaf": True,
+            "scope": "private",
+            "source_tenant_id": "testteam",
+            "source_user_id": "alice",
+            "session_id": "sess_anchor_001",
+            "project_id": "",
+            "source_doc_id": "",
+            "memory_kind": "event",
+        }
+        abstract_json = {
+            "memory_kind": "event",
+            "anchors": [
+                {"anchor_type": "entity", "text": "Alice", "value": "Alice"},
+                {"anchor_type": "time", "text": "2024-01-15", "value": "2024-01-15"},
+            ],
+            "slots": {"entities": ["Alice"], "time_refs": ["2024-01-15"]},
+            "overview": "Alice moved to Hangzhou on 2024-01-15",
+        }
+        records = orch._anchor_projection_records(
+            source_record=source_record,
+            abstract_json=abstract_json,
+        )
+        self.assertEqual(len(records), 2)
+        # "Alice" is 5 chars (< 15) → gets phrase format
+        alice_record = next(r for r in records if "Alice" in r["overview"])
+        self.assertEqual(alice_record["overview"], "entity: Alice")
+        # "2024-01-15" is 10 chars (< 15) → gets phrase format
+        time_record = next(r for r in records if "time" in r["overview"])
+        self.assertEqual(time_record["overview"], "time: 2024-01-15")
+
+        self._run(orch.close())
+
+    def test_anchor_projection_overview_passthrough_for_long_anchors(self):
+        """Anchors >= 15 chars keep their text as-is for the overview."""
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+
+        source_record = {
+            "uri": "opencortex://testteam/alice/memory/events/xyz789",
+            "is_leaf": True,
+            "scope": "private",
+            "source_tenant_id": "testteam",
+            "source_user_id": "alice",
+            "session_id": "sess_anchor_002",
+            "project_id": "",
+            "source_doc_id": "",
+            "memory_kind": "preference",
+        }
+        long_anchor_text = "Alice relocated to Hangzhou"  # 26 chars, >= 15
+        abstract_json = {
+            "memory_kind": "preference",
+            "anchors": [
+                {"anchor_type": "entity", "text": long_anchor_text, "value": long_anchor_text},
+            ],
+            "slots": {},
+            "overview": "Alice relocated",
+        }
+        records = orch._anchor_projection_records(
+            source_record=source_record,
+            abstract_json=abstract_json,
+        )
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["overview"], long_anchor_text)
+
+        self._run(orch.close())
+
+    def test_anchor_projection_r11_filters_short_anchor_text(self):
+        """Anchors with text shorter than 4 chars are filtered out (R11)."""
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+
+        source_record = {
+            "uri": "opencortex://testteam/alice/memory/events/r11test",
+            "is_leaf": True,
+            "scope": "private",
+            "source_tenant_id": "testteam",
+            "source_user_id": "alice",
+            "session_id": "sess_r11",
+            "project_id": "",
+            "source_doc_id": "",
+            "memory_kind": "event",
+        }
+        abstract_json = {
+            "memory_kind": "event",
+            "anchors": [
+                {"anchor_type": "entity", "text": "Li", "value": "Li"},    # 2 chars → filtered
+                {"anchor_type": "entity", "text": "Bob", "value": "Bob"},  # 3 chars → filtered
+                {"anchor_type": "entity", "text": "Alice", "value": "Alice"},  # 5 chars → kept
+            ],
+            "slots": {},
+            "overview": "Test",
+        }
+        records = orch._anchor_projection_records(
+            source_record=source_record,
+            abstract_json=abstract_json,
+        )
+        self.assertEqual(len(records), 1)
+        self.assertIn("Alice", records[0]["overview"])
+
+        self._run(orch.close())
+
+    def test_anchor_projection_zero_anchors_no_embed_call(self):
+        """When there are no anchors, no embedding is done and no records written."""
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+
+        embed_calls = []
+        original_embed_batch = self.embedder.embed_batch
+
+        def tracking_embed_batch(texts):
+            embed_calls.append(texts)
+            return original_embed_batch(texts)
+
+        self.embedder.embed_batch = tracking_embed_batch
+
+        source_record = {
+            "uri": "opencortex://testteam/alice/memory/general/noanchor",
+            "is_leaf": True,
+            "scope": "private",
+            "source_tenant_id": "testteam",
+            "source_user_id": "alice",
+            "session_id": "sess_noanchor",
+            "project_id": "",
+            "source_doc_id": "",
+            "memory_kind": "preference",
+        }
+        abstract_json = {
+            "memory_kind": "preference",
+            "anchors": [],
+            "slots": {},
+            "overview": "No anchors here",
+        }
+
+        self._run(orch._sync_anchor_projection_records(
+            source_record=source_record,
+            abstract_json=abstract_json,
+        ))
+
+        self.assertEqual(embed_calls, [])
+        anchor_records = [
+            r for r in self.storage._records.get("context", {}).values()
+            if r.get("retrieval_surface") == "anchor_projection"
+               and "noanchor" in r.get("uri", "")
+        ]
+        self.assertEqual(anchor_records, [])
+
+        self._run(orch.close())
+
+    def test_anchor_projection_records_have_non_zero_vectors(self):
+        """After sync, anchor projection records must carry non-zero vectors."""
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+
+        source_uri = "opencortex://testteam/alice/memory/events/vec_test_001"
+        source_record = {
+            "uri": source_uri,
+            "is_leaf": True,
+            "scope": "private",
+            "source_tenant_id": "testteam",
+            "source_user_id": "alice",
+            "session_id": "sess_vec_001",
+            "project_id": "",
+            "source_doc_id": "",
+            "memory_kind": "event",
+            "abstract": "Alice moved to Hangzhou",
+            "overview": "Alice moved to Hangzhou",
+        }
+        abstract_json = {
+            "memory_kind": "event",
+            "anchors": [
+                {"anchor_type": "entity", "text": "Alice", "value": "Alice"},
+                {"anchor_type": "location", "text": "Hangzhou", "value": "Hangzhou"},
+            ],
+            "slots": {"entities": ["Alice", "Hangzhou"]},
+            "overview": "Alice moved to Hangzhou",
+        }
+
+        self._run(orch._sync_anchor_projection_records(
+            source_record=source_record,
+            abstract_json=abstract_json,
+        ))
+
+        anchor_records = [
+            r for r in self.storage._records.get("context", {}).values()
+            if r.get("retrieval_surface") == "anchor_projection"
+               and r.get("uri", "").startswith(source_uri)
+        ]
+        self.assertEqual(len(anchor_records), 2)
+        for record in anchor_records:
+            vec = record.get("vector")
+            self.assertIsNotNone(vec, f"Record {record.get('uri')} missing vector")
+            self.assertIsInstance(vec, list)
+            self.assertEqual(len(vec), MockEmbedder.DIMENSION)
+            # Vector must be non-zero
+            self.assertGreater(sum(abs(v) for v in vec), 0.0)
+
+        self._run(orch.close())
+
+    def test_anchor_embed_batch_failure_falls_back_to_zero_vectors(self):
+        """If embed_batch raises, anchor records are still written with zero vectors."""
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+
+        def failing_embed_batch(texts):
+            raise RuntimeError("embed failure")
+
+        self.embedder.embed_batch = failing_embed_batch
+
+        source_uri = "opencortex://testteam/alice/memory/events/embed_fail_001"
+        source_record = {
+            "uri": source_uri,
+            "is_leaf": True,
+            "scope": "private",
+            "source_tenant_id": "testteam",
+            "source_user_id": "alice",
+            "session_id": "sess_embfail",
+            "project_id": "",
+            "source_doc_id": "",
+            "memory_kind": "event",
+            "abstract": "",
+            "overview": "",
+        }
+        abstract_json = {
+            "memory_kind": "event",
+            "anchors": [
+                {"anchor_type": "entity", "text": "Alice", "value": "Alice"},
+            ],
+            "slots": {},
+            "overview": "Alice test",
+        }
+
+        # Should not raise — graceful fallback
+        self._run(orch._sync_anchor_projection_records(
+            source_record=source_record,
+            abstract_json=abstract_json,
+        ))
+
+        anchor_records = [
+            r for r in self.storage._records.get("context", {}).values()
+            if r.get("retrieval_surface") == "anchor_projection"
+               and r.get("uri", "").startswith(source_uri)
+        ]
+        # Record still written (zero vector fallback)
+        self.assertEqual(len(anchor_records), 1)
+        # No vector field set — adapter will use zero vector fallback
+        self.assertNotIn("vector", anchor_records[0])
+
+        self._run(orch.close())
+
+    def test_anchor_projection_vectors_set_after_add(self):
+        """Calling orchestrator.add() with LLM anchor handles produces embedded anchor records."""
+        async def anchor_llm(prompt: str) -> str:
+            return (
+                '{"overview":"Alice relocated to Hangzhou on May 1",'
+                '"keywords":["Alice","Hangzhou"],'
+                '"entities":["Alice","Hangzhou"],'
+                '"anchor_handles":["Alice","Hangzhou"]}'
+            )
+
+        orch = self._make_orchestrator(llm_completion=anchor_llm)
+        self._run(orch.init())
+
+        self._run(
+            orch.add(
+                abstract="",
+                content="Alice relocated to Hangzhou on May 1, 2024.",
+                category="events",
+            )
+        )
+
+        anchor_records = [
+            r for r in self.storage._records.get("context", {}).values()
+            if r.get("retrieval_surface") == "anchor_projection"
+        ]
+        self.assertGreaterEqual(len(anchor_records), 1)
+        for record in anchor_records:
+            vec = record.get("vector")
+            self.assertIsNotNone(vec, f"Anchor record {record.get('uri')} has no vector")
+            self.assertIsInstance(vec, list)
+            self.assertGreater(sum(abs(v) for v in vec), 0.0, "Vector should be non-zero")
+
+        self._run(orch.close())
+
+
 if __name__ == "__main__":
     unittest.main()
