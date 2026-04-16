@@ -1696,6 +1696,14 @@ class MemoryOrchestrator:
         This implements the write-then-delete contract: caller writes new records
         first, then calls this to remove only the records that were NOT just written.
         Records with matching URIs (same content → same digest) are kept.
+
+        Filter DSL ``op=prefix`` on the Qdrant adapter is tokenised (MatchText)
+        and over-matches when a sibling URI shares a literal substring with
+        *prefix* (see tests/test_cascade_qdrant_integration.py,
+        ``test_delete_derived_stale_does_not_touch_sibling_prefix``).  To avoid
+        deleting sibling records that happen to token-match, every candidate
+        URI is re-checked with literal ``startswith`` before it is marked
+        stale.
         """
         try:
             old_records = await self._storage.filter(

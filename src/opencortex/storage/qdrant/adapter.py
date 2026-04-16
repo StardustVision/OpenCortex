@@ -339,11 +339,31 @@ class QdrantStorageAdapter(StorageInterface):
         return count_before
 
     async def remove_by_uri(self, collection: str, uri: str) -> int:
+        """Delete the record at *uri* and every derived record beneath it.
+
+        "Beneath" = URI equals ``uri`` exactly OR URI starts with ``uri + "/"``.
+        Sibling URIs that merely share a tokenised substring with *uri* (e.g.
+        ``{uri}AB``) must NOT be removed.
+
+        Implementation: MatchText is used as a server-side *candidate* filter
+        (cheap, tokenised), but every match is re-checked with literal
+        ``startswith`` before deletion.  This is necessary because:
+
+        * On embedded (local) Qdrant payload indexes are no-ops (the client
+          logs ``Payload indexes have no effect``) so MatchText degenerates
+          to tokenised substring matching — it would match ``{uri}AB``.
+        * On a real Qdrant server with a TEXT index, MatchText requires all
+          query tokens to be present but still does not enforce word order or
+          exact string prefix, so collisions are possible for
+          tokeniser-adjacent URIs.
+
+        The client-side ``startswith`` guard removes both failure modes.
+        """
         await self._assert_collection(collection)
         client = await self._ensure_client()
 
-        # Use prefix match on uri field
-        qdrant_filter = models.Filter(
+        # Narrow candidates server-side with MatchText (tokenised).
+        candidate_filter = models.Filter(
             must=[
                 models.FieldCondition(
                     key="uri",
@@ -352,17 +372,36 @@ class QdrantStorageAdapter(StorageInterface):
             ]
         )
 
-        count_before = (await client.count(
-            collection_name=collection,
-            count_filter=qdrant_filter,
-        )).count
-
-        if count_before > 0:
-            await client.delete(
+        # Fetch candidate points in pages and keep only true prefix matches.
+        descendant_prefix = uri if uri.endswith("/") else uri + "/"
+        stale_ids: List[Any] = []
+        next_offset = None
+        while True:
+            page, next_offset = await client.scroll(
                 collection_name=collection,
-                points_selector=models.FilterSelector(filter=qdrant_filter),
+                scroll_filter=candidate_filter,
+                limit=256,
+                offset=next_offset,
+                with_payload=True,
+                with_vectors=False,
             )
-        return count_before
+            for point in page:
+                record_uri = (point.payload or {}).get("uri", "")
+                if not isinstance(record_uri, str):
+                    continue
+                if record_uri == uri or record_uri.startswith(descendant_prefix):
+                    stale_ids.append(point.id)
+            if next_offset is None:
+                break
+
+        if not stale_ids:
+            return 0
+
+        await client.delete(
+            collection_name=collection,
+            points_selector=models.PointIdsList(points=stale_ids),
+        )
+        return len(stale_ids)
 
     # =========================================================================
     # Search Operations
