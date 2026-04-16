@@ -177,7 +177,8 @@ class TestCommitToolCalls(unittest.TestCase):
         self.assertTrue(result["accepted"])
 
         # Both messages should be in the buffer
-        sk = ("testteam", "alice", "s3")
+        # SessionKey is now (collection, tenant_id, user_id, session_id) per Plan 005
+        sk = ("context", "testteam", "alice", "s3")
         buffer = cm._conversation_buffers.get(sk)
         self.assertIsNotNone(buffer)
         self.assertEqual(len(buffer.messages), 2)
@@ -221,7 +222,8 @@ class TestCommitToolCalls(unittest.TestCase):
             tool_calls=tc2,
         ))
 
-        sk = ("testteam", "alice", "s4")
+        # SessionKey is now (collection, tenant_id, user_id, session_id) per Plan 005
+        sk = ("context", "testteam", "alice", "s4")
         buffer = cm._conversation_buffers.get(sk)
         self.assertIsNotNone(buffer)
         self.assertEqual(len(buffer.tool_calls_per_turn), 2)
