@@ -213,22 +213,44 @@ async def chunked_llm_derive(
     if merge_policy == "abstract_overview":
         return {"abstract": abstract, "overview": overview}
 
-    # Merge: keywords deduplicated union
     all_keywords = []
-    seen: set = set()
-    for r in chunk_results:
-        kw = r.get("keywords", [])
-        if isinstance(kw, list):
-            for k in kw:
-                k_lower = str(k).lower()
-                if k_lower not in seen:
-                    seen.add(k_lower)
-                    all_keywords.append(k)
+    all_entities = []
+    all_anchor_handles = []
+    seen_keywords: set[str] = set()
+    seen_entities: set[str] = set()
+    seen_anchor_handles: set[str] = set()
+    for result in chunk_results:
+        keywords = result.get("keywords", [])
+        if isinstance(keywords, list):
+            for keyword in keywords:
+                normalized = str(keyword).strip()
+                lowered = normalized.lower()
+                if normalized and lowered not in seen_keywords:
+                    seen_keywords.add(lowered)
+                    all_keywords.append(normalized)
+        entities = result.get("entities", [])
+        if isinstance(entities, list):
+            for entity in entities:
+                normalized = str(entity).strip()
+                lowered = normalized.lower()
+                if normalized and lowered not in seen_entities:
+                    seen_entities.add(lowered)
+                    all_entities.append(normalized)
+        anchor_handles = result.get("anchor_handles", [])
+        if isinstance(anchor_handles, list):
+            for handle in anchor_handles:
+                normalized = str(handle).strip()
+                lowered = normalized.lower()
+                if normalized and lowered not in seen_anchor_handles:
+                    seen_anchor_handles.add(lowered)
+                    all_anchor_handles.append(normalized)
 
     return {
         "abstract": abstract,
         "overview": overview,
         "keywords": all_keywords,
+        "entities": all_entities,
+        "anchor_handles": all_anchor_handles,
     }
 
 

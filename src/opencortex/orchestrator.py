@@ -228,6 +228,7 @@ class MemoryOrchestrator:
         }
         # Guard to serialize sweep execution across startup/periodic triggers.
         self._autophagy_sweep_guard = asyncio.Lock()
+        self._recall_bookkeeping_tasks: set[asyncio.Task[Any]] = set()
 
     # =========================================================================
     # Collection Routing
@@ -932,6 +933,11 @@ class MemoryOrchestrator:
         explicit_entities = _merge_unique_strings(meta.get("entities"))
         explicit_topics = _merge_unique_strings(meta.get("topics"))
         record_meta = dict(meta)
+        if explicit_topics:
+            record_meta["topics"] = _merge_unique_strings(
+                record_meta.get("topics"),
+                explicit_topics,
+            )
         record_meta.update(
             {
                 "layer": "immediate",
@@ -1004,6 +1010,7 @@ class MemoryOrchestrator:
             content=text,
             entities=explicit_entities,
             meta=record_meta,
+            keywords=explicit_topics,
             parent_uri=record["parent_uri"],
             session_id=session_id,
         )
@@ -1209,6 +1216,7 @@ class MemoryOrchestrator:
                 "overview": user_overview,
                 "keywords": "",
                 "entities": [],
+                "anchor_handles": [],
             }
 
         if self._llm_completion:
@@ -1235,11 +1243,21 @@ class MemoryOrchestrator:
                         entities = [str(e).strip().lower() for e in entities_list if e][:20]
                     else:
                         entities = []
+                    anchor_handles_list = result.get("anchor_handles", [])
+                    if isinstance(anchor_handles_list, list):
+                        anchor_handles = [
+                            str(handle).strip()
+                            for handle in anchor_handles_list
+                            if str(handle).strip()
+                        ][:6]
+                    else:
+                        anchor_handles = []
                     return {
                         "abstract": user_abstract or llm_abstract or content,
                         "overview": user_overview or llm_overview,
                         "keywords": keywords,
                         "entities": entities,
+                        "anchor_handles": anchor_handles,
                     }
                 except Exception as e:
                     logger.warning(
@@ -1262,11 +1280,21 @@ class MemoryOrchestrator:
                         entities = [str(e).strip().lower() for e in entities_list if e][:20]
                     else:
                         entities = []
+                    anchor_handles_list = data.get("anchor_handles", [])
+                    if isinstance(anchor_handles_list, list):
+                        anchor_handles = [
+                            str(handle).strip()
+                            for handle in anchor_handles_list
+                            if str(handle).strip()
+                        ][:6]
+                    else:
+                        anchor_handles = []
                     return {
                         "abstract": user_abstract or llm_abstract or content,
                         "overview": user_overview or llm_overview,
                         "keywords": keywords,
                         "entities": entities,
+                        "anchor_handles": anchor_handles,
                     }
             except Exception as e:
                 logger.warning("[Orchestrator] _derive_layers LLM failed: %s", e)
@@ -1280,7 +1308,13 @@ class MemoryOrchestrator:
             logger.warning(
                 "[Orchestrator] No LLM configured — abstract uses raw content"
             )
-        return {"abstract": abstract, "overview": overview, "keywords": "", "entities": []}
+        return {
+            "abstract": abstract,
+            "overview": overview,
+            "keywords": "",
+            "entities": [],
+            "anchor_handles": [],
+        }
 
     def _build_abstract_json(
         self,
@@ -1293,6 +1327,7 @@ class MemoryOrchestrator:
         content: str,
         entities: List[str],
         meta: Optional[Dict[str, Any]],
+        keywords: Optional[List[str]] = None,
         parent_uri: str,
         session_id: str,
     ) -> Dict[str, Any]:
@@ -1305,6 +1340,7 @@ class MemoryOrchestrator:
             "overview": overview,
             "content": content,
             "entities": entities,
+            "keywords": keywords or [],
             "metadata": meta or {},
             "parent_uri": parent_uri,
             "session_id": session_id,
@@ -1590,6 +1626,14 @@ class MemoryOrchestrator:
             _split_keyword_string(keywords),
             explicit_topics,
         )
+        if keywords_list:
+            meta["topics"] = _merge_unique_strings(meta.get("topics"), keywords_list)
+        anchor_handles = _merge_unique_strings(
+            meta.get("anchor_handles"),
+            (layers.get("anchor_handles", []) if content and is_leaf else []),
+        )
+        if anchor_handles:
+            meta["anchor_handles"] = anchor_handles
         keywords = ", ".join(keywords_list)
 
         # Build effective user identity (per-request or config default)
@@ -1634,6 +1678,7 @@ class MemoryOrchestrator:
             content=content,
             entities=entities,
             meta=meta,
+            keywords=keywords_list,
             parent_uri=parent_uri,
             session_id=session_id,
         )
@@ -1961,37 +2006,75 @@ class MemoryOrchestrator:
         record_id = record.get("id", "")
 
         update_data: Dict[str, Any] = {}
-        next_meta = record.get("meta")
+        next_meta = record.get("meta", {})
+        if isinstance(next_meta, str):
+            import json
 
-        if abstract is not None:
-            update_data["abstract"] = abstract
-            # Re-embed
-            if self._embedder:
-                loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(
-                    None, self._embedder.embed, abstract
-                )
-                update_data["vector"] = result.dense_vector
-                if result.sparse_vector:
-                    update_data["sparse_vector"] = result.sparse_vector
+            try:
+                next_meta = json.loads(next_meta)
+            except (json.JSONDecodeError, TypeError):
+                next_meta = {}
+        elif not isinstance(next_meta, dict):
+            next_meta = {}
 
         if meta:
-            existing_meta = record.get("meta", {})
-            if isinstance(existing_meta, str):
-                import json
-
-                try:
-                    existing_meta = json.loads(existing_meta)
-                except (json.JSONDecodeError, TypeError):
-                    existing_meta = {}
-            existing_meta.update(meta)
-            update_data["meta"] = existing_meta
-            next_meta = existing_meta
+            next_meta.update(meta)
+            update_data["meta"] = next_meta
+        if abstract is not None:
+            update_data["abstract"] = abstract
 
         next_abstract = abstract if abstract is not None else record.get("abstract", "")
         next_content = content if content is not None else record.get("content", "")
         next_overview = record.get("overview", "")
-        next_entities = record.get("entities") or []
+        next_entities = _merge_unique_strings(
+            record.get("entities") or [],
+            next_meta.get("entities"),
+        )
+        next_keywords_list = _merge_unique_strings(
+            next_meta.get("topics"),
+            _split_keyword_string(record.get("keywords", "")),
+        )
+        if next_content and (abstract is not None or content is not None):
+            derive_result = await self._derive_layers(
+                user_abstract=next_abstract,
+                content=next_content,
+                user_overview=next_overview,
+            )
+            next_entities = _merge_unique_strings(
+                derive_result.get("entities", []),
+                next_entities,
+            )
+            next_keywords_list = _merge_unique_strings(
+                next_keywords_list,
+                _split_keyword_string(derive_result.get("keywords", "")),
+            )
+            next_anchor_handles = _merge_unique_strings(
+                next_meta.get("anchor_handles"),
+                derive_result.get("anchor_handles", []),
+            )
+            if next_anchor_handles:
+                next_meta["anchor_handles"] = next_anchor_handles
+        if next_keywords_list:
+            next_meta["topics"] = _merge_unique_strings(
+                next_meta.get("topics"),
+                next_keywords_list,
+            )
+            update_data["keywords"] = ", ".join(next_keywords_list)
+        if next_entities:
+            update_data["entities"] = next_entities
+        if update_data.get("meta") is not None or next_meta:
+            update_data["meta"] = next_meta
+        if self._embedder and (abstract is not None or content is not None):
+            loop = asyncio.get_event_loop()
+            embed_input = next_abstract
+            if next_keywords_list:
+                embed_input = f"{embed_input} {', '.join(next_keywords_list)}".strip()
+            result = await loop.run_in_executor(
+                None, self._embedder.embed, embed_input
+            )
+            update_data["vector"] = result.dense_vector
+            if result.sparse_vector:
+                update_data["sparse_vector"] = result.sparse_vector
         abstract_json = self._build_abstract_json(
             uri=uri,
             context_type=record.get("context_type", ""),
@@ -2001,6 +2084,7 @@ class MemoryOrchestrator:
             content=next_content,
             entities=next_entities,
             meta=next_meta,
+            keywords=next_keywords_list,
             parent_uri=record.get("parent_uri", ""),
             session_id=record.get("session_id", ""),
         )
@@ -2541,9 +2625,7 @@ class MemoryOrchestrator:
         """Execute one object-aware retrieval query without the legacy retriever."""
         started = time.perf_counter()
         embed_started = started
-        query_vector = await self._embed_retrieval_query(
-            typed_query.hyde_text or typed_query.query
-        )
+        query_vector = await self._embed_retrieval_query(typed_query.query)
         embed_finished = time.perf_counter()
 
         kind_filter = None
@@ -2839,25 +2921,6 @@ class MemoryOrchestrator:
             for typed_query in typed_queries:
                 typed_query.target_doc_id = target_doc_id
 
-        # HyDE: generate hypothetical answers for dense embedding
-        if self._config.hyde_enabled and self._llm_completion:
-            from opencortex.prompts import build_hyde_prompt
-
-            async def _hyde_rewrite(tq):
-                try:
-                    hyde_answer = await self._llm_completion(
-                        build_hyde_prompt(tq.query),
-                    )
-                    if hyde_answer and len(hyde_answer.strip()) > 10:
-                        tq.hyde_text = hyde_answer.strip()
-                except Exception:
-                    pass  # graceful degradation — use original query
-                return tq
-
-            typed_queries = list(
-                await asyncio.gather(*[_hyde_rewrite(tq) for tq in typed_queries])
-            )
-
         # Set target directories on queries if specified
         if target_uri:
             for tq in typed_queries:
@@ -2939,22 +3002,12 @@ class MemoryOrchestrator:
         result.resources = [m for m in result.resources if m.is_leaf]
         result.skills = [m for m in result.skills if m.is_leaf]
 
-        recalled_owner_ids = await self._resolve_memory_owner_ids(result.memories)
-        if recalled_owner_ids and self._autophagy_kernel:
-            try:
-                await self._autophagy_kernel.apply_recall_outcome(
-                    owner_ids=recalled_owner_ids,
-                    query=query,
-                    recall_outcome={"selected_results": recalled_owner_ids},
-                )
-            except Exception as exc:
-                logger.warning(
-                    "[search] Autophagy recall application failed tenant=%s user=%s owners=%d: %s",
-                    tid,
-                    uid,
-                    len(recalled_owner_ids),
-                    exc,
-                )
+        self._schedule_recall_bookkeeping(
+            memories=result.memories,
+            query=query,
+            tenant_id=tid,
+            user_id=uid,
+        )
 
         # Fire-and-forget: resolve URIs → record IDs → update access stats
         all_matched = result.memories + result.resources + result.skills
@@ -3082,6 +3135,65 @@ class MemoryOrchestrator:
             if owner_id and owner_id not in owner_ids:
                 owner_ids.append(owner_id)
         return owner_ids
+
+    def _schedule_recall_bookkeeping(
+        self,
+        *,
+        memories: List[Any],
+        query: str,
+        tenant_id: str,
+        user_id: str,
+    ) -> None:
+        """Run recall-side autophagy bookkeeping off the request hot path."""
+        if not memories or getattr(self, "_autophagy_kernel", None) is None:
+            return
+        task = asyncio.create_task(
+            self._run_recall_bookkeeping(
+                memories=memories,
+                query=query,
+                tenant_id=tenant_id,
+                user_id=user_id,
+            ),
+            name="opencortex.autophagy.recall_bookkeeping",
+        )
+        self._recall_bookkeeping_tasks_set().add(task)
+        task.add_done_callback(self._recall_bookkeeping_tasks_set().discard)
+
+    def _recall_bookkeeping_tasks_set(self) -> set[asyncio.Task[Any]]:
+        """Return the tracked background recall bookkeeping task set."""
+        if not hasattr(self, "_recall_bookkeeping_tasks"):
+            self._recall_bookkeeping_tasks = set()
+        return self._recall_bookkeeping_tasks
+
+    async def _run_recall_bookkeeping(
+        self,
+        *,
+        memories: List[Any],
+        query: str,
+        tenant_id: str,
+        user_id: str,
+    ) -> None:
+        """Apply autophagy recall bookkeeping without blocking retrieval."""
+        recalled_owner_ids: List[str] = []
+        try:
+            recalled_owner_ids = await self._resolve_memory_owner_ids(memories)
+            if not recalled_owner_ids or self._autophagy_kernel is None:
+                return
+            await self._autophagy_kernel.apply_recall_outcome(
+                owner_ids=recalled_owner_ids,
+                query=query,
+                recall_outcome={"selected_results": recalled_owner_ids},
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "[search] Autophagy recall application failed tenant=%s user=%s owners=%d: %s",
+                tenant_id,
+                user_id,
+                len(recalled_owner_ids),
+                exc,
+            )
 
     async def _get_record_by_uri(self, uri: str) -> Optional[Dict[str, Any]]:
         if not uri or not self._storage:
@@ -4243,6 +4355,14 @@ class MemoryOrchestrator:
                 await task
         self._autophagy_startup_sweep_task = None
         self._autophagy_sweep_task = None
+        recall_tasks = list(self._recall_bookkeeping_tasks_set())
+        for task in recall_tasks:
+            if not task.done():
+                task.cancel()
+        for task in recall_tasks:
+            with suppress(asyncio.CancelledError):
+                await task
+        self._recall_bookkeeping_tasks_set().clear()
 
         if self._context_manager:
             await self._context_manager.close()

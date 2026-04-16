@@ -49,7 +49,12 @@ class TestIngestionE2E(unittest.TestCase):
     def test_memory_mode_short_text(self):
         """Short text → single record via memory mode → searchable."""
         async def mock_llm(prompt):
-            return '{"abstract": "user prefers dark mode", "overview": "user always uses dark mode in editors", "keywords": ["dark mode", "preferences"]}'
+            return (
+                '{"abstract": "user prefers dark mode", '
+                '"overview": "user always uses dark mode in editors", '
+                '"keywords": ["dark mode", "preferences"], '
+                '"anchor_handles": ["dark mode", "editor preference"]}'
+            )
 
         async def run():
             tmpdir = tempfile.mkdtemp()
@@ -66,6 +71,16 @@ class TestIngestionE2E(unittest.TestCase):
                     )
                     self.assertIsNotNone(result)
                     self.assertTrue(result.uri.startswith("opencortex://"))
+                    records = await orch._storage.filter(
+                        "context",
+                        {"op": "must", "field": "uri", "conds": [result.uri]},
+                        limit=1,
+                    )
+                    anchor_texts = [
+                        anchor["text"]
+                        for anchor in records[0]["abstract_json"]["anchors"]
+                    ]
+                    self.assertIn("dark mode", anchor_texts)
 
                     # Search should find it
                     results = await orch.search("dark mode preference", limit=5)

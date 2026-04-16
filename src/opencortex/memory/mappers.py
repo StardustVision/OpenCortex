@@ -27,6 +27,14 @@ _TIME_TOKEN_RE = re.compile(
     re.IGNORECASE,
 )
 _WHITESPACE_RE = re.compile(r"\s+")
+_HANDLE_SPLIT_RE = re.compile(r"[,;\n|]+")
+_QUOTED_HANDLE_RE = re.compile(r"[\"'`“”‘’]([^\"'`“”‘’]{2,40})[\"'`“”‘’]")
+_PATHISH_HANDLE_RE = re.compile(r"\b[a-zA-Z0-9]+(?:[._/-][a-zA-Z0-9]+)+\b")
+_CAMEL_CASE_HANDLE_RE = re.compile(r"\b[a-z]+[A-Z][A-Za-z0-9]*\b")
+_ALL_CAPS_HANDLE_RE = re.compile(r"\b[A-Z]{2,}(?:[._-][A-Z0-9]+)*\b")
+_MULTIWORD_LATIN_RE = re.compile(
+    r"\b[A-Za-z][A-Za-z0-9]+(?:\s+[A-Za-z0-9][A-Za-z0-9._/-]+)+\b"
+)
 _GENERIC_CATEGORY_TOPICS = {
     "event",
     "events",
@@ -44,6 +52,33 @@ _GENERIC_SLOT_VALUES = _GENERIC_CATEGORY_TOPICS | {
     "memory",
     "resource",
 }
+_GENERIC_HANDLE_VALUES = _GENERIC_SLOT_VALUES | {
+    "document",
+    "documents",
+    "chunk",
+    "chunks",
+    "section",
+    "sections",
+    "message",
+    "messages",
+    "note",
+    "notes",
+    "content",
+    "details",
+    "detail",
+    "record",
+    "records",
+    "资料",
+    "文档",
+    "章节",
+    "部分",
+    "消息",
+    "记录",
+    "内容",
+    "详情",
+}
+_MAX_DISTILLED_ANCHORS = 6
+_MAX_HANDLE_LENGTH = 80
 
 
 class MemoryRetrievalHints(MemoryDomainModel):
@@ -349,7 +384,33 @@ def _extract_time_refs(record: Mapping[str, Any], metadata: Mapping[str, Any]) -
 
 
 def _extract_topics(record: Mapping[str, Any], metadata: Mapping[str, Any]) -> List[str]:
-    topics = _unique_strings(metadata.get("topics") or metadata.get("keywords"))
+    topics: List[str] = []
+    trusted_candidates: List[str] = []
+    trusted_candidates.extend(_unique_strings(metadata.get("topics")))
+    trusted_candidates.extend(_keyword_values(metadata.get("keywords")))
+    trusted_candidates.extend(_keyword_values(record.get("keywords")))
+    trusted_candidates.extend(_unique_strings(metadata.get("anchor_handles")))
+
+    for candidate in trusted_candidates:
+        _append_distilled_handle(topics, candidate, trusted=True)
+        if len(topics) >= _MAX_DISTILLED_ANCHORS:
+            return topics
+    if topics:
+        return topics
+
+    raw_text = " ".join(
+        part
+        for part in (
+            _string_value(record, "abstract"),
+            _string_value(record, "overview"),
+            _string_value(record, "content"),
+        )
+        if part
+    )
+    for candidate in _text_anchor_candidates(raw_text):
+        _append_distilled_handle(topics, candidate, trusted=False)
+        if len(topics) >= _MAX_DISTILLED_ANCHORS:
+            return topics
     if topics:
         return topics
     category = _string_value(record, "category")
@@ -427,6 +488,7 @@ def _extract_summary_refs(
 
 def _anchor_entries_from_slots(slots: StructuredSlots) -> List[AnchorEntry]:
     anchors: List[AnchorEntry] = []
+    seen: set[tuple[str, str]] = set()
     for anchor_type, values in (
         ("entity", slots.entities),
         ("time", slots.time_refs),
@@ -436,12 +498,23 @@ def _anchor_entries_from_slots(slots: StructuredSlots) -> List[AnchorEntry]:
         ("relation", slots.relations),
     ):
         for value in values:
-            normalized = str(value).strip()
+            normalized = _normalize_anchor_handle(value)
             if not normalized:
                 continue
+            if anchor_type not in {"entity", "time"}:
+                if _is_paragraph_style_handle(normalized):
+                    continue
+                if normalized.lower() in _GENERIC_HANDLE_VALUES:
+                    continue
+            dedupe_key = (anchor_type, normalized.lower())
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
             anchors.append(
                 AnchorEntry(anchor_type=anchor_type, value=normalized, text=normalized)
             )
+            if len(anchors) >= _MAX_DISTILLED_ANCHORS:
+                return anchors
     return anchors
 
 
@@ -493,3 +566,87 @@ def _normalize_signature_value(value: str) -> str:
     if not normalized or normalized in _GENERIC_SLOT_VALUES:
         return ""
     return normalized[:120]
+
+
+def _keyword_values(raw_value: Any) -> List[str]:
+    if not raw_value:
+        return []
+    if isinstance(raw_value, str):
+        return _unique_strings(_HANDLE_SPLIT_RE.split(raw_value))
+    return _unique_strings(raw_value)
+
+
+def _normalize_anchor_handle(value: Any) -> str:
+    normalized = _WHITESPACE_RE.sub(" ", str(value or "").strip())
+    if not normalized:
+        return ""
+    normalized = normalized.strip(" \t\r\n,;:!?[](){}<>\"'`")
+    if not normalized:
+        return ""
+    return normalized[:_MAX_HANDLE_LENGTH]
+
+
+def _is_paragraph_style_handle(value: str) -> bool:
+    if "\n" in value:
+        return True
+    if len(value) > _MAX_HANDLE_LENGTH:
+        return True
+    if value.count("。") > 1 or value.count(". ") > 1:
+        return True
+    return False
+
+
+def _has_concrete_handle_signal(value: str) -> bool:
+    if _TIME_TOKEN_RE.search(value):
+        return True
+    if any(char.isdigit() for char in value):
+        return True
+    if _PATHISH_HANDLE_RE.search(value):
+        return True
+    if _CAMEL_CASE_HANDLE_RE.search(value):
+        return True
+    if _ALL_CAPS_HANDLE_RE.search(value):
+        return True
+    if _MULTIWORD_LATIN_RE.search(value):
+        return True
+    return False
+
+
+def _append_distilled_handle(
+    handles: List[str],
+    candidate: Any,
+    *,
+    trusted: bool,
+) -> None:
+    normalized = _normalize_anchor_handle(candidate)
+    if not normalized:
+        return
+    lowered = normalized.lower()
+    if lowered in _GENERIC_HANDLE_VALUES:
+        return
+    if _is_paragraph_style_handle(normalized):
+        return
+    if not trusted and not _has_concrete_handle_signal(normalized):
+        return
+    if lowered in {handle.lower() for handle in handles}:
+        return
+    handles.append(normalized)
+
+
+def _text_anchor_candidates(text: str) -> List[str]:
+    if not text:
+        return []
+    candidates: List[str] = []
+    for match in _QUOTED_HANDLE_RE.findall(text):
+        _append_distilled_handle(candidates, match, trusted=False)
+    for regex in (
+        _PATHISH_HANDLE_RE,
+        _CAMEL_CASE_HANDLE_RE,
+        _ALL_CAPS_HANDLE_RE,
+        _MULTIWORD_LATIN_RE,
+    ):
+        for match in regex.findall(text):
+            _append_distilled_handle(candidates, match, trusted=False)
+            if len(candidates) >= _MAX_DISTILLED_ANCHORS:
+                return candidates
+    return candidates

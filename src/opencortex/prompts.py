@@ -189,7 +189,8 @@ Return a JSON object with exactly these fields:
   "abstract": "1-2 sentence standalone summary, max 200 chars",
   "overview": "3-8 sentence overview covering key facts, decisions, and actionable details",
   "keywords": ["term1", "term2", "..."],
-  "entities": ["entity1", "entity2", "..."]
+  "entities": ["entity1", "entity2", "..."],
+  "anchor_handles": ["handle1", "handle2", "..."]
 }}
 
 Rules:
@@ -197,6 +198,7 @@ Rules:
 - overview: Covers the main points, decisions, and context. Do NOT repeat the abstract verbatim.
 - keywords: 3-15 key terms (names, tools, technologies, concepts) that aid search. No generic words.
 - entities: Named entities only — people, systems, tools, organizations, places. NOT generic concepts. Max 10.
+- anchor_handles: 0-6 short retrieval handles. Prefer concrete entities, numbers, paths, module names, operations, or compact noun phrases. No paragraphs or generic labels.
 - Return ONLY the JSON object, no other text."""
 
 
@@ -299,30 +301,8 @@ def build_rerank_prompt(query: str, docs_text: str) -> str:
         "Scores:"
     )
 
-
 # =========================================================================
-# 10. HyDE (Hypothetical Document Embedding)
-# =========================================================================
-
-def build_hyde_prompt(question: str) -> str:
-    """Build prompt for generating a hypothetical memory observation.
-
-    The generated text is used as the dense-embedding query instead of the
-    original question, bridging the semantic gap between interrogative queries
-    and declarative stored observations.
-    """
-    return (
-        "You are generating a short hypothetical memory observation "
-        "that would answer the following question. Write it as a factual "
-        "statement about a person, as if recorded during a conversation. "
-        "Keep it to 1-2 sentences. Do not include the question.\n\n"
-        f"Question: {question}\n\n"
-        "Hypothetical observation:"
-    )
-
-
-# =========================================================================
-# 11. Overview Compression  (for chunked derivation)
+# 10. Overview Compression  (for chunked derivation)
 # =========================================================================
 
 def build_overview_compression_prompt(overviews: str) -> str:

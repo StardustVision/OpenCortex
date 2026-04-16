@@ -250,6 +250,201 @@ class TestAutophagySweeperLifecycle(unittest.IsolatedAsyncioTestCase):
 
 
 
+class TestRecallBookkeepingAsync(unittest.IsolatedAsyncioTestCase):
+    async def test_search_does_not_await_recall_bookkeeping(self):
+        """search() should return before slow recall bookkeeping finishes."""
+        from opencortex.config import CortexConfig
+        from opencortex.intent import SearchResult
+        from opencortex.orchestrator import MemoryOrchestrator
+        from opencortex.retrieve.types import ContextType, FindResult, MatchedContext
+
+        oc = MemoryOrchestrator.__new__(MemoryOrchestrator)
+        oc._config = CortexConfig()
+        oc._initialized = True
+        oc._context_manager = None
+        oc._storage = MagicMock()
+        oc._storage.close = AsyncMock()
+        oc._autophagy_startup_sweep_task = None
+        oc._autophagy_sweep_task = None
+        oc._skill_manager = None
+        oc._memory_runtime = MagicMock()
+        oc._memory_runtime.arbitrate_hydration.return_value = (
+            {
+                "memory_limit": 1,
+                "effective_depth": "l0",
+            },
+            False,
+            [],
+            False,
+        )
+        oc._memory_runtime.finalize.return_value = MagicMock()
+        oc._build_typed_queries = MagicMock(return_value=[MagicMock()])
+        oc._summarize_retrieve_breakdown = MagicMock(
+            return_value={
+                "embed": 1.0,
+                "search": 1.0,
+                "rerank": 0.0,
+                "assemble": 0.0,
+                "total": 2.0,
+            }
+        )
+        oc.bind_memory_runtime = MagicMock(
+            return_value={
+                "memory_limit": 1,
+                "effective_depth": "l0",
+            }
+        )
+
+        async def fake_query(**_kwargs):
+            return MagicMock(
+                timing_ms={
+                    "embed": 1.0,
+                    "search": 1.0,
+                    "rerank": 0.0,
+                    "assemble": 0.0,
+                    "total": 2.0,
+                },
+                explain=MagicMock(rerank_ms=0),
+                matched_contexts=[],
+            )
+
+        oc._execute_object_query = AsyncMock(side_effect=fake_query)
+        oc._resolve_and_update_access_stats = AsyncMock()
+        memory = MatchedContext(
+            uri="opencortex://tenant/user/memories/test",
+            context_type=ContextType.MEMORY,
+            is_leaf=True,
+            abstract="test memory",
+        )
+        oc._aggregate_results = MagicMock(
+            return_value=FindResult(memories=[memory], resources=[], skills=[])
+        )
+        oc._resolve_memory_owner_ids = AsyncMock(return_value=["owner-1"])
+
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_apply_recall_outcome(**_kwargs):
+            started.set()
+            await release.wait()
+
+        oc._autophagy_kernel = MagicMock()
+        oc._autophagy_kernel.apply_recall_outcome = AsyncMock(
+            side_effect=slow_apply_recall_outcome
+        )
+
+        probe_result = SearchResult(should_recall=True)
+        retrieve_plan = MagicMock()
+
+        t0 = asyncio.get_running_loop().time()
+        result = await oc.search(
+            query="test question",
+            probe_result=probe_result,
+            retrieve_plan=retrieve_plan,
+        )
+        elapsed = asyncio.get_running_loop().time() - t0
+
+        self.assertEqual(len(result.memories), 1)
+        self.assertLess(
+            elapsed,
+            0.5,
+            f"search() blocked on recall bookkeeping for {elapsed:.3f}s",
+        )
+
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        self.assertEqual(len(oc._recall_bookkeeping_tasks_set()), 1)
+
+        release.set()
+        await oc.close()
+        oc._autophagy_kernel.apply_recall_outcome.assert_awaited_once()
+        self.assertEqual(len(oc._recall_bookkeeping_tasks_set()), 0)
+
+    async def test_search_no_longer_calls_hyde_rewrite(self):
+        """search() should not invoke the old retrieval-time HyDE callback."""
+        from opencortex.config import CortexConfig
+        from opencortex.intent import SearchResult
+        from opencortex.orchestrator import MemoryOrchestrator
+        from opencortex.retrieve.types import ContextType, FindResult, MatchedContext
+
+        oc = MemoryOrchestrator.__new__(MemoryOrchestrator)
+        oc._config = CortexConfig()
+        oc._initialized = True
+        oc._context_manager = None
+        oc._storage = MagicMock()
+        oc._storage.close = AsyncMock()
+        oc._autophagy_startup_sweep_task = None
+        oc._autophagy_sweep_task = None
+        oc._autophagy_kernel = None
+        oc._skill_manager = None
+        oc._llm_completion = AsyncMock(side_effect=AssertionError("unexpected HyDE call"))
+        oc._memory_runtime = MagicMock()
+        oc._memory_runtime.arbitrate_hydration.return_value = (
+            {
+                "memory_limit": 1,
+                "effective_depth": "l0",
+            },
+            False,
+            [],
+            False,
+        )
+        oc._memory_runtime.finalize.return_value = MagicMock()
+        oc._build_typed_queries = MagicMock(
+            return_value=[
+                MagicMock(
+                    query="test question",
+                    target_directories=[],
+                )
+            ]
+        )
+        oc._summarize_retrieve_breakdown = MagicMock(
+            return_value={
+                "embed": 1.0,
+                "search": 1.0,
+                "rerank": 0.0,
+                "assemble": 0.0,
+                "total": 2.0,
+            }
+        )
+        oc.bind_memory_runtime = MagicMock(
+            return_value={
+                "memory_limit": 1,
+                "effective_depth": "l0",
+            }
+        )
+        oc._execute_object_query = AsyncMock(
+            return_value=MagicMock(
+                timing_ms={
+                    "embed": 1.0,
+                    "search": 1.0,
+                    "rerank": 0.0,
+                    "assemble": 0.0,
+                    "total": 2.0,
+                },
+                explain=MagicMock(rerank_ms=0),
+                matched_contexts=[],
+            )
+        )
+        oc._resolve_and_update_access_stats = AsyncMock()
+        memory = MatchedContext(
+            uri="opencortex://tenant/user/memories/test",
+            context_type=ContextType.MEMORY,
+            is_leaf=True,
+            abstract="test memory",
+        )
+        oc._aggregate_results = MagicMock(
+            return_value=FindResult(memories=[memory], resources=[], skills=[])
+        )
+
+        result = await oc.search(
+            query="test question",
+            probe_result=SearchResult(should_recall=True),
+            retrieve_plan=MagicMock(),
+        )
+
+        self.assertEqual(len(result.memories), 1)
+        oc._llm_completion.assert_not_awaited()
+
+
 class TestBatchAddConcurrency(unittest.IsolatedAsyncioTestCase):
     async def test_items_processed_concurrently(self):
         """batch_add with 8 items must run at least 2 concurrently."""

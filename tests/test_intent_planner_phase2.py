@@ -97,7 +97,7 @@ class TestIntentPlannerPhase2(unittest.TestCase):
         assert plan is not None
         self.assertEqual(plan.target_memory_kinds[0], MemoryKind.RELATION)
         self.assertGreater(plan.search_profile.association_budget, 0.7)
-        self.assertEqual(plan.query_plan.rewrite_mode, QueryRewriteMode.LIGHT)
+        self.assertEqual(plan.query_plan.rewrite_mode, QueryRewriteMode.NONE)
         self.assertEqual(plan.decision, "arbitrate_l1")
 
     def test_full_content_request_can_request_l2(self):

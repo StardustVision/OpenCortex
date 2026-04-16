@@ -146,6 +146,10 @@ class TestRecallPlannerIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertIn("probe", payload["memory_pipeline"])
         self.assertIn("planner", payload["memory_pipeline"])
         self.assertIn("runtime", payload["memory_pipeline"])
+        self.assertEqual(
+            payload["memory_pipeline"]["planner"]["query_plan"]["rewrite_mode"],
+            "none",
+        )
         self.assertGreaterEqual(
             payload["memory_pipeline"]["probe"]["evidence"]["candidate_count"],
             1,
@@ -180,6 +184,7 @@ class TestRecallPlannerIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plan.retrieval_depth, "l1")
         self.assertEqual(plan.decision, "arbitrate_l1")
         self.assertGreater(plan.confidence or 0.0, 0.7)
+        self.assertEqual(plan.query_plan.rewrite_mode.value, "none")
 
     async def test_search_caps_final_results_to_requested_limit(self):
         await self.orch.add(

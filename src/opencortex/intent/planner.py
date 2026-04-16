@@ -280,19 +280,7 @@ class RecallPlanner:
         probe_result: SearchResult,
         max_items: int,
     ) -> QueryRewriteMode:
-        if coarse_class == MemoryCoarseClass.RELATIONAL and anchors:
-            return QueryRewriteMode.LIGHT
-        if (
-            coarse_class == MemoryCoarseClass.EXPLORE
-            and len(anchors) >= 3
-            and max_items >= 5
-            and probe_result.evidence.candidate_count >= 2
-        ):
-            return QueryRewriteMode.DECOMPOSE
-        if coarse_class == MemoryCoarseClass.EXPLORE and (
-            len(anchors) >= 2 or probe_result.evidence.anchor_hit_count >= 2
-        ):
-            return QueryRewriteMode.LIGHT
+        del coarse_class, anchors, probe_result, max_items
         return QueryRewriteMode.NONE
 
     def _target_memory_kinds(

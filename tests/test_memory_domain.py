@@ -173,6 +173,44 @@ class TestMemoryDomain(unittest.TestCase):
         self.assertTrue(signature.startswith("preference|"))
         self.assertIn("user prefers dark theme in editors.", signature)
 
+    def test_memory_abstract_promotes_keywords_and_anchor_handles(self):
+        abstract_payload = memory_abstract_from_record(
+            {
+                "uri": "opencortex://team/user/resources/doc/chunk-2",
+                "category": "document_chunk",
+                "context_type": "resource",
+                "abstract": "Dark mode rollout lives in src/main.py with 3 replicas.",
+                "keywords": ["dark mode", "src/main.py"],
+                "metadata": {
+                    "anchor_handles": ["3 replicas", "rollout checklist"],
+                },
+            }
+        ).to_dict()
+
+        anchor_texts = [anchor["text"] for anchor in abstract_payload["anchors"]]
+
+        self.assertIn("dark mode", anchor_texts)
+        self.assertIn("src/main.py", anchor_texts)
+        self.assertIn("3 replicas", anchor_texts)
+        self.assertLessEqual(len(anchor_texts), 6)
+
+    def test_memory_abstract_drops_generic_keyword_handles(self):
+        abstract_payload = memory_abstract_from_record(
+            {
+                "uri": "opencortex://team/user/memories/events/2",
+                "category": "events",
+                "context_type": "memory",
+                "abstract": "Release note",
+                "keywords": ["events", "summary", "document"],
+            }
+        ).to_dict()
+
+        anchor_texts = [anchor["text"] for anchor in abstract_payload["anchors"]]
+
+        self.assertNotIn("events", anchor_texts)
+        self.assertNotIn("summary", anchor_texts)
+        self.assertNotIn("document", anchor_texts)
+
 
 if __name__ == "__main__":
     unittest.main()

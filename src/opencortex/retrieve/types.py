@@ -301,7 +301,6 @@ class TypedQuery:
     priority: int = 3
     target_directories: List[str] = field(default_factory=list)
     detail_level: DetailLevel = DetailLevel.L1
-    hyde_text: Optional[str] = None  # HyDE hypothetical answer for dense embedding
     target_doc_id: Optional[str] = None
 
 

@@ -360,7 +360,6 @@ async def _test_app_context():
         embedding_dimension=MockEmbedder.DIMENSION,
         rerank_provider="disabled",
         query_classifier_enabled=False,
-        hyde_enabled=False,
         explain_enabled=False,
     )
     init_config(config)
@@ -597,6 +596,10 @@ class TestHTTPServer(unittest.TestCase):
                 self.assertIn(
                     "fallback",
                     data["memory_pipeline"]["runtime"]["trace"],
+                )
+                self.assertEqual(
+                    data["memory_pipeline"]["planner"]["query_plan"]["rewrite_mode"],
+                    "none",
                 )
                 self.assertEqual(
                     data["memory_pipeline"]["runtime"]["trace"]["fallback"],

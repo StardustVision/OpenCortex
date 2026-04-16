@@ -131,8 +131,6 @@ class CortexConfig:
     rerank_flat_pool_multiplier: int = 3  # Flat-search rerank candidate multiplier (pool = limit * N)
     # Search behavior
     force_flat_search: bool = False  # Skip frontier/recursive, always use flat vector search
-    # HyDE (Hypothetical Document Embedding)
-    hyde_enabled: bool = False  # Generate hypothetical answer for dense embedding
     # OpenCortex HTTP Server (FastAPI)
     http_server_host: str = "127.0.0.1"
     http_server_port: int = 8921
