@@ -34,7 +34,7 @@ Typical usage::
 
 import asyncio
 from contextlib import suppress
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 import hashlib
 import logging
 import math
@@ -158,6 +158,24 @@ def _split_keyword_string(raw_keywords: str) -> List[str]:
     ]
 
 
+@dataclass
+class _DeriveTask:
+    """Async document derive task — enqueued by Phase A, processed by worker."""
+    parent_uri: str
+    content: str
+    abstract: str
+    chunks: list
+    category: str
+    context_type: str
+    meta: Dict[str, Any]
+    session_id: Optional[str]
+    source_path: str
+    source_doc_id: str
+    source_doc_title: str
+    tenant_id: str
+    user_id: str
+
+
 class MemoryOrchestrator:
     """
     Top-level orchestrator for OpenCortex memory operations.
@@ -220,6 +238,11 @@ class MemoryOrchestrator:
         )
         self._memory_runtime = MemoryExecutor()
         self._memory_probe = None
+
+        # Document derive worker (async queue for background LLM derive)
+        self._derive_queue: asyncio.Queue[Optional[_DeriveTask]] = asyncio.Queue()
+        self._derive_worker_task: Optional[asyncio.Task] = None
+        self._inflight_derive_uris: set = set()
 
         # Autophagy background sweeps (metabolism)
         self._autophagy_sweep_task: asyncio.Task | None = None
@@ -350,8 +373,11 @@ class MemoryOrchestrator:
             top_k=6,
         )
 
-        # 8. Background maintenance: text indexes, migrations, re-embed
+        # 8. Background maintenance: text indexes, migrations, re-embed, recovery
         asyncio.create_task(self._startup_maintenance())
+
+        # 8b. Document derive worker
+        self._start_derive_worker()
 
         # 9. Autophagy cognition components
         await self._init_cognition()
@@ -892,6 +918,318 @@ class MemoryOrchestrator:
         except Exception as exc:
             logger.warning("[Orchestrator] Auto re-embed skipped: %s", exc)
 
+        await self._recover_pending_derives()
+
+    # =========================================================================
+    # Document Derive Worker
+    # =========================================================================
+
+    def _start_derive_worker(self) -> None:
+        """Launch the background derive worker coroutine."""
+        if self._derive_worker_task is None or self._derive_worker_task.done():
+            self._derive_worker_task = asyncio.create_task(self._derive_worker())
+
+    async def _derive_worker(self) -> None:
+        """Consume _DeriveTask items from the queue. Stops on None sentinel."""
+        while True:
+            task = await self._derive_queue.get()
+            if task is None:
+                self._derive_queue.task_done()
+                break
+            try:
+                await self._process_derive_task(task)
+            except Exception as exc:
+                logger.error(
+                    "[DeriveWorker] Failed to process %s: %s",
+                    task.parent_uri,
+                    exc,
+                )
+            finally:
+                self._derive_queue.task_done()
+
+    async def _process_derive_task(self, task: _DeriveTask) -> None:
+        """Process a single document derive task (Phase B).
+
+        Creates parent record, derives chunks level-by-level, runs bottom-up
+        summarization, then deletes the .derive_pending marker.
+        """
+        from opencortex.http.request_context import (
+            set_request_identity,
+            reset_request_identity,
+        )
+
+        tokens = set_request_identity(task.tenant_id, task.user_id)
+        try:
+            # 1. Create parent record in Qdrant (is_leaf=False, skips _derive_layers)
+            parent_ctx = await self.add(
+                abstract=task.abstract,
+                content=task.content,
+                category=task.category,
+                uri=task.parent_uri,
+                is_leaf=False,
+                context_type=task.context_type,
+                meta={
+                    **task.meta,
+                    "ingest_mode": "memory",
+                    "source_doc_id": task.source_doc_id,
+                    "source_doc_title": task.source_doc_title,
+                    "source_section_path": "",
+                    "chunk_role": "document",
+                },
+                session_id=task.session_id,
+            )
+            doc_parent_uri = parent_ctx.uri
+
+            chunks = task.chunks
+            # 2. Precompute topology
+            is_dir_chunk = [
+                any(c.parent_index == idx for c in chunks[idx + 1:])
+                for idx in range(len(chunks))
+            ]
+            levels: Dict[int, List[int]] = {}
+            for idx, chunk in enumerate(chunks):
+                if chunk.parent_index < 0:
+                    level = 0
+                else:
+                    parent_level = next(
+                        (lv for lv, idxs in levels.items() if chunk.parent_index in idxs),
+                        0,
+                    )
+                    level = parent_level + 1
+                levels.setdefault(level, []).append(idx)
+
+            chunk_results: List[Optional[Any]] = [None] * len(chunks)
+            sem = asyncio.Semaphore(self._config.document_derive_concurrency)
+
+            async def _process_chunk(idx: int) -> None:
+                chunk = chunks[idx]
+                chunk_parent = doc_parent_uri
+                if chunk.parent_index >= 0:
+                    parent_result = chunk_results[chunk.parent_index]
+                    if parent_result is not None and not parent_result.is_leaf:
+                        chunk_parent = parent_result.uri
+
+                chunk_role = "section" if is_dir_chunk[idx] else "leaf"
+                sp = chunk.meta.get("source_section_path", "") or chunk.meta.get(
+                    "section_path", ""
+                )
+                if is_dir_chunk[idx]:
+                    heading = sp.split(" > ")[-1].strip() if sp else chunk.content[:80].strip()
+                    chunk_abstract = heading
+                else:
+                    chunk_abstract = ""
+
+                embed_text = ""
+                if self._config.context_flattening_enabled:
+                    parts = []
+                    if task.source_doc_title:
+                        parts.append(f"[{task.source_doc_title}]")
+                    if sp:
+                        parts.append(f"[{sp}]")
+                    if chunk_abstract:
+                        parts.append(chunk_abstract)
+                    embed_text = " ".join(parts)
+
+                async with sem:
+                    try:
+                        ctx = await self.add(
+                            abstract=chunk_abstract,
+                            content=chunk.content,
+                            category=task.category,
+                            parent_uri=chunk_parent,
+                            is_leaf=not is_dir_chunk[idx],
+                            context_type=task.context_type,
+                            meta={
+                                **task.meta,
+                                "ingest_mode": "memory",
+                                "chunk_index": idx,
+                                "source_doc_id": task.source_doc_id,
+                                "source_doc_title": task.source_doc_title,
+                                "source_section_path": sp,
+                                "chunk_role": chunk_role,
+                            },
+                            session_id=task.session_id,
+                            embed_text=embed_text,
+                        )
+                        chunk_results[idx] = ctx
+                    except Exception as exc:
+                        logger.warning(
+                            "[DeriveWorker] chunk %d/%d failed: %s",
+                            idx + 1, len(chunks), exc,
+                        )
+
+            # 3. Level-by-level concurrent derive
+            for level in sorted(levels.keys()):
+                level_tasks = [_process_chunk(idx) for idx in levels[level]]
+                await asyncio.gather(*level_tasks)
+
+            # 4. Bottom-up summarization
+            for level in sorted(levels.keys(), reverse=True):
+                for si in [i for i in levels[level] if is_dir_chunk[i]]:
+                    if chunk_results[si] is None:
+                        continue
+                    child_indices = [
+                        j for j in range(len(chunks)) if chunks[j].parent_index == si
+                    ]
+                    available = [
+                        chunk_results[j].abstract
+                        for j in child_indices
+                        if chunk_results[j] is not None
+                    ]
+                    if not available:
+                        continue
+                    if len(available) < len(child_indices) / 2:
+                        logger.warning(
+                            "[DeriveWorker] section %d: >50%% children failed, skipping bottom-up",
+                            si,
+                        )
+                        continue
+                    summary = await self._derive_parent_summary(task.abstract, available)
+                    if summary.get("abstract"):
+                        try:
+                            await self.update(
+                                chunk_results[si].uri,
+                                abstract=summary["abstract"],
+                                overview=summary["overview"],
+                                meta={"topics": summary.get("keywords", [])},
+                            )
+                            chunk_results[si].abstract = summary["abstract"]
+                            chunk_results[si].overview = summary["overview"]
+                        except Exception as exc:
+                            logger.warning(
+                                "[DeriveWorker] section %d bottom-up failed: %s", si, exc,
+                            )
+
+            # 5. Parent summary from top-level children
+            top_children = [
+                chunk_results[i].abstract
+                for i in range(len(chunks))
+                if chunks[i].parent_index < 0 and chunk_results[i] is not None
+            ]
+            if top_children:
+                summary = await self._derive_parent_summary(task.abstract, top_children)
+                if summary.get("abstract"):
+                    try:
+                        await self.update(
+                            doc_parent_uri,
+                            abstract=summary["abstract"],
+                            overview=summary["overview"],
+                            meta={"topics": summary.get("keywords", [])},
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[DeriveWorker] parent bottom-up failed: %s", exc,
+                        )
+
+            # 6. Delete .derive_pending marker on success
+            try:
+                fs_path = self._fs._uri_to_path(task.parent_uri)
+                self._fs.agfs.rm(f"{fs_path}/.derive_pending")
+            except Exception:
+                pass
+
+            logger.info(
+                "[DeriveWorker] Completed %s (%d chunks)",
+                task.parent_uri, len(chunks),
+            )
+        finally:
+            self._inflight_derive_uris.discard(task.parent_uri)
+            reset_request_identity(tokens)
+
+    async def _recover_pending_derives(self) -> None:
+        """Scan for .derive_pending markers and re-enqueue incomplete derives."""
+        import json as _json
+        from pathlib import Path
+
+        data_root = Path(self._config.data_root).resolve()
+        markers = list(data_root.rglob(".derive_pending"))
+        if not markers:
+            return
+
+        if self._parser_registry is None:
+            from opencortex.parse.registry import ParserRegistry
+            self._parser_registry = ParserRegistry()
+
+        recovered = 0
+        for marker_path in markers:
+            try:
+                marker_data = _json.loads(marker_path.read_bytes())
+                parent_uri = marker_data["parent_uri"]
+
+                if parent_uri in self._inflight_derive_uris:
+                    continue
+
+                content_path = marker_path.parent / "content.md"
+                if not content_path.exists():
+                    logger.warning("[DeriveRecovery] Stale marker (no content.md) at %s — removing", marker_path)
+                    marker_path.unlink(missing_ok=True)
+                    continue
+
+                content = content_path.read_text(encoding="utf-8")
+                source_path = marker_data.get("source_path", "")
+                if source_path:
+                    parser = self._parser_registry.get_parser_for_file(source_path)
+                else:
+                    parser = None
+
+                if parser:
+                    chunks = await parser.parse_content(content, source_path=source_path)
+                else:
+                    chunks = await self._parser_registry.parse_content(content, source_format="markdown")
+
+                task = _DeriveTask(
+                    parent_uri=parent_uri,
+                    content=content,
+                    abstract=marker_data.get("source_doc_title", "") or (Path(source_path).stem if source_path else "Document"),
+                    chunks=chunks,
+                    category=marker_data.get("category", ""),
+                    context_type=marker_data.get("context_type", "resource"),
+                    meta=marker_data.get("meta", {}),
+                    session_id=None,
+                    source_path=source_path,
+                    source_doc_id=marker_data.get("source_doc_id", ""),
+                    source_doc_title=marker_data.get("source_doc_title", ""),
+                    tenant_id=marker_data.get("tenant_id", ""),
+                    user_id=marker_data.get("user_id", ""),
+                )
+                self._inflight_derive_uris.add(parent_uri)
+                await self._derive_queue.put(task)
+                recovered += 1
+            except Exception as exc:
+                logger.error("[DeriveRecovery] Failed to recover %s: %s", marker_path, exc)
+
+        if recovered:
+            logger.info("[DeriveRecovery] Re-enqueued %d pending derive task(s)", recovered)
+
+    async def _drain_derive_queue(self) -> None:
+        """Wait for all pending derive tasks to complete. Test-only."""
+        await self._derive_queue.join()
+
+    async def derive_status(self, uri: str) -> Dict[str, Any]:
+        """Check the async derive status for a document URI.
+
+        Returns dict with 'status' key: 'pending', 'completed', or 'not_found'.
+        """
+        if uri in self._inflight_derive_uris:
+            return {"uri": uri, "status": "pending"}
+
+        fs_path = self._fs._uri_to_path(uri)
+        try:
+            self._fs.agfs.read(f"{fs_path}/.derive_pending")
+            return {"uri": uri, "status": "pending"}
+        except (FileNotFoundError, Exception):
+            pass
+
+        records = await self._storage.filter(
+            self._get_collection(),
+            {"conds": [{"field": "uri", "op": "must", "value": uri}]},
+            limit=1,
+        )
+        if records:
+            return {"uri": uri, "status": "completed"}
+
+        return {"uri": uri, "status": "not_found"}
+
     async def reembed_all(self) -> int:
         """Re-embed all records with the current embedder.
 
@@ -1143,8 +1481,7 @@ class MemoryOrchestrator:
                 embed_text=embed_text,
             )
 
-        # Multi-chunk: create parent + children
-        # Title priority: source filename > caller-provided abstract > fallback "Document"
+        # Multi-chunk: async derive — return immediately, process in background
         doc_title = (
             Path(source_path).stem
             if source_path
@@ -1153,174 +1490,80 @@ class MemoryOrchestrator:
             else "Document"
         )
 
-        parent_ctx = await self.add(
-            abstract=doc_title,
+        # Phase A: generate URI, write CortexFS, enqueue, return
+        import json as _json
+
+        parent_uri_candidate = self._auto_uri(
+            context_type or "resource", category, abstract=doc_title
+        )
+        parent_uri_candidate = await self._resolve_unique_uri(parent_uri_candidate)
+        while parent_uri_candidate in self._inflight_derive_uris:
+            parent_uri_candidate = await self._resolve_unique_uri(
+                parent_uri_candidate + "_"
+            )
+        self._inflight_derive_uris.add(parent_uri_candidate)
+
+        tid, uid = get_effective_identity()
+
+        # Write .derive_pending marker first (recovery signal)
+        marker_data = _json.dumps({
+            "parent_uri": parent_uri_candidate,
+            "category": category,
+            "context_type": context_type or "resource",
+            "source_path": source_path or "",
+            "source_doc_id": source_doc_id,
+            "source_doc_title": source_doc_title,
+            "meta": meta or {},
+            "tenant_id": tid,
+            "user_id": uid,
+        }).encode("utf-8")
+        fs_path = self._fs._uri_to_path(parent_uri_candidate)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, lambda: (
+            self._fs.agfs.mkdir(fs_path),
+            self._fs.agfs.write(f"{fs_path}/.derive_pending", marker_data),
+        ))
+
+        # Write L2 content to CortexFS
+        await self._fs.write_context(
+            uri=parent_uri_candidate, content=content
+        )
+
+        # Enqueue derive task
+        task = _DeriveTask(
+            parent_uri=parent_uri_candidate,
             content=content,
+            abstract=doc_title,
+            chunks=chunks,
             category=category,
-            parent_uri=parent_uri,
+            context_type=context_type or "resource",
+            meta=meta or {},
+            session_id=session_id,
+            source_path=source_path or "",
+            source_doc_id=source_doc_id,
+            source_doc_title=source_doc_title,
+            tenant_id=tid,
+            user_id=uid,
+        )
+        await self._derive_queue.put(task)
+
+        logger.info(
+            "[MemoryOrchestrator] Document enqueued for async derive: %s (%d chunks)",
+            parent_uri_candidate,
+            len(chunks),
+        )
+
+        from opencortex.core.context import Context
+
+        return Context(
+            uri=parent_uri_candidate,
+            abstract=doc_title,
+            context_type=context_type or "resource",
+            category=category,
             is_leaf=False,
-            context_type=context_type,
-            meta={
-                **(meta or {}),
-                "ingest_mode": "memory",
-                "source_doc_id": source_doc_id,
-                "source_doc_title": source_doc_title,
-                "source_section_path": "",
-                "chunk_role": "document",
-            },
+            meta={**(meta or {}), "dedup_action": "created", "derive_pending": True},
             session_id=session_id,
         )
-        doc_parent_uri = parent_ctx.uri
-
-        # Precompute is_dir_chunk and topological levels
-        is_dir_chunk = [
-            any(c.parent_index == idx for c in chunks[idx + 1 :])
-            for idx in range(len(chunks))
-        ]
-        levels: Dict[int, List[int]] = {}
-        for idx, chunk in enumerate(chunks):
-            if chunk.parent_index < 0:
-                level = 0
-            else:
-                # parent must have been assigned already (MarkdownParser guarantees order)
-                parent_level = next(
-                    (lv for lv, idxs in levels.items() if chunk.parent_index in idxs),
-                    0,
-                )
-                level = parent_level + 1
-            levels.setdefault(level, []).append(idx)
-
-        chunk_results: List[Optional[Any]] = [None] * len(chunks)
-        sem = asyncio.Semaphore(self._config.document_derive_concurrency)
-
-        async def _process_chunk(idx: int) -> None:
-            chunk = chunks[idx]
-            chunk_parent = doc_parent_uri
-            if chunk.parent_index >= 0:
-                parent_result = chunk_results[chunk.parent_index]
-                if parent_result is not None and not parent_result.is_leaf:
-                    chunk_parent = parent_result.uri
-
-            chunk_role = "section" if is_dir_chunk[idx] else "leaf"
-            sp = chunk.meta.get("source_section_path", "") or chunk.meta.get(
-                "section_path", ""
-            )
-            # Section nodes use heading text as initial abstract for better fallback
-            if is_dir_chunk[idx]:
-                heading = sp.split(" > ")[-1].strip() if sp else chunk.content[:80].strip()
-                chunk_abstract = heading
-            else:
-                chunk_abstract = ""
-
-            embed_text = ""
-            if self._config.context_flattening_enabled:
-                parts = []
-                if source_doc_title:
-                    parts.append(f"[{source_doc_title}]")
-                if sp:
-                    parts.append(f"[{sp}]")
-                if chunk_abstract:
-                    parts.append(chunk_abstract)
-                embed_text = " ".join(parts)
-
-            async with sem:
-                try:
-                    ctx = await self.add(
-                        abstract=chunk_abstract,
-                        content=chunk.content,
-                        category=category,
-                        parent_uri=chunk_parent,
-                        is_leaf=not is_dir_chunk[idx],
-                        context_type=context_type,
-                        meta={
-                            **(meta or {}),
-                            "ingest_mode": "memory",
-                            "chunk_index": idx,
-                            "source_doc_id": source_doc_id,
-                            "source_doc_title": source_doc_title,
-                            "source_section_path": sp,
-                            "chunk_role": chunk_role,
-                        },
-                        session_id=session_id,
-                        embed_text=embed_text,
-                    )
-                    chunk_results[idx] = ctx
-                except Exception as exc:
-                    logger.warning(
-                        "[MemoryOrchestrator] chunk %d/%d failed: %s",
-                        idx + 1,
-                        len(chunks),
-                        exc,
-                    )
-
-        # Process chunks level by level (top-down), each level fully concurrent
-        for level in sorted(levels.keys()):
-            tasks = [_process_chunk(idx) for idx in levels[level]]
-            await asyncio.gather(*tasks)
-
-        # Bottom-up summarization: deepest levels first
-        for level in sorted(levels.keys(), reverse=True):
-            for si in [i for i in levels[level] if is_dir_chunk[i]]:
-                if chunk_results[si] is None:
-                    continue
-                child_indices = [
-                    j for j in range(len(chunks)) if chunks[j].parent_index == si
-                ]
-                available = [
-                    chunk_results[j].abstract
-                    for j in child_indices
-                    if chunk_results[j] is not None
-                ]
-                if len(available) == 0:
-                    continue
-                if len(available) < len(child_indices) / 2:
-                    logger.warning(
-                        "[MemoryOrchestrator] section %d: >50%% children failed, skipping bottom-up",
-                        si,
-                    )
-                    continue
-                summary = await self._derive_parent_summary(doc_title, available)
-                if summary.get("abstract"):
-                    try:
-                        await self.update(
-                            chunk_results[si].uri,
-                            abstract=summary["abstract"],
-                            overview=summary["overview"],
-                            meta={"topics": summary.get("keywords", [])},
-                        )
-                        chunk_results[si].abstract = summary["abstract"]
-                        chunk_results[si].overview = summary["overview"]
-                    except Exception as exc:
-                        logger.warning(
-                            "[MemoryOrchestrator] section %d bottom-up update failed: %s",
-                            si,
-                            exc,
-                        )
-
-        # Summarize document parent from top-level chunk abstracts
-        top_children = [
-            chunk_results[i].abstract
-            for i in range(len(chunks))
-            if chunks[i].parent_index < 0 and chunk_results[i] is not None
-        ]
-        if top_children:
-            summary = await self._derive_parent_summary(doc_title, top_children)
-            if summary.get("abstract"):
-                try:
-                    await self.update(
-                        doc_parent_uri,
-                        abstract=summary["abstract"],
-                        overview=summary["overview"],
-                        meta={"topics": summary.get("keywords", [])},
-                    )
-                    parent_ctx.abstract = summary["abstract"]
-                    parent_ctx.overview = summary["overview"]
-                except Exception as exc:
-                    logger.warning(
-                        "[MemoryOrchestrator] doc parent bottom-up update failed: %s", exc
-                    )
-
-        return parent_ctx
 
     async def _derive_parent_summary(
         self,
@@ -1510,6 +1753,111 @@ class MemoryOrchestrator:
             "anchor_handles": [],
             "fact_points": [],
         }
+
+    async def _complete_deferred_derive(
+        self,
+        uri: str,
+        content: str,
+        abstract: str = "",
+        overview: str = "",
+        session_id: str = "",
+        meta: Optional[Dict[str, Any]] = None,
+        context_type: str = "memory",
+    ) -> None:
+        """Run LLM derive for a previously deferred record and update Qdrant + CortexFS."""
+        try:
+            layers = await self._derive_layers(
+                user_abstract=abstract,
+                content=content,
+                user_overview=overview,
+            )
+            new_abstract = layers.get("abstract") or abstract
+            new_overview = layers.get("overview") or overview
+            keywords = layers.get("keywords", "")
+            entities = layers.get("entities", [])
+            anchor_handles = layers.get("anchor_handles", [])
+            fact_points = layers.get("fact_points", [])
+
+            keywords_list = _split_keyword_string(keywords)
+            keywords_str = ", ".join(keywords_list)
+
+            from opencortex.core.context import Vectorize, Context
+
+            vectorize_text = f"{new_abstract} {keywords_str}".strip() if keywords_str else new_abstract
+
+            loop = asyncio.get_event_loop()
+            result = None
+            if self._embedder:
+                result = await loop.run_in_executor(
+                    None, self._embedder.embed, vectorize_text,
+                )
+
+            meta = dict(meta or {})
+            if keywords_list:
+                meta["topics"] = _merge_unique_strings(meta.get("topics"), keywords_list)
+            if anchor_handles:
+                meta["anchor_handles"] = anchor_handles
+            if entities:
+                meta["entities"] = entities
+
+            effective_category = self._extract_category_from_uri(uri)
+            abstract_json = self._build_abstract_json(
+                uri=uri,
+                context_type=context_type,
+                category=effective_category,
+                abstract=new_abstract,
+                overview=new_overview,
+                content=content,
+                entities=entities,
+                meta=meta,
+                keywords=keywords_list,
+                parent_uri=self._derive_parent_uri(uri),
+                session_id=session_id,
+            )
+            abstract_json["fact_points"] = fact_points
+
+            update_payload: Dict[str, Any] = {
+                "abstract": new_abstract,
+                "overview": new_overview,
+                "keywords": keywords_str,
+                "entities": entities,
+                "abstract_json": abstract_json,
+            }
+            if result and result.dense_vector:
+                update_payload["vector"] = result.dense_vector
+            if result and result.sparse_vector:
+                update_payload["sparse_vector"] = result.sparse_vector
+
+            existing = await self._get_record_by_uri(uri)
+            if existing:
+                await self._storage.update(
+                    self._get_collection(),
+                    str(existing["id"]),
+                    update_payload,
+                )
+                record = dict(existing)
+                record.update(update_payload)
+                record["abstract_json"] = abstract_json
+                await self._sync_anchor_projection_records(
+                    source_record=record,
+                    abstract_json=abstract_json,
+                )
+
+            await self._fs.write_context(
+                uri=uri,
+                content=content,
+                abstract=new_abstract,
+                abstract_json=abstract_json,
+                overview=new_overview,
+                is_leaf=True,
+            )
+            logger.info(
+                "[Orchestrator] deferred derive completed for %s", uri,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[Orchestrator] deferred derive failed for %s: %s", uri, exc,
+            )
 
     @staticmethod
     def _fallback_overview_from_content(
@@ -1979,6 +2327,7 @@ class MemoryOrchestrator:
         dedup: bool = False,
         dedup_threshold: float = 0.82,
         embed_text: str = "",
+        defer_derive: bool = False,
     ) -> Context:
         """
         Add a new context (memory, resource, or skill).
@@ -2063,7 +2412,8 @@ class MemoryOrchestrator:
 
         # Derive L0/L1/keywords from L2 in a single structured LLM call
         keywords = ""
-        if content and is_leaf:
+        layers = {}
+        if content and is_leaf and not defer_derive:
             derive_started = asyncio.get_running_loop().time()
             layers = await self._derive_layers(
                 user_abstract=abstract,
@@ -2082,6 +2432,17 @@ class MemoryOrchestrator:
                 layers.get("entities", []),
                 explicit_entities,
             )
+        elif content and is_leaf and defer_derive:
+            # Deferred derive: use deterministic truncation as placeholder
+            if not overview:
+                overview = self._fallback_overview_from_content(
+                    user_overview=overview, content=content,
+                )
+            if not abstract:
+                abstract = self._derive_abstract_from_overview(
+                    user_abstract=abstract, overview=overview, content=content,
+                )
+            entities = explicit_entities
         else:
             entities = explicit_entities
 
@@ -5124,6 +5485,15 @@ class MemoryOrchestrator:
             with suppress(asyncio.CancelledError):
                 await task
         self._recall_bookkeeping_tasks_set().clear()
+
+        if self._derive_worker_task and not self._derive_worker_task.done():
+            await self._derive_queue.put(None)
+            try:
+                await asyncio.wait_for(self._derive_worker_task, timeout=30.0)
+            except asyncio.TimeoutError:
+                self._derive_worker_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await self._derive_worker_task
 
         if self._context_manager:
             await self._context_manager.close()

@@ -1790,9 +1790,25 @@ class ContextManager:
                         "tool_calls": all_tool_calls if all_tool_calls else [],
                     },
                     session_id=session_id,
+                    defer_derive=True,
                 )
                 created_merged_uris.append(merged_context.uri)
-
+                _defer_task = asyncio.create_task(
+                    self._orchestrator._complete_deferred_derive(
+                        uri=merged_context.uri,
+                        content=combined,
+                        abstract="",
+                        overview="",
+                        session_id=session_id,
+                        meta=aggregated_meta,
+                    )
+                )
+                _defer_task.add_done_callback(
+                    lambda t: None if t.cancelled() else (
+                        logger.warning("[ContextManager] deferred derive failed: %s", t.exception())
+                        if t.exception() else None
+                    )
+                )
             superseded_merged_uris = self._merge_unique_strings(
                 *[
                     segment.get("superseded_merged_uris", [])
@@ -1999,8 +2015,25 @@ class ContextManager:
                             "tool_calls": all_tool_calls if all_tool_calls else [],
                         },
                         session_id=session_id,
+                        defer_derive=True,
                     )
                     created_merged_uris.append(merged_context.uri)
+                    _defer_task = asyncio.create_task(
+                        self._orchestrator._complete_deferred_derive(
+                            uri=merged_context.uri,
+                            content=combined,
+                            abstract="",
+                            overview="",
+                            session_id=session_id,
+                            meta=aggregated_meta,
+                        )
+                    )
+                    _defer_task.add_done_callback(
+                        lambda t: None if t.cancelled() else (
+                            logger.warning("[ContextManager] deferred derive failed: %s", t.exception())
+                            if t.exception() else None
+                        )
+                    )
 
                 superseded_merged_uris = self._merge_unique_strings(
                     *[
