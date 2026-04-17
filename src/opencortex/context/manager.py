@@ -2013,31 +2013,15 @@ class ContextManager:
                     self._pending_tasks.add(task)
                     task.add_done_callback(self._pending_tasks.discard)
 
-                # Physically delete merged records — they've served their purpose.
-                # conversation_source preserves the full transcript for audit/trace.
-                try:
-                    merged_records = await self._load_session_merged_records(
-                        session_id=session_id,
-                        source_uri=source_uri,
-                    )
-                    merged_uris = [
-                        str(r.get("uri", "") or "")
-                        for r in merged_records
-                        if r.get("uri")
-                    ]
-                    if merged_uris:
-                        await self._delete_immediate_families(merged_uris)
-                        logger.debug(
-                            "[ContextManager] deleted %d merged records sid=%s",
-                            len(merged_uris),
-                            session_id,
-                        )
-                except Exception as exc:
-                    logger.warning(
-                        "[ContextManager] merged record cleanup failed sid=%s: %s",
-                        session_id,
-                        exc,
-                    )
+                # Full recompose: re-segment all merged records semantically,
+                # preserve conversation order, delete intermediate chunks.
+                self._spawn_full_recompose_task(
+                    sk,
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    source_uri=source_uri,
+                )
 
                 duration_ms = int((time.monotonic() - start_time) * 1000)
                 self._cleanup_session(sk)

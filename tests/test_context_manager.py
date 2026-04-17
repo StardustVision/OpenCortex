@@ -930,13 +930,14 @@ class TestContextManager(unittest.TestCase):
         )
         self.assertIn("我搬到了杭州。", rendered_source)
 
-        # merged records are physically deleted on session_end
         merged_records = [
             record
             for record in self.storage._records.get("context", {}).values()
             if record.get("meta", {}).get("layer") == "merged"
         ]
-        self.assertEqual(len(merged_records), 0)
+        self.assertEqual(len(merged_records), 1)
+        self.assertEqual(merged_records[0]["meta"]["source_uri"], source_uri)
+        self.assertEqual(merged_records[0]["meta"]["msg_range"], [0, 1])
 
         self._run(orch.close())
 
@@ -1420,7 +1421,6 @@ class TestContextManager(unittest.TestCase):
             result = await asyncio.wait_for(end_task, timeout=2.0)
             self.assertEqual(result["status"], "closed")
 
-            # merged records are physically deleted on session_end
             merged_records = [
                 record
                 for record in self.storage._records.get("context", {}).values()
@@ -1431,7 +1431,7 @@ class TestContextManager(unittest.TestCase):
                 for record in self.storage._records.get("context", {}).values()
                 if record.get("meta", {}).get("layer") == "immediate"
             ]
-            self.assertEqual(len(merged_records), 0)
+            self.assertGreaterEqual(len(merged_records), 1)
             self.assertEqual(immediate_records, [])
             self.assertFalse(
                 any(
@@ -1498,13 +1498,12 @@ class TestContextManager(unittest.TestCase):
             )
             self.assertEqual(result["status"], "closed")
 
-            # merged records are physically deleted on session_end
             merged_records = [
                 record
                 for record in self.storage._records.get("context", {}).values()
                 if record.get("meta", {}).get("layer") == "merged"
             ]
-            self.assertEqual(len(merged_records), 0)
+            self.assertGreaterEqual(len(merged_records), 1)
             self.assertFalse(
                 any(
                     record.get("uri", "").startswith(f"{uri}/anchors")
