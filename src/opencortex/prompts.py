@@ -186,6 +186,7 @@ Content:
 
 Return a JSON object with exactly these fields:
 {{
+  "abstract": "One concise sentence (≤200 chars) capturing the core fact or decision. Must be a complete sentence, not a truncation of overview.",
   "overview": "3-8 sentence overview covering key facts, decisions, and actionable details",
   "keywords": ["term1", "term2", "..."],
   "entities": ["entity1", "entity2", "..."],
@@ -194,6 +195,7 @@ Return a JSON object with exactly these fields:
 }}
 
 Rules:
+- abstract: ≤200 characters. Synthesize, not truncate. Captures the single most important fact.
 - overview: This is the primary semantic surface. Lead with concrete facts (entities, events, times, places, decisions, constraints).
 - keywords: 3-15 key terms (names, tools, technologies, concepts) that aid search. No generic words.
 - entities: Named entities only — people, systems, tools, organizations, places. NOT generic concepts. Max 10.
@@ -321,3 +323,45 @@ Rules:
 - Do NOT repeat information
 - Maintain factual accuracy
 - Return ONLY the compressed overview text, no JSON wrapping"""
+
+
+# =========================================================================
+# 11. Parent / Session Summarization  (bottom-up from children abstracts)
+# =========================================================================
+
+def build_parent_summarization_prompt(doc_title: str, children_abstracts: list) -> str:
+    """Build prompt to summarize a parent node from its children's abstracts.
+
+    Used for document section nodes (bottom-up) and conversation session summaries.
+
+    Args:
+        doc_title: Title of the parent document or session identifier.
+        children_abstracts: List of L0 abstract strings from child records.
+    """
+    numbered = "\n".join(
+        f"{i + 1}. {a}" for i, a in enumerate(children_abstracts)
+    )
+    fallback_note = (
+        "\nNote: No child abstracts available. Generate a minimal placeholder summary."
+        if not children_abstracts
+        else ""
+    )
+    return f"""Summarize the following child sections into a parent-level summary for a memory system.
+
+Document: {doc_title}
+
+Child section abstracts:
+{numbered}{fallback_note}
+
+Return a JSON object with exactly these fields:
+{{
+  "abstract": "One concise sentence (≤200 chars) capturing the core theme across all children. Must be a complete sentence, not a truncation.",
+  "overview": "3-8 sentence overview synthesizing the key facts, decisions, and topics from all children. Lead with concrete facts.",
+  "keywords": ["term1", "term2", "..."]
+}}
+
+Rules:
+- abstract: Synthesize, do not copy from any single child. ≤200 characters.
+- overview: Cover all major themes. No repetition. Factually grounded.
+- keywords: 3-10 key terms across all children.
+- Return ONLY the JSON object, no other text."""

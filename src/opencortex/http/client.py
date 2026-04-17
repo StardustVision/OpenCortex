@@ -23,6 +23,7 @@ from opencortex.http.models import ContextPrepareResponse, MemorySearchResponse
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 30.0
+_STORE_TIMEOUT = 300.0
 _MAX_RETRIES = 2
 
 
@@ -63,9 +64,21 @@ class OpenCortexClient:
     # Internal helpers
     # ---------------------------------------------------------------------
 
-    async def _post(self, path: str, json: Dict[str, Any]) -> Any:
+    async def _post(
+        self,
+        path: str,
+        json: Dict[str, Any],
+        timeout: Optional[float] = None,
+        retry_on_read_timeout: bool = True,
+    ) -> Any:
         """POST with retry logic."""
-        return await self._request("POST", path, json=json)
+        return await self._request(
+            "POST",
+            path,
+            json=json,
+            timeout=timeout,
+            retry_on_read_timeout=retry_on_read_timeout,
+        )
 
     async def _get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
         """GET with retry logic."""
@@ -84,16 +97,24 @@ class OpenCortexClient:
         path: str,
         json: Optional[Dict[str, Any]] = None,
         params: Optional[Dict[str, Any]] = None,
+        timeout: Optional[float] = None,
+        retry_on_read_timeout: bool = True,
     ) -> Any:
         if not self._client:
             raise OpenCortexClientError("Client not connected — call connect() first")
 
+        effective_timeout = timeout if timeout is not None else self._timeout
         headers = self._build_headers()
         last_exc: Optional[Exception] = None
         for attempt in range(_MAX_RETRIES + 1):
             try:
                 resp = await self._client.request(
-                    method, path, json=json, params=params, headers=headers
+                    method,
+                    path,
+                    json=json,
+                    params=params,
+                    headers=headers,
+                    timeout=effective_timeout,
                 )
                 resp.raise_for_status()
                 return resp.json()
@@ -101,7 +122,23 @@ class OpenCortexClient:
                 raise OpenCortexClientError(
                     f"HTTP {exc.response.status_code}: {exc.response.text}"
                 ) from exc
-            except (httpx.ConnectError, httpx.ReadTimeout) as exc:
+            except httpx.ReadTimeout as exc:
+                if not retry_on_read_timeout:
+                    raise OpenCortexClientError(
+                        f"Request timed out after {effective_timeout}s: {exc}"
+                    ) from exc
+                last_exc = exc
+                if attempt < _MAX_RETRIES:
+                    logger.warning(
+                        "[OpenCortexClient] Retry %d/%d for %s %s: %s",
+                        attempt + 1,
+                        _MAX_RETRIES,
+                        method,
+                        path,
+                        exc,
+                    )
+                    continue
+            except httpx.ConnectError as exc:
                 last_exc = exc
                 if attempt < _MAX_RETRIES:
                     logger.warning(
@@ -147,7 +184,12 @@ class OpenCortexClient:
             payload["meta"] = meta
         if embed_text:
             payload["embed_text"] = embed_text
-        return await self._post("/api/v1/memory/store", payload)
+        return await self._post(
+            "/api/v1/memory/store",
+            payload,
+            timeout=_STORE_TIMEOUT,
+            retry_on_read_timeout=False,
+        )
 
     async def memory_batch_store(
         self,
@@ -159,7 +201,12 @@ class OpenCortexClient:
         payload: Dict[str, Any] = {"items": items, "source_path": source_path}
         if scan_meta is not None:
             payload["scan_meta"] = scan_meta
-        return await self._post("/api/v1/memory/batch_store", payload)
+        return await self._post(
+            "/api/v1/memory/batch_store",
+            payload,
+            timeout=_STORE_TIMEOUT,
+            retry_on_read_timeout=False,
+        )
 
     async def memory_promote_to_shared(
         self,

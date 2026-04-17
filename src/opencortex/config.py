@@ -163,6 +163,7 @@ class CortexConfig:
     small_to_big_enabled: bool = True
     small_to_big_sibling_count: int = 2
     context_flattening_enabled: bool = True
+    document_derive_concurrency: int = 3
     time_filter_enabled: bool = True
     time_filter_fallback_threshold: int = 3
     rerank_gate_score_gap_threshold: float = 0.15

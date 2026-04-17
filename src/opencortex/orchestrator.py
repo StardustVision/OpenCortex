@@ -58,6 +58,7 @@ from opencortex.config import CortexConfig, get_config
 from opencortex.prompts import (
     build_doc_summarization_prompt,
     build_layer_derivation_prompt,
+    build_parent_summarization_prompt,
 )
 from opencortex.http.request_context import (
     get_effective_identity,
@@ -1171,55 +1172,181 @@ class MemoryOrchestrator:
         )
         doc_parent_uri = parent_ctx.uri
 
-        # Process chunks sequentially to maintain parent_index references
-        chunk_results = []
+        # Precompute is_dir_chunk and topological levels
+        is_dir_chunk = [
+            any(c.parent_index == idx for c in chunks[idx + 1 :])
+            for idx in range(len(chunks))
+        ]
+        levels: Dict[int, List[int]] = {}
         for idx, chunk in enumerate(chunks):
+            if chunk.parent_index < 0:
+                level = 0
+            else:
+                # parent must have been assigned already (MarkdownParser guarantees order)
+                parent_level = next(
+                    (lv for lv, idxs in levels.items() if chunk.parent_index in idxs),
+                    0,
+                )
+                level = parent_level + 1
+            levels.setdefault(level, []).append(idx)
+
+        chunk_results: List[Optional[Any]] = [None] * len(chunks)
+        sem = asyncio.Semaphore(self._config.document_derive_concurrency)
+
+        async def _process_chunk(idx: int) -> None:
+            chunk = chunks[idx]
             chunk_parent = doc_parent_uri
-            if chunk.parent_index >= 0 and chunk.parent_index < len(chunk_results):
+            if chunk.parent_index >= 0:
                 parent_result = chunk_results[chunk.parent_index]
-                if parent_result and not parent_result.is_leaf:
+                if parent_result is not None and not parent_result.is_leaf:
                     chunk_parent = parent_result.uri
 
-            # Determine chunk_role: directory chunks (is_leaf=False) become "section",
-            # leaf chunks become "leaf". We detect via next chunk's parent_index.
-            # A chunk is a directory if any later chunk references it as parent.
-            is_dir_chunk = any(c.parent_index == idx for c in chunks[idx + 1 :])
-            chunk_role = "section" if is_dir_chunk else "leaf"
+            chunk_role = "section" if is_dir_chunk[idx] else "leaf"
+            sp = chunk.meta.get("source_section_path", "") or chunk.meta.get(
+                "section_path", ""
+            )
+            # Section nodes use heading text as initial abstract for better fallback
+            if is_dir_chunk[idx]:
+                heading = sp.split(" > ")[-1].strip() if sp else chunk.content[:80].strip()
+                chunk_abstract = heading
+            else:
+                chunk_abstract = ""
 
-            chunk_abstract = ""
             embed_text = ""
             if self._config.context_flattening_enabled:
                 parts = []
                 if source_doc_title:
                     parts.append(f"[{source_doc_title}]")
-                sp = chunk.meta.get("source_section_path", "") or chunk.meta.get(
-                    "section_path", ""
-                )
                 if sp:
                     parts.append(f"[{sp}]")
-                parts.append(chunk_abstract)
+                if chunk_abstract:
+                    parts.append(chunk_abstract)
                 embed_text = " ".join(parts)
-            ctx = await self.add(
-                abstract=chunk_abstract,
-                content=chunk.content,
-                category=category,
-                parent_uri=chunk_parent,
-                context_type=context_type,
-                meta={
-                    **(meta or {}),
-                    "ingest_mode": "memory",
-                    "chunk_index": idx,
-                    "source_doc_id": source_doc_id,
-                    "source_doc_title": source_doc_title,
-                    "source_section_path": chunk.meta.get("section_path", ""),
-                    "chunk_role": chunk_role,
-                },
-                session_id=session_id,
-                embed_text=embed_text,
-            )
-            chunk_results.append(ctx)
+
+            async with sem:
+                try:
+                    ctx = await self.add(
+                        abstract=chunk_abstract,
+                        content=chunk.content,
+                        category=category,
+                        parent_uri=chunk_parent,
+                        is_leaf=not is_dir_chunk[idx],
+                        context_type=context_type,
+                        meta={
+                            **(meta or {}),
+                            "ingest_mode": "memory",
+                            "chunk_index": idx,
+                            "source_doc_id": source_doc_id,
+                            "source_doc_title": source_doc_title,
+                            "source_section_path": sp,
+                            "chunk_role": chunk_role,
+                        },
+                        session_id=session_id,
+                        embed_text=embed_text,
+                    )
+                    chunk_results[idx] = ctx
+                except Exception as exc:
+                    logger.warning(
+                        "[MemoryOrchestrator] chunk %d/%d failed: %s",
+                        idx + 1,
+                        len(chunks),
+                        exc,
+                    )
+
+        # Process chunks level by level (top-down), each level fully concurrent
+        for level in sorted(levels.keys()):
+            tasks = [_process_chunk(idx) for idx in levels[level]]
+            await asyncio.gather(*tasks)
+
+        # Bottom-up summarization: deepest levels first
+        for level in sorted(levels.keys(), reverse=True):
+            for si in [i for i in levels[level] if is_dir_chunk[i]]:
+                if chunk_results[si] is None:
+                    continue
+                child_indices = [
+                    j for j in range(len(chunks)) if chunks[j].parent_index == si
+                ]
+                available = [
+                    chunk_results[j].abstract
+                    for j in child_indices
+                    if chunk_results[j] is not None
+                ]
+                if len(available) == 0:
+                    continue
+                if len(available) < len(child_indices) / 2:
+                    logger.warning(
+                        "[MemoryOrchestrator] section %d: >50%% children failed, skipping bottom-up",
+                        si,
+                    )
+                    continue
+                summary = await self._derive_parent_summary(doc_title, available)
+                if summary.get("abstract"):
+                    try:
+                        await self.update(
+                            chunk_results[si].uri,
+                            abstract=summary["abstract"],
+                            overview=summary["overview"],
+                            meta={"topics": summary.get("keywords", [])},
+                        )
+                        chunk_results[si].abstract = summary["abstract"]
+                        chunk_results[si].overview = summary["overview"]
+                    except Exception as exc:
+                        logger.warning(
+                            "[MemoryOrchestrator] section %d bottom-up update failed: %s",
+                            si,
+                            exc,
+                        )
+
+        # Summarize document parent from top-level chunk abstracts
+        top_children = [
+            chunk_results[i].abstract
+            for i in range(len(chunks))
+            if chunks[i].parent_index < 0 and chunk_results[i] is not None
+        ]
+        if top_children:
+            summary = await self._derive_parent_summary(doc_title, top_children)
+            if summary.get("abstract"):
+                try:
+                    await self.update(
+                        doc_parent_uri,
+                        abstract=summary["abstract"],
+                        overview=summary["overview"],
+                        meta={"topics": summary.get("keywords", [])},
+                    )
+                    parent_ctx.abstract = summary["abstract"]
+                    parent_ctx.overview = summary["overview"]
+                except Exception as exc:
+                    logger.warning(
+                        "[MemoryOrchestrator] doc parent bottom-up update failed: %s", exc
+                    )
 
         return parent_ctx
+
+    async def _derive_parent_summary(
+        self,
+        doc_title: str,
+        children_abstracts: List[str],
+    ) -> Dict[str, Any]:
+        """LLM-derive L1/L0 for a parent/section node from children abstracts."""
+        if not self._llm_completion:
+            return {}
+        try:
+            prompt = build_parent_summarization_prompt(doc_title, children_abstracts)
+            response = await self._derive_layers_llm_completion(prompt)
+            data = parse_json_from_response(response)
+            if isinstance(data, dict):
+                return {
+                    "abstract": str(data.get("abstract") or "").strip()[:200],
+                    "overview": str(data.get("overview") or "").strip(),
+                    "keywords": data.get("keywords", []),
+                }
+        except Exception as exc:
+            logger.warning(
+                "[MemoryOrchestrator] _derive_parent_summary failed for '%s': %s",
+                doc_title,
+                exc,
+            )
+        return {}
 
     async def _derive_layers(
         self,
@@ -1255,6 +1382,7 @@ class MemoryOrchestrator:
                         parse_fn=parse_json_from_response,
                         max_chars_per_chunk=4000,
                     )
+                    llm_abstract = str(result.get("abstract") or "").strip()
                     llm_overview = str(result.get("overview") or "").strip()
                     keywords_list = result.get("keywords", [])
                     if isinstance(keywords_list, list):
@@ -1289,7 +1417,7 @@ class MemoryOrchestrator:
                         content=content,
                     )
                     derived_abstract = self._derive_abstract_from_overview(
-                        user_abstract=user_abstract,
+                        user_abstract=user_abstract or llm_abstract,
                         overview=resolved_overview,
                         content=content,
                     )
@@ -1310,6 +1438,7 @@ class MemoryOrchestrator:
                 response = await self._derive_layers_llm_completion(prompt)
                 data = parse_json_from_response(response)
                 if isinstance(data, dict):
+                    llm_abstract = (data.get("abstract") or "").strip()
                     llm_overview = (data.get("overview") or "").strip()
                     keywords_list = data.get("keywords") or []
                     if isinstance(keywords_list, list):
@@ -1344,7 +1473,7 @@ class MemoryOrchestrator:
                         content=content,
                     )
                     derived_abstract = self._derive_abstract_from_overview(
-                        user_abstract=user_abstract,
+                        user_abstract=user_abstract or llm_abstract,
                         overview=resolved_overview,
                         content=content,
                     )
@@ -2318,6 +2447,7 @@ class MemoryOrchestrator:
         abstract: Optional[str] = None,
         content: Optional[str] = None,
         meta: Optional[Dict[str, Any]] = None,
+        overview: Optional[str] = None,
     ) -> bool:
         """
         Update an existing context.
@@ -2329,6 +2459,8 @@ class MemoryOrchestrator:
             abstract: New abstract (re-embeds if changed).
             content: New full content.
             meta: Metadata fields to merge.
+            overview: New L1 overview. When provided together with abstract,
+                _derive_layers fast-path is used (no extra LLM call).
 
         Returns:
             True if updated successfully, False if not found.
@@ -2368,7 +2500,7 @@ class MemoryOrchestrator:
 
         next_abstract = abstract if abstract is not None else record.get("abstract", "")
         next_content = content if content is not None else record.get("content", "")
-        next_overview = record.get("overview", "")
+        next_overview = overview if overview is not None else record.get("overview", "")
         next_entities = _merge_unique_strings(
             record.get("entities") or [],
             next_meta.get("entities"),
@@ -2470,16 +2602,21 @@ class MemoryOrchestrator:
             )
 
         # Update filesystem
-        if abstract is not None or content is not None:
+        if abstract is not None or content is not None or overview is not None:
             await self._fs.write_context(
                 uri=uri,
-                content=content or "",
-                abstract=abstract or "",
+                content=next_content,
+                abstract=next_abstract,
+                overview=next_overview,
                 abstract_json=abstract_json,
             )
 
-        # Sync entity index if content/abstract changed
-        if getattr(self, '_entity_index', None) and (abstract is not None or content is not None):
+        # Sync entity index if content/abstract changed (skip for non-leaf nodes)
+        if (
+            getattr(self, '_entity_index', None)
+            and (abstract is not None or content is not None)
+            and record.get("is_leaf") is not False
+        ):
             try:
                 text_for_entities = content or abstract or ""
                 if text_for_entities and self._llm_completion:
@@ -2761,6 +2898,10 @@ class MemoryOrchestrator:
             combined_conds.append(
                 {"op": "must", "field": "category", "conds": list(category_filter)}
             )
+
+        combined_conds.append(
+            {"op": "must_not", "field": "meta.superseded", "conds": [True]}
+        )
 
         if metadata_filter:
             return {"op": "and", "conds": [metadata_filter] + combined_conds}
