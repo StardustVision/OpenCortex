@@ -2015,6 +2015,7 @@ class ContextManager:
 
                 # Full recompose: re-segment all merged records semantically,
                 # preserve conversation order, delete intermediate chunks.
+                # Await completion so callers see final records, not intermediates.
                 self._spawn_full_recompose_task(
                     sk,
                     session_id=session_id,
@@ -2022,6 +2023,12 @@ class ContextManager:
                     user_id=user_id,
                     source_uri=source_uri,
                 )
+                recompose_task = self._session_full_recompose_tasks.get(sk)
+                if recompose_task and not recompose_task.done():
+                    try:
+                        await asyncio.wait_for(asyncio.shield(recompose_task), timeout=120.0)
+                    except (asyncio.TimeoutError, Exception):
+                        pass
 
                 duration_ms = int((time.monotonic() - start_time) * 1000)
                 self._cleanup_session(sk)
