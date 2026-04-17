@@ -1677,7 +1677,6 @@ class ContextManager:
                     content=combined,
                     category="events",
                     context_type="memory",
-                    embed_text=combined,
                     meta={
                         **aggregated_meta,
                         "layer": "merged",
@@ -1879,7 +1878,6 @@ class ContextManager:
                         content=combined,
                         category="events",
                         context_type="memory",
-                        embed_text=combined,
                         meta={
                             **aggregated_meta,
                             "layer": "merged",
