@@ -44,6 +44,9 @@ _SEGMENT_MAX_TOKENS = 1200
 _SEGMENT_MIN_MESSAGES = 2
 _RECOMPOSE_TAIL_MAX_MERGED_LEAVES = 6
 _RECOMPOSE_TAIL_MAX_MESSAGES = 24
+_RECOMPOSE_CLUSTER_MAX_TOKENS = 3000
+_RECOMPOSE_CLUSTER_MAX_MESSAGES = 30
+_RECOMPOSE_CLUSTER_JACCARD_THRESHOLD = 0.15
 _COARSE_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _COARSE_HUMAN_DATE_RE = re.compile(r"^\d{1,2}\s+[A-Za-z]+,\s+\d{4}$")
 _COARSE_WEEKDAY_RE = re.compile(
@@ -1212,7 +1215,7 @@ class ContextManager:
             merged_meta["event_date"] = event_date
         return merged_meta
 
-    def _build_recomposition_entries(
+    async def _build_recomposition_entries(
         self,
         *,
         snapshot: ConversationBuffer,
@@ -1222,14 +1225,33 @@ class ContextManager:
         """Build ordered recomposition entries from merged-tail + immediates."""
         entries: List[Dict[str, Any]] = []
 
+        fs = getattr(self._orchestrator, "_fs", None)
+        tail_uris = [
+            str(r.get("uri", "") or "").strip()
+            for r in tail_records
+            if r.get("uri")
+        ]
+
+        async def _read_l2(uri: str) -> str:
+            try:
+                return await fs.read_file(f"{uri}/content.md")
+            except Exception:
+                return ""
+
+        if fs and tail_uris:
+            l2_contents = await asyncio.gather(*[_read_l2(u) for u in tail_uris])
+            l2_by_uri = dict(zip(tail_uris, l2_contents))
+        else:
+            l2_by_uri = {}
+
         for record in tail_records:
             msg_range = self._record_msg_range(record)
             if msg_range is None:
                 continue
-            text = self._record_text(record)
+            uri = str(record.get("uri", "") or "").strip()
+            text = l2_by_uri.get(uri, "") or self._record_text(record)
             if not text:
                 continue
-            uri = str(record.get("uri", "") or "").strip()
             entries.append(
                 {
                     "text": text,
@@ -1339,6 +1361,65 @@ class ContextManager:
             current.append(entry)
             current_tokens += int(entry["token_count"])
             current_messages += max(entry_messages, 1)
+
+        if current:
+            segments.append(self._finalize_recomposition_segment(current))
+
+        return segments
+
+    def _build_anchor_clustered_segments(
+        self,
+        entries: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Cluster entries by anchor Jaccard similarity for full_recompose."""
+        if not entries:
+            return []
+
+        segments: List[Dict[str, Any]] = []
+        current: List[Dict[str, Any]] = [entries[0]]
+        current_anchors: Set[str] = (
+            entries[0]["anchor_terms"] | entries[0]["time_refs"]
+        )
+        current_tokens = int(entries[0]["token_count"])
+        current_messages = (
+            int(entries[0]["msg_end"]) - int(entries[0]["msg_start"]) + 1
+        )
+
+        for entry in entries[1:]:
+            entry_anchors: Set[str] = entry["anchor_terms"] | entry["time_refs"]
+            entry_messages = int(entry["msg_end"]) - int(entry["msg_start"]) + 1
+            entry_tokens = int(entry["token_count"])
+
+            if not entry_anchors:
+                current.append(entry)
+                current_tokens += entry_tokens
+                current_messages += max(entry_messages, 1)
+                continue
+
+            union = current_anchors | entry_anchors
+            jaccard = (
+                len(current_anchors & entry_anchors) / len(union)
+                if union
+                else 0.0
+            )
+
+            within_caps = (
+                current_tokens + entry_tokens <= _RECOMPOSE_CLUSTER_MAX_TOKENS
+                and current_messages + max(entry_messages, 1)
+                <= _RECOMPOSE_CLUSTER_MAX_MESSAGES
+            )
+
+            if jaccard >= _RECOMPOSE_CLUSTER_JACCARD_THRESHOLD and within_caps:
+                current.append(entry)
+                current_anchors = current_anchors | entry_anchors
+                current_tokens += entry_tokens
+                current_messages += max(entry_messages, 1)
+            else:
+                segments.append(self._finalize_recomposition_segment(current))
+                current = [entry]
+                current_anchors = set(entry_anchors)
+                current_tokens = entry_tokens
+                current_messages = max(entry_messages, 1)
 
         if current:
             segments.append(self._finalize_recomposition_segment(current))
@@ -1669,7 +1750,7 @@ class ContextManager:
                     }
                 )
 
-            segments = self._build_recomposition_segments(entries)
+            segments = self._build_anchor_clustered_segments(entries)
             if not segments:
                 return
 
@@ -1812,11 +1893,21 @@ class ContextManager:
             if normalized and normalized not in unique_uris:
                 unique_uris.append(normalized)
 
+        fs = getattr(self._orchestrator, "_fs", None)
         for uri in unique_uris:
             await self._orchestrator._storage.remove_by_uri(
                 self._orchestrator._get_collection(),
                 uri,
             )
+            if fs:
+                try:
+                    await fs.rm(uri, recursive=True)
+                except Exception as exc:
+                    logger.warning(
+                        "[ContextManager] CortexFS cleanup failed for %s: %s",
+                        uri,
+                        exc,
+                    )
 
     async def _list_immediate_uris(self, session_id: str) -> List[str]:
         """Return current session immediate source URIs for fallback cleanup."""
@@ -1865,7 +1956,7 @@ class ContextManager:
                     session_id=session_id,
                     source_uri=source_uri,
                 )
-                entries = self._build_recomposition_entries(
+                entries = await self._build_recomposition_entries(
                     snapshot=snapshot,
                     immediate_records=records,
                     tail_records=tail_records,
