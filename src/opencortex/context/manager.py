@@ -1721,10 +1721,8 @@ class ContextManager:
     def _merge_trigger_threshold(self) -> int:
         cfg = getattr(self._orchestrator, "_config", None)
         if cfg is None:
-            return 8192
-        budget = int(getattr(cfg, "conversation_merge_token_budget", 10240))
-        ratio = float(getattr(cfg, "conversation_merge_trigger_ratio", 0.8))
-        return max(1, int(budget * ratio))
+            return 4096
+        return max(1, int(getattr(cfg, "conversation_merge_token_budget", 4096)))
 
     async def _wait_for_merge_task(self, sk: SessionKey) -> None:
         """Wait until any in-flight background merge for the session finishes."""
