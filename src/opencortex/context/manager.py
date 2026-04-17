@@ -1624,15 +1624,36 @@ class ContextManager:
             if len(merged_records) <= 1:
                 return
 
+            # Batch-read L2 content from CortexFS for all merged records.
+            # Falls back to Qdrant overview if CortexFS read fails.
+            fs = getattr(self._orchestrator, "_fs", None)
+            uris_to_read = [
+                str(r.get("uri", "") or "").strip()
+                for r in merged_records
+                if r.get("uri")
+            ]
+
+            async def _read_l2(uri: str) -> str:
+                try:
+                    return await fs.read_file(f"{uri}/content.md")
+                except Exception:
+                    return ""
+
+            if fs and uris_to_read:
+                l2_contents = await asyncio.gather(*[_read_l2(u) for u in uris_to_read])
+                l2_by_uri = dict(zip(uris_to_read, l2_contents))
+            else:
+                l2_by_uri = {}
+
             entries: List[Dict[str, Any]] = []
             for record in merged_records:
                 msg_range = self._record_msg_range(record)
                 if msg_range is None:
                     continue
-                text = self._record_text(record)
+                uri = str(record.get("uri", "") or "").strip()
+                text = l2_by_uri.get(uri, "") or self._record_text(record)
                 if not text:
                     continue
-                uri = str(record.get("uri", "") or "").strip()
                 entries.append(
                     {
                         "text": text,
