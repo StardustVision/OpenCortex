@@ -880,6 +880,25 @@ class ContextManager:
         )
 
     @staticmethod
+    def _session_summary_uri(
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+    ) -> str:
+        """Return the stable session-summary URI for one conversation session."""
+        from opencortex.utils.uri import CortexURI
+
+        session_hash = hashlib.md5(session_id.encode("utf-8")).hexdigest()[:12]
+        node_name = f"session-summary-{session_hash}"
+        return CortexURI.build_private(
+            tenant_id,
+            user_id,
+            "memories",
+            "events",
+            node_name,
+        )
+
+    @staticmethod
     def _merged_leaf_uri(
         tenant_id: str,
         user_id: str,
@@ -1086,6 +1105,98 @@ class ContextManager:
             selected_message_count += width
         selected.reverse()
         return selected
+
+    async def _generate_session_summary(
+        self,
+        *,
+        session_id: str,
+        tenant_id: str,
+        user_id: str,
+        source_uri: Optional[str],
+    ) -> Optional[str]:
+        """Generate a session-level summary from merged records and soft-delete them.
+
+        Returns the session summary URI on success, None otherwise.
+        Merged records are marked superseded=True only after summary write succeeds.
+        """
+        from opencortex.prompts import build_parent_summarization_prompt
+
+        merged_records = await self._load_session_merged_records(
+            session_id=session_id,
+            source_uri=source_uri,
+        )
+        if len(merged_records) < 2:
+            return None
+
+        abstracts = [
+            str(r.get("abstract", "") or "")
+            for r in merged_records
+            if r.get("abstract")
+        ]
+        if not abstracts:
+            return None
+
+        session_title = f"Session {session_id}"
+        try:
+            prompt = build_parent_summarization_prompt(session_title, abstracts)
+            response = await self._orchestrator._derive_layers_llm_completion(prompt)
+            from opencortex.utils.json_parse import parse_json_from_response
+            data = parse_json_from_response(response)
+        except Exception as exc:
+            logger.warning(
+                "[ContextManager] session summary LLM failed sid=%s: %s", session_id, exc
+            )
+            return None
+
+        if not isinstance(data, dict):
+            return None
+        summary_abstract = str(data.get("abstract") or "").strip()[:200]
+        summary_overview = str(data.get("overview") or "").strip()
+        if not summary_abstract:
+            return None
+
+        summary_uri = self._session_summary_uri(tenant_id, user_id, session_id)
+        try:
+            await self._orchestrator.add(
+                uri=summary_uri,
+                abstract=summary_abstract,
+                content=summary_overview,
+                category="events",
+                context_type="memory",
+                is_leaf=True,
+                session_id=session_id,
+                meta={
+                    "layer": "session_summary",
+                    "session_id": session_id,
+                    "source_uri": source_uri or "",
+                    "merged_count": len(merged_records),
+                },
+            )
+        except Exception as exc:
+            logger.warning(
+                "[ContextManager] session summary write failed sid=%s: %s", session_id, exc
+            )
+            return None
+
+        # Final supersede: mark merged records as no longer searchable
+        for record in merged_records:
+            uri = str(record.get("uri", "") or "").strip()
+            if not uri:
+                continue
+            try:
+                await self._orchestrator.update(uri, meta={"superseded": True})
+            except Exception as exc:
+                logger.warning(
+                    "[ContextManager] supersede failed uri=%s: %s", uri, exc
+                )
+
+        logger.info(
+            "[ContextManager] session summary written sid=%s uri=%s merged_count=%d",
+            session_id,
+            summary_uri,
+            len(merged_records),
+        )
+        return summary_uri
 
     @classmethod
     def _segment_anchor_terms(cls, record: Dict[str, Any]) -> Set[str]:
@@ -1506,7 +1617,7 @@ class ContextManager:
                 if tool_calls:
                     buffer.tool_calls_per_turn.append(tool_calls)
 
-            if buffer.token_count >= 1000:
+            if buffer.token_count >= 2000:
                 self._spawn_merge_task(sk, session_id, tenant_id, user_id)
 
             write_status = "ok" if observer_ok else "fallback"
@@ -1738,7 +1849,7 @@ class ContextManager:
             buffer = self._conversation_buffers.get(sk)
             if not buffer or not buffer.messages:
                 return None
-            if not flush_all and buffer.token_count < 1000:
+            if not flush_all and buffer.token_count < 2000:
                 return None
 
             snapshot = ConversationBuffer(
@@ -2013,7 +2124,8 @@ class ContextManager:
                     self._pending_tasks.add(task)
                     task.add_done_callback(self._pending_tasks.discard)
 
-                # Full-session recomposition runs asynchronously after closeout.
+                # Full-session recomposition: wait for convergence so session summary
+                # is based on final merged records, not intermediate state.
                 self._spawn_full_recompose_task(
                     sk,
                     session_id=session_id,
@@ -2021,6 +2133,31 @@ class ContextManager:
                     user_id=user_id,
                     source_uri=source_uri,
                 )
+                recompose_task = self._session_full_recompose_tasks.get(sk)
+                if recompose_task and not recompose_task.done():
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.shield(recompose_task), timeout=60.0
+                        )
+                    except (asyncio.TimeoutError, Exception):
+                        pass
+
+                # Session summary: LLM-synthesize merged records into a single
+                # session-level object; then soft-delete merged records.
+                summary_uri = None
+                try:
+                    summary_uri = await self._generate_session_summary(
+                        session_id=session_id,
+                        tenant_id=tenant_id,
+                        user_id=user_id,
+                        source_uri=source_uri,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[ContextManager] session summary failed sid=%s: %s",
+                        session_id,
+                        exc,
+                    )
 
                 duration_ms = int((time.monotonic() - start_time) * 1000)
                 self._cleanup_session(sk)
@@ -2035,7 +2172,7 @@ class ContextManager:
                     duration_ms,
                 )
 
-                return {
+                result: Dict[str, Any] = {
                     "session_id": session_id,
                     "status": status,
                     "total_turns": total_turns,
@@ -2044,6 +2181,9 @@ class ContextManager:
                     "duration_ms": duration_ms,
                     "source_uri": source_uri,
                 }
+                if summary_uri:
+                    result["session_summary_uri"] = summary_uri
+                return result
         finally:
             reset_request_project_id(project_token)
 
