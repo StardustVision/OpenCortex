@@ -113,7 +113,7 @@ class OCClient:
             payload["meta"] = meta
         if embed_text:
             payload["embed_text"] = embed_text
-        return await self._post("/api/v1/memory/store", payload)
+        return await self._post("/api/v1/memory/store", payload, timeout=300.0, retry_on_timeout=False)
 
     async def search(
         self,
@@ -259,20 +259,32 @@ class OCClient:
         """Get Archivist pipeline status."""
         return await self._post("/api/v1/archivist/status", {})
 
-    async def _post(self, path: str, payload: Dict) -> Dict:
+    async def _post(
+        self,
+        path: str,
+        payload: Dict,
+        timeout: Optional[float] = None,
+        retry_on_timeout: bool = True,
+    ) -> Dict:
         """POST with retry logic (retryable on 429/5xx and transport errors)."""
         url = f"{self._base}{path}"
+        effective_timeout = timeout if timeout is not None else self._client.timeout.read
         last_error: Optional[Exception] = None
         for attempt in range(1, self._retries + 1):
             try:
-                r = await self._client.post(url, json=payload, headers=self._hdrs)
+                r = await self._client.post(
+                    url, json=payload, headers=self._hdrs, timeout=effective_timeout
+                )
                 r.raise_for_status()
                 return r.json()
-            except (
-                httpx.TimeoutException,
-                httpx.HTTPStatusError,
-                httpx.TransportError,
-            ) as exc:
+            except httpx.TimeoutException as exc:
+                if not retry_on_timeout:
+                    raise
+                last_error = exc
+                if attempt >= self._retries:
+                    raise
+                await asyncio.sleep(min(2**attempt, 120))
+            except (httpx.HTTPStatusError, httpx.TransportError) as exc:
                 last_error = exc
                 if attempt >= self._retries or not _is_retryable_http_error(exc):
                     raise
