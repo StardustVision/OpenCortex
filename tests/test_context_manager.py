@@ -930,36 +930,13 @@ class TestContextManager(unittest.TestCase):
         )
         self.assertIn("我搬到了杭州。", rendered_source)
 
+        # merged records are physically deleted on session_end
         merged_records = [
             record
             for record in self.storage._records.get("context", {}).values()
             if record.get("meta", {}).get("layer") == "merged"
         ]
-        self.assertEqual(len(merged_records), 1)
-        self.assertEqual(merged_records[0]["meta"]["source_uri"], source_uri)
-        self.assertEqual(merged_records[0]["meta"]["msg_range"], [0, 1])
-
-        items = self._run(
-            orch.list_memories(
-                category="events",
-                context_type="memory",
-                limit=10,
-                offset=0,
-                include_payload=True,
-            )
-        )
-        merged_item = next(
-            item
-            for item in items
-            if item.get("source_uri") == source_uri and item.get("msg_range") == [0, 1]
-        )
-        self.assertIn("overview", merged_item)
-        self.assertEqual(merged_item["source_uri"], source_uri)
-        self.assertEqual(merged_item["msg_range"], [0, 1])
-        self.assertIn(
-            merged_item["recomposition_stage"],
-            {"online_tail", "final_full"},
-        )
+        self.assertEqual(len(merged_records), 0)
 
         self._run(orch.close())
 
@@ -1443,6 +1420,7 @@ class TestContextManager(unittest.TestCase):
             result = await asyncio.wait_for(end_task, timeout=2.0)
             self.assertEqual(result["status"], "closed")
 
+            # merged records are physically deleted on session_end
             merged_records = [
                 record
                 for record in self.storage._records.get("context", {}).values()
@@ -1453,7 +1431,7 @@ class TestContextManager(unittest.TestCase):
                 for record in self.storage._records.get("context", {}).values()
                 if record.get("meta", {}).get("layer") == "immediate"
             ]
-            self.assertGreaterEqual(len(merged_records), 1)
+            self.assertEqual(len(merged_records), 0)
             self.assertEqual(immediate_records, [])
             self.assertFalse(
                 any(
@@ -1520,12 +1498,13 @@ class TestContextManager(unittest.TestCase):
             )
             self.assertEqual(result["status"], "closed")
 
+            # merged records are physically deleted on session_end
             merged_records = [
                 record
                 for record in self.storage._records.get("context", {}).values()
                 if record.get("meta", {}).get("layer") == "merged"
             ]
-            self.assertGreaterEqual(len(merged_records), 1)
+            self.assertEqual(len(merged_records), 0)
             self.assertFalse(
                 any(
                     record.get("uri", "").startswith(f"{uri}/anchors")
