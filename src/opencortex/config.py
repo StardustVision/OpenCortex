@@ -164,6 +164,8 @@ class CortexConfig:
     small_to_big_sibling_count: int = 2
     context_flattening_enabled: bool = True
     document_derive_concurrency: int = 3
+    conversation_merge_token_budget: int = 10240
+    conversation_merge_trigger_ratio: float = 0.8
     time_filter_enabled: bool = True
     time_filter_fallback_threshold: int = 3
     rerank_gate_score_gap_threshold: float = 0.15

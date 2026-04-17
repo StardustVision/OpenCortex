@@ -1373,7 +1373,7 @@ class TestContextManager(unittest.TestCase):
             cm = orch._context_manager
             session_id = "sess_merge_async_001"
             sk = cm._make_session_key("testteam", "alice", session_id)
-            cm._estimate_tokens = lambda _text: 1200
+            cm._estimate_tokens = lambda _text: 8500
 
             original_add = orch.add
             merge_started = asyncio.Event()
@@ -1453,7 +1453,7 @@ class TestContextManager(unittest.TestCase):
             cm = orch._context_manager
             session_id = "sess_merge_async_002"
             sk = cm._make_session_key("testteam", "alice", session_id)
-            cm._estimate_tokens = lambda _text: 1200
+            cm._estimate_tokens = lambda _text: 8500
 
             original_add = orch.add
             first_call = True

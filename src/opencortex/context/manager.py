@@ -1506,7 +1506,7 @@ class ContextManager:
                 if tool_calls:
                     buffer.tool_calls_per_turn.append(tool_calls)
 
-            if buffer.token_count >= 2000:
+            if buffer.token_count >= self._merge_trigger_threshold():
                 self._spawn_merge_task(sk, session_id, tenant_id, user_id)
 
             write_status = "ok" if observer_ok else "fallback"
@@ -1719,6 +1719,14 @@ class ContextManager:
         finally:
             reset_request_identity(tokens_for_identity)
 
+    def _merge_trigger_threshold(self) -> int:
+        cfg = getattr(self._orchestrator, "_config", None)
+        if cfg is None:
+            return 8192
+        budget = int(getattr(cfg, "conversation_merge_token_budget", 10240))
+        ratio = float(getattr(cfg, "conversation_merge_trigger_ratio", 0.8))
+        return max(1, int(budget * ratio))
+
     async def _wait_for_merge_task(self, sk: SessionKey) -> None:
         """Wait until any in-flight background merge for the session finishes."""
         task = self._session_merge_tasks.get(sk)
@@ -1738,7 +1746,7 @@ class ContextManager:
             buffer = self._conversation_buffers.get(sk)
             if not buffer or not buffer.messages:
                 return None
-            if not flush_all and buffer.token_count < 2000:
+            if not flush_all and buffer.token_count < self._merge_trigger_threshold():
                 return None
 
             snapshot = ConversationBuffer(
