@@ -9,51 +9,16 @@ from opencortex.intent.types import (
     ExecutionResult,
     ExecutionTrace,
     MemoryRuntimeDegrade,
-    RetrievalDepth,
     RetrievalPlan,
     SearchResult,
     ScopeLevel,
 )
 from opencortex.memory import retrieval_hints_for_kinds
+from opencortex.memory import retrieval_hints_for_kinds
 
 
 class MemoryExecutor:
     """Bind planner posture into execution facts without semantic replanning."""
-
-    @staticmethod
-    def _l1_overview_signal(query_results: List[Any]) -> Dict[str, float]:
-        """Summarize retrieved L1 evidence quality for post-retrieve arbitration."""
-        matched_contexts: List[Any] = []
-        for query_result in query_results:
-            matched_contexts.extend(list(query_result.matched_contexts or []))
-            if len(matched_contexts) >= 3:
-                break
-
-        if not matched_contexts:
-            return {
-                "matched_count": 0.0,
-                "overview_count": 0.0,
-                "overview_coverage": 0.0,
-                "avg_overview_chars": 0.0,
-                "top_score": 0.0,
-            }
-
-        overview_lengths = [
-            float(len(str(context.overview or "").strip()))
-            for context in matched_contexts
-            if str(context.overview or "").strip()
-        ]
-        matched_count = float(len(matched_contexts))
-        overview_count = float(len(overview_lengths))
-        return {
-            "matched_count": matched_count,
-            "overview_count": overview_count,
-            "overview_coverage": overview_count / matched_count,
-            "avg_overview_chars": (
-                sum(overview_lengths) / overview_count if overview_lengths else 0.0
-            ),
-            "top_score": float(matched_contexts[0].score or 0.0),
-        }
 
     @staticmethod
     def _raw_candidate_cap(
@@ -105,7 +70,6 @@ class MemoryExecutor:
         association_mode = self._association_mode(
             retrieve_plan.search_profile.association_budget
         )
-        hydration_allowed = retrieve_plan.retrieval_depth != RetrievalDepth.L2
         raw_candidate_cap = self._raw_candidate_cap(
             max_items=max_items,
             recall_budget=recall_budget,
@@ -144,7 +108,6 @@ class MemoryExecutor:
             "seed_uri_cap": seed_uri_cap,
             "anchor_cap": anchor_cap,
             "bind_start_points": bind_start_points,
-            "hydration_allowed": hydration_allowed,
             "degrade": MemoryRuntimeDegrade().to_dict(),
         }
 
@@ -191,86 +154,6 @@ class MemoryExecutor:
             degrade=MemoryRuntimeDegrade(**dict(bound_plan["degrade"])),
         )
 
-    def arbitrate_hydration(
-        self,
-        *,
-        bound_plan: Dict[str, Any],
-        query_results: List[Any],
-    ) -> tuple[Dict[str, Any], bool, List[Dict[str, Any]], bool]:
-        """Decide after L1 retrieval whether execution should stop or hydrate to L2."""
-        effective_depth = str(bound_plan.get("effective_depth", ""))
-        if effective_depth != RetrievalDepth.L1.value:
-            return bound_plan, False, [], False
-        if not bool(bound_plan.get("hydration_allowed", False)):
-            return bound_plan, False, [], False
-
-        signal = self._l1_overview_signal(query_results)
-        matched_count = int(signal["matched_count"])
-        if matched_count == 0:
-            return (
-                bound_plan,
-                False,
-                [
-                    {
-                        "step": "l1_arbitration",
-                        "decision": "stay_l1",
-                        "reason": "no_candidates",
-                    }
-                ],
-                False,
-            )
-
-        sufficient = bool(
-            signal["overview_count"] >= 1
-            and (
-                signal["top_score"] >= 0.85
-                or matched_count == 1
-                or (
-                    signal["overview_coverage"] >= 0.6
-                    and signal["avg_overview_chars"] >= 72.0
-                )
-            )
-        )
-        if sufficient:
-            return (
-                bound_plan,
-                False,
-                [
-                    {
-                        "step": "l1_arbitration",
-                        "decision": "stay_l1",
-                        "reason": "overview_sufficient",
-                        "matched_count": matched_count,
-                        "overview_count": int(signal["overview_count"]),
-                        "overview_coverage": round(signal["overview_coverage"], 4),
-                        "avg_overview_chars": round(signal["avg_overview_chars"], 2),
-                    }
-                ],
-                True,
-            )
-
-        upgraded_plan = {
-            **bound_plan,
-            "effective_depth": RetrievalDepth.L2.value,
-            "hydration_allowed": False,
-        }
-        return (
-            upgraded_plan,
-            True,
-            [
-                {
-                    "step": "l1_arbitration",
-                    "decision": "upgrade_l2",
-                    "reason": "overview_insufficient",
-                    "matched_count": matched_count,
-                    "overview_count": int(signal["overview_count"]),
-                    "overview_coverage": round(signal["overview_coverage"], 4),
-                    "avg_overview_chars": round(signal["avg_overview_chars"], 2),
-                }
-            ],
-            False,
-        )
-
     def apply_degrade(
         self,
         *,
@@ -291,8 +174,6 @@ class MemoryExecutor:
             degraded["rerank"] = False
         if "disable_association" in actions:
             degraded["association_mode"] = "off"
-        if "skip_hydration" in actions:
-            degraded["hydration_allowed"] = False
         if "narrow_recall" in actions:
             degraded["memory_limit"] = max(1, int(degraded["memory_limit"] * 0.7))
             degraded["raw_candidate_cap"] = max(

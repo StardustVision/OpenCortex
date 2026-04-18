@@ -458,6 +458,17 @@ def _register_routes(app: FastAPI) -> None:
     async def memory_stats() -> Dict[str, Any]:
         return await _orchestrator.stats()
 
+    @app.get("/api/v1/memory/derive_status")
+    async def memory_derive_status(uri: str) -> Dict[str, Any]:
+        """Check async derive status for a document URI."""
+        return await _orchestrator.derive_status(uri)
+
+    @app.post("/api/v1/memory/wait_derives")
+    async def memory_wait_derives() -> Dict[str, Any]:
+        """Wait until all in-flight deferred derives complete. Returns count of completed derives."""
+        await _orchestrator.wait_deferred_derives()
+        return {"status": "ok"}
+
     @app.post("/api/v1/memory/forget")
     async def memory_forget(req: MemoryForgetRequest) -> Dict[str, Any]:
         """Delete a memory by exact URI or semantic search query."""

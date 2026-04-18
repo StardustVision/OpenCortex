@@ -22,10 +22,13 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from dataclasses import dataclass, field as dc_field
 
 from opencortex.http.request_context import (
+    get_collection_name,
     get_effective_identity,
     get_effective_project_id,
+    reset_collection_name,
     reset_request_identity,
     reset_request_project_id,
+    set_collection_name,
     set_request_identity,
     set_request_project_id,
 )
@@ -1635,6 +1638,7 @@ class ContextManager:
         if existing_task and not existing_task.done():
             return
 
+        collection_name = get_collection_name()
         task = asyncio.create_task(
             self._merge_buffer(
                 sk,
@@ -1642,6 +1646,7 @@ class ContextManager:
                 tenant_id,
                 user_id,
                 flush_all=False,
+                collection_name=collection_name,
             )
         )
         self._session_merge_tasks[sk] = task
@@ -1668,12 +1673,14 @@ class ContextManager:
         if existing_task and not existing_task.done():
             return
 
+        collection_name = get_collection_name()
         task = asyncio.create_task(
             self._run_full_session_recomposition(
                 session_id=session_id,
                 tenant_id=tenant_id,
                 user_id=user_id,
                 source_uri=source_uri,
+                collection_name=collection_name,
             )
         )
         self._session_full_recompose_tasks[sk] = task
@@ -1693,9 +1700,11 @@ class ContextManager:
         tenant_id: str,
         user_id: str,
         source_uri: Optional[str],
+        collection_name: Optional[str] = None,
     ) -> None:
         """Run one asynchronous full-session merged-leaf convergence pass."""
         tokens_for_identity = set_request_identity(tenant_id, user_id)
+        coll_token = set_collection_name(collection_name) if collection_name else None
         created_merged_uris: List[str] = []
         try:
             merged_records = await self._load_session_merged_records(
@@ -1835,6 +1844,8 @@ class ContextManager:
                     await self._delete_immediate_families(created_merged_uris)
         finally:
             reset_request_identity(tokens_for_identity)
+            if coll_token is not None:
+                reset_collection_name(coll_token)
 
     def _merge_trigger_threshold(self) -> int:
         cfg = getattr(self._orchestrator, "_config", None)
@@ -1949,9 +1960,11 @@ class ContextManager:
         user_id: str,
         *,
         flush_all: bool,
+        collection_name: Optional[str] = None,
     ) -> None:
         """Merge accumulated buffer snapshots into durable merged records."""
         tokens_for_identity = None
+        coll_token = set_collection_name(collection_name) if collection_name else None
         self._session_pending_immediate_cleanup.pop(sk, None)
         try:
             while True:
@@ -2073,9 +2086,8 @@ class ContextManager:
         finally:
             if tokens_for_identity:
                 reset_request_identity(tokens_for_identity)
-
-    # =========================================================================
-    # Phase: end
+            if coll_token is not None:
+                reset_collection_name(coll_token)
     # =========================================================================
 
     async def _end(

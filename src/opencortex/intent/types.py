@@ -6,7 +6,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import Field, model_validator
+from pydantic import Field
 
 from opencortex.memory import MemoryKind
 from opencortex.memory.domain import MemoryDomainModel
@@ -191,18 +191,6 @@ class SearchResult(MemoryDomainModel):
     evidence: SearchEvidence = Field(default_factory=SearchEvidence)
     trace: MemoryProbeTrace = Field(default_factory=MemoryProbeTrace)
 
-    @model_validator(mode="after")
-    def _normalize_fields(self) -> "SearchResult":
-        if not self.should_recall:
-            self.anchor_hits = []
-            self.candidate_entries = []
-            self.starting_points = []
-            self.query_entities = []
-            self.starting_point_anchors = []
-            self.scope_level = ScopeLevel.GLOBAL
-            self.evidence = SearchEvidence()
-        return self
-
 
 def probe_confidence(probe_result: Optional[SearchResult]) -> float:
     """Project bounded probe evidence into a cheap normalized confidence."""
@@ -225,7 +213,7 @@ def probe_confidence(probe_result: Optional[SearchResult]) -> float:
 
 
 class RetrievalPlan(MemoryDomainModel):
-    """Phase 2 object-aware retrieval plan."""
+    """Phase 2 object-aware retrieval plan — planner-owned decision object."""
 
     target_memory_kinds: List[MemoryKind] = Field(default_factory=list)
     query_plan: MemoryQueryPlan = Field(default_factory=MemoryQueryPlan)
@@ -235,6 +223,9 @@ class RetrievalPlan(MemoryDomainModel):
     session_scope: Optional[str] = None
     confidence: Optional[float] = None
     decision: str = ""
+    drill_uris: List[str] = Field(default_factory=list)
+    expand_anchors: List[str] = Field(default_factory=list)
+    scope_filter: Optional[Dict[str, Any]] = None
 
 
 class ExecutionResult(MemoryDomainModel):

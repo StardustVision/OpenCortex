@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from opencortex.intent.types import (
     MemoryCoarseClass,
@@ -101,9 +101,22 @@ class RecallPlanner:
         max_items: int,
         recall_mode: str,
         detail_level_override: Optional[str],
+        scope_input: Optional[Any] = None,
     ) -> Optional[RetrievalPlan]:
         """Build the Phase 2 planner output from bounded probe evidence."""
         if recall_mode == "never":
+            return None
+
+        scope_level, scope_source, scope_filter, root_uris = self._select_scope(
+            probe_result=probe_result,
+            scope_input=scope_input,
+        )
+
+        if (
+            probe_result.scope_authoritative
+            and not probe_result.candidate_entries
+            and not probe_result.anchor_hits
+        ):
             return None
 
         confidence = probe_confidence(probe_result)
@@ -121,12 +134,10 @@ class RecallPlanner:
             detail_level_override=detail_level_override,
         )
 
-        scope_level = probe_result.scope_level
-
         session_scope = None
         if (
             scope_level == ScopeLevel.SESSION_ONLY
-            or probe_result.scope_source == ProbeScopeSource.SESSION_ID
+            or scope_source == ProbeScopeSource.SESSION_ID
         ):
             for sp in probe_result.starting_points:
                 if sp.session_id:
@@ -156,7 +167,90 @@ class RecallPlanner:
             session_scope=session_scope,
             confidence=confidence,
             decision=self._decision_for_depth(retrieval_depth),
+            drill_uris=[],
+            expand_anchors=[],
+            scope_filter=scope_filter,
         )
+
+    def _select_scope(
+        self,
+        *,
+        probe_result: SearchResult,
+        scope_input: Optional[Any],
+    ) -> tuple[ScopeLevel, ProbeScopeSource, Optional[Dict[str, Any]], List[str]]:
+        """Infer scope from probe signals and caller scope context."""
+        if scope_input is None:
+            return ScopeLevel.GLOBAL, ProbeScopeSource.GLOBAL_ROOT, None, []
+
+        source = scope_input.source
+        starting_points = probe_result.starting_points
+
+        if source == ProbeScopeSource.TARGET_URI:
+            root_uris = [scope_input.target_uri] if scope_input.target_uri else []
+            parent_uris = [sp.uri for sp in starting_points if sp.uri]
+            scope_filter = (
+                {"op": "must", "field": "parent_uri", "conds": parent_uris}
+                if parent_uris
+                else None
+            )
+            return ScopeLevel.CONTAINER_SCOPED, source, scope_filter, root_uris
+
+        if source == ProbeScopeSource.SESSION_ID:
+            session_ids = list({
+                sp.session_id
+                for sp in starting_points
+                if sp.session_id
+            })
+            scope_filter = (
+                {"op": "must", "field": "session_id", "conds": session_ids}
+                if session_ids
+                else None
+            )
+            root_uris = [sp.uri for sp in starting_points if sp.session_id][:3]
+            return ScopeLevel.SESSION_ONLY, source, scope_filter, root_uris
+
+        if source == ProbeScopeSource.SOURCE_DOC_ID:
+            doc_ids = list({
+                sp.source_doc_id
+                for sp in starting_points
+                if sp.source_doc_id
+            })
+            scope_filter = (
+                {"op": "must", "field": "source_doc_id", "conds": doc_ids}
+                if doc_ids
+                else None
+            )
+            root_uris = [sp.uri for sp in starting_points if sp.source_doc_id][:3]
+            return ScopeLevel.DOCUMENT_ONLY, source, scope_filter, root_uris
+
+        if starting_points:
+            top = starting_points[0]
+            if top.session_id:
+                session_id = top.session_id
+                filtered = [
+                    sp for sp in starting_points if sp.session_id == session_id
+                ][:3]
+                scope_filter = {
+                    "op": "must",
+                    "field": "session_id",
+                    "conds": [session_id],
+                }
+                root_uris = [sp.uri for sp in filtered]
+                return ScopeLevel.SESSION_ONLY, ProbeScopeSource.SESSION_ID, scope_filter, root_uris
+            if top.source_doc_id:
+                doc_id = top.source_doc_id
+                filtered = [
+                    sp for sp in starting_points if sp.source_doc_id == doc_id
+                ][:3]
+                scope_filter = {
+                    "op": "must",
+                    "field": "source_doc_id",
+                    "conds": [doc_id],
+                }
+                root_uris = [sp.uri for sp in filtered]
+                return ScopeLevel.DOCUMENT_ONLY, ProbeScopeSource.SOURCE_DOC_ID, scope_filter, root_uris
+
+        return ScopeLevel.GLOBAL, source, None, []
 
     def _infer_class_prior(
         self,
@@ -350,23 +444,7 @@ class RecallPlanner:
         if self._l0_is_sufficient(probe_result, confidence):
             return RetrievalDepth.L0
 
-        if coarse_class in {
-            MemoryCoarseClass.PROFILE,
-            MemoryCoarseClass.EXPLORE,
-            MemoryCoarseClass.RELATIONAL,
-        }:
-            base_depth = RetrievalDepth.L1
-        else:
-            base_depth = RetrievalDepth.L0
-
-        if (
-            probe_result.evidence.object_candidate_count == 0
-            and probe_result.evidence.anchor_candidate_count > 0
-        ):
-            return RetrievalDepth.L1
-        if confidence < 0.4 and base_depth == RetrievalDepth.L0:
-            return RetrievalDepth.L1
-        return base_depth
+        return RetrievalDepth.L2
 
     @staticmethod
     def _l0_is_sufficient(
@@ -387,7 +465,7 @@ class RecallPlanner:
         if depth == RetrievalDepth.L0:
             return "stop_l0"
         if depth == RetrievalDepth.L1:
-            return "arbitrate_l1"
+            return "stop_l1"
         return "hydrate_l2"
 
     @staticmethod

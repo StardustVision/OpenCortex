@@ -222,7 +222,8 @@ class TestMemoryRuntime(unittest.TestCase):
         self.assertEqual(degraded["trace"]["effective"]["association_mode"], "off")
         self.assertEqual(degraded["trace"]["effective"]["retrieval_depth"], "l1")
 
-    def test_l1_arbitration_upgrades_to_l2_when_overview_is_missing(self):
+    def test_bind_effective_depth_equals_planned_depth(self):
+        """Executor does not arbitrate depth — planner's decision is final."""
         bound = self.runtime.bind(
             probe_result=self.probe,
             retrieve_plan=self.plan,
@@ -233,80 +234,9 @@ class TestMemoryRuntime(unittest.TestCase):
             project_id="project-1",
             include_knowledge=False,
         )
-        query_results = [
-            QueryResult(
-                query=TypedQuery(
-                    query="What would I likely choose based on habit?",
-                    context_type=ContextType.MEMORY,
-                    intent="memory",
-                    detail_level=DetailLevel.L1,
-                ),
-                matched_contexts=[
-                    MatchedContext(
-                        uri="opencortex://memory/profile/1",
-                        context_type=ContextType.MEMORY,
-                        is_leaf=True,
-                        abstract="User prefers quiet hotels.",
-                        overview=None,
-                        score=0.91,
-                    )
-                ],
-                searched_directories=[],
-            )
-        ]
 
-        upgraded, should_hydrate, actions, early_stop = self.runtime.arbitrate_hydration(
-            bound_plan=bound,
-            query_results=query_results,
-        )
-
-        self.assertTrue(should_hydrate)
-        self.assertFalse(early_stop)
-        self.assertEqual(upgraded["effective_depth"], "l2")
-        self.assertEqual(actions[0]["decision"], "upgrade_l2")
-
-    def test_l1_arbitration_stays_on_l1_when_overview_is_sufficient(self):
-        bound = self.runtime.bind(
-            probe_result=self.probe,
-            retrieve_plan=self.plan,
-            max_items=5,
-            session_id="sess-1",
-            tenant_id="tenant-1",
-            user_id="user-1",
-            project_id="project-1",
-            include_knowledge=False,
-        )
-        query_results = [
-            QueryResult(
-                query=TypedQuery(
-                    query="What would I likely choose based on habit?",
-                    context_type=ContextType.MEMORY,
-                    intent="memory",
-                    detail_level=DetailLevel.L1,
-                ),
-                matched_contexts=[
-                    MatchedContext(
-                        uri="opencortex://memory/profile/1",
-                        context_type=ContextType.MEMORY,
-                        is_leaf=True,
-                        abstract="User prefers quiet hotels.",
-                        overview="User consistently chooses quiet hotels close to lakes and avoids nightlife districts when traveling for work.",
-                        score=0.91,
-                    )
-                ],
-                searched_directories=[],
-            )
-        ]
-
-        upgraded, should_hydrate, actions, early_stop = self.runtime.arbitrate_hydration(
-            bound_plan=bound,
-            query_results=query_results,
-        )
-
-        self.assertFalse(should_hydrate)
-        self.assertTrue(early_stop)
-        self.assertEqual(upgraded["effective_depth"], "l1")
-        self.assertEqual(actions[0]["decision"], "stay_l1")
+        self.assertEqual(bound["effective_depth"], bound["planned_depth"])
+        self.assertNotIn("hydration_allowed", bound)
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from opencortex.config import CortexConfig, init_config
 from opencortex.intent import ExecutionResult, RecallPlanner, RetrievalPlan, SearchResult
-from opencortex.intent.types import ProbeScopeSource, ScopeLevel, StartingPoint
+from opencortex.intent.types import ProbeScopeInput, ProbeScopeSource, ScopeLevel, StartingPoint
 from opencortex.memory import MemoryKind
 from opencortex.orchestrator import MemoryOrchestrator
 from opencortex.retrieve.types import FindResult
@@ -15,7 +15,8 @@ from test_e2e_phase1 import InMemoryStorage, MockEmbedder
 
 
 class TestRecallPlanContracts(unittest.TestCase):
-    def test_probe_result_to_dict_clears_hits_when_no_recall(self):
+    def test_probe_result_preserves_candidates_regardless_of_should_recall(self):
+        """SearchResult no longer auto-clears fields on should_recall=False."""
         result = SearchResult(
             should_recall=False,
             candidate_entries=[
@@ -26,49 +27,9 @@ class TestRecallPlanContracts(unittest.TestCase):
             ],
         )
 
-        self.assertEqual(
-            result.to_dict(),
-            {
-                "should_recall": False,
-                "anchor_hits": [],
-                "candidate_entries": [],
-                "starting_points": [],
-                "query_entities": [],
-                "starting_point_anchors": [],
-                "scope_level": "global",
-                "scope_source": "global_root",
-                "scope_authoritative": False,
-                "selected_root_uris": [],
-                "scoped_miss": False,
-                "evidence": {
-                    "top_score": None,
-                    "score_gap": None,
-                    "object_top_score": None,
-                    "anchor_top_score": None,
-                    "candidate_count": 0,
-                    "object_candidate_count": 0,
-                    "anchor_candidate_count": 0,
-                    "anchor_hit_count": 0,
-                },
-                "trace": {
-                    "backend": "local_probe",
-                    "model": None,
-                    "top_k": 0,
-                    "latency_ms": None,
-                    "object_latency_ms": None,
-                    "anchor_latency_ms": None,
-                    "object_candidates": 0,
-                    "anchor_candidates": 0,
-                    "starting_points": 0,
-                    "selected_bucket_source": None,
-                    "scope_authoritative": False,
-                    "selected_root_uris": [],
-                    "scoped_miss": False,
-                    "degraded": False,
-                    "degrade_reason": None,
-                },
-            },
-        )
+        serialized = result.to_dict()
+        self.assertFalse(serialized["should_recall"])
+        self.assertEqual(len(serialized["candidate_entries"]), 1)
 
     def test_find_result_to_dict_emits_probe_first_memory_pipeline(self):
         probe_result = SearchResult(
@@ -178,8 +139,8 @@ class TestRecallPlannerIntegration(unittest.IsolatedAsyncioTestCase):
             plan.target_memory_kinds[0],
             {MemoryKind.PREFERENCE, MemoryKind.PROFILE},
         )
-        self.assertEqual(plan.retrieval_depth, "l1")
-        self.assertEqual(plan.decision, "arbitrate_l1")
+        self.assertEqual(plan.retrieval_depth, "l2")
+        self.assertEqual(plan.decision, "hydrate_l2")
         self.assertGreater(plan.confidence or 0.0, 0.7)
         self.assertEqual(plan.query_plan.rewrite_mode.value, "none")
 
@@ -228,7 +189,8 @@ class TestRecallPlannerIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.total, 1)
         self.assertEqual(result.memories[0].session_id, "sess-a")
 
-    async def test_search_probe_pipeline_exposes_selected_scope_bucket(self):
+    async def test_search_probe_passes_scope_signals(self):
+        """Probe passes scope_input through as signals (planner scope tested after Unit 5)."""
         await self.orch.add(
             abstract="Project launch notes under events root.",
             category="events",
@@ -242,10 +204,8 @@ class TestRecallPlannerIntegration(unittest.IsolatedAsyncioTestCase):
         )
 
         probe_payload = result.to_dict()["memory_pipeline"]["probe"]
-        self.assertEqual(probe_payload["scope_level"], ScopeLevel.CONTAINER_SCOPED.value)
         self.assertEqual(probe_payload["scope_source"], ProbeScopeSource.TARGET_URI.value)
         self.assertTrue(probe_payload["scope_authoritative"])
-        self.assertEqual(probe_payload["selected_root_uris"], ["opencortex://memory/events"])
 
     async def test_search_authoritative_scope_miss_stays_scoped(self):
         result = await self.orch.search(
@@ -257,12 +217,11 @@ class TestRecallPlannerIntegration(unittest.IsolatedAsyncioTestCase):
         payload = result.to_dict()["memory_pipeline"]
         self.assertEqual(payload["probe"]["scope_source"], ProbeScopeSource.TARGET_URI.value)
         self.assertTrue(payload["probe"]["scope_authoritative"])
-        self.assertTrue(payload["probe"]["scoped_miss"])
-        self.assertEqual(payload["probe"]["selected_root_uris"], ["opencortex://memory/missing-scope"])
         self.assertNotIn("planner", payload)
         self.assertNotIn("runtime", payload)
 
-    async def test_search_stays_l1_when_fallback_overview_is_sufficient(self):
+    async def test_search_depth_is_planned_not_arbitrated(self):
+        """Planner pre-decides depth; no executor arbitration."""
         long_content = (
             "用户在出差订酒店时总是优先选择安静、靠湖、步行可达会场的酒店，"
             "并且明确避免夜生活区域和高噪音街区。"
@@ -281,11 +240,8 @@ class TestRecallPlannerIntegration(unittest.IsolatedAsyncioTestCase):
         )
 
         payload = result.to_dict()["memory_pipeline"]["runtime"]
-        self.assertEqual(payload["trace"]["effective"]["retrieval_depth"], "l1")
-        self.assertEqual(payload["trace"]["hydration"][0]["decision"], "stay_l1")
+        self.assertEqual(payload["trace"]["effective"]["retrieval_depth"], "l2")
         self.assertTrue(result.memories)
-        self.assertIsNone(result.memories[0].content)
-        self.assertTrue(result.memories[0].overview)
 
 
 class TestRecallPlannerStartingPoints(unittest.TestCase):
@@ -328,7 +284,7 @@ class TestRecallPlannerStartingPoints(unittest.TestCase):
             ],
             starting_point_anchors=["Alice"],
             query_entities=["Alice"],
-            scope_level=ScopeLevel.SESSION_ONLY,
+            scope_level=ScopeLevel.GLOBAL,
         )
         planner = RecallPlanner(cone_enabled=True)
         plan = planner.semantic_plan(
@@ -337,6 +293,7 @@ class TestRecallPlannerStartingPoints(unittest.TestCase):
             max_items=5,
             recall_mode="auto",
             detail_level_override=None,
+            scope_input=ProbeScopeInput(source=ProbeScopeSource.GLOBAL_ROOT),
         )
         assert plan is not None
         self.assertEqual(plan.scope_level, ScopeLevel.SESSION_ONLY)
@@ -354,7 +311,7 @@ class TestRecallPlannerStartingPoints(unittest.TestCase):
             ],
             starting_point_anchors=[],
             query_entities=["what"],
-            scope_level=ScopeLevel.SESSION_ONLY,
+            scope_level=ScopeLevel.GLOBAL,
         )
         planner = RecallPlanner(cone_enabled=True)
         plan = planner.semantic_plan(
@@ -363,6 +320,7 @@ class TestRecallPlannerStartingPoints(unittest.TestCase):
             max_items=5,
             recall_mode="auto",
             detail_level_override=None,
+            scope_input=ProbeScopeInput(source=ProbeScopeSource.GLOBAL_ROOT),
         )
         assert plan is not None
         self.assertEqual(plan.scope_level, ScopeLevel.SESSION_ONLY)
@@ -432,7 +390,7 @@ class TestRecallPlannerStartingPoints(unittest.TestCase):
             anchor_hits=["perseid meteor shower", "20 July, 2023"],
             query_entities=["Melanie", "paint", "sunrise"],
             evidence={"candidate_count": 1, "top_score": 0.8, "anchor_hit_count": 3},
-            scope_level=ScopeLevel.SESSION_ONLY,
+            scope_level=ScopeLevel.GLOBAL,
         )
         planner = RecallPlanner(cone_enabled=True)
         plan = planner.semantic_plan(
@@ -441,6 +399,7 @@ class TestRecallPlannerStartingPoints(unittest.TestCase):
             max_items=5,
             recall_mode="auto",
             detail_level_override=None,
+            scope_input=ProbeScopeInput(source=ProbeScopeSource.GLOBAL_ROOT),
         )
 
         assert plan is not None
@@ -458,10 +417,10 @@ class TestRecallPlannerStartingPoints(unittest.TestCase):
                 {"uri": "opencortex://memory/events/item-1", "memory_kind": "event"}
             ],
             evidence={"candidate_count": 1, "top_score": 0.83},
-            scope_level=ScopeLevel.CONTAINER_SCOPED,
+            scope_level=ScopeLevel.GLOBAL,
             scope_source=ProbeScopeSource.TARGET_URI,
             scope_authoritative=True,
-            selected_root_uris=["opencortex://memory/events"],
+            selected_root_uris=[],
         )
         planner = RecallPlanner(cone_enabled=True)
         plan = planner.semantic_plan(
@@ -470,6 +429,11 @@ class TestRecallPlannerStartingPoints(unittest.TestCase):
             max_items=5,
             recall_mode="auto",
             detail_level_override=None,
+            scope_input=ProbeScopeInput(
+                source=ProbeScopeSource.TARGET_URI,
+                authoritative=True,
+                target_uri="opencortex://memory/events",
+            ),
         )
 
         assert plan is not None
@@ -504,7 +468,7 @@ class TestRecallPlannerStartingPoints(unittest.TestCase):
                     source_doc_id="d1",
                 ),
             ],
-            scope_level=ScopeLevel.SESSION_ONLY,  # probe already computed this
+            scope_level=ScopeLevel.GLOBAL,
         )
         planner = RecallPlanner(cone_enabled=True)
         plan = planner.semantic_plan(
@@ -513,9 +477,9 @@ class TestRecallPlannerStartingPoints(unittest.TestCase):
             max_items=5,
             recall_mode="auto",
             detail_level_override=None,
+            scope_input=ProbeScopeInput(source=ProbeScopeSource.GLOBAL_ROOT),
         )
         assert plan is not None
-        # session_scope is extracted from starting points, overriding document
         self.assertEqual(plan.session_scope, "s1")
 
 

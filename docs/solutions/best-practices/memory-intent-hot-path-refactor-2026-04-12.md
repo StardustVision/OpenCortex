@@ -58,20 +58,20 @@ whether the system should escalate.
 
 Keep the three phases strict and explicit.
 
-- Phase 1 probe returns only first-pass evidence:
-  `MemoryProbeResult(should_recall, hits, evidence, trace)`.
-- Phase 2 planner converts `query + probe_result` into retrieval posture:
-  `MemoryRetrievePlan(target_memory_kinds, query_plan, search_profile, retrieval_depth)`.
+- Phase 1 probe returns only first-pass signals (URIs, anchors, starting points):
+  `SearchResult(should_recall=True, candidate_entries, anchor_hits, starting_points, evidence, trace)`.
+  Probe does not make scope decisions or set `scoped_miss`.
+- Phase 2 planner converts `query + probe_result` into retrieval decisions:
+  `RetrievalPlan(target_memory_kinds, query_plan, search_profile, retrieval_depth, scope_level, scope_filter, drill_uris, expand_anchors)`.
+  Planner is the sole decision center for scope, depth, and strategy.
 - Phase 3 runtime binds the plan into bounded executable facts and emits
   machine-readable execution results:
-  `MemoryRuntimeResult(items, trace, degrade)`.
+  `ExecutionResult(items, trace, degrade)`. Runtime does not re-arbitrate depth.
 
 The correct orchestration shape is:
 
 ```python
-probe_result = await probe.probe(query)
-if not probe_result.should_recall:
-    return None
+probe_result = await probe.probe(query, scope_filter=scope_filter)
 
 retrieve_plan = planner.semantic_plan(
     query=query,
@@ -79,9 +79,10 @@ retrieve_plan = planner.semantic_plan(
     max_items=max_items,
     recall_mode="auto",
     detail_level_override=None,
+    scope_input=scope_input,
 )
 if retrieve_plan is None:
-    return None
+    return None  # scoped miss or recall_mode=never
 
 bound_plan = runtime.bind(
     probe_result=probe_result,

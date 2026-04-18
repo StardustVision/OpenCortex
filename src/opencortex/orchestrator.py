@@ -244,6 +244,9 @@ class MemoryOrchestrator:
         self._derive_worker_task: Optional[asyncio.Task] = None
         self._inflight_derive_uris: set = set()
 
+        # Conversation deferred derive tracking
+        self._deferred_derive_count: int = 0
+
         # Autophagy background sweeps (metabolism)
         self._autophagy_sweep_task: asyncio.Task | None = None
         self._autophagy_startup_sweep_task: asyncio.Task | None = None
@@ -308,13 +311,15 @@ class MemoryOrchestrator:
             from opencortex.storage.qdrant import QdrantStorageAdapter
 
             db_path = str(Path(self._config.data_root) / ".qdrant")
+            qdrant_url = getattr(self._config, "qdrant_url", "") or ""
             self._storage = QdrantStorageAdapter(
                 path=db_path,
                 embedding_dim=self._config.embedding_dimension,
+                url=qdrant_url,
             )
             logger.info(
                 "[MemoryOrchestrator] Auto-created QdrantStorageAdapter at %s",
-                db_path,
+                qdrant_url or db_path,
             )
 
         # 1b. Embedder auto-creation
@@ -1765,6 +1770,7 @@ class MemoryOrchestrator:
         context_type: str = "memory",
     ) -> None:
         """Run LLM derive for a previously deferred record and update Qdrant + CortexFS."""
+        self._deferred_derive_count += 1
         try:
             layers = await self._derive_layers(
                 user_abstract=abstract,
@@ -1858,6 +1864,17 @@ class MemoryOrchestrator:
             logger.warning(
                 "[Orchestrator] deferred derive failed for %s: %s", uri, exc,
             )
+        finally:
+            self._deferred_derive_count -= 1
+
+    async def wait_deferred_derives(self, poll_interval: float = 1.0) -> None:
+        """Wait until all in-flight deferred derives complete."""
+        while self._deferred_derive_count > 0:
+            logger.info(
+                "[Orchestrator] waiting for %d deferred derives...",
+                self._deferred_derive_count,
+            )
+            await asyncio.sleep(poll_interval)
 
     @staticmethod
     def _fallback_overview_from_content(
@@ -3101,6 +3118,7 @@ class MemoryOrchestrator:
         max_items: int,
         recall_mode: str,
         detail_level_override: Optional[str],
+        scope_input: Optional[Any] = None,
     ) -> Optional[RetrievalPlan]:
         """Run the Phase 2 evidence-driven planner."""
         return self._recall_planner.semantic_plan(
@@ -3109,6 +3127,7 @@ class MemoryOrchestrator:
             max_items=max_items,
             recall_mode=recall_mode,
             detail_level_override=detail_level_override,
+            scope_input=scope_input,
         )
 
     def bind_memory_runtime(
@@ -3592,47 +3611,44 @@ class MemoryOrchestrator:
         # is_leaf=True stays only on the leaf search (anchor/fp records are non-leaf).
         scope_only_filter: Optional[Dict[str, Any]] = None
         if retrieve_plan is not None:
-            if retrieve_plan.scope_level == ScopeLevel.CONTAINER_SCOPED:
+            if retrieve_plan.scope_filter:
+                scope_only_filter = retrieve_plan.scope_filter
+            elif retrieve_plan.scope_level != ScopeLevel.GLOBAL:
                 if probe_result and probe_result.starting_points:
-                    parent_uris = [
-                        sp.uri for sp in probe_result.starting_points if sp.uri
-                    ]
-                    if parent_uris:
-                        scope_only_filter = {
-                            "op": "must",
-                            "field": "parent_uri",
-                            "conds": parent_uris,
-                        }
-            elif retrieve_plan.scope_level == ScopeLevel.SESSION_ONLY:
-                if probe_result and probe_result.starting_points:
-                    session_ids = sorted(
-                        {
+                    if retrieve_plan.scope_level == ScopeLevel.CONTAINER_SCOPED:
+                        parent_uris = [
+                            sp.uri for sp in probe_result.starting_points if sp.uri
+                        ]
+                        if parent_uris:
+                            scope_only_filter = {
+                                "op": "must",
+                                "field": "parent_uri",
+                                "conds": parent_uris,
+                            }
+                    elif retrieve_plan.scope_level == ScopeLevel.SESSION_ONLY:
+                        session_ids = sorted({
                             sp.session_id
                             for sp in probe_result.starting_points
                             if sp.session_id
-                        }
-                    )
-                    if session_ids:
-                        scope_only_filter = {
-                            "op": "must",
-                            "field": "session_id",
-                            "conds": session_ids,
-                        }
-            elif retrieve_plan.scope_level == ScopeLevel.DOCUMENT_ONLY:
-                if probe_result and probe_result.starting_points:
-                    doc_ids = sorted(
-                        {
+                        })
+                        if session_ids:
+                            scope_only_filter = {
+                                "op": "must",
+                                "field": "session_id",
+                                "conds": session_ids,
+                            }
+                    elif retrieve_plan.scope_level == ScopeLevel.DOCUMENT_ONLY:
+                        doc_ids = sorted({
                             sp.source_doc_id
                             for sp in probe_result.starting_points
                             if sp.source_doc_id
-                        }
-                    )
-                    if doc_ids:
-                        scope_only_filter = {
-                            "op": "must",
-                            "field": "source_doc_id",
-                            "conds": doc_ids,
-                        }
+                        })
+                        if doc_ids:
+                            scope_only_filter = {
+                                "op": "must",
+                                "field": "source_doc_id",
+                                "conds": doc_ids,
+                            }
 
         is_leaf_filter = {"op": "must", "field": "is_leaf", "conds": [True]}
 
@@ -3968,14 +3984,13 @@ class MemoryOrchestrator:
             )
         else:
             stage_timings.record_ms("probe", 0)
-        if probe_result is not None and probe_result.scoped_miss:
-            return FindResult(
-                memories=[],
-                resources=[],
-                skills=[],
-                probe_result=probe_result,
-            )
         if retrieve_plan is None:
+            scope_input = build_probe_scope_input(
+                context_type=context_type,
+                target_uri=target_uri,
+                target_doc_id=target_doc_id,
+                session_context=session_context,
+            )
             retrieve_plan = measure_sync(
                 stage_timings,
                 "plan",
@@ -3985,6 +4000,7 @@ class MemoryOrchestrator:
                 max_items=limit,
                 recall_mode="auto",
                 detail_level_override=detail_level_override,
+                scope_input=scope_input,
             )
         else:
             stage_timings.record_ms("plan", 0)
@@ -4062,42 +4078,6 @@ class MemoryOrchestrator:
         )
         query_results = list(query_results)
         hydration_actions: List[Dict[str, Any]] = []
-        early_stop = False
-        if runtime_bound_plan is not None:
-            (
-                runtime_bound_plan,
-                should_hydrate_l2,
-                hydration_actions,
-                early_stop,
-            ) = self._memory_runtime.arbitrate_hydration(
-                bound_plan=runtime_bound_plan,
-                query_results=query_results,
-            )
-            if should_hydrate_l2:
-                hydrated_queries = [
-                    replace(typed_query, detail_level=DetailLevel.L2)
-                    for typed_query in typed_queries
-                ]
-                query_results = await measure_async(
-                    stage_timings,
-                    "hydrate",
-                    asyncio.gather,
-                    *[
-                        self._execute_object_query(
-                            typed_query=typed_query,
-                            limit=effective_limit,
-                            score_threshold=score_threshold,
-                            search_filter=search_filter,
-                            retrieve_plan=retrieve_plan,
-                            probe_result=probe_result,
-                            bound_plan=runtime_bound_plan,
-                        )
-                        for typed_query in hydrated_queries
-                    ],
-                )
-                query_results = list(query_results)
-            else:
-                stage_timings.record_ms("hydrate", 0)
 
         aggregate_started = asyncio.get_running_loop().time()
         result = self._aggregate_results(query_results, limit=limit)
@@ -4139,7 +4119,6 @@ class MemoryOrchestrator:
                 stage_timing_ms=timing_snapshot,
                 retrieve_breakdown_ms=retrieve_breakdown_ms,
                 hydration_actions=hydration_actions,
-                early_stop=early_stop,
             )
         logger.info(
             "[search] tenant=%s user=%s probe_candidates=%d queries=%d results=%d "

@@ -83,7 +83,7 @@ class TestMemoryProbe(unittest.IsolatedAsyncioTestCase):
 
         result = await probe.probe("   ")
 
-        self.assertFalse(result.should_recall)
+        self.assertTrue(result.should_recall)
         self.assertEqual(result.trace.degrade_reason, "empty_query")
 
     async def test_probe_merges_scope_filter_into_storage_search(self):
@@ -128,7 +128,8 @@ class TestMemoryProbe(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-    async def test_probe_records_target_uri_bucket_without_concrete_roots(self):
+    async def test_probe_records_target_uri_scope_input_passthrough(self):
+        """Probe passes scope_input through as signal, does not make scope decisions."""
         storage = _StorageStub([])
         probe = MemoryBootstrapProbe(
             storage=storage,
@@ -147,13 +148,12 @@ class TestMemoryProbe(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-        self.assertFalse(result.should_recall)
-        self.assertTrue(result.scoped_miss)
+        self.assertTrue(result.should_recall)
+        self.assertFalse(result.scoped_miss)
         self.assertEqual(result.scope_source, ProbeScopeSource.TARGET_URI)
         self.assertTrue(result.scope_authoritative)
-        self.assertEqual(result.selected_root_uris, ["opencortex://memory/events"])
-        self.assertEqual(result.trace.selected_bucket_source, ProbeScopeSource.TARGET_URI)
-        self.assertEqual(result.trace.selected_root_uris, ["opencortex://memory/events"])
+        self.assertEqual(result.scope_level, ScopeLevel.GLOBAL)
+        self.assertEqual(result.selected_root_uris, [])
 
     async def test_probe_records_context_type_bucket_without_concrete_roots(self):
         probe = MemoryBootstrapProbe(
@@ -312,7 +312,7 @@ class TestMemoryProbe(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result.starting_points), 1)
         self.assertEqual(result.starting_points[0].uri, "opencortex://t/u/memories/events/s1")
         self.assertEqual(result.starting_points[0].session_id, "s1")
-        self.assertEqual(result.scope_level, ScopeLevel.SESSION_ONLY)
+        self.assertEqual(result.scope_level, ScopeLevel.GLOBAL)
         self.assertIn("Alice", result.starting_point_anchors)
 
     async def test_starting_points_document_scoped(self):
@@ -351,9 +351,10 @@ class TestMemoryProbe(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result.starting_points), 1)
         self.assertEqual(result.starting_points[0].uri, "opencortex://t/u/resources/documents/doc-1")
         self.assertEqual(result.starting_points[0].source_doc_id, "doc-1")
-        self.assertEqual(result.scope_level, ScopeLevel.DOCUMENT_ONLY)
+        self.assertEqual(result.scope_level, ScopeLevel.GLOBAL)
 
-    async def test_starting_points_most_specific_scope_wins(self):
+    async def test_starting_points_collected_as_signals(self):
+        """Probe collects starting points as signals; scope decisions deferred to planner."""
         storage = _StorageStub(
             [
                 {
@@ -384,9 +385,7 @@ class TestMemoryProbe(unittest.IsolatedAsyncioTestCase):
         result = await probe.probe("Query")
 
         self.assertEqual(len(result.starting_points), 2)
-        # With current storage hierarchy, any session_id-bearing record
-        # maps to SESSION_ONLY because parent_uri traversal is not reliable.
-        self.assertEqual(result.scope_level, ScopeLevel.SESSION_ONLY)
+        self.assertEqual(result.scope_level, ScopeLevel.GLOBAL)
 
 
 if __name__ == "__main__":

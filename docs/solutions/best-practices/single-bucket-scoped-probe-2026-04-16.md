@@ -1,5 +1,5 @@
 ---
-title: Keep memory probe scope single-bucket and authoritative before anchor expansion
+title: Keep scope single-bucket, authoritative, and planner-decided
 date: 2026-04-16
 category: best-practices
 module: intent
@@ -64,22 +64,22 @@ When changing the memory recall hot path, keep these rules intact.
   instead of relying only on a flattened merged filter. The important signal is
   not just the final predicate, but where scope came from:
   `target_uri`, `session_id`, `source_doc_id`, `context_type`, or global.
-- Let `src/opencortex/intent/probe.py` choose exactly one active bucket before
-  object and anchor retrieval. Do not union roots from multiple bucket levels
-  in the same normal-path pass.
-- Treat explicit scope as authoritative. If `target_uri`, `session_id`, or
-  `source_doc_id` yields no usable in-scope candidates, return `scoped_miss`
-  and keep the request scoped. Do not silently widen to weaker global search.
+- Let `src/opencortex/intent/planner.py` choose exactly one active scope bucket
+  from probe signals. Probe collects signals (URIs, anchors, starting points);
+  planner decides scope. Do not union roots from multiple bucket levels in the
+  same normal-path pass.
+- Treat explicit scope as authoritative. If planner sees authoritative scope
+  with no in-scope candidates, return `None` (scoped miss) and keep the request
+  scoped. Do not silently widen to weaker global search.
 - Keep anchor guidance inside the chosen scope. Anchors are precision signals,
   not a second scope-selection system.
 - Keep compatibility fields compatible but inert. Fields such as
   `fallback_ready` and runtime `trace.fallback` may remain in DTO/API surfaces
   for contract stability, but they should not accidentally reintroduce a
   widening policy that the runtime no longer uses.
-- Make hydration an execution decision based on retrieved `L1` evidence, not a
-  pre-committed retrieval depth escalation. In this codebase that means
-  inspecting the first retrieved contexts, then only upgrading to `L2` when
-  overview coverage is insufficient.
+- Make retrieval depth a planner decision. Planner pre-decides `L0`/`L1`/`L2`
+  depth based on probe evidence confidence and coarse class. When uncertain,
+  default to `L2`. Executor does not re-arbitrate depth after retrieval.
 - Keep benchmark adapters and HTTP contracts aligned with the shipped path.
   If the runtime now emits selected bucket, scoped miss, hydration, and
   retrieval contract signals, adapter metadata and API tests should assert
@@ -94,13 +94,13 @@ regressions:
   instead of becoming an invisible global search success.
 - Probe traces stay debuggable. Reviewers can tell which bucket won, whether it
   was authoritative, and which roots were retained.
-- Planner and runtime stay phase-native. Probe chooses scope, planner shapes
-  retrieval posture, runtime decides whether `L1` evidence is sufficient.
+- Planner and runtime stay phase-native. Probe collects signals, planner decides
+  scope + depth + strategy, runtime executes faithfully.
 - Benchmark attribution stays trustworthy. `benchmarks/adapters/conversation.py`,
   `benchmarks/adapters/locomo.py`, and HTTP/contract tests can only validate
   the system if they consume the same semantics the runtime is actually using.
-- Latency work becomes safer. `L1 -> L2` hydration only happens when the first
-  pass did not already provide enough overview evidence.
+- Latency work becomes safer. Depth is decided upfront by planner, avoiding
+  post-retrieval arbitration overhead.
 
 ## When to Apply
 
@@ -138,28 +138,28 @@ context. A merged filter alone loses that distinction.
 Example 2: authoritative scope miss should stop widening immediately.
 
 ```python
-if result.scope_authoritative and not result.candidate_entries and not result.anchor_hits:
-    result.should_recall = False
-    result.scoped_miss = True
-    result.fallback_ready = False
-    result.trace.scoped_miss = True
+# In planner.semantic_plan():
+if (
+    probe_result.scope_authoritative
+    and not probe_result.candidate_entries
+    and not probe_result.anchor_hits
+):
+    return None  # scoped miss
 ```
 
-This behavior in `src/opencortex/intent/probe.py` is the key guardrail that
+This behavior in `src/opencortex/intent/planner.py` is the key guardrail that
 keeps explicit scope requests honest.
 
-Example 3: runtime should arbitrate `L1` sufficiency after retrieval rather
-than escalating up front.
+Example 3: planner pre-decides retrieval depth.
 
 ```python
-upgraded_plan, should_hydrate, actions, early_stop = runtime.arbitrate_hydration(
-    bound_plan=bound_plan,
-    query_results=query_results,
-)
+# Planner decides depth based on probe evidence. When uncertain, default L2.
+if _FULL_EVIDENCE_RE.search(query):
+    return RetrievalDepth.L2
+if _l0_is_sufficient(probe_result, confidence):
+    return RetrievalDepth.L0
+return RetrievalDepth.L2  # conservative default
 ```
-
-The implementation in `src/opencortex/intent/executor.py` checks retrieved
-overview coverage before upgrading to `L2`.
 
 Example 4: benchmark adapter metadata should describe the actual retrieval
 contract, not just raw payload shape.

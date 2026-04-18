@@ -479,7 +479,7 @@ class TestHTTPServer(unittest.TestCase):
                     data["memory_pipeline"]["probe"],
                 )
                 planned_depth = data["memory_pipeline"]["planner"]["retrieval_depth"]
-                self.assertIn(planned_depth, {"l0", "l1"})
+                self.assertIn(planned_depth, {"l0", "l1", "l2"})
                 effective_depth = data["memory_pipeline"]["runtime"]["trace"][
                     "effective"
                 ]["retrieval_depth"]

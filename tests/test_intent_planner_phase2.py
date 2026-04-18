@@ -20,10 +20,14 @@ class TestIntentPlannerPhase2(unittest.TestCase):
             query="Which file did we edit for the retry fix?",
             probe_result=SearchResult(
                 should_recall=True,
+                candidate_entries=[
+                    {"uri": "opencortex://memory/events/1", "memory_kind": "event"},
+                ],
                 evidence={
                     "top_score": 0.92,
                     "score_gap": 0.2,
                     "candidate_count": 1,
+                    "object_candidate_count": 1,
                 },
             ),
             max_items=5,
@@ -67,8 +71,8 @@ class TestIntentPlannerPhase2(unittest.TestCase):
             MemoryKind.PREFERENCE,
             MemoryKind.CONSTRAINT,
         ])
-        self.assertEqual(plan.retrieval_depth, RetrievalDepth.L1)
-        self.assertEqual(plan.decision, "arbitrate_l1")
+        self.assertEqual(plan.retrieval_depth, RetrievalDepth.L2)
+        self.assertEqual(plan.decision, "hydrate_l2")
         self.assertTrue(plan.search_profile.rerank)
 
     def test_relational_query_increases_association_budget(self):
@@ -99,7 +103,7 @@ class TestIntentPlannerPhase2(unittest.TestCase):
         self.assertEqual(plan.target_memory_kinds[0], MemoryKind.RELATION)
         self.assertGreater(plan.search_profile.association_budget, 0.0)
         self.assertEqual(plan.query_plan.rewrite_mode, QueryRewriteMode.NONE)
-        self.assertEqual(plan.decision, "arbitrate_l1")
+        self.assertEqual(plan.decision, "hydrate_l2")
 
     def test_full_content_request_can_request_l2(self):
         planner = RecallPlanner(cone_enabled=True)

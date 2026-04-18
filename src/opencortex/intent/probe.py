@@ -177,7 +177,7 @@ class MemoryBootstrapProbe:
         query_stripped = _WHITESPACE_RE.sub(" ", (query or "").strip())
         if not query_stripped:
             result = SearchResult(
-                should_recall=False,
+                should_recall=True,
                 trace=MemoryProbeTrace(
                     backend="local_probe",
                     model=self._model_name(),
@@ -204,32 +204,26 @@ class MemoryBootstrapProbe:
         try:
             query_vector = await self._embed_query(query_stripped)
             base_filter = _merge_filters(self._filter_builder(), scope_filter)
-            (
-                selected_filter,
-                selected_scope_source,
-                selected_scope_authoritative,
-                selected_scope_level,
-                selected_root_uris,
-                starting_point_records,
-                starting_point_latency_ms,
-            ) = await self._select_scope_bucket(
-                query=query_stripped,
-                query_vector=query_vector,
-                base_filter=base_filter,
-                scope_input=normalized_scope_input,
-            )
-            object_probe, anchor_probe = await asyncio.gather(
+
+            object_probe, anchor_probe, sp_probe = await asyncio.gather(
                 self._timed_probe(
                     self._object_probe(
                         query=query_stripped,
                         query_vector=query_vector,
-                        base_filter=selected_filter,
+                        base_filter=base_filter,
                     )
                 ),
                 self._timed_probe(
                     self._anchor_probe(
                         query=query_stripped,
-                        base_filter=selected_filter,
+                        base_filter=base_filter,
+                    )
+                ),
+                self._timed_probe(
+                    self._starting_point_probe(
+                        query=query_stripped,
+                        query_vector=query_vector,
+                        base_filter=base_filter,
                     )
                 ),
             )
@@ -237,15 +231,13 @@ class MemoryBootstrapProbe:
                 query=query_stripped,
                 object_records=object_probe[0],
                 anchor_records=anchor_probe[0],
-                starting_point_records=starting_point_records,
+                starting_point_records=sp_probe[0],
                 latency_ms=(time.perf_counter() - started) * 1000.0,
                 object_latency_ms=object_probe[1],
                 anchor_latency_ms=anchor_probe[1],
-                starting_point_latency_ms=starting_point_latency_ms,
-                scope_source=selected_scope_source,
-                scope_authoritative=selected_scope_authoritative,
-                selected_root_uris=selected_root_uris,
-                selected_scope_level=selected_scope_level,
+                starting_point_latency_ms=sp_probe[1],
+                scope_source=normalized_scope_input.source,
+                scope_authoritative=normalized_scope_input.authoritative,
             )
         except Exception as exc:
             logger.warning("[MemoryBootstrapProbe] probe failed: %s", exc)
@@ -260,11 +252,6 @@ class MemoryBootstrapProbe:
                     degrade_reason=str(exc),
                 ),
             )
-
-        if result.scope_authoritative and not result.candidate_entries and not result.anchor_hits:
-            result.should_recall = False
-            result.scoped_miss = True
-            result.trace.scoped_miss = True
 
         self._last_probe_trace = result.trace.to_dict()
         self._decision_cache_put(cache_key, result, self._last_probe_trace)
@@ -424,97 +411,6 @@ class MemoryBootstrapProbe:
                     break
         return deduped
 
-    async def _select_scope_bucket(
-        self,
-        *,
-        query: str,
-        query_vector: Optional[list[float]],
-        base_filter: Optional[Dict[str, Any]],
-        scope_input: ProbeScopeInput,
-    ) -> tuple[
-        Optional[Dict[str, Any]],
-        ProbeScopeSource,
-        bool,
-        ScopeLevel,
-        list[str],
-        list[Dict[str, Any]],
-        float,
-    ]:
-        """Select the active scope bucket before object/anchor retrieval."""
-        selected_filter = base_filter
-        selected_scope_source = scope_input.source
-        selected_scope_authoritative = bool(scope_input.authoritative)
-        selected_scope_level = ScopeLevel.GLOBAL
-        selected_root_uris: list[str] = []
-        starting_point_records: list[Dict[str, Any]] = []
-        starting_point_latency_ms = 0.0
-
-        if selected_scope_source == ProbeScopeSource.TARGET_URI:
-            selected_scope_level = ScopeLevel.CONTAINER_SCOPED
-            if scope_input.target_uri:
-                selected_root_uris = [scope_input.target_uri]
-        elif selected_scope_source in {
-            ProbeScopeSource.SESSION_ID,
-            ProbeScopeSource.SOURCE_DOC_ID,
-            ProbeScopeSource.GLOBAL_ROOT,
-        }:
-            starting_point_records, starting_point_latency_ms = await self._timed_probe(
-                self._starting_point_probe(
-                    query=query,
-                    query_vector=query_vector,
-                    base_filter=base_filter,
-                )
-            )
-        if selected_scope_source == ProbeScopeSource.SESSION_ID:
-            selected_scope_level = ScopeLevel.SESSION_ONLY
-            selected_root_uris = self._record_uris(starting_point_records)
-        elif selected_scope_source == ProbeScopeSource.SOURCE_DOC_ID:
-            selected_scope_level = ScopeLevel.DOCUMENT_ONLY
-            selected_root_uris = self._record_uris(starting_point_records)
-        elif (
-            selected_scope_source == ProbeScopeSource.GLOBAL_ROOT
-            and starting_point_records
-        ):
-            top_record = starting_point_records[0]
-            session_id = str(top_record.get("session_id") or "").strip()
-            source_doc_id = str(top_record.get("source_doc_id") or "").strip()
-            if session_id:
-                selected_scope_source = ProbeScopeSource.SESSION_ID
-                selected_scope_level = ScopeLevel.SESSION_ONLY
-                starting_point_records = [
-                    record
-                    for record in starting_point_records
-                    if str(record.get("session_id") or "").strip() == session_id
-                ][: self._top_k]
-                selected_root_uris = self._record_uris(starting_point_records)
-                selected_filter = _merge_filters(
-                    base_filter,
-                    {"op": "must", "field": "session_id", "conds": [session_id]},
-                )
-            elif source_doc_id:
-                selected_scope_source = ProbeScopeSource.SOURCE_DOC_ID
-                selected_scope_level = ScopeLevel.DOCUMENT_ONLY
-                starting_point_records = [
-                    record
-                    for record in starting_point_records
-                    if str(record.get("source_doc_id") or "").strip() == source_doc_id
-                ][: self._top_k]
-                selected_root_uris = self._record_uris(starting_point_records)
-                selected_filter = _merge_filters(
-                    base_filter,
-                    {"op": "must", "field": "source_doc_id", "conds": [source_doc_id]},
-                )
-
-        return (
-            selected_filter,
-            selected_scope_source,
-            selected_scope_authoritative,
-            selected_scope_level,
-            selected_root_uris,
-            starting_point_records,
-            starting_point_latency_ms,
-        )
-
     def _build_probe_result(
         self,
         *,
@@ -528,8 +424,6 @@ class MemoryBootstrapProbe:
         starting_point_latency_ms: float,
         scope_source: ProbeScopeSource,
         scope_authoritative: bool,
-        selected_root_uris: list[str],
-        selected_scope_level: ScopeLevel,
     ) -> SearchResult:
         candidate_entries_by_uri: Dict[str, SearchCandidate] = {}
         anchor_values: list[str] = []
@@ -646,7 +540,6 @@ class MemoryBootstrapProbe:
 
         starting_points: list[StartingPoint] = []
         starting_point_anchors: list[str] = []
-        scope_levels: set[ScopeLevel] = set()
 
         for record in starting_point_records:
             session_id = str(record.get("session_id") or "").strip() or None
@@ -688,30 +581,6 @@ class MemoryBootstrapProbe:
                 if value and value not in starting_point_anchors:
                     starting_point_anchors.append(value)
 
-            if session_id:
-                # All session-scoped records currently map to SESSION_ONLY
-                # because the storage hierarchy does not support reliable
-                # parent_uri-based child retrieval for arbitrary memory records.
-                scope_levels.add(ScopeLevel.SESSION_ONLY)
-            elif source_doc_id:
-                scope_levels.add(ScopeLevel.DOCUMENT_ONLY)
-            else:
-                scope_levels.add(ScopeLevel.GLOBAL)
-
-        # Most specific scope level wins
-        scope_level = ScopeLevel.GLOBAL
-        if ScopeLevel.CONTAINER_SCOPED in scope_levels:
-            scope_level = ScopeLevel.CONTAINER_SCOPED
-        elif ScopeLevel.SESSION_ONLY in scope_levels:
-            scope_level = ScopeLevel.SESSION_ONLY
-        elif ScopeLevel.DOCUMENT_ONLY in scope_levels:
-            scope_level = ScopeLevel.DOCUMENT_ONLY
-
-        if not starting_points and selected_scope_level == ScopeLevel.GLOBAL:
-            scope_level = ScopeLevel.GLOBAL
-        if selected_scope_level != ScopeLevel.GLOBAL:
-            scope_level = selected_scope_level
-
         return SearchResult(
             should_recall=True,
             anchor_hits=anchor_values[:8],
@@ -719,10 +588,10 @@ class MemoryBootstrapProbe:
             starting_points=starting_points,
             query_entities=query_entities,
             starting_point_anchors=starting_point_anchors[:8],
-            scope_level=scope_level,
+            scope_level=ScopeLevel.GLOBAL,
             scope_source=scope_source,
             scope_authoritative=scope_authoritative,
-            selected_root_uris=selected_root_uris[: self._top_k],
+            selected_root_uris=[],
             evidence=SearchEvidence(
                 top_score=top_score,
                 score_gap=score_gap,
@@ -745,7 +614,7 @@ class MemoryBootstrapProbe:
                 anchor_candidates=len(anchor_records),
                 selected_bucket_source=scope_source,
                 scope_authoritative=scope_authoritative,
-                selected_root_uris=selected_root_uris[: self._top_k],
+                selected_root_uris=[],
             ),
         )
 
@@ -809,13 +678,6 @@ class MemoryBootstrapProbe:
             if raw_value is not None:
                 return float(raw_value)
         return None
-
-    def _record_uris(self, records: list[Dict[str, Any]]) -> list[str]:
-        return [
-            str(record.get("uri") or "")
-            for record in records
-            if str(record.get("uri") or "").strip()
-        ][: self._top_k]
 
     def _query_anchor_terms(self, query: str) -> list[str]:
         values: list[str] = []
