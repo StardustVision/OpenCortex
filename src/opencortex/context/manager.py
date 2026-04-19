@@ -33,6 +33,7 @@ from opencortex.http.request_context import (
     set_request_project_id,
 )
 from opencortex.intent import RetrievalPlan, SearchResult
+from opencortex.intent.retrieval_support import build_probe_scope_input
 from opencortex.intent.timing import StageTimingCollector, measure_async, measure_sync
 from opencortex.utils.text import smart_truncate
 from opencortex.retrieve.types import (
@@ -47,8 +48,8 @@ _SEGMENT_MAX_TOKENS = 1200
 _SEGMENT_MIN_MESSAGES = 2
 _RECOMPOSE_TAIL_MAX_MERGED_LEAVES = 6
 _RECOMPOSE_TAIL_MAX_MESSAGES = 24
-_RECOMPOSE_CLUSTER_MAX_TOKENS = 3000
-_RECOMPOSE_CLUSTER_MAX_MESSAGES = 30
+_RECOMPOSE_CLUSTER_MAX_TOKENS = 8000
+_RECOMPOSE_CLUSTER_MAX_MESSAGES = 60
 _RECOMPOSE_CLUSTER_JACCARD_THRESHOLD = 0.15
 _COARSE_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _COARSE_HUMAN_DATE_RE = re.compile(r"^\d{1,2}\s+[A-Za-z]+,\s+\d{4}$")
@@ -391,6 +392,12 @@ class ContextManager:
                     ),
                     timeout=10.0,
                 )
+                scope_input = build_probe_scope_input(
+                    context_type=options.context_type,
+                    target_uri="",
+                    target_doc_id=None,
+                    session_context=options.session_context,
+                )
                 retrieve_plan = measure_sync(
                     stage_timings,
                     "plan",
@@ -400,6 +407,7 @@ class ContextManager:
                     max_items=options.max_items,
                     recall_mode=options.recall_mode,
                     detail_level_override=options.detail_level_override,
+                    scope_input=scope_input,
                 )
                 if retrieve_plan is not None:
                     runtime_bound = measure_sync(
@@ -498,6 +506,10 @@ class ContextManager:
                         options.category
                     )
                 find_result = await self._orchestrator.search(**search_kwargs)
+                # Expand directory hits into children leaf records
+                find_result.memories = await self._expand_directory_hits(
+                    find_result.memories
+                )
                 owner_ids = await self._orchestrator._resolve_memory_owner_ids(
                     find_result.memories
                 )
@@ -886,6 +898,23 @@ class ContextManager:
         )
 
     @staticmethod
+    def _session_summary_uri(
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+    ) -> str:
+        from opencortex.utils.uri import CortexURI
+
+        return CortexURI.build_private(
+            tenant_id,
+            user_id,
+            "session",
+            "conversations",
+            session_id,
+            "summary",
+        )
+
+    @staticmethod
     def _merged_leaf_uri(
         tenant_id: str,
         user_id: str,
@@ -899,6 +928,26 @@ class ContextManager:
         end = int(msg_range[1])
         session_hash = hashlib.md5(session_id.encode("utf-8")).hexdigest()[:12]
         node_name = f"conversation-{session_hash}-{start:06d}-{end:06d}"
+        return CortexURI.build_private(
+            tenant_id,
+            user_id,
+            "memories",
+            "events",
+            node_name,
+        )
+
+    @staticmethod
+    def _directory_uri(
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+        index: int,
+    ) -> str:
+        """Return URI for a directory parent record."""
+        from opencortex.utils.uri import CortexURI
+
+        session_hash = hashlib.md5(session_id.encode("utf-8")).hexdigest()[:12]
+        node_name = f"conversation-{session_hash}/dir-{index:03d}"
         return CortexURI.build_private(
             tenant_id,
             user_id,
@@ -1049,6 +1098,36 @@ class ContextManager:
         for record in records:
             meta = dict(record.get("meta") or {})
             if str(meta.get("layer", "") or "") != "merged":
+                continue
+            if source_uri:
+                if str(meta.get("source_uri", "") or "") != source_uri:
+                    continue
+            msg_range = self._record_msg_range(record)
+            if msg_range is None:
+                continue
+            sortable.append((msg_range[0], msg_range[1], record))
+        sortable.sort(key=lambda item: (item[0], item[1]))
+        return [record for _, _, record in sortable]
+
+    async def _load_session_directory_records(
+        self,
+        *,
+        session_id: str,
+        source_uri: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Load directory parent records for one session in msg-range order."""
+        conds: List[Dict[str, Any]] = [
+            {"op": "must", "field": "session_id", "conds": [session_id]},
+        ]
+        records = await self._orchestrator._storage.filter(
+            self._orchestrator._get_collection(),
+            {"op": "and", "conds": conds},
+            limit=10000,
+        )
+        sortable: List[Tuple[int, int, Dict[str, Any]]] = []
+        for record in records:
+            meta = dict(record.get("meta") or {})
+            if str(meta.get("layer", "") or "") != "directory":
                 continue
             if source_uri:
                 if str(meta.get("source_uri", "") or "") != source_uri:
@@ -1702,10 +1781,15 @@ class ContextManager:
         source_uri: Optional[str],
         collection_name: Optional[str] = None,
     ) -> None:
-        """Run one asynchronous full-session merged-leaf convergence pass."""
+        """Create directory parent records for semantically related leaf clusters.
+
+        Preserves original merged leaf records. For each cluster of >=2 leaves,
+        generates a directory summary from children abstracts and writes a
+        directory record (layer="directory", is_leaf=False).
+        """
         tokens_for_identity = set_request_identity(tenant_id, user_id)
         coll_token = set_collection_name(collection_name) if collection_name else None
-        created_merged_uris: List[str] = []
+        created_directory_uris: List[str] = []
         try:
             merged_records = await self._load_session_merged_records(
                 session_id=session_id,
@@ -1714,34 +1798,13 @@ class ContextManager:
             if len(merged_records) <= 1:
                 return
 
-            # Batch-read L2 content from CortexFS for all merged records.
-            # Falls back to Qdrant overview if CortexFS read fails.
-            fs = getattr(self._orchestrator, "_fs", None)
-            uris_to_read = [
-                str(r.get("uri", "") or "").strip()
-                for r in merged_records
-                if r.get("uri")
-            ]
-
-            async def _read_l2(uri: str) -> str:
-                try:
-                    return await fs.read_file(f"{uri}/content.md")
-                except Exception:
-                    return ""
-
-            if fs and uris_to_read:
-                l2_contents = await asyncio.gather(*[_read_l2(u) for u in uris_to_read])
-                l2_by_uri = dict(zip(uris_to_read, l2_contents))
-            else:
-                l2_by_uri = {}
-
             entries: List[Dict[str, Any]] = []
             for record in merged_records:
                 msg_range = self._record_msg_range(record)
                 if msg_range is None:
                     continue
                 uri = str(record.get("uri", "") or "").strip()
-                text = l2_by_uri.get(uri, "") or self._record_text(record)
+                text = self._record_text(record)
                 if not text:
                     continue
                 entries.append(
@@ -1755,7 +1818,7 @@ class ContextManager:
                         "time_refs": self._segment_time_refs(record),
                         "source_record": record,
                         "immediate_uris": [],
-                        "superseded_merged_uris": ([uri] if uri else []),
+                        "superseded_merged_uris": [],
                     }
                 )
 
@@ -1763,74 +1826,108 @@ class ContextManager:
             if not segments:
                 return
 
-            all_tool_calls: List[Dict[str, Any]] = []
-            for record in merged_records:
-                meta = dict(record.get("meta") or {})
-                for call in meta.get("tool_calls", []) or []:
-                    if isinstance(call, dict):
-                        all_tool_calls.append(call)
-
+            directory_index = 0
             for segment in segments:
-                if not segment["messages"]:
+                source_records = segment.get("source_records", [])
+                if len(source_records) < 2:
                     continue
-                combined = "\n\n".join(segment["messages"])
-                aggregated_meta = await self._aggregate_records_metadata(
-                    segment["source_records"]
+
+                children_abstracts: List[str] = []
+                for rec in source_records:
+                    abstract = str(rec.get("abstract") or "").strip()
+                    if abstract:
+                        children_abstracts.append(abstract)
+                if not children_abstracts:
+                    continue
+
+                cluster_title = f"Directory-{directory_index:03d}"
+                derived = await self._orchestrator._derive_parent_summary(
+                    doc_title=cluster_title,
+                    children_abstracts=children_abstracts,
                 )
-                merged_context = await self._orchestrator.add(
-                    uri=self._merged_leaf_uri(
-                        tenant_id,
-                        user_id,
-                        session_id,
-                        segment["msg_range"],
-                    ),
-                    abstract="",
-                    content=combined,
+                if not derived:
+                    continue
+
+                llm_abstract = derived.get("abstract", "")
+                llm_overview = derived.get("overview", "")
+                keywords_list = derived.get("keywords", [])
+                keywords_str = ", ".join(str(k) for k in keywords_list if k) if isinstance(keywords_list, list) else ""
+
+                dir_uri = self._directory_uri(
+                    tenant_id, user_id, session_id, directory_index,
+                )
+
+                aggregated_meta = await self._aggregate_records_metadata(source_records)
+                all_tool_calls: List[Dict[str, Any]] = []
+                for rec in source_records:
+                    meta = dict(rec.get("meta") or {})
+                    for call in meta.get("tool_calls", []) or []:
+                        if isinstance(call, dict):
+                            all_tool_calls.append(call)
+
+                content = "\n\n".join(children_abstracts)
+
+                await self._orchestrator.add(
+                    uri=dir_uri,
+                    abstract=llm_abstract,
+                    content=content,
                     category="events",
                     context_type="memory",
+                    is_leaf=False,
+                    session_id=session_id,
                     meta={
                         **aggregated_meta,
-                        "layer": "merged",
+                        "layer": "directory",
                         "ingest_mode": "memory",
                         "msg_range": list(segment["msg_range"]),
                         "source_uri": source_uri or "",
                         "session_id": session_id,
-                        "recomposition_stage": "final_full",
+                        "child_count": len(source_records),
+                        "child_uris": [str(r.get("uri", "")) for r in source_records],
                         "tool_calls": all_tool_calls if all_tool_calls else [],
                     },
-                    session_id=session_id,
-                    defer_derive=True,
+                    overview=llm_overview,
                 )
-                created_merged_uris.append(merged_context.uri)
-                _defer_task = asyncio.create_task(
-                    self._orchestrator._complete_deferred_derive(
-                        uri=merged_context.uri,
-                        content=combined,
-                        abstract="",
-                        overview="",
-                        session_id=session_id,
-                        meta=aggregated_meta,
+
+                created_directory_uris.append(dir_uri)
+                directory_index += 1
+
+                if keywords_str:
+                    try:
+                        records = await self._orchestrator._storage.filter(
+                            self._orchestrator._get_collection(),
+                            {"op": "must", "field": "uri", "conds": [dir_uri]},
+                            limit=1,
+                        )
+                        if records:
+                            await self._orchestrator._storage.update(
+                                self._orchestrator._get_collection(),
+                                str(records[0].get("id", "")),
+                                {"keywords": keywords_str},
+                            )
+                    except Exception:
+                        logger.warning("[ContextManager] Failed to patch keywords for %s", dir_uri)
+
+                fs = getattr(self._orchestrator, "_fs", None)
+                if fs is not None:
+                    await fs.write_context(
+                        uri=dir_uri,
+                        content=content,
+                        abstract=llm_abstract,
+                        abstract_json={
+                            "keywords": keywords_list,
+                            "child_count": len(source_records),
+                        },
+                        overview=llm_overview,
+                        is_leaf=False,
                     )
-                )
-                _defer_task.add_done_callback(
-                    lambda t: None if t.cancelled() else (
-                        logger.warning("[ContextManager] deferred derive failed: %s", t.exception())
-                        if t.exception() else None
-                    )
-                )
-            superseded_merged_uris = self._merge_unique_strings(
-                *[
-                    segment.get("superseded_merged_uris", [])
-                    for segment in segments
-                ]
+
+            logger.info(
+                "[ContextManager] Full recompose completed sid=%s directories=%d leaves_preserved=%d",
+                session_id,
+                len(created_directory_uris),
+                len(merged_records),
             )
-            superseded_merged_uris = [
-                uri
-                for uri in superseded_merged_uris
-                if uri not in created_merged_uris
-            ]
-            if superseded_merged_uris:
-                await self._delete_immediate_families(superseded_merged_uris)
         except Exception as exc:
             logger.warning(
                 "[ContextManager] Full-session recomposition failed sid=%s tenant=%s user=%s: %s",
@@ -1839,19 +1936,146 @@ class ContextManager:
                 user_id,
                 exc,
             )
-            if created_merged_uris:
+            if created_directory_uris:
                 with contextlib.suppress(Exception):
-                    await self._delete_immediate_families(created_merged_uris)
+                    await self._delete_immediate_families(created_directory_uris)
         finally:
             reset_request_identity(tokens_for_identity)
             if coll_token is not None:
                 reset_collection_name(coll_token)
 
+    async def _generate_session_summary(
+        self,
+        *,
+        session_id: str,
+        tenant_id: str,
+        user_id: str,
+        source_uri: Optional[str],
+    ) -> Optional[str]:
+        """Generate a session-level summary from directory abstracts (or leaf abstracts as fallback)."""
+        directory_records = await self._load_session_directory_records(
+            session_id=session_id,
+            source_uri=source_uri,
+        )
+
+        abstracts: List[str] = []
+
+        if directory_records:
+            # Use directory abstracts as primary source
+            dir_child_uris: Set[str] = set()
+            for rec in directory_records:
+                meta = dict(rec.get("meta") or {})
+                for child_uri in meta.get("child_uris", []) or []:
+                    if child_uri:
+                        dir_child_uris.add(child_uri)
+                abstract = str(rec.get("abstract") or "").strip()
+                if abstract:
+                    abstracts.append(abstract)
+
+            # Include ungrouped leaf abstracts (leaves not in any directory)
+            merged_records = await self._load_session_merged_records(
+                session_id=session_id,
+                source_uri=source_uri,
+            )
+            for rec in merged_records:
+                uri = str(rec.get("uri", "") or "").strip()
+                if uri and uri not in dir_child_uris:
+                    abstract = str(rec.get("abstract") or "").strip()
+                    if abstract:
+                        abstracts.append(abstract)
+        else:
+            # Fallback: use leaf abstracts directly
+            merged_records = await self._load_session_merged_records(
+                session_id=session_id,
+                source_uri=source_uri,
+            )
+            if len(merged_records) < 2:
+                return None
+            for record in merged_records:
+                abstract = str(record.get("abstract") or "").strip()
+                if abstract:
+                    abstracts.append(abstract)
+
+        if not abstracts:
+            return None
+
+        derived = await self._orchestrator._derive_parent_summary(
+            doc_title=session_id,
+            children_abstracts=abstracts,
+        )
+        if not derived:
+            return None
+
+        summary_uri = self._session_summary_uri(tenant_id, user_id, session_id)
+        llm_abstract = derived.get("abstract", "")
+        llm_overview = derived.get("overview", "")
+        keywords_list = derived.get("keywords", [])
+        keywords_str = ", ".join(str(k) for k in keywords_list if k) if isinstance(keywords_list, list) else ""
+
+        content = "\n\n".join(abstracts)
+
+        await self._orchestrator.add(
+            uri=summary_uri,
+            abstract=llm_abstract,
+            content=content,
+            category="events",
+            context_type="memory",
+            is_leaf=False,
+            session_id=session_id,
+            meta={
+                "layer": "session_summary",
+                "session_id": session_id,
+                "source_uri": source_uri or "",
+                "child_count": len(abstracts),
+                "topics": keywords_list,
+            },
+            overview=llm_overview,
+        )
+
+        # Patch keywords into the Qdrant record (add() fast-path skips them).
+        if keywords_str:
+            try:
+                records = await self._orchestrator._storage.filter(
+                    self._orchestrator._get_collection(),
+                    {"op": "must", "field": "uri", "conds": [summary_uri]},
+                    limit=1,
+                )
+                if records:
+                    await self._orchestrator._storage.update(
+                        self._orchestrator._get_collection(),
+                        str(records[0].get("id", "")),
+                        {"keywords": keywords_str},
+                    )
+            except Exception:
+                logger.warning("[ContextManager] Failed to patch keywords for %s", summary_uri)
+
+        fs = getattr(self._orchestrator, "_fs", None)
+        if fs is not None:
+            await fs.write_context(
+                uri=summary_uri,
+                content=content,
+                abstract=llm_abstract,
+                abstract_json={
+                    "keywords": keywords_list,
+                    "child_count": len(abstracts),
+                },
+                overview=llm_overview,
+                is_leaf=False,
+            )
+
+        logger.info(
+            "[ContextManager] Session summary generated sid=%s uri=%s children=%d",
+            session_id,
+            summary_uri,
+            len(abstracts),
+        )
+        return summary_uri
+
     def _merge_trigger_threshold(self) -> int:
         cfg = getattr(self._orchestrator, "_config", None)
         if cfg is None:
-            return 4096
-        return max(1, int(getattr(cfg, "conversation_merge_token_budget", 4096)))
+            return 8192
+        return max(1, int(getattr(cfg, "conversation_merge_token_budget", 8192)))
 
     async def _wait_for_merge_task(self, sk: SessionKey) -> None:
         """Wait until any in-flight background merge for the session finishes."""
@@ -2191,6 +2415,21 @@ class ContextManager:
                     except (asyncio.TimeoutError, Exception):
                         pass
 
+                # Generate session-level directory summary from final merged records.
+                try:
+                    await self._generate_session_summary(
+                        session_id=session_id,
+                        tenant_id=tenant_id,
+                        user_id=user_id,
+                        source_uri=source_uri,
+                    )
+                except Exception:
+                    logger.warning(
+                        "[ContextManager] Session summary generation failed sid=%s",
+                        session_id,
+                        exc_info=True,
+                    )
+
                 duration_ms = int((time.monotonic() - start_time) * 1000)
                 self._cleanup_session(sk)
 
@@ -2398,6 +2637,77 @@ class ContextManager:
             "knowledge": [],
             "instructions": self._empty_instructions(),
         }
+
+    async def _expand_directory_hits(
+        self, find_result,
+    ) -> list:
+        """Replace directory records with their children leaf records.
+
+        Directories serve as broad semantic surfaces for vector matching.
+        When hit, we expand to the actual leaf records for content delivery.
+        """
+        from opencortex.retrieve.types import DetailLevel
+        expanded = []
+        seen_uris: set = set()
+
+        for matched in find_result:
+            if getattr(matched, "layer", None) != "directory":
+                if matched.uri not in seen_uris:
+                    expanded.append(matched)
+                    seen_uris.add(matched.uri)
+                continue
+
+            # Directory hit — load children URIs from meta
+            meta = {}
+            try:
+                records = await self._orchestrator._storage.filter(
+                    self._orchestrator._get_collection(),
+                    {"op": "must", "field": "uri", "conds": [matched.uri]},
+                    limit=1,
+                )
+                if records:
+                    meta = dict(records[0].get("meta") or {})
+            except Exception:
+                pass
+
+            child_uris = meta.get("child_uris") or []
+            if not child_uris:
+                continue
+
+            # Load child leaf records
+            try:
+                children = await self._orchestrator._storage.filter(
+                    self._orchestrator._get_collection(),
+                    {"op": "or", "conds": [
+                        {"op": "must", "field": "uri", "conds": [uri]}
+                        for uri in child_uris
+                    ]},
+                    limit=len(child_uris),
+                )
+            except Exception:
+                continue
+
+            if not children:
+                continue
+
+            # Convert to MatchedContext via orchestrator helper
+            child_contexts = await self._orchestrator._records_to_matched_contexts(
+                candidates=children,
+                context_type=matched.context_type,
+                detail_level=DetailLevel.L1,
+            )
+            for child in child_contexts:
+                if child.uri in seen_uris:
+                    continue
+                seen_uris.add(child.uri)
+                # Carry the directory's score as a floor for ranking
+                if child.score < matched.score:
+                    child.score = matched.score
+                expanded.append(child)
+
+        # Re-sort by score descending
+        expanded.sort(key=lambda m: m.score, reverse=True)
+        return expanded
 
     def _format_memories(
         self, find_result, detail_level: str,

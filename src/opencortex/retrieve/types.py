@@ -351,6 +351,7 @@ class MatchedContext:
     source_uri: Optional[str] = None
     msg_range: Optional[List[int]] = None
     recomposition_stage: Optional[str] = None
+    layer: Optional[str] = None
     matched_anchors: List[str] = field(default_factory=list)
     cone_used: Optional[bool] = None
 

@@ -110,6 +110,7 @@ class CortexConfig:
     """
 
     data_root: str = "./data"
+    qdrant_url: str = ""
     embedding_dimension: int = 384
     embedding_provider: str = "local"
     embedding_model: str = DEFAULT_LOCAL_EMBEDDING_MODEL
@@ -164,7 +165,7 @@ class CortexConfig:
     small_to_big_sibling_count: int = 2
     context_flattening_enabled: bool = True
     document_derive_concurrency: int = 3
-    conversation_merge_token_budget: int = 4096
+    conversation_merge_token_budget: int = 8192
     time_filter_enabled: bool = True
     time_filter_fallback_threshold: int = 3
     rerank_gate_score_gap_threshold: float = 0.15
@@ -172,7 +173,7 @@ class CortexConfig:
     max_compensation_queries: int = 3
     max_total_search_calls: int = 12
     explain_enabled: bool = True
-    onnx_intra_op_threads: int = 0
+    onnx_intra_op_threads: int = field(default_factory=lambda: os.cpu_count() or 1)
 
     # Cone Retrieval
     cone_retrieval_enabled: bool = True

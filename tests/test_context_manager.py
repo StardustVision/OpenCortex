@@ -719,8 +719,12 @@ class TestContextManager(unittest.TestCase):
 
         self._run(orch.close())
 
-    def test_full_session_recomposition_replaces_merged_set(self):
-        orch = self._make_orchestrator()
+    def test_full_session_recomposition_preserves_leaves_and_creates_directories(self):
+        """Full recompose preserves original merged leaves and creates directory records."""
+        async def mock_llm(prompt, **kwargs):
+            return '{"abstract": "test abstract", "overview": "test overview", "keywords": ["test"]}'
+
+        orch = self._make_orchestrator(llm_completion=mock_llm)
         self._run(orch.init())
         cm = orch._context_manager
         session_id = "sess_full_recompose_001"
@@ -774,6 +778,7 @@ class TestContextManager(unittest.TestCase):
             )
         )
 
+        # Original merged leaves MUST be preserved
         merged_records = [
             record
             for record in self.storage._records.get("context", {}).values()
@@ -781,20 +786,26 @@ class TestContextManager(unittest.TestCase):
             and record.get("session_id") == session_id
         ]
         merged_uris = {record.get("uri") for record in merged_records}
-        self.assertNotIn(first.uri, merged_uris)
-        self.assertNotIn(second.uri, merged_uris)
-        self.assertTrue(merged_records)
-        self.assertTrue(
-            all(
-                record.get("meta", {}).get("recomposition_stage") == "final_full"
-                for record in merged_records
-            )
-        )
+        self.assertIn(first.uri, merged_uris, "Original leaf must be preserved")
+        self.assertIn(second.uri, merged_uris, "Original leaf must be preserved")
+
+        # Directory records should be created
+        directory_records = [
+            record
+            for record in self.storage._records.get("context", {}).values()
+            if record.get("meta", {}).get("layer") == "directory"
+            and record.get("session_id") == session_id
+        ]
+        self.assertTrue(directory_records, "At least one directory record should be created")
 
         self._run(orch.close())
 
-    def test_full_session_recomposition_reuses_stable_uri_without_self_deletion(self):
-        orch = self._make_orchestrator()
+    def test_full_session_recomposition_preserves_leaf_uris_unchanged(self):
+        """Leaf URIs and content remain unchanged after full_recompose."""
+        async def mock_llm(prompt, **kwargs):
+            return '{"abstract": "test abstract", "overview": "test overview", "keywords": ["test"]}'
+
+        orch = self._make_orchestrator(llm_completion=mock_llm)
         self._run(orch.init())
         cm = orch._context_manager
         session_id = "sess_full_recompose_stable_uri_001"
@@ -852,6 +863,7 @@ class TestContextManager(unittest.TestCase):
             )
         )
 
+        # Original leaf records must still exist with their original URIs
         merged_records = sorted(
             [
                 record
@@ -861,18 +873,129 @@ class TestContextManager(unittest.TestCase):
             ],
             key=lambda record: record.get("meta", {}).get("msg_range", [999, 999])[0],
         )
-        self.assertEqual(
-            [record.get("uri") for record in merged_records],
-            [first_uri, second_uri],
-        )
-        self.assertTrue(
-            all(
-                record.get("meta", {}).get("recomposition_stage") == "final_full"
-                for record in merged_records
+        merged_uris = [record.get("uri") for record in merged_records]
+        self.assertIn(first_uri, merged_uris, "First leaf URI must be preserved")
+        self.assertIn(second_uri, merged_uris, "Second leaf URI must be preserved")
+
+        self._run(orch.close())
+
+    def test_full_recompose_creates_directory_records(self):
+        """Directory records have correct layer, is_leaf, abstract, overview."""
+        async def mock_llm(prompt, **kwargs):
+            return '{"abstract": "dir abstract", "overview": "dir overview", "keywords": ["k1", "k2"]}'
+
+        orch = self._make_orchestrator(llm_completion=mock_llm)
+        self._run(orch.init())
+        cm = orch._context_manager
+        session_id = "sess_dir_records_001"
+        source_uri = cm._conversation_source_uri("testteam", "alice", session_id)
+
+        # Create 3 merged leaves that should cluster together (shared anchors)
+        for i, (content, entities) in enumerate([
+            ("讨论了关于杭州的生活", ["杭州"]),
+            ("杭州的西湖风景很美", ["杭州", "西湖"]),
+            ("杭州的美食推荐", ["杭州", "美食"]),
+        ]):
+            self._run(
+                orch.add(
+                    abstract="",
+                    content=content,
+                    category="events",
+                    context_type="memory",
+                    session_id=session_id,
+                    meta={
+                        "layer": "merged",
+                        "ingest_mode": "memory",
+                        "msg_range": [i, i],
+                        "source_uri": source_uri,
+                        "session_id": session_id,
+                        "recomposition_stage": "online_tail",
+                        "entities": entities,
+                    },
+                )
+            )
+
+        self._run(
+            cm._run_full_session_recomposition(
+                session_id=session_id,
+                tenant_id="testteam",
+                user_id="alice",
+                source_uri=source_uri,
             )
         )
 
+        directory_records = [
+            record
+            for record in self.storage._records.get("context", {}).values()
+            if record.get("meta", {}).get("layer") == "directory"
+            and record.get("session_id") == session_id
+        ]
+        self.assertTrue(directory_records, "Directory records should be created")
+        for rec in directory_records:
+            self.assertFalse(rec.get("is_leaf", True), "Directory must be is_leaf=False")
+            self.assertTrue(rec.get("abstract"), "Directory must have abstract")
+            self.assertEqual(rec.get("meta", {}).get("session_id"), session_id)
+
         self._run(orch.close())
+
+    def test_full_recompose_skips_singleton_clusters(self):
+        """Clusters of size 1 should not create directory records."""
+        async def mock_llm(prompt, **kwargs):
+            return '{"abstract": "dir abstract", "overview": "dir overview", "keywords": []}'
+
+        orch = self._make_orchestrator(llm_completion=mock_llm)
+        self._run(orch.init())
+        cm = orch._context_manager
+        session_id = "sess_singleton_001"
+        source_uri = cm._conversation_source_uri("testteam", "alice", session_id)
+
+        # Only one merged leaf → can't cluster
+        self._run(
+            orch.add(
+                abstract="",
+                content="唯一的对话记录",
+                category="events",
+                context_type="memory",
+                session_id=session_id,
+                meta={
+                    "layer": "merged",
+                    "ingest_mode": "memory",
+                    "msg_range": [0, 0],
+                    "source_uri": source_uri,
+                    "session_id": session_id,
+                    "recomposition_stage": "online_tail",
+                    "entities": ["唯一"],
+                },
+            )
+        )
+
+        self._run(
+            cm._run_full_session_recomposition(
+                session_id=session_id,
+                tenant_id="testteam",
+                user_id="alice",
+                source_uri=source_uri,
+            )
+        )
+
+        # Only 1 record → should return early (len <= 1 check)
+        directory_records = [
+            record
+            for record in self.storage._records.get("context", {}).values()
+            if record.get("meta", {}).get("layer") == "directory"
+            and record.get("session_id") == session_id
+        ]
+        self.assertEqual(directory_records, [], "No directory for single record")
+
+        self._run(orch.close())
+
+    def test_directory_uri_pattern(self):
+        """_directory_uri produces correct URI pattern."""
+        from opencortex.context.manager import ContextManager
+        uri = ContextManager._directory_uri("team1", "user1", "session-abc", 2)
+        self.assertIn("/dir-002", uri)
+        self.assertIn("team1", uri)
+        self.assertIn("user1", uri)
 
     def test_end_persists_conversation_source_and_links_merged_leaf(self):
         orch = self._make_orchestrator()
@@ -2837,9 +2960,12 @@ class TestContextManager(unittest.TestCase):
 
         self._run(orch.close())
 
-    def test_recomposition_cleans_up_old_fact_points(self):
-        """When recomposition supersedes old merged leaves, old fact_points are deleted."""
-        orch = self._make_orchestrator()
+    def test_recomposition_preserves_leaves_and_fact_points(self):
+        """Full recompose preserves original leaves — fact_points remain intact."""
+        async def mock_llm(prompt, **kwargs):
+            return '{"abstract": "test abstract", "overview": "test overview", "keywords": ["test"]}'
+
+        orch = self._make_orchestrator(llm_completion=mock_llm)
         self._run(orch.init())
         cm = orch._context_manager
         session_id = "sess_recompose_fp_cleanup"
@@ -2898,7 +3024,7 @@ class TestContextManager(unittest.TestCase):
         ]
         self.assertEqual(len(fp_before), 2)
 
-        # Run full session recomposition (creates new merged leaves, deletes old ones)
+        # Run full session recomposition — preserves leaves, adds directories
         self._run(
             cm._run_full_session_recomposition(
                 session_id=session_id,
@@ -2908,27 +3034,23 @@ class TestContextManager(unittest.TestCase):
             )
         )
 
-        # Old leaf URIs should be gone (superseded by recomposition)
+        # Original leaf URIs must still be present
         for old_uri in [old_uri_1, old_uri_2]:
             old_still_present = any(
                 r.get("uri") == old_uri
                 for r in self.storage._records.get("context", {}).values()
             )
-            if old_still_present:
-                # If old leaf is still present with same URI (stable reuse), skip cascade check
-                # In this case both old_uri_1 and old_uri_2 may be combined into a new leaf
-                # with a different URI, so the old fact_points should be cleaned up regardless
-                pass
+            self.assertTrue(old_still_present, f"Leaf {old_uri} must be preserved")
 
-        # Fact_points under old_uri_1 and old_uri_2 must be deleted
+        # Fact_points under old leaves must also remain intact
         fp_after = [
             r for r in self.storage._records.get("context", {}).values()
             if r.get("retrieval_surface") == "fact_point"
             and (r.get("uri", "").startswith(old_uri_1) or r.get("uri", "").startswith(old_uri_2))
         ]
         self.assertEqual(
-            fp_after, [],
-            f"Old fact_points must be cleaned up after recomposition supersede, "
+            len(fp_after), 2,
+            f"Fact_points must be preserved when leaves are preserved, "
             f"found: {[r.get('uri') for r in fp_after]}",
         )
 

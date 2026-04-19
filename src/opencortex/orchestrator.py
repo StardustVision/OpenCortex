@@ -3556,6 +3556,11 @@ class MemoryOrchestrator:
                     if isinstance(record.get("meta"), dict)
                     else None
                 ),
+                layer=(
+                    dict(record.get("meta") or {}).get("layer")
+                    if isinstance(record.get("meta"), dict)
+                    else None
+                ),
                 matched_anchors=list(record.get("_matched_anchors", []) or []),
                 cone_used=bool(record.get("_cone_used", False)),
                 path_source=record.get("_path_source") or None,
