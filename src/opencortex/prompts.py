@@ -186,21 +186,43 @@ Content:
 
 Return a JSON object with exactly these fields:
 {{
-  "abstract": "One concise sentence (≤200 chars) capturing the core fact or decision. Must be a complete sentence, not a truncation of overview.",
-  "overview": "3-8 sentence overview covering key facts, decisions, and actionable details",
+  "overview": "Structured Markdown summary (see rules below)",
   "keywords": ["term1", "term2", "..."],
   "entities": ["entity1", "entity2", "..."],
   "anchor_handles": ["handle1", "handle2", "..."],
   "fact_points": ["atomic fact 1", "atomic fact 2", "..."]
 }}
 
-Rules:
-- abstract: ≤200 characters. Synthesize, not truncate. Captures the single most important fact.
-- overview: This is the primary semantic surface. Lead with concrete facts (entities, events, times, places, decisions, constraints).
-- keywords: 3-15 key terms (names, tools, technologies, concepts) that aid search. No generic words.
-- entities: Named entities only — people, systems, tools, organizations, places. NOT generic concepts. Max 10.
-- anchor_handles: 0-6 short retrieval handles. Prefer concrete entities, numbers, paths, module names, operations, or compact noun phrases. No paragraphs or generic labels.
-- fact_points: 0-8 atomic fact statements extracted from the content. Each must be a complete, self-contained statement under 80 characters. Must contain at least one concrete signal: entity name, number, date, file path, or technical term. Good: "Alice moved to Hangzhou on May 1", "Migration uses batch size 500 to avoid downtime". Bad: "discussed the plan", "some changes were made", "the system was updated". Reject generic descriptions, paragraph-style text, and statements that require surrounding context to understand.
+Rules — overview (PRIMARY field, write this FIRST and make it the longest):
+This is the primary semantic surface for retrieval. Total length MUST be 300-600 words.
+Write it as Markdown with EXACTLY this heading structure:
+
+## Summary
+One concise sentence capturing the core topic and participants.
+
+## Key Events and Statements
+List the important things said or done. Attribute to speakers by name.
+Preserve original phrasing — do NOT paraphrase or compress. Include all specific
+names, dates, numbers, and locations verbatim.
+
+## Decisions and Outcomes
+Conclusions reached, plans made, or commitments given.
+
+## Key Quotes
+Preserve 3-6 important original sentences verbatim from the content.
+Prioritize sentences containing specific facts: names, dates, numbers, locations,
+decisions, or commitments. Use the EXACT original wording — do not rewrite.
+
+Hard constraints:
+- Every sentence in "Key Events" MUST contain at least one concrete detail (name, date, number, or location).
+- "Key Quotes" MUST be verbatim copies from the content, not paraphrases.
+- Do NOT produce generic summaries. A reader must be able to answer specific factual questions from the overview alone.
+
+Rules — other fields:
+- keywords: 3-15 key terms (names, tools, technologies, concepts). No generic words.
+- entities: Named entities only — people, systems, tools, organizations, places. Max 10.
+- anchor_handles: 0-6 short retrieval handles. Prefer concrete entities, numbers, paths, module names, or compact noun phrases.
+- fact_points: 0-8 atomic fact statements. Each ≤80 chars, self-contained, must contain at least one concrete signal (name, number, date, path, or technical term).
 - Return ONLY the JSON object, no other text."""
 
 
@@ -356,12 +378,16 @@ Child section abstracts:
 Return a JSON object with exactly these fields:
 {{
   "abstract": "One concise sentence (≤200 chars) capturing the core theme across all children. Must be a complete sentence, not a truncation.",
-  "overview": "3-8 sentence overview synthesizing the key facts, decisions, and topics from all children. Lead with concrete facts.",
+  "overview": "Comprehensive overview synthesizing the key facts, decisions, and topics from all child sections.",
   "keywords": ["term1", "term2", "..."]
 }}
 
 Rules:
 - abstract: Synthesize, do not copy from any single child. ≤200 characters.
-- overview: Cover all major themes. No repetition. Factually grounded.
+- overview: This is the primary semantic surface for retrieval. Write 200-500 words. Structure as:
+  1. Opening paragraph: participants, main topics, and time context. Preserve original names, dates, and locations verbatim.
+  2. Key discussions and statements: important things said or done, with speaker attribution. Use original phrasing where possible.
+  3. Decisions and outcomes: conclusions reached, plans made, or commitments given.
+  Do NOT compress into generic summaries. Cover all major themes from ALL children with no repetition. Factually grounded.
 - keywords: 3-10 key terms across all children.
 - Return ONLY the JSON object, no other text."""

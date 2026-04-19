@@ -35,7 +35,13 @@ class TestVectorizationExpansion(unittest.TestCase):
 
         async def mock_llm(prompt: str) -> str:
             # _derive_layers joins list into comma-separated string
-            return '{"abstract": "test abstract", "overview": "test overview", "keywords": ["auth", "login", "JWT"]}'
+            # overview uses Markdown headings; abstract is derived from ## Summary
+            return (
+                '{"overview": "## Summary\\nUser discussed JWT authentication flow.\\n\\n'
+                '## Key Events\\nExplored login token handling.\\n\\n'
+                '## Decisions\\nChose JWT for auth.", '
+                '"keywords": ["auth", "login", "JWT"]}'
+            )
 
         async def run():
             import tempfile
@@ -64,7 +70,7 @@ class TestVectorizationExpansion(unittest.TestCase):
                     self.assertIn("auth", first_embedded)
                     self.assertIn("login", first_embedded)
                     self.assertIn("JWT", first_embedded)
-                    self.assertIn("test abstract", first_embedded)
+                    self.assertIn("User discussed JWT authentication flow", first_embedded)
                 finally:
                     reset_request_identity(tokens)
             finally:

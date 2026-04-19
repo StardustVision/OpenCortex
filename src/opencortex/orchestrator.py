@@ -1630,7 +1630,6 @@ class MemoryOrchestrator:
                         parse_fn=parse_json_from_response,
                         max_chars_per_chunk=4000,
                     )
-                    llm_abstract = str(result.get("abstract") or "").strip()
                     llm_overview = str(result.get("overview") or "").strip()
                     keywords_list = result.get("keywords", [])
                     if isinstance(keywords_list, list):
@@ -1665,7 +1664,7 @@ class MemoryOrchestrator:
                         content=content,
                     )
                     derived_abstract = self._derive_abstract_from_overview(
-                        user_abstract=user_abstract or llm_abstract,
+                        user_abstract=user_abstract,
                         overview=resolved_overview,
                         content=content,
                     )
@@ -1686,7 +1685,6 @@ class MemoryOrchestrator:
                 response = await self._derive_layers_llm_completion(prompt)
                 data = parse_json_from_response(response)
                 if isinstance(data, dict):
-                    llm_abstract = (data.get("abstract") or "").strip()
                     llm_overview = (data.get("overview") or "").strip()
                     keywords_list = data.get("keywords") or []
                     if isinstance(keywords_list, list):
@@ -1721,7 +1719,7 @@ class MemoryOrchestrator:
                         content=content,
                     )
                     derived_abstract = self._derive_abstract_from_overview(
-                        user_abstract=user_abstract or llm_abstract,
+                        user_abstract=user_abstract,
                         overview=resolved_overview,
                         content=content,
                     )
@@ -1941,12 +1939,37 @@ class MemoryOrchestrator:
         overview: str,
         content: str,
     ) -> str:
-        """Derive a short abstract from a richer overview."""
+        """Derive a short abstract from a richer overview.
+
+        Extracts the first sentence under ## Summary heading when present,
+        otherwise falls back to the first line of the overview text.
+        """
         if user_abstract:
             return user_abstract
 
         overview_text = str(overview or "").strip()
         if overview_text:
+            # If overview uses Markdown headings, extract from ## Summary
+            summary_text = ""
+            in_summary = False
+            for line in overview_text.splitlines():
+                if line.strip() == "## Summary":
+                    in_summary = True
+                    continue
+                if in_summary and line.strip().startswith("## "):
+                    break
+                if in_summary and line.strip():
+                    summary_text = line.strip()
+                    break
+            if summary_text:
+                first_sentence = re.split(r"(?<=[.!?。！？])\s+", summary_text)[0].strip()
+                candidate = first_sentence or summary_text
+                if len(candidate) > 200:
+                    candidate = smart_truncate(candidate, 200).strip()
+                if candidate:
+                    return candidate
+
+            # Fallback: first line of overview
             first_line = overview_text.splitlines()[0].strip()
             first_sentence = re.split(r"(?<=[.!?。！？])\s+", first_line)[0].strip()
             candidate = first_sentence or first_line
@@ -1986,7 +2009,26 @@ class MemoryOrchestrator:
             "parent_uri": parent_uri,
             "session_id": session_id,
         }
-        return memory_abstract_from_record(record).to_dict()
+        result = memory_abstract_from_record(record).to_dict()
+        # Inject anchor_handles from LLM derivation into the anchors list
+        # so that _memory_object_payload can project them into anchor_hits.
+        meta_dict = meta or {}
+        anchor_handles = meta_dict.get("anchor_handles")
+        if anchor_handles:
+            existing_values = {
+                a.get("value", "").lower()
+                for a in result.get("anchors") or []
+                if isinstance(a, dict)
+            }
+            for handle in anchor_handles:
+                if isinstance(handle, str) and handle.strip() and handle.lower() not in existing_values:
+                    result.setdefault("anchors", []).append({
+                        "anchor_type": "handle",
+                        "value": handle.strip(),
+                        "text": handle.strip(),
+                    })
+                    existing_values.add(handle.lower())
+        return result
 
     @staticmethod
     def _memory_object_payload(
@@ -3328,8 +3370,15 @@ class MemoryOrchestrator:
             or retrieve_plan is None
             or retrieve_plan.search_profile.association_budget <= 0.0
             or not records
-            or not self._entity_index.is_ready(self._get_collection())
         ):
+            return records, False
+
+        collection = self._get_collection()
+        if not self._entity_index.is_ready(collection):
+            await self._entity_index.build_for_collection(
+                self._storage, collection
+            )
+        if not self._entity_index.is_ready(collection):
             return records, False
 
         query_entities = self._cone_query_entities(
