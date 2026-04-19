@@ -48,8 +48,8 @@ _SEGMENT_MAX_TOKENS = 1200
 _SEGMENT_MIN_MESSAGES = 2
 _RECOMPOSE_TAIL_MAX_MERGED_LEAVES = 6
 _RECOMPOSE_TAIL_MAX_MESSAGES = 24
-_RECOMPOSE_CLUSTER_MAX_TOKENS = 8000
-_RECOMPOSE_CLUSTER_MAX_MESSAGES = 60
+_RECOMPOSE_CLUSTER_MAX_TOKENS = 1_000_000
+_RECOMPOSE_CLUSTER_MAX_MESSAGES = 1_000_000
 _RECOMPOSE_CLUSTER_JACCARD_THRESHOLD = 0.15
 _COARSE_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _COARSE_HUMAN_DATE_RE = re.compile(r"^\d{1,2}\s+[A-Za-z]+,\s+\d{4}$")
@@ -160,6 +160,8 @@ class ContextManager:
         self._session_pending_immediate_cleanup: Dict[SessionKey, bool] = {}
         # Conversation buffers: per-session incremental chunking
         self._conversation_buffers: Dict[SessionKey, ConversationBuffer] = {}
+        # Semaphore limiting concurrent fire-and-forget deferred derives
+        self._derive_semaphore = asyncio.Semaphore(3)
         # Skill selection tracking: (session_key, turn_id) -> set of skill URIs
         # Turn-scoped to prevent stale selections leaking across turns
         self._selected_skill_uris: Dict[tuple, Set[str]] = {}
@@ -2074,8 +2076,8 @@ class ContextManager:
     def _merge_trigger_threshold(self) -> int:
         cfg = getattr(self._orchestrator, "_config", None)
         if cfg is None:
-            return 8192
-        return max(1, int(getattr(cfg, "conversation_merge_token_budget", 8192)))
+            return 6144
+        return max(1, int(getattr(cfg, "conversation_merge_token_budget", 6144)))
 
     async def _wait_for_merge_task(self, sk: SessionKey) -> None:
         """Wait until any in-flight background merge for the session finishes."""
@@ -2255,8 +2257,16 @@ class ContextManager:
                         defer_derive=True,
                     )
                     created_merged_uris.append(merged_context.uri)
+
+                    async def _bounded_derive(
+                        sem=self._derive_semaphore,
+                        **dkw,
+                    ):
+                        async with sem:
+                            await self._orchestrator._complete_deferred_derive(**dkw)
+
                     _defer_task = asyncio.create_task(
-                        self._orchestrator._complete_deferred_derive(
+                        _bounded_derive(
                             uri=merged_context.uri,
                             content=combined,
                             abstract="",
