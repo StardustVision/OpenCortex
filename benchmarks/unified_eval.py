@@ -46,6 +46,7 @@ from opencortex.parse.base import estimate_tokens
 from benchmarks.llm_client import LLMClient
 from benchmarks.metrics import (
     bootstrap_ci,
+    compute_content_recall,
     compute_latency_metrics,
     compute_ndcg,
     compute_retrieval_metrics,
@@ -323,27 +324,30 @@ async def run_mode(
     """Run evaluation for a single mode. Returns the report dict."""
     # Tenant isolation
     run_id = args.run_id or f"eval_{mode}_{uuid4().hex[:8]}"
-    collection_id = f"bench_{uuid4().hex[:8]}"
+    collection_id = args.collection or f"bench_{uuid4().hex[:8]}"
     data_root = args.data_root
     secret = ensure_secret(data_root)
     jwt_token = args.token or generate_token(run_id, "eval_runner", secret)
 
     log(f"Mode: {mode} | Run ID: {run_id}")
 
-    # Create isolated collection using admin token
+    # Create isolated collection using admin token (skip if reusing existing)
     oc = OCClient(args.server, jwt_token, timeout=120.0, collection=collection_id)
     admin_token = generate_token("_system", "_admin", secret, role="admin")
-    await oc.create_collection(collection_id, admin_token=admin_token)
+    if not args.collection:
+        await oc.create_collection(collection_id, admin_token=admin_token)
     log(f"Isolated collection: {collection_id}")
     _admin_token = admin_token  # capture for finally block
 
-    llm = LLMClient(
-        args.llm_base,
-        args.llm_key,
-        args.llm_model,
-        api_style=args.llm_api_style,
-        no_thinking=args.no_thinking,
-    )
+    llm = None
+    if not args.retrieval_only:
+        llm = LLMClient(
+            args.llm_base,
+            args.llm_key,
+            args.llm_model,
+            api_style=args.llm_api_style,
+            no_thinking=args.no_thinking,
+        )
 
     try:
         # Load adapter + dataset
@@ -380,6 +384,9 @@ async def run_mode(
                 for err in ingest_result.errors[:5]:
                     log(f"  ERROR: {err}")
             await asyncio.sleep(1)  # let embeddings settle
+            log("  Waiting for deferred LLM derives to complete...")
+            await oc.wait_derives()
+            log("  Deferred derives complete.")
 
         # Phase 2: Build QA items (max_conv limits QA to ingested conversations only)
         qa_items = adapter.build_qa_items(max_qa=args.max_qa, max_conv=args.max_conv)
@@ -437,6 +444,8 @@ async def run_mode(
                             )
                         elif isinstance(r, str):
                             ctx_parts.append(r)
+                    record["retrieved_content"] = ctx_parts
+                    record["meta"] = qa_item.meta
                     oc_context = (
                         "\n\n---\n\n".join(ctx_parts) if ctx_parts else "(no results)"
                     )
@@ -444,12 +453,12 @@ async def run_mode(
                 # OC path: LLM answer
                 oc_prediction = ""
                 oc_prompt = ""
-                if not args.baseline_only and oc_context:
+                if not args.retrieval_only and not args.baseline_only and oc_context and llm:
                     oc_prompt = _build_prompt(
                         oc_context, qa_item.question, qa_item.category, args.dataset
                     )
                     try:
-                        oc_prediction = await llm.complete(oc_prompt, max_tokens=512)
+                        oc_prediction = await llm.complete(oc_prompt, max_tokens=args.llm_max_tokens)
                     except Exception as e:
                         log(f"  LLM error (OC): {e}")
                     record["oc_prediction"] = oc_prediction
@@ -458,7 +467,7 @@ async def run_mode(
                 # Baseline path: LLM answer
                 bl_prediction = ""
                 bl_prompt = ""
-                if not args.oc_only:
+                if not args.retrieval_only and not args.oc_only and llm:
                     raw_context = adapter.get_baseline_context(qa_item)
                     truncated_context = truncate_to_budget(
                         raw_context, args.max_context_tokens
@@ -470,7 +479,7 @@ async def run_mode(
                         args.dataset,
                     )
                     try:
-                        bl_prediction = await llm.complete(bl_prompt, max_tokens=512)
+                        bl_prediction = await llm.complete(bl_prompt, max_tokens=args.llm_max_tokens)
                     except Exception as e:
                         log(f"  LLM error (BL): {e}")
                     record["bl_prediction"] = bl_prediction
@@ -505,7 +514,7 @@ async def run_mode(
                         record["joint_f1"] = record["oc_f1"] * sp
 
                 # LLM-as-Judge (optional, legacy 3-point scale)
-                if args.enable_llm_judge:
+                if args.enable_llm_judge and llm:
                     if oc_prediction:
                         record["oc_judge"] = await llm_judge_score(
                             oc_prediction,
@@ -523,12 +532,16 @@ async def run_mode(
 
                 # J-score (always-on for Cat 1-4, Mem0-aligned binary judge)
                 if not args.disable_jscore and cat != 5:
+                    question_type = qa_item.meta.get("question_type", "")
+                    question_id = qa_item.meta.get("question_id", "")
                     if oc_prediction:
                         record["oc_jscore"] = await jscore_judge(
                             oc_prediction,
                             qa_item.answer,
                             qa_item.question,
                             llm.complete,
+                            question_type=question_type,
+                            question_id=str(question_id),
                         )
                     if bl_prediction:
                         record["bl_jscore"] = await jscore_judge(
@@ -536,6 +549,8 @@ async def run_mode(
                             qa_item.answer,
                             qa_item.question,
                             llm.complete,
+                            question_type=question_type,
+                            question_id=str(question_id),
                         )
 
                 done_count += 1
@@ -585,6 +600,15 @@ async def run_mode(
             retrieval_ci = compute_retrieval_metrics_with_ci(ndcg_records, ks=[1, 3, 5])
             retrieval_metrics["confidence_intervals"] = retrieval_ci.get(
                 "confidence_intervals", {}
+            )
+
+        # Content-level recall (evidence-based, like OpenViking)
+        content_recall_records = [
+            r for r in records if r.get("retrieved_content") and r.get("meta", {}).get("evidence_texts")
+        ]
+        if content_recall_records:
+            retrieval_metrics["content_recall"] = compute_content_recall(
+                content_recall_records
             )
 
         # QA Accuracy — Category 5 (adversarial) excluded from overall per LoCoMo protocol
@@ -670,7 +694,7 @@ async def run_mode(
             accuracy["f1_ci"] = {"lower": ci_lo, "upper": ci_hi}
 
         # LLM Judge (legacy)
-        if args.enable_llm_judge:
+        if args.enable_llm_judge and llm:
             oc_judges = [r["oc_judge"] for r in records if "oc_judge" in r]
             if oc_judges:
                 accuracy["llm_judge"] = {
@@ -779,7 +803,7 @@ async def run_mode(
     finally:
         await oc.delete_collection(collection_id, admin_token=_admin_token)
         await oc.close()
-        await llm.close()
+        await llm.close() if llm else None
 
 
 async def run(args):
@@ -789,13 +813,27 @@ async def run(args):
         ts = time.strftime("%H:%M:%S")
         print(f"[{ts}] {msg}", flush=True)
 
-    modes = (
-        ["memory", "conversation", "document", "knowledge"] if args.mode == "all" else [args.mode]
-    )
+    if args.mode == "all":
+        # Run each mode with its primary dataset, plus LongMemEval for conversation
+        run_specs: List[tuple] = []
+        for mode, (dataset, data_path) in _DEFAULT_DATASETS.items():
+            run_specs.append((mode, dataset, data_path))
+        # Add LongMemEval as a second conversation-mode run
+        run_specs.append((
+            "conversation", "longmemeval",
+            "benchmarks/datasets/longmemeval/longmemeval_s_cleaned.json",
+        ))
+    else:
+        run_specs = [(args.mode, args.dataset, args.data)]
+
     reports = []
 
-    for mode in modes:
-        report = await run_mode(mode, args, log)
+    for mode, dataset, data_path in run_specs:
+        # Override args for this specific run
+        run_args = argparse.Namespace(**vars(args))
+        run_args.dataset = dataset
+        run_args.data = data_path
+        report = await run_mode(mode, run_args, log)
         reports.append(report)
 
     if len(reports) > 1:
@@ -852,14 +890,18 @@ def main():
     )
 
     # LLM
-    p.add_argument("--llm-base", required=True, help="LLM API base URL")
-    p.add_argument("--llm-key", required=True, help="LLM API key")
-    p.add_argument("--llm-model", required=True, help="LLM model name")
+    p.add_argument("--llm-base", required="--retrieval-only" not in sys.argv, help="LLM API base URL")
+    p.add_argument("--llm-key", required="--retrieval-only" not in sys.argv, help="LLM API key")
+    p.add_argument("--llm-model", required="--retrieval-only" not in sys.argv, help="LLM model name")
     p.add_argument(
         "--llm-api-style", default="auto", choices=["auto", "openai", "anthropic"]
     )
     p.add_argument(
         "--no-thinking", action="store_true", help="Disable LLM reasoning/thinking"
+    )
+    p.add_argument(
+        "--llm-max-tokens", type=int, default=4096,
+        help="Max tokens for LLM completion (raise for reasoning models like Kimi K2.5)"
     )
 
     # Eval params
@@ -901,12 +943,14 @@ def main():
     )
     p.add_argument("--oc-only", action="store_true", help="Skip baseline evaluation")
     p.add_argument("--baseline-only", action="store_true", help="Skip OC evaluation")
+    p.add_argument("--retrieval-only", action="store_true", help="Only measure retrieval metrics, skip LLM generation")
     p.add_argument("--max-qa", type=int, default=0, help="Limit QA count (0=all)")
     p.add_argument(
         "--max-conv", type=int, default=0, help="Limit conversation count (0=all)"
     )
     p.add_argument("--output", default="", help="Report output directory")
     p.add_argument("--run-id", default="", help="Reuse tenant from previous run")
+    p.add_argument("--collection", default="", help="Reuse existing collection (skips create)")
     p.add_argument("--seed", type=int, default=42, help="Random seed")
 
     args = p.parse_args()

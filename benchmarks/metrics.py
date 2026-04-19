@@ -7,6 +7,7 @@ No external dependencies (no numpy).
 
 import math
 import random
+import re
 from typing import Any, Dict, List, Sequence, Tuple
 
 
@@ -106,6 +107,91 @@ def compute_retrieval_metrics(
         cat_result[cat] = cat_agg
     result["by_category"] = cat_result
 
+    return result
+
+
+def _normalize_content(s: str) -> str:
+    """Lowercase, strip punctuation for soft matching."""
+    return re.sub(r"[^\w\s]", "", str(s).lower())
+
+
+_CONTENT_STOPWORDS = frozenset({
+    "a", "an", "the", "and", "or", "to", "of", "in", "on", "at", "for",
+    "from", "with", "did", "does", "do", "is", "was", "were", "be", "been",
+    "has", "have", "had", "will", "would", "could", "should", "can", "may",
+    "it", "its", "i", "me", "my", "we", "us", "our", "you", "your", "he",
+    "she", "they", "them", "their", "this", "that", "these", "those",
+    "what", "when", "where", "who", "why", "how", "which", "so", "very",
+    "just", "also", "then", "than", "up", "out", "about", "into", "over",
+})
+
+
+def _content_tokens(text: str) -> set[str]:
+    """Extract meaningful tokens (no stopwords, no short words) for matching."""
+    normalized = _normalize_content(text)
+    return {t for t in normalized.split() if t not in _CONTENT_STOPWORDS and len(t) >= 3}
+
+
+def compute_content_recall(
+    records: List[Dict[str, Any]],
+    soft_threshold: float = 0.5,
+    min_key_tokens: int = 2,
+) -> Dict[str, Any]:
+    """Compute evidence-based content recall using key-entity overlap.
+
+    Each record must have:
+        - retrieved_content: List[str] — text content of retrieved chunks
+        - evidence_texts (in meta): List[str] — resolved evidence turn text
+
+    Matches by checking whether key entities from evidence text appear in
+    retrieved content. Uses stopword-filtered token overlap rather than
+    raw token overlap, since LLM-derived overviews rephrase raw turns.
+    """
+    scored: List[float] = []
+    by_category: Dict[str, List[float]] = {}
+
+    for record in records:
+        evidence_texts = record.get("meta", {}).get("evidence_texts", [])
+        if not evidence_texts:
+            continue
+        retrieved = record.get("retrieved_content", [])
+        if not retrieved:
+            scored.append(0.0)
+            cat = str(record.get("category", "unknown"))
+            by_category.setdefault(cat, []).append(0.0)
+            continue
+
+        combined = " ".join(retrieved)
+        combined_keys = _content_tokens(combined)
+        hit_count = 0
+
+        for evidence in evidence_texts:
+            ev_keys = _content_tokens(evidence)
+            if len(ev_keys) < min_key_tokens:
+                # For short evidence, check raw substring
+                if evidence in combined:
+                    hit_count += 1
+                continue
+            overlap = len(ev_keys & combined_keys)
+            if overlap / len(ev_keys) >= soft_threshold:
+                hit_count += 1
+
+        recall = hit_count / len(evidence_texts)
+        scored.append(recall)
+        cat = str(record.get("category", "unknown"))
+        by_category.setdefault(cat, []).append(recall)
+
+    result: Dict[str, Any] = {}
+    result["content_recall"] = round(sum(scored) / len(scored), 4) if scored else 0.0
+    result["evaluated_count"] = len(scored)
+
+    cat_result: Dict[str, Dict[str, float]] = {}
+    for cat, vals in by_category.items():
+        cat_result[cat] = {
+            "content_recall": round(sum(vals) / len(vals), 4),
+            "count": float(len(vals)),
+        }
+    result["by_category"] = cat_result
     return result
 
 

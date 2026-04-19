@@ -173,7 +173,7 @@ async def llm_judge_score(
 
 
 # ---------------------------------------------------------------------------
-# J-Score (Mem0-aligned binary LLM-as-Judge)
+# J-Score (LLM-as-Judge, industry-aligned)
 # ---------------------------------------------------------------------------
 
 JSCORE_SYSTEM = (
@@ -189,6 +189,66 @@ JSCORE_USER = (
     "Prediction: {prediction}\n\n"
     "Output only JSON."
 )
+
+# Type-specific prompts matching LongMemEval official evaluation protocol.
+
+_JSCORE_TEMPORAL_SYSTEM = (
+    "You are an evaluation judge. Given a question, ground truth answer, and "
+    "a predicted answer, determine if the prediction is correct.\n"
+    "Do not penalize off-by-one errors for the number of days. If the question "
+    "asks for the number of days/weeks/months, and the model makes off-by-one "
+    "errors (e.g., predicting 19 days when the answer is 18), the response is "
+    "still correct.\n"
+    'Output JSON: {"label": "CORRECT"} or {"label": "WRONG"}'
+)
+
+_JSCORE_KNOWLEDGE_UPDATE_SYSTEM = (
+    "You are an evaluation judge. Given a question, ground truth answer, and "
+    "a predicted answer, determine if the prediction is correct.\n"
+    "If the response contains some previous information along with an updated "
+    "answer, the response should be considered correct as long as the updated "
+    "answer is the required answer.\n"
+    'Output JSON: {"label": "CORRECT"} or {"label": "WRONG"}'
+)
+
+_JSCORE_PREFERENCE_USER = (
+    "Question: {question}\n"
+    "Rubric: {ground_truth}\n"
+    "Prediction: {prediction}\n\n"
+    "Does the prediction correctly recall and utilize the user's personal "
+    "information? The prediction does not need to reflect all points in the "
+    "rubric — it is correct as long as it recalls and utilizes the user's "
+    "personal information correctly.\n"
+    'Output JSON: {"label": "CORRECT"} or {"label": "WRONG"}'
+)
+
+_JSCORE_ABSTENTION_SYSTEM = (
+    "You are an evaluation judge. Given an unanswerable question, an "
+    "explanation of why it is unanswerable, and a model's response, determine "
+    "if the model correctly identifies the question as unanswerable.\n"
+    "The model could say that the information is incomplete, or that some "
+    "other information is given but the asked information is not.\n"
+    'Output JSON: {"label": "CORRECT"} or {"label": "WRONG"}'
+)
+
+_JSCORE_ABSTENTION_USER = (
+    "Question (unanswerable): {question}\n"
+    "Explanation: {ground_truth}\n"
+    "Prediction: {prediction}\n\n"
+    "Does the model correctly identify the question as unanswerable?\n"
+    'Output JSON: {"label": "CORRECT"} or {"label": "WRONG"}'
+)
+
+# Question types that use type-specific judge prompts.
+_TEMPORAL_TYPES = {"temporal-reasoning", "Temporal Reasoning"}
+_KNOWLEDGE_UPDATE_TYPES = {"knowledge-update", "Knowledge Update"}
+_PREFERENCE_TYPES = {"single-session-preference", "Single-Session (Preference)"}
+_ABSTENTION_TYPES = {"abstention"}
+
+
+def _is_abstention(question_id: str) -> bool:
+    """Check if a question is an abstention (unanswerable) variant."""
+    return str(question_id).endswith("_abs")
 
 
 def _parse_jscore_label(response: str) -> float:
@@ -209,23 +269,56 @@ def _parse_jscore_label(response: str) -> float:
     return 0.0
 
 
+def _select_judge_prompts(
+    question_type: str,
+    question_id: str = "",
+) -> tuple:
+    """Select system/user prompt pair based on question type.
+
+    Returns (system_prompt, user_prompt_template) where user_prompt_template
+    uses {question}, {ground_truth}, {prediction} placeholders.
+    """
+    if _is_abstention(question_id) or question_type in _ABSTENTION_TYPES:
+        return _JSCORE_ABSTENTION_SYSTEM, _JSCORE_ABSTENTION_USER
+    if question_type in _TEMPORAL_TYPES:
+        return _JSCORE_TEMPORAL_SYSTEM, JSCORE_USER
+    if question_type in _KNOWLEDGE_UPDATE_TYPES:
+        return _JSCORE_KNOWLEDGE_UPDATE_SYSTEM, JSCORE_USER
+    if question_type in _PREFERENCE_TYPES:
+        return JSCORE_SYSTEM, _JSCORE_PREFERENCE_USER
+    return JSCORE_SYSTEM, JSCORE_USER
+
+
 async def jscore_judge(
     prediction: str,
     ground_truth: str,
     question: str,
     llm_complete_fn,
+    *,
+    question_type: str = "",
+    question_id: str = "",
 ) -> float:
-    """Mem0-aligned binary J-score. Returns 1.0 (CORRECT) or 0.0 (WRONG).
+    """Binary LLM-as-Judge score aligned with industry standard.
+
+    Returns 1.0 (CORRECT) or 0.0 (WRONG). Routes to type-specific prompts
+    for LongMemEval question types (temporal, knowledge-update, preference,
+    abstention). Falls back to generic prompt for LoCoMo and other datasets.
 
     Args:
+        prediction: Model's predicted answer.
+        ground_truth: Gold-standard answer.
+        question: The question text.
         llm_complete_fn: async callable(prompt, max_tokens, *, system, temperature) -> str
+        question_type: LongMemEval question type for prompt selection.
+        question_id: Question ID (checked for _abs suffix for abstention).
     """
-    user_prompt = JSCORE_USER.format(
+    system_prompt, user_template = _select_judge_prompts(question_type, question_id)
+    user_prompt = user_template.format(
         question=question,
         ground_truth=ground_truth,
         prediction=prediction,
     )
     response = await llm_complete_fn(
-        user_prompt, 512, system=JSCORE_SYSTEM, temperature=0
+        user_prompt, 512, system=system_prompt, temperature=0
     )
     return _parse_jscore_label(response)

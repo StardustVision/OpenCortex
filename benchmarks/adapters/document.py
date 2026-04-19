@@ -92,7 +92,19 @@ class DocumentAdapter(EvalAdapter):
                         answer = answer_obj["free_form_answer"]
                     else:
                         continue
-                    qas.append({"question": question, "answer": answer, "category": "qasper"})
+                    # Extract evidence texts (sentence-level preferred, paragraph fallback)
+                    evidence = (
+                        answer_obj.get("highlighted_evidence")
+                        or answer_obj.get("evidence")
+                        or []
+                    )
+                    evidence_texts = [e for e in evidence if isinstance(e, str) and e.strip()]
+                    qas.append({
+                        "question": question,
+                        "answer": answer,
+                        "category": "qasper",
+                        "evidence_texts": evidence_texts,
+                    })
                     break  # Use first annotator answer
 
             docs.append({
@@ -239,12 +251,19 @@ class DocumentAdapter(EvalAdapter):
         for doc in self._dataset:
             for qa in doc.get("qas", []):
                 expected_uris = doc_chunk_uris.get(doc["doc_id"], [])
+                evidence_texts = qa.get("evidence_texts", [])
+                meta: Dict[str, Any] = {
+                    "doc_id": doc["doc_id"],
+                    "dataset": self._dataset_type,
+                }
+                if evidence_texts:
+                    meta["evidence_texts"] = evidence_texts
                 items.append(QAItem(
                     question=qa["question"],
                     answer=str(qa.get("answer", "")),
                     category=qa.get("category", ""),
                     expected_uris=expected_uris,
-                    meta={"doc_id": doc["doc_id"], "dataset": self._dataset_type},
+                    meta=meta,
                 ))
 
         if max_qa > 0:

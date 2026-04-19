@@ -265,6 +265,29 @@ class LongMemEvalBench(EvalAdapter):
             errors=errors,
         )
 
+    @staticmethod
+    def _extract_evidence_texts(item: Dict[str, Any]) -> List[str]:
+        """Extract evidence texts from has_answer turns in answer sessions."""
+        sessions = item.get("haystack_sessions", [])
+        session_ids = item.get("haystack_session_ids", [])
+        answer_session_ids = set(item.get("answer_session_ids") or [])
+        if not answer_session_ids:
+            return []
+
+        evidence: List[str] = []
+        for idx, session in enumerate(sessions):
+            sid = session_ids[idx] if idx < len(session_ids) else ""
+            if sid not in answer_session_ids:
+                continue
+            for msg in session:
+                if not isinstance(msg, dict):
+                    continue
+                if msg.get("has_answer") and msg.get("content"):
+                    role = msg.get("role", "")
+                    content = msg.get("content", "")
+                    evidence.append(f"{role}: {content}" if role else content)
+        return evidence
+
     def build_qa_items(self, **kwargs) -> List[QAItem]:
         items: List[QAItem] = []
         for index, item in enumerate(self._dataset):
@@ -277,21 +300,26 @@ class LongMemEvalBench(EvalAdapter):
                 for session_id in expected_session_ids
                 if session_id in self._lme_session_to_uri
             ]
+            raw_question_type = str(item.get("question_type", ""))
+            question_id = str(item.get("question_id", index))
+            evidence_texts = self._extract_evidence_texts(item)
             items.append(
                 QAItem(
                     question=str(item.get("question", "")),
                     answer=str(item.get("answer", "")),
                     category=LME_QUESTION_TYPES.get(
-                        str(item.get("question_type", "")),
-                        str(item.get("question_type", "unknown")),
+                        raw_question_type,
+                        raw_question_type or "unknown",
                     ),
                     difficulty=str(item.get("difficulty", "")),
                     expected_ids=[str(session_id) for session_id in expected_session_ids],
                     expected_uris=expected_uris,
                     meta={
-                        "question_id": item.get("question_id", index),
+                        "question_id": question_id,
+                        "question_type": raw_question_type,
                         "item_index": index,
                         "dataset": "longmemeval",
+                        **({"evidence_texts": evidence_texts} if evidence_texts else {}),
                     },
                 )
             )

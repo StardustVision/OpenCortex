@@ -138,5 +138,7 @@ class LLMClient:
                 content = message.get("content", "")
                 if not content:
                     content = message.get("reasoning_content", "")
+                if not content:
+                    content = message.get("reasoning", "")
                 return self._strip_thinking(str(content))
         raise KeyError("OpenAI-compatible response missing choices[0].message.content")

@@ -542,6 +542,37 @@ class LoCoMoBench(EvalAdapter):
             errors=errors,
         )
 
+    @classmethod
+    def _resolve_evidence_texts(
+        cls,
+        conv: Dict[str, Any],
+        qa: Dict[str, Any],
+    ) -> List[str]:
+        """Resolve LoCoMo evidence tokens (D{n}:{idx}) to actual turn text."""
+        sessions = _parse_locomo_sessions(conv)
+        session_by_num = {s["session_num"]: s for s in sessions}
+        texts: List[str] = []
+        for token in _flatten_evidence_tokens(qa.get("evidence", [])):
+            if not token.startswith("D") or ":" not in token:
+                texts.append(str(token))
+                continue
+            try:
+                parts = token[1:].split(":", 1)
+                session_num = int(parts[0])
+                turn_idx = int(parts[1]) - 1  # dia_id is 1-based
+            except (ValueError, IndexError):
+                texts.append(str(token))
+                continue
+            session = session_by_num.get(session_num)
+            if not session or turn_idx >= len(session["turns"]):
+                texts.append(str(token))
+                continue
+            turn = session["turns"][turn_idx]
+            turn_text = _turn_text(turn)
+            if turn_text:
+                texts.append(f"{turn.get('speaker', '')}: {turn_text}")
+        return texts
+
     def build_qa_items(self, **kwargs) -> List[QAItem]:
         conversations = self._selected_conversations(
             max_conv=kwargs.get("max_conv", 0),
@@ -567,6 +598,7 @@ class LoCoMoBench(EvalAdapter):
                     expected_uris = self._conversation_uris_by_id.get(conv_id) or [
                         self._conversation_uri(conv_id)
                     ]
+                evidence_texts = self._resolve_evidence_texts(conv, qa)
                 items.append(
                     QAItem(
                         question=str(qa.get("question", "")),
@@ -579,6 +611,7 @@ class LoCoMoBench(EvalAdapter):
                             "question_id": f"{conv_id}_q{index}",
                             "dataset": "locomo",
                             "evidence_sessions": evidence_sessions,
+                            "evidence_texts": evidence_texts,
                         },
                     )
                 )
@@ -612,7 +645,6 @@ class LoCoMoBench(EvalAdapter):
             turn_id="q-" + md5(qa_item.question.encode()).hexdigest()[:12],
             query=qa_item.question,
             limit=top_k,
-            detail_level="l2",
             session_scope=True,
         )
         self._set_last_retrieval_meta(

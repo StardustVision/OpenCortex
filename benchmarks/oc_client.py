@@ -153,6 +153,10 @@ class OCClient:
             payload["context_type"] = context_type
         return await self._post("/api/v1/memory/search", payload)
 
+    async def derive_status(self, uri: str) -> Dict:
+        """Check async derive status for a document URI."""
+        return await self._get("/api/v1/memory/derive_status", params={"uri": uri})
+
     async def forget(self, uri: str) -> Dict:
         """Delete a memory by URI."""
         return await self._post("/api/v1/memory/forget", {"uri": uri})
@@ -258,6 +262,10 @@ class OCClient:
     async def archivist_status(self) -> Dict:
         """Get Archivist pipeline status."""
         return await self._post("/api/v1/archivist/status", {})
+
+    async def wait_derives(self) -> Dict:
+        """Wait until all in-flight deferred derives complete."""
+        return await self._post("/api/v1/memory/wait_derives", {}, timeout=600.0)
 
     async def _post(
         self,
