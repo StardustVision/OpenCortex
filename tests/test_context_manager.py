@@ -1119,6 +1119,51 @@ class TestContextManager(unittest.TestCase):
 
         self._run(orch.close())
 
+    def test_end_fail_fast_raises_when_source_persistence_fails(self):
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        cm = orch._context_manager
+        session_id = "sess_source_fail_fast_001"
+
+        self._run(
+            cm.handle(
+                session_id=session_id,
+                phase="commit",
+                tenant_id="testteam",
+                user_id="alice",
+                turn_id="t1",
+                messages=[
+                    {"role": "user", "content": "我下周去上海。"},
+                    {"role": "assistant", "content": "记住了。"},
+                ],
+            )
+        )
+
+        original_add = orch.add
+
+        async def flaky_add(*args, **kwargs):
+            meta = kwargs.get("meta") or {}
+            if meta.get("layer") == "conversation_source":
+                raise RuntimeError("source boom")
+            return await original_add(*args, **kwargs)
+
+        orch.add = AsyncMock(side_effect=flaky_add)
+
+        with self.assertRaisesRegex(RuntimeError, "session_end failed"):
+            self._run(
+                cm.handle(
+                    session_id=session_id,
+                    phase="end",
+                    tenant_id="testteam",
+                    user_id="alice",
+                    config={"fail_fast_end": True},
+                )
+            )
+
+        sk = cm._make_session_key("testteam", "alice", session_id)
+        self.assertNotIn(sk, cm._session_activity)
+        self._run(orch.close())
+
     def test_commit_and_transcript_are_isolated_by_collection(self):
         orch = self._make_orchestrator()
         self._run(orch.init())
@@ -1377,7 +1422,7 @@ class TestContextManager(unittest.TestCase):
             )
         )
 
-        self.assertEqual(attempts, 2)
+        self.assertEqual(attempts, 7)
         self.assertEqual(
             layers["overview"],
             "Alice moved to Hangzhou and plans a West Lake visit.",
@@ -1564,6 +1609,113 @@ class TestContextManager(unittest.TestCase):
                 )
             )
             self.assertNotIn(sk, cm._session_merge_tasks)
+
+            await orch.close()
+
+        self._run(_case())
+
+    def test_end_waits_for_merge_followup_tasks_before_full_recompose(self):
+        async def _case():
+            orch = self._make_orchestrator()
+            await orch.init()
+            cm = orch._context_manager
+            session_id = "sess_merge_async_003"
+            sk = cm._make_session_key("testteam", "alice", session_id)
+            cm._estimate_tokens = lambda _text: 8500
+
+            original_complete = orch._complete_deferred_derive
+            derive_started = asyncio.Event()
+            allow_derive = asyncio.Event()
+            full_recompose_spawned = asyncio.Event()
+
+            async def slow_complete(*args, **kwargs):
+                derive_started.set()
+                await allow_derive.wait()
+                return await original_complete(*args, **kwargs)
+
+            orch._complete_deferred_derive = AsyncMock(side_effect=slow_complete)
+
+            original_spawn = cm._spawn_full_recompose_task
+
+            def track_spawn(*args, **kwargs):
+                full_recompose_spawned.set()
+                return original_spawn(*args, **kwargs)
+
+            cm._spawn_full_recompose_task = Mock(side_effect=track_spawn)
+
+            await cm.handle(
+                session_id=session_id,
+                phase="commit",
+                tenant_id="testteam",
+                user_id="alice",
+                turn_id="t1",
+                messages=[
+                    {"role": "user", "content": "我下周二要去杭州出差。"},
+                    {"role": "assistant", "content": "记住了，你住在西湖边。"},
+                ],
+            )
+
+            await asyncio.wait_for(derive_started.wait(), timeout=1.0)
+            await cm._wait_for_merge_task(sk)
+            self.assertNotIn(sk, cm._session_merge_tasks)
+            self.assertIn(sk, cm._session_merge_followup_tasks)
+
+            end_task = asyncio.create_task(
+                cm.handle(
+                    session_id=session_id,
+                    phase="end",
+                    tenant_id="testteam",
+                    user_id="alice",
+                )
+            )
+            await asyncio.sleep(0.05)
+            self.assertFalse(end_task.done())
+            self.assertFalse(full_recompose_spawned.is_set())
+
+            allow_derive.set()
+            result = await asyncio.wait_for(end_task, timeout=2.0)
+
+            self.assertEqual(result["status"], "closed")
+            self.assertTrue(full_recompose_spawned.is_set())
+            self.assertNotIn(sk, cm._session_merge_followup_tasks)
+
+            await orch.close()
+
+        self._run(_case())
+
+    def test_end_fail_fast_raises_when_merge_followup_fails(self):
+        async def _case():
+            orch = self._make_orchestrator()
+            await orch.init()
+            cm = orch._context_manager
+            session_id = "sess_merge_async_failfast_001"
+            cm._estimate_tokens = lambda _text: 8500
+
+            async def broken_complete(*args, **kwargs):
+                raise RuntimeError("derive boom")
+
+            orch._complete_deferred_derive = AsyncMock(side_effect=broken_complete)
+
+            await cm.handle(
+                session_id=session_id,
+                phase="commit",
+                tenant_id="testteam",
+                user_id="alice",
+                turn_id="t1",
+                messages=[
+                    {"role": "user", "content": "我下周二要去杭州出差。"},
+                    {"role": "assistant", "content": "记住了，你住在西湖边。"},
+                ],
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "Merge follow-up task failed"):
+                await cm.handle(
+                    session_id=session_id,
+                    phase="end",
+                    tenant_id="testteam",
+                    user_id="alice",
+                    config={"fail_fast_end": True},
+                )
 
             await orch.close()
 

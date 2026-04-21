@@ -267,6 +267,7 @@ class ContextConfig(BaseModel):
     max_items: int = Field(default=5, ge=1, le=20)
     detail_level: str = "l1"  # l0 | l1 | l2
     recall_mode: str = "auto"  # auto | always | never
+    fail_fast_end: bool = False
 
 
 class ContextRequest(BaseModel):

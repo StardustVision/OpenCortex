@@ -61,58 +61,77 @@ class TestOpenAIEmbedder(unittest.TestCase):
     def _make_embedder(self, dimension=None):
         from opencortex.models.embedder.openai_embedder import OpenAIDenseEmbedder
 
+        return OpenAIDenseEmbedder(
+            model_name="text-embedding-3-small",
+            api_key="sk-test-key",
+            api_base="https://api.openai.com/v1",
+            dimension=dimension,
+        )
+
+    @staticmethod
+    def _mock_client_ctx(response):
         mock_client = MagicMock()
-        with patch("opencortex.models.embedder.openai_embedder.httpx.Client",
-                    return_value=mock_client):
-            embedder = OpenAIDenseEmbedder(
-                model_name="text-embedding-3-small",
-                api_key="sk-test-key",
-                api_base="https://api.openai.com/v1",
-                dimension=dimension,
-            )
-        self._mock_client = mock_client
-        return embedder
+        mock_client.__enter__.return_value = mock_client
+        mock_client.__exit__.return_value = False
+        mock_client.post.return_value = response
+        return mock_client
 
     def test_embed_single(self):
         """Single text -> correct EmbedResult with dense_vector."""
         embedder = self._make_embedder()
         vec = [0.1, 0.2, 0.3, 0.4]
-        self._mock_client.post.return_value = _mock_httpx_response(
-            _make_embedding_response([vec])
+        mock_client = self._mock_client_ctx(
+            _mock_httpx_response(_make_embedding_response([vec]))
         )
 
-        result = embedder.embed("hello world")
+        with patch(
+            "opencortex.models.embedder.openai_embedder.httpx.Client",
+            return_value=mock_client,
+        ) as mock_ctor:
+            result = embedder.embed("hello world")
 
         self.assertIsNotNone(result.dense_vector)
         self.assertEqual(result.dense_vector, vec)
-        self._mock_client.post.assert_called_once()
+        mock_ctor.assert_called_once_with(timeout=60.0)
+        mock_client.post.assert_called_once()
+        _, kwargs = mock_client.post.call_args
+        self.assertEqual(kwargs["headers"]["Connection"], "close")
 
     def test_embed_batch(self):
         """Batch of texts -> correct list of EmbedResult."""
         embedder = self._make_embedder()
         vecs = [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]]
-        self._mock_client.post.return_value = _mock_httpx_response(
-            _make_embedding_response(vecs)
+        mock_client = self._mock_client_ctx(
+            _mock_httpx_response(_make_embedding_response(vecs))
         )
 
-        results = embedder.embed_batch(["a", "b", "c"])
+        with patch(
+            "opencortex.models.embedder.openai_embedder.httpx.Client",
+            return_value=mock_client,
+        ) as mock_ctor:
+            results = embedder.embed_batch(["a", "b", "c"])
 
         self.assertEqual(len(results), 3)
         for i, r in enumerate(results):
             self.assertEqual(r.dense_vector, vecs[i])
         # Should be a single API call, not 3
-        self.assertEqual(self._mock_client.post.call_count, 1)
+        mock_ctor.assert_called_once_with(timeout=60.0)
+        self.assertEqual(mock_client.post.call_count, 1)
 
     def test_dimension_auto_detect(self):
         """First embed auto-detects dimension."""
         embedder = self._make_embedder(dimension=None)
         vec = [0.1, 0.2, 0.3]
-        self._mock_client.post.return_value = _mock_httpx_response(
-            _make_embedding_response([vec])
+        mock_client = self._mock_client_ctx(
+            _mock_httpx_response(_make_embedding_response([vec]))
         )
 
         self.assertIsNone(embedder._dimension)
-        embedder.embed("probe")
+        with patch(
+            "opencortex.models.embedder.openai_embedder.httpx.Client",
+            return_value=mock_client,
+        ):
+            embedder.embed("probe")
         self.assertEqual(embedder.get_dimension(), 3)
 
     def test_dimension_explicit(self):
@@ -120,11 +139,15 @@ class TestOpenAIEmbedder(unittest.TestCase):
         embedder = self._make_embedder(dimension=2)
         # 4-dim vector, should be truncated to 2 and L2-normalized
         vec = [3.0, 4.0, 99.0, 99.0]
-        self._mock_client.post.return_value = _mock_httpx_response(
-            _make_embedding_response([vec])
+        mock_client = self._mock_client_ctx(
+            _mock_httpx_response(_make_embedding_response([vec]))
         )
 
-        result = embedder.embed("test")
+        with patch(
+            "opencortex.models.embedder.openai_embedder.httpx.Client",
+            return_value=mock_client,
+        ):
+            result = embedder.embed("test")
 
         self.assertEqual(len(result.dense_vector), 2)
         # After truncation to [3.0, 4.0], L2 norm = 5.0 -> [0.6, 0.8]
@@ -134,13 +157,43 @@ class TestOpenAIEmbedder(unittest.TestCase):
     def test_api_error_raises(self):
         """4xx/5xx responses raise RuntimeError."""
         embedder = self._make_embedder()
-        self._mock_client.post.return_value = _mock_httpx_response(
-            {"error": {"message": "Invalid API key"}}, status_code=401
+        mock_client = self._mock_client_ctx(
+            _mock_httpx_response(
+                {"error": {"message": "Invalid API key"}},
+                status_code=401,
+            )
         )
 
-        with self.assertRaises(RuntimeError) as ctx:
-            embedder.embed("fail")
+        with patch(
+            "opencortex.models.embedder.openai_embedder.httpx.Client",
+            return_value=mock_client,
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                embedder.embed("fail")
         self.assertIn("401", str(ctx.exception))
+
+    def test_embed_uses_fresh_client_per_request(self):
+        """Each embedding request creates and closes a new client."""
+        embedder = self._make_embedder()
+        first_client = self._mock_client_ctx(
+            _mock_httpx_response(_make_embedding_response([[0.1, 0.2]]))
+        )
+        second_client = self._mock_client_ctx(
+            _mock_httpx_response(_make_embedding_response([[0.3, 0.4]]))
+        )
+
+        with patch(
+            "opencortex.models.embedder.openai_embedder.httpx.Client",
+            side_effect=[first_client, second_client],
+        ) as mock_ctor:
+            embedder.embed("first")
+            embedder.embed("second")
+
+        self.assertEqual(mock_ctor.call_count, 2)
+        first_client.post.assert_called_once()
+        second_client.post.assert_called_once()
+        first_client.__exit__.assert_called_once()
+        second_client.__exit__.assert_called_once()
 
 
 # =============================================================================
@@ -154,6 +207,8 @@ class TestOrchestratorProvider(unittest.TestCase):
     def test_orchestrator_openai_provider(self):
         """config.embedding_provider='openai' -> OpenAIDenseEmbedder created."""
         from opencortex.orchestrator import MemoryOrchestrator
+        from opencortex.models.embedder.cache import CachedEmbedder
+        from opencortex.models.embedder.base import CompositeHybridEmbedder
         from opencortex.models.embedder.openai_embedder import OpenAIDenseEmbedder
 
         config = CortexConfig(
@@ -171,9 +226,11 @@ class TestOrchestratorProvider(unittest.TestCase):
             orch._config = config
             embedder = orch._create_default_embedder()
 
-        self.assertIsInstance(embedder, OpenAIDenseEmbedder)
-        self.assertEqual(embedder.model_name, "text-embedding-3-small")
-        self.assertEqual(embedder.api_key, "sk-test")
+        self.assertIsInstance(embedder, CachedEmbedder)
+        self.assertIsInstance(embedder._inner, CompositeHybridEmbedder)
+        self.assertIsInstance(embedder._inner.dense_embedder, OpenAIDenseEmbedder)
+        self.assertEqual(embedder._inner.dense_embedder.model_name, "text-embedding-3-small")
+        self.assertEqual(embedder._inner.dense_embedder.api_key, "sk-test")
         embedder.close()
 
 

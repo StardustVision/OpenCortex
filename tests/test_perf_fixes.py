@@ -230,6 +230,49 @@ class TestAutophagySweeperLifecycle(unittest.IsolatedAsyncioTestCase):
 
             await oc.close()
 
+    async def test_init_skips_cognition_when_disabled(self):
+        """init() should not initialize cognition or start sweeper when disabled."""
+        from opencortex.config import CortexConfig
+        from opencortex.orchestrator import MemoryOrchestrator
+
+        with patch.object(
+            MemoryOrchestrator,
+            "_init_cognition",
+            new_callable=AsyncMock,
+        ) as mock_init_cognition, patch.object(
+            MemoryOrchestrator,
+            "_start_autophagy_sweeper",
+        ) as mock_start_sweeper, patch(
+            "opencortex.orchestrator.init_context_collection",
+            new_callable=AsyncMock,
+        ), patch(
+            "opencortex.orchestrator.init_cortex_fs",
+            return_value=MagicMock(),
+        ), patch.object(
+            MemoryOrchestrator,
+            "_create_default_embedder",
+            return_value=None,
+        ), patch.object(
+            MemoryOrchestrator,
+            "_init_alpha",
+            new_callable=AsyncMock,
+        ), patch.object(
+            MemoryOrchestrator,
+            "_init_skill_engine",
+            new_callable=AsyncMock,
+        ):
+            oc = MemoryOrchestrator(
+                CortexConfig(cognition_enabled=False),
+                storage=AsyncMock(),
+            )
+            await oc.init()
+
+            mock_init_cognition.assert_not_awaited()
+            mock_start_sweeper.assert_not_called()
+            self.assertIsNone(oc._autophagy_kernel)
+
+            await oc.close()
+
     async def test_sweep_is_serialized_across_overlapping_calls(self):
         """Overlapping sweep triggers must not run concurrently (shared cursor state)."""
         import asyncio

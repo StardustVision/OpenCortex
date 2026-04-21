@@ -226,6 +226,161 @@ Rules — other fields:
 - Return ONLY the JSON object, no other text."""
 
 
+def build_layer_abstract_prompt(content: str, user_abstract: str = "") -> str:
+    """Build prompt for short abstract derivation from content."""
+    user_hint = ""
+    if user_abstract:
+        user_hint = (
+            f"\nThe user described this memory as: \"{user_abstract}\"\n"
+            "Use it as a grounding hint, but still produce the best concise abstract from the content.\n"
+        )
+    return f"""Analyze the following content and produce a concise abstract for a memory system.
+{user_hint}
+Content:
+{content}
+
+Return a JSON object with exactly this field:
+{{
+  "abstract": "One concise sentence (<=200 chars) capturing the core topic and participants."
+}}
+
+Rules:
+- Preserve concrete names, dates, numbers, and locations when they are central.
+- Keep it factual and specific, not generic.
+- Return ONLY the JSON object, no other text."""
+
+
+def build_layer_overview_only_prompt(content: str, user_abstract: str = "") -> str:
+    """Build prompt for overview-only derivation from content."""
+    user_hint = ""
+    if user_abstract:
+        user_hint = (
+            f"\nThe user described this memory as: \"{user_abstract}\"\n"
+            "Keep this in mind while generating the overview.\n"
+        )
+    return f"""Analyze the following content and produce an overview for a memory system.
+{user_hint}
+Content:
+{content}
+
+Return a JSON object with exactly this field:
+{{
+  "overview": "Structured Markdown summary (see rules below)"
+}}
+
+Rules:
+- This is the primary semantic surface for retrieval. Total length MUST be 300-600 words.
+- Write it as Markdown with EXACTLY this heading structure:
+
+## Summary
+One concise sentence capturing the core topic and participants.
+
+## Key Events and Statements
+List the important things said or done. Attribute to speakers by name.
+Preserve original phrasing — do NOT paraphrase or compress. Include all specific
+names, dates, numbers, and locations verbatim.
+
+## Decisions and Outcomes
+Conclusions reached, plans made, or commitments given.
+
+## Key Quotes
+Preserve 3-6 important original sentences verbatim from the content.
+Prioritize sentences containing specific facts: names, dates, numbers, locations,
+decisions, or commitments. Use the EXACT original wording — do not rewrite.
+
+Hard constraints:
+- Every sentence in "Key Events" MUST contain at least one concrete detail (name, date, number, or location).
+- "Key Quotes" MUST be verbatim copies from the content, not paraphrases.
+- Do NOT produce generic summaries. A reader must be able to answer specific factual questions from the overview alone.
+- Return ONLY the JSON object, no other text."""
+
+
+def build_layer_keywords_prompt(content: str, user_abstract: str = "") -> str:
+    """Build prompt for keyword derivation from content."""
+    user_hint = ""
+    if user_abstract:
+        user_hint = f"\nThe user described this memory as: \"{user_abstract}\"\n"
+    return f"""Analyze the following content and extract memory keywords.
+{user_hint}
+Content:
+{content}
+
+Return a JSON object with exactly this field:
+{{
+  "keywords": ["term1", "term2", "..."]
+}}
+
+Rules:
+- Return 3-15 key terms.
+- Prefer names, tools, technologies, concepts, dates, locations, and decisions.
+- Do not include generic filler words.
+- Return ONLY the JSON object, no other text."""
+
+
+def build_layer_entities_prompt(content: str, user_abstract: str = "") -> str:
+    """Build prompt for entity derivation from content."""
+    user_hint = ""
+    if user_abstract:
+        user_hint = f"\nThe user described this memory as: \"{user_abstract}\"\n"
+    return f"""Analyze the following content and extract named entities for a memory system.
+{user_hint}
+Content:
+{content}
+
+Return a JSON object with exactly this field:
+{{
+  "entities": ["entity1", "entity2", "..."]
+}}
+
+Rules:
+- Named entities only: people, systems, tools, organizations, or places.
+- Maximum 10 entities.
+- Return ONLY the JSON object, no other text."""
+
+
+def build_layer_anchor_handles_prompt(content: str, user_abstract: str = "") -> str:
+    """Build prompt for anchor-handle derivation from content."""
+    user_hint = ""
+    if user_abstract:
+        user_hint = f"\nThe user described this memory as: \"{user_abstract}\"\n"
+    return f"""Analyze the following content and extract retrieval anchor handles for a memory system.
+{user_hint}
+Content:
+{content}
+
+Return a JSON object with exactly this field:
+{{
+  "anchor_handles": ["handle1", "handle2", "..."]
+}}
+
+Rules:
+- Return 0-6 short retrieval handles.
+- Prefer concrete entities, numbers, paths, module names, dates, or compact noun phrases.
+- Return ONLY the JSON object, no other text."""
+
+
+def build_layer_fact_points_prompt(content: str, user_abstract: str = "") -> str:
+    """Build prompt for fact-point derivation from content."""
+    user_hint = ""
+    if user_abstract:
+        user_hint = f"\nThe user described this memory as: \"{user_abstract}\"\n"
+    return f"""Analyze the following content and extract atomic fact points for a memory system.
+{user_hint}
+Content:
+{content}
+
+Return a JSON object with exactly this field:
+{{
+  "fact_points": ["atomic fact 1", "atomic fact 2", "..."]
+}}
+
+Rules:
+- Return 0-8 atomic fact statements.
+- Each fact point must be self-contained and include at least one concrete signal such as a name, number, date, location, path, or technical term.
+- Each fact point should be concise and no longer than 80 characters when possible.
+- Return ONLY the JSON object, no other text."""
+
+
 def build_overview_prompt(abstract: str, content: str) -> str:
     """Build prompt for L1 overview generation from content.
 

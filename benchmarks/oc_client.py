@@ -215,14 +215,21 @@ class OCClient:
             },
         )
 
-    async def context_end(self, session_id: str) -> Dict:
-        """MCP end: flush session → Alpha pipeline."""
+    async def context_end(self, session_id: str, fail_fast_end: bool = True) -> Dict:
+        """MCP end: flush session → Alpha pipeline.
+
+        Benchmarks default to fail-fast so degraded end-state never slips
+        through as a successful ingest.
+        """
+        payload: Dict[str, Any] = {
+            "session_id": session_id,
+            "phase": "end",
+        }
+        if fail_fast_end:
+            payload["config"] = {"fail_fast_end": True}
         return await self._post(
             "/api/v1/context",
-            {
-                "session_id": session_id,
-                "phase": "end",
-            },
+            payload,
         )
 
     # ------------------------------------------------------------------

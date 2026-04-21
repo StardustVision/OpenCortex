@@ -48,8 +48,7 @@ class OpenAIDenseEmbedder(DenseEmbedderBase):
 
         if not self.api_key:
             raise ValueError("api_key is required for OpenAIDenseEmbedder")
-
-        self._client = httpx.Client(timeout=60.0)
+        self._timeout = 60.0
 
     def _post_embeddings(self, input_data) -> dict:
         """POST to /embeddings and return the parsed JSON response."""
@@ -57,12 +56,14 @@ class OpenAIDenseEmbedder(DenseEmbedderBase):
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
+            "Connection": "close",
         }
         payload = {
             "model": self.model_name,
             "input": input_data,
         }
-        resp = self._client.post(url, headers=headers, json=payload)
+        with httpx.Client(timeout=self._timeout) as client:
+            resp = client.post(url, headers=headers, json=payload)
         if resp.status_code >= 400:
             raise RuntimeError(
                 f"OpenAI embedding API error {resp.status_code}: {resp.text}"
@@ -135,5 +136,4 @@ class OpenAIDenseEmbedder(DenseEmbedderBase):
         return self._dimension  # type: ignore[return-value]
 
     def close(self):
-        """Close the underlying httpx client."""
-        self._client.close()
+        """No-op for API parity; requests use one-shot clients."""

@@ -148,6 +148,10 @@ class ContextManager:
         self._session_merge_locks: Dict[SessionKey, asyncio.Lock] = {}
         # At most one background merge worker per session.
         self._session_merge_tasks: Dict[SessionKey, asyncio.Task] = {}
+        self._session_merge_task_failures: Dict[SessionKey, List[BaseException]] = {}
+        # Deferred follow-up tasks spawned by session merge workers.
+        self._session_merge_followup_tasks: Dict[SessionKey, Set[asyncio.Task]] = {}
+        self._session_merge_followup_failures: Dict[SessionKey, List[BaseException]] = {}
         # At most one background full-session recomposition worker per session.
         self._session_full_recompose_tasks: Dict[SessionKey, asyncio.Task] = {}
         # Session project id snapshot for explicit/idle/background end flows.
@@ -232,7 +236,7 @@ class ContextManager:
             )
 
         elif phase == "end":
-            return await self._end(session_id, tenant_id, user_id)
+            return await self._end(session_id, tenant_id, user_id, config)
 
         else:
             raise ValueError(f"Unknown phase: {phase}")
@@ -1141,6 +1145,24 @@ class ContextManager:
         sortable.sort(key=lambda item: (item[0], item[1]))
         return [record for _, _, record in sortable]
 
+    async def _session_layer_counts(self, session_id: str) -> Dict[str, int]:
+        """Return per-layer record counts for one session."""
+        records = await self._orchestrator._storage.filter(
+            self._orchestrator._get_collection(),
+            {
+                "op": "must",
+                "field": "session_id",
+                "conds": [session_id],
+            },
+            limit=10000,
+        )
+        counts: Dict[str, int] = {}
+        for record in records:
+            meta = dict(record.get("meta") or {})
+            layer = str(meta.get("layer", "") or "<none>")
+            counts[layer] = counts.get(layer, 0) + 1
+        return counts
+
     async def _select_tail_merged_records(
         self,
         *,
@@ -1661,7 +1683,18 @@ class ContextManager:
                 for (text, idx, tc, _msg_meta), result in zip(write_items, results):
                     if isinstance(result, Exception):
                         logger.warning(
-                            "[ContextManager] Immediate write failed: %s", result
+                            "[ContextManager] Immediate write failed sid=%s turn=%s msg_index=%d chars=%d exc_type=%s exc=%r",
+                            session_id,
+                            turn_id,
+                            idx,
+                            len(text),
+                            type(result).__name__,
+                            result,
+                            exc_info=(
+                                type(result),
+                                result,
+                                result.__traceback__,
+                            ),
                         )
                         continue
                     buffer.messages.append(text)
@@ -1728,6 +1761,7 @@ class ContextManager:
                 user_id,
                 flush_all=False,
                 collection_name=collection_name,
+                raise_on_error=True,
             )
         )
         self._session_merge_tasks[sk] = task
@@ -1735,6 +1769,11 @@ class ContextManager:
 
         def _cleanup(done_task: asyncio.Task) -> None:
             self._pending_tasks.discard(done_task)
+            with contextlib.suppress(asyncio.CancelledError):
+                exc = done_task.exception()
+                if exc is not None:
+                    failures = self._session_merge_task_failures.setdefault(sk, [])
+                    failures.append(exc)
             if self._session_merge_tasks.get(sk) is done_task:
                 self._session_merge_tasks.pop(sk, None)
 
@@ -1748,6 +1787,7 @@ class ContextManager:
         tenant_id: str,
         user_id: str,
         source_uri: Optional[str],
+        raise_on_error: bool = False,
     ) -> None:
         """Start one async full-session recomposition worker per session."""
         existing_task = self._session_full_recompose_tasks.get(sk)
@@ -1762,6 +1802,7 @@ class ContextManager:
                 user_id=user_id,
                 source_uri=source_uri,
                 collection_name=collection_name,
+                raise_on_error=raise_on_error,
             )
         )
         self._session_full_recompose_tasks[sk] = task
@@ -1782,6 +1823,7 @@ class ContextManager:
         user_id: str,
         source_uri: Optional[str],
         collection_name: Optional[str] = None,
+        raise_on_error: bool = False,
     ) -> None:
         """Create directory parent records for semantically related leaf clusters.
 
@@ -1796,6 +1838,15 @@ class ContextManager:
             merged_records = await self._load_session_merged_records(
                 session_id=session_id,
                 source_uri=source_uri,
+            )
+            logger.info(
+                "[ContextManager] Full recompose start sid=%s tenant=%s user=%s collection=%s source_uri=%s merged=%d",
+                session_id,
+                tenant_id,
+                user_id,
+                self._orchestrator._get_collection(),
+                source_uri,
+                len(merged_records),
             )
             if len(merged_records) <= 1:
                 return
@@ -1825,6 +1876,13 @@ class ContextManager:
                 )
 
             segments = self._build_anchor_clustered_segments(entries)
+            logger.info(
+                "[ContextManager] Full recompose planned sid=%s entries=%d segments=%d ranges=%s",
+                session_id,
+                len(entries),
+                len(segments),
+                [segment.get("msg_range") for segment in segments[:8]],
+            )
             if not segments:
                 return
 
@@ -1833,6 +1891,13 @@ class ContextManager:
                 source_records = segment.get("source_records", [])
                 if len(source_records) < 2:
                     continue
+                logger.info(
+                    "[ContextManager] Full recompose segment sid=%s dir_index=%d msg_range=%s children=%d",
+                    session_id,
+                    directory_index,
+                    segment.get("msg_range"),
+                    len(source_records),
+                )
 
                 children_abstracts: List[str] = []
                 for rec in source_records:
@@ -1932,15 +1997,21 @@ class ContextManager:
             )
         except Exception as exc:
             logger.warning(
-                "[ContextManager] Full-session recomposition failed sid=%s tenant=%s user=%s: %s",
+                "[ContextManager] Full-session recomposition failed sid=%s tenant=%s user=%s collection=%s source_uri=%s created_dirs=%d: %s",
                 session_id,
                 tenant_id,
                 user_id,
+                self._orchestrator._get_collection(),
+                source_uri,
+                len(created_directory_uris),
                 exc,
+                exc_info=True,
             )
             if created_directory_uris:
                 with contextlib.suppress(Exception):
                     await self._delete_immediate_families(created_directory_uris)
+            if raise_on_error:
+                raise
         finally:
             reset_request_identity(tokens_for_identity)
             if coll_token is not None:
@@ -2079,12 +2150,77 @@ class ContextManager:
             return 6144
         return max(1, int(getattr(cfg, "conversation_merge_token_budget", 6144)))
 
-    async def _wait_for_merge_task(self, sk: SessionKey) -> None:
+    @staticmethod
+    def _task_failures(results: List[Any]) -> List[BaseException]:
+        """Extract task failures from ``asyncio.gather(..., return_exceptions=True)``."""
+        return [result for result in results if isinstance(result, BaseException)]
+
+    async def _wait_for_merge_task(self, sk: SessionKey) -> List[BaseException]:
         """Wait until any in-flight background merge for the session finishes."""
+        failures = list(self._session_merge_task_failures.pop(sk, []))
         task = self._session_merge_tasks.get(sk)
         if not task:
-            return
-        await asyncio.gather(task, return_exceptions=True)
+            return failures
+        results = await asyncio.gather(task, return_exceptions=True)
+        failures.extend(self._task_failures(results))
+        deduped: List[BaseException] = []
+        seen_ids: Set[int] = set()
+        for failure in failures:
+            if id(failure) in seen_ids:
+                continue
+            seen_ids.add(id(failure))
+            deduped.append(failure)
+        return deduped
+
+    def _track_session_merge_followup_task(
+        self,
+        sk: SessionKey,
+        task: asyncio.Task,
+    ) -> None:
+        """Track deferred tasks spawned from a session merge worker."""
+        session_tasks = self._session_merge_followup_tasks.setdefault(sk, set())
+        session_tasks.add(task)
+        self._pending_tasks.add(task)
+
+        def _cleanup(done_task: asyncio.Task) -> None:
+            self._pending_tasks.discard(done_task)
+            with contextlib.suppress(asyncio.CancelledError):
+                exc = done_task.exception()
+                if exc is not None:
+                    failures = self._session_merge_followup_failures.setdefault(sk, [])
+                    failures.append(exc)
+            active_tasks = self._session_merge_followup_tasks.get(sk)
+            if active_tasks is None:
+                return
+            active_tasks.discard(done_task)
+            if not active_tasks:
+                self._session_merge_followup_tasks.pop(sk, None)
+
+        task.add_done_callback(_cleanup)
+
+    async def _wait_for_merge_followup_tasks(self, sk: SessionKey) -> List[BaseException]:
+        """Wait until deferred follow-up tasks for the session merge finish."""
+        failures: List[BaseException] = list(
+            self._session_merge_followup_failures.pop(sk, []),
+        )
+        while True:
+            tasks = tuple(self._session_merge_followup_tasks.get(sk, set()))
+            if not tasks:
+                deduped: List[BaseException] = []
+                seen_ids: Set[int] = set()
+                for failure in failures:
+                    if id(failure) in seen_ids:
+                        continue
+                    seen_ids.add(id(failure))
+                    deduped.append(failure)
+                return deduped
+            logger.info(
+                "[ContextManager] Waiting for merge follow-up tasks sk=%s pending=%d",
+                sk,
+                len(tasks),
+            )
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            failures.extend(self._task_failures(results))
 
     async def _take_merge_snapshot(
         self,
@@ -2187,6 +2323,7 @@ class ContextManager:
         *,
         flush_all: bool,
         collection_name: Optional[str] = None,
+        raise_on_error: bool = False,
     ) -> None:
         """Merge accumulated buffer snapshots into durable merged records."""
         tokens_for_identity = None
@@ -2200,6 +2337,18 @@ class ContextManager:
                 )
                 if snapshot is None:
                     return
+                logger.info(
+                    "[ContextManager] Merge start sid=%s tenant=%s user=%s collection=%s flush_all=%s snapshot_messages=%d snapshot_tokens=%d snapshot_immediates=%d start_msg_index=%d",
+                    session_id,
+                    tenant_id,
+                    user_id,
+                    self._orchestrator._get_collection(),
+                    flush_all,
+                    len(snapshot.messages),
+                    snapshot.token_count,
+                    len(snapshot.immediate_uris),
+                    snapshot.start_msg_index,
+                )
 
                 records = await self._load_immediate_records(snapshot.immediate_uris)
                 source_uri = self._conversation_source_uri(
@@ -2217,6 +2366,15 @@ class ContextManager:
                     tail_records=tail_records,
                 )
                 segments = self._build_recomposition_segments(entries)
+                logger.info(
+                    "[ContextManager] Merge planned sid=%s immediate_records=%d tail_records=%d entries=%d segments=%d segment_ranges=%s",
+                    session_id,
+                    len(records),
+                    len(tail_records),
+                    len(entries),
+                    len(segments),
+                    [segment.get("msg_range") for segment in segments[:8]],
+                )
 
                 all_tool_calls = []
                 for tc_list in snapshot.tool_calls_per_turn:
@@ -2273,8 +2431,10 @@ class ContextManager:
                             overview="",
                             session_id=session_id,
                             meta=aggregated_meta,
+                            raise_on_error=True,
                         )
                     )
+                    self._track_session_merge_followup_task(sk, _defer_task)
                     _defer_task.add_done_callback(
                         lambda t: None if t.cancelled() else (
                             logger.warning("[ContextManager] deferred derive failed: %s", t.exception())
@@ -2311,12 +2471,29 @@ class ContextManager:
                             "[ContextManager] Immediate cleanup after merge: %s", exc
                         )
         except Exception as exc:
-            logger.error("[ContextManager] Merge failed: %s", exc)
+            logger.error(
+                "[ContextManager] Merge failed sid=%s tenant=%s user=%s collection=%s flush_all=%s source_uri=%s snapshot_messages=%s immediate_records=%s tail_records=%s segments=%s created_merged=%s: %s",
+                session_id,
+                tenant_id,
+                user_id,
+                self._orchestrator._get_collection(),
+                flush_all,
+                locals().get("source_uri"),
+                len(snapshot.messages) if "snapshot" in locals() and snapshot is not None else None,
+                len(records) if "records" in locals() and records is not None else None,
+                len(tail_records) if "tail_records" in locals() and tail_records is not None else None,
+                len(segments) if "segments" in locals() and segments is not None else None,
+                len(created_merged_uris) if "created_merged_uris" in locals() and created_merged_uris is not None else None,
+                exc,
+                exc_info=True,
+            )
             if "created_merged_uris" in locals() and created_merged_uris:
                 with contextlib.suppress(Exception):
                     await self._delete_immediate_families(created_merged_uris)
             if "snapshot" in locals() and snapshot is not None:
                 await self._restore_merge_snapshot(sk, snapshot)
+            if raise_on_error:
+                raise
         finally:
             if tokens_for_identity:
                 reset_request_identity(tokens_for_identity)
@@ -2329,6 +2506,7 @@ class ContextManager:
         session_id: str,
         tenant_id: str,
         user_id: str,
+        config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         sk = self._make_session_key(tenant_id, user_id, session_id)
         total_turns = len(self._committed_turns.get(sk, set()))
@@ -2338,30 +2516,6 @@ class ContextManager:
 
         try:
             async with lock:
-                await self._wait_for_merge_task(sk)
-                buffer = self._conversation_buffers.get(sk)
-                if buffer and buffer.messages:
-                    try:
-                        await self._merge_buffer(
-                            sk,
-                            session_id,
-                            tenant_id,
-                            user_id,
-                            flush_all=True,
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "[ContextManager] End-of-session buffer flush failed: %s",
-                            exc,
-                        )
-
-                if self._session_pending_immediate_cleanup.pop(sk, False):
-                    try:
-                        immediate_uris = await self._list_immediate_uris(session_id)
-                        await self._delete_immediate_families(immediate_uris)
-                    except Exception as exc:
-                        logger.warning("[ContextManager] End cleanup immediates: %s", exc)
-
                 start_time = time.monotonic()
                 status = "closed"
                 traces = 0
@@ -2370,98 +2524,244 @@ class ContextManager:
                     self._session_memory_owner_ids.get(sk, set())
                 )
                 source_uri = None
+                fail_fast = bool((config or {}).get("fail_fast_end", False))
+
+                def _handle_end_failure(
+                    message: str,
+                    exc: Optional[BaseException] = None,
+                ) -> None:
+                    nonlocal status
+                    if fail_fast:
+                        raise RuntimeError(message) from exc
+                    status = "partial"
+                    if exc is None:
+                        logger.warning("[ContextManager] %s", message)
+                    else:
+                        logger.warning(
+                            "[ContextManager] %s: %s",
+                            message,
+                            exc,
+                            exc_info=(
+                                type(exc),
+                                exc,
+                                exc.__traceback__,
+                            ),
+                        )
 
                 try:
-                    source_uri = await self._persist_conversation_source(
-                        session_id=session_id,
-                        tenant_id=tenant_id,
-                        user_id=user_id,
-                    )
-                    result = await self._orchestrator.session_end(
-                        session_id=session_id,
-                        quality_score=0.5,
-                    )
-                    traces = result.get("alpha_traces", 0)
-                    knowledge_candidates = result.get("knowledge_candidates", 0)
-                except Exception as exc:
-                    logger.warning(
-                        "[ContextManager] session_end failed sid=%s tenant=%s user=%s: %s",
-                        session_id,
-                        tenant_id,
-                        user_id,
-                        exc,
-                    )
-                    status = "partial"
+                    merge_failures = await self._wait_for_merge_task(sk)
+                    if fail_fast and merge_failures:
+                        _handle_end_failure(
+                            "Background merge task failed "
+                            f"sid={session_id} tenant={tenant_id} user={user_id} "
+                            f"failures={len(merge_failures)}",
+                            merge_failures[0],
+                        )
 
-                if (
-                    session_owner_ids
-                    and getattr(self._orchestrator, "_autophagy_kernel", None) is not None
-                ):
-                    task = asyncio.create_task(
-                        self._run_autophagy_metabolism(
+                    buffer = self._conversation_buffers.get(sk)
+                    if buffer and buffer.messages:
+                        try:
+                            await self._merge_buffer(
+                                sk,
+                                session_id,
+                                tenant_id,
+                                user_id,
+                                flush_all=True,
+                                raise_on_error=True,
+                            )
+                        except Exception as exc:
+                            _handle_end_failure(
+                                "End-of-session buffer flush failed "
+                                f"sid={session_id} tenant={tenant_id} user={user_id}",
+                                exc,
+                            )
+
+                    if self._session_pending_immediate_cleanup.pop(sk, False):
+                        try:
+                            immediate_uris = await self._list_immediate_uris(session_id)
+                            await self._delete_immediate_families(immediate_uris)
+                        except Exception as exc:
+                            _handle_end_failure(
+                                "End cleanup immediates failed "
+                                f"sid={session_id} tenant={tenant_id} user={user_id}",
+                                exc,
+                            )
+
+                    try:
+                        source_uri = await self._persist_conversation_source(
                             session_id=session_id,
                             tenant_id=tenant_id,
                             user_id=user_id,
-                            owner_ids=session_owner_ids,
                         )
-                    )
-                    self._pending_tasks.add(task)
-                    task.add_done_callback(self._pending_tasks.discard)
+                        result = await self._orchestrator.session_end(
+                            session_id=session_id,
+                            quality_score=0.5,
+                        )
+                        traces = result.get("alpha_traces", 0)
+                        knowledge_candidates = result.get("knowledge_candidates", 0)
+                    except Exception as exc:
+                        _handle_end_failure(
+                            "session_end failed "
+                            f"sid={session_id} tenant={tenant_id} user={user_id}",
+                            exc,
+                        )
 
-                # Full recompose: re-segment all merged records semantically,
-                # preserve conversation order, delete intermediate chunks.
-                # Await completion so callers see final records, not intermediates.
-                self._spawn_full_recompose_task(
-                    sk,
-                    session_id=session_id,
-                    tenant_id=tenant_id,
-                    user_id=user_id,
-                    source_uri=source_uri,
-                )
-                recompose_task = self._session_full_recompose_tasks.get(sk)
-                if recompose_task and not recompose_task.done():
-                    try:
-                        await asyncio.wait_for(asyncio.shield(recompose_task), timeout=120.0)
-                    except (asyncio.TimeoutError, Exception):
-                        pass
+                    if (
+                        session_owner_ids
+                        and getattr(self._orchestrator, "_autophagy_kernel", None) is not None
+                    ):
+                        task = asyncio.create_task(
+                            self._run_autophagy_metabolism(
+                                session_id=session_id,
+                                tenant_id=tenant_id,
+                                user_id=user_id,
+                                owner_ids=session_owner_ids,
+                            )
+                        )
+                        self._pending_tasks.add(task)
+                        task.add_done_callback(self._pending_tasks.discard)
 
-                # Generate session-level directory summary from final merged records.
-                try:
-                    await self._generate_session_summary(
+                    followup_failures = await self._wait_for_merge_followup_tasks(sk)
+                    if fail_fast and followup_failures:
+                        _handle_end_failure(
+                            "Merge follow-up task failed "
+                            f"sid={session_id} tenant={tenant_id} user={user_id} "
+                            f"failures={len(followup_failures)}",
+                            followup_failures[0],
+                        )
+
+                    # Full recompose: re-segment all merged records semantically,
+                    # preserve conversation order, delete intermediate chunks.
+                    # Await completion so callers see final records, not intermediates.
+                    self._spawn_full_recompose_task(
+                        sk,
                         session_id=session_id,
                         tenant_id=tenant_id,
                         user_id=user_id,
                         source_uri=source_uri,
+                        raise_on_error=fail_fast,
                     )
-                except Exception:
-                    logger.warning(
-                        "[ContextManager] Session summary generation failed sid=%s",
+                    recompose_task = self._session_full_recompose_tasks.get(sk)
+                    if recompose_task is not None:
+                        try:
+                            await asyncio.wait_for(
+                                asyncio.shield(recompose_task),
+                                timeout=120.0,
+                            )
+                        except asyncio.TimeoutError as exc:
+                            recompose_task.cancel()
+                            with contextlib.suppress(asyncio.CancelledError):
+                                await recompose_task
+                            _handle_end_failure(
+                                "Full-session recomposition timed out "
+                                f"sid={session_id} tenant={tenant_id} user={user_id} timeout=120s",
+                                exc,
+                            )
+                        except Exception as exc:
+                            _handle_end_failure(
+                                "Full-session recomposition wait failed "
+                                f"sid={session_id} tenant={tenant_id} user={user_id}",
+                                exc,
+                            )
+
+                    # Generate session-level directory summary from final merged records.
+                    try:
+                        await self._generate_session_summary(
+                            session_id=session_id,
+                            tenant_id=tenant_id,
+                            user_id=user_id,
+                            source_uri=source_uri,
+                        )
+                    except Exception as exc:
+                        _handle_end_failure(
+                            f"Session summary generation failed sid={session_id}",
+                            exc,
+                        )
+
+                    layer_counts: Optional[Dict[str, int]] = None
+                    try:
+                        layer_counts = await self._session_layer_counts(session_id)
+                        logger.info(
+                            "[ContextManager] End state sid=%s source_uri=%s layer_counts=%s",
+                            session_id,
+                            source_uri,
+                            layer_counts,
+                        )
+                    except Exception as exc:
+                        _handle_end_failure(
+                            f"Failed to inspect end state sid={session_id}",
+                            exc,
+                        )
+
+                    if layer_counts is not None:
+                        integrity_errors: List[str] = []
+                        if total_turns > 0 and layer_counts.get("merged", 0) == 0:
+                            integrity_errors.append("merged=0")
+                        if layer_counts.get("immediate", 0) > 0:
+                            integrity_errors.append(
+                                f"immediate={layer_counts.get('immediate', 0)}",
+                            )
+                        if (
+                            layer_counts.get("merged", 0) >= 2
+                            and self._orchestrator._llm_completion is not None
+                            and layer_counts.get("session_summary", 0) == 0
+                        ):
+                            integrity_errors.append("session_summary=0")
+                        if integrity_errors:
+                            if fail_fast:
+                                _handle_end_failure(
+                                    "End degraded "
+                                    f"sid={session_id} source_uri={source_uri} "
+                                    f"layer_counts={layer_counts} integrity_errors={integrity_errors}",
+                                )
+                            else:
+                                logger.warning(
+                                    "[ContextManager] End degraded sid=%s source_uri=%s layer_counts=%s integrity_errors=%s",
+                                    session_id,
+                                    source_uri,
+                                    layer_counts,
+                                    integrity_errors,
+                                )
+
+                    duration_ms = int((time.monotonic() - start_time) * 1000)
+                    logger.info(
+                        "[ContextManager] end sid=%s tenant=%s user=%s turns=%d traces=%d latency=%dms",
                         session_id,
-                        exc_info=True,
+                        tenant_id,
+                        user_id,
+                        total_turns,
+                        traces,
+                        duration_ms,
                     )
 
-                duration_ms = int((time.monotonic() - start_time) * 1000)
-                self._cleanup_session(sk)
-
-                logger.info(
-                    "[ContextManager] end sid=%s tenant=%s user=%s turns=%d traces=%d latency=%dms",
-                    session_id,
-                    tenant_id,
-                    user_id,
-                    total_turns,
-                    traces,
-                    duration_ms,
-                )
-
-                return {
-                    "session_id": session_id,
-                    "status": status,
-                    "total_turns": total_turns,
-                    "traces": traces,
-                    "knowledge_candidates": knowledge_candidates,
-                    "duration_ms": duration_ms,
-                    "source_uri": source_uri,
-                }
+                    return {
+                        "session_id": session_id,
+                        "status": status,
+                        "total_turns": total_turns,
+                        "traces": traces,
+                        "knowledge_candidates": knowledge_candidates,
+                        "duration_ms": duration_ms,
+                        "source_uri": source_uri,
+                    }
+                except Exception as exc:
+                    duration_ms = int((time.monotonic() - start_time) * 1000)
+                    logger.warning(
+                        "[ContextManager] end failed sid=%s tenant=%s user=%s latency=%dms fail_fast=%s: %s",
+                        session_id,
+                        tenant_id,
+                        user_id,
+                        duration_ms,
+                        fail_fast,
+                        exc,
+                        exc_info=(
+                            type(exc),
+                            exc,
+                            exc.__traceback__,
+                        ),
+                    )
+                    raise
+                finally:
+                    self._cleanup_session(sk)
         finally:
             reset_request_project_id(project_token)
 
@@ -2561,6 +2861,9 @@ class ContextManager:
         self._session_locks.pop(sk, None)
         self._session_merge_locks.pop(sk, None)
         self._session_merge_tasks.pop(sk, None)
+        self._session_merge_task_failures.pop(sk, None)
+        self._session_merge_followup_tasks.pop(sk, None)
+        self._session_merge_followup_failures.pop(sk, None)
         self._conversation_buffers.pop(sk, None)
         self._session_project_ids.pop(sk, None)
         self._session_memory_owner_ids.pop(sk, None)

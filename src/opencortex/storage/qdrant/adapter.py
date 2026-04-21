@@ -68,19 +68,23 @@ class QdrantStorageAdapter(StorageInterface):
     _DENSE_NAME = "dense"
     _SPARSE_NAME = "sparse"
 
-    def __init__(self, path: str = "./.qdrant", embedding_dim: int = 1024):
+    def __init__(self, path: str = "./.qdrant", embedding_dim: int = 1024, url: str = ""):
         self._path = path
+        self._url = url
         self._dim = embedding_dim
         self._client: Optional[AsyncQdrantClient] = None
-        # Track which collections have sparse vectors configured
         self._sparse_collections: set = set()
 
     async def _ensure_client(self) -> AsyncQdrantClient:
         """Lazily initialize the Qdrant client."""
         if self._client is None:
-            os.makedirs(self._path, exist_ok=True)
-            self._client = AsyncQdrantClient(path=self._path)
-            logger.info("[QdrantAdapter] Client initialized at %s", self._path)
+            if self._url:
+                self._client = AsyncQdrantClient(url=self._url)
+                logger.info("[QdrantAdapter] Client initialized at %s", self._url)
+            else:
+                os.makedirs(self._path, exist_ok=True)
+                self._client = AsyncQdrantClient(path=self._path)
+                logger.info("[QdrantAdapter] Client initialized at %s", self._path)
         return self._client
 
     async def ensure_text_indexes(self) -> None:

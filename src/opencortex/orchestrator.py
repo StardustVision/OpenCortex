@@ -57,7 +57,13 @@ from opencortex.cognition import (
 from opencortex.config import CortexConfig, get_config
 from opencortex.prompts import (
     build_doc_summarization_prompt,
+    build_layer_abstract_prompt,
+    build_layer_anchor_handles_prompt,
     build_layer_derivation_prompt,
+    build_layer_entities_prompt,
+    build_layer_fact_points_prompt,
+    build_layer_keywords_prompt,
+    build_layer_overview_only_prompt,
     build_parent_summarization_prompt,
 )
 from opencortex.http.request_context import (
@@ -128,6 +134,8 @@ _CONTEXT_COLLECTION = "context"
 
 # Maximum number of batch_add items processed concurrently
 _BATCH_ADD_CONCURRENCY = 8
+_IMMEDIATE_EMBED_TIMEOUT_SECONDS = 8.0
+_IMMEDIATE_LOCAL_FALLBACK_MODEL = "BAAI/bge-m3"
 
 
 def _merge_unique_strings(*groups: Any) -> List[str]:
@@ -243,6 +251,8 @@ class MemoryOrchestrator:
         self._derive_queue: asyncio.Queue[Optional[_DeriveTask]] = asyncio.Queue()
         self._derive_worker_task: Optional[asyncio.Task] = None
         self._inflight_derive_uris: set = set()
+        self._immediate_fallback_embedder: Optional[EmbedderBase] = None
+        self._immediate_fallback_embedder_attempted = False
 
         # Conversation deferred derive tracking
         self._deferred_derive_count: int = 0
@@ -385,8 +395,9 @@ class MemoryOrchestrator:
         self._start_derive_worker()
 
         # 9. Autophagy cognition components
-        await self._init_cognition()
-        self._start_autophagy_sweeper()
+        if getattr(self._config, "cognition_enabled", True):
+            await self._init_cognition()
+            self._start_autophagy_sweeper()
 
         # 10. Cortex Alpha components
         await self._init_alpha()
@@ -818,6 +829,71 @@ class MemoryOrchestrator:
                 exc,
             )
             return None
+
+    def _is_retryable_immediate_embed_exception(self, exc: Exception) -> bool:
+        """Return True when immediate remote embedding should fall back locally."""
+        if isinstance(exc, TimeoutError):
+            return True
+        try:
+            import httpx
+
+            return isinstance(exc, (httpx.TimeoutException, httpx.TransportError))
+        except Exception:
+            return False
+
+    def _create_immediate_fallback_embedder(self) -> Optional[EmbedderBase]:
+        """Create a local fallback embedder for immediate-write remote failures."""
+        try:
+            from opencortex.models.embedder.local_embedder import LocalEmbedder
+
+            local_config = {"onnx_intra_op_threads": self._config.onnx_intra_op_threads}
+            embedder = LocalEmbedder(
+                model_name=_IMMEDIATE_LOCAL_FALLBACK_MODEL,
+                config=local_config,
+            )
+            if not embedder.is_available:
+                logger.warning(
+                    "[MemoryOrchestrator] Immediate local fallback unavailable "
+                    "(model=%s)",
+                    _IMMEDIATE_LOCAL_FALLBACK_MODEL,
+                )
+                return None
+
+            detected_dim = embedder.get_dimension()
+            expected_dim = self._config.embedding_dimension or detected_dim
+            if expected_dim and detected_dim != expected_dim:
+                logger.warning(
+                    "[MemoryOrchestrator] Immediate local fallback disabled: "
+                    "model=%s dim=%d != configured_dim=%d",
+                    _IMMEDIATE_LOCAL_FALLBACK_MODEL,
+                    detected_dim,
+                    expected_dim,
+                )
+                embedder.close()
+                return None
+
+            logger.info(
+                "[MemoryOrchestrator] Created immediate local fallback embedder "
+                "(model=%s, dim=%d)",
+                _IMMEDIATE_LOCAL_FALLBACK_MODEL,
+                detected_dim,
+            )
+            return self._wrap_with_cache(self._wrap_with_hybrid(embedder))
+        except Exception as exc:
+            logger.warning(
+                "[MemoryOrchestrator] Failed to create immediate local fallback "
+                "embedder: %s",
+                exc,
+            )
+            return None
+
+    def _get_immediate_fallback_embedder(self) -> Optional[EmbedderBase]:
+        """Return cached immediate local fallback embedder if available."""
+        if self._immediate_fallback_embedder_attempted:
+            return self._immediate_fallback_embedder
+        self._immediate_fallback_embedder_attempted = True
+        self._immediate_fallback_embedder = self._create_immediate_fallback_embedder()
+        return self._immediate_fallback_embedder
 
     def _wrap_with_hybrid(self, embedder):
         """Wrap dense embedder with BM25 sparse for hybrid search.
@@ -1329,10 +1405,42 @@ class MemoryOrchestrator:
         sparse_vector = None
         if self._embedder:
             loop = asyncio.get_running_loop()
-            result = await asyncio.wait_for(
-                loop.run_in_executor(None, self._embedder.embed, embed_input),
-                timeout=2.0,
-            )
+            try:
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(None, self._embedder.embed, embed_input),
+                    timeout=_IMMEDIATE_EMBED_TIMEOUT_SECONDS,
+                )
+            except Exception as exc:
+                fallback_embedder = None
+                if (
+                    (self._config.embedding_provider or "").strip().lower() == "openai"
+                    and self._is_retryable_immediate_embed_exception(exc)
+                ):
+                    fallback_embedder = self._get_immediate_fallback_embedder()
+                if fallback_embedder is None:
+                    raise
+                logger.warning(
+                    "[Orchestrator] Immediate remote embedding failed; "
+                    "retrying local fallback model=%s exc_type=%s exc=%r",
+                    getattr(fallback_embedder, "model_name", "local-fallback"),
+                    type(exc).__name__,
+                    exc,
+                )
+                try:
+                    result = await loop.run_in_executor(
+                        None,
+                        fallback_embedder.embed,
+                        embed_input,
+                    )
+                except Exception as fallback_exc:
+                    logger.warning(
+                        "[Orchestrator] Immediate local fallback embedding failed "
+                        "model=%s exc_type=%s exc=%r",
+                        getattr(fallback_embedder, "model_name", "local-fallback"),
+                        type(fallback_exc).__name__,
+                        fallback_exc,
+                    )
+                    raise exc from fallback_exc
             vector = result.dense_vector
             sparse_vector = result.sparse_vector
 
@@ -1602,7 +1710,7 @@ class MemoryOrchestrator:
         content: str,
         user_overview: str = "",
     ) -> Dict[str, str]:
-        """Derive L0/L1/keywords from L2 in a single LLM call.
+        """Derive L0/L1/keywords from L2 with LLM assistance.
 
         Returns {"abstract": str, "overview": str, "keywords": str}
         keywords is a comma-separated string (for Qdrant MatchText).
@@ -1680,57 +1788,12 @@ class MemoryOrchestrator:
                     logger.warning(
                         "[Orchestrator] _derive_layers chunked LLM failed: %s", e
                     )
-            prompt = build_layer_derivation_prompt(content, user_abstract)
             try:
-                response = await self._derive_layers_llm_completion(prompt)
-                data = parse_json_from_response(response)
-                if isinstance(data, dict):
-                    llm_overview = (data.get("overview") or "").strip()
-                    keywords_list = data.get("keywords") or []
-                    if isinstance(keywords_list, list):
-                        keywords = ", ".join(str(k) for k in keywords_list if k)
-                    else:
-                        keywords = str(keywords_list)
-                    entities_list = data.get("entities", [])
-                    if isinstance(entities_list, list):
-                        entities = [str(e).strip().lower() for e in entities_list if e][:20]
-                    else:
-                        entities = []
-                    anchor_handles_list = data.get("anchor_handles", [])
-                    if isinstance(anchor_handles_list, list):
-                        anchor_handles = [
-                            str(handle).strip()
-                            for handle in anchor_handles_list
-                            if str(handle).strip()
-                        ][:6]
-                    else:
-                        anchor_handles = []
-                    fact_points_list = data.get("fact_points", [])
-                    if isinstance(fact_points_list, list):
-                        fact_points = [
-                            str(fp).strip()
-                            for fp in fact_points_list
-                            if str(fp).strip()
-                        ][:8]
-                    else:
-                        fact_points = []
-                    resolved_overview = self._fallback_overview_from_content(
-                        user_overview=user_overview or llm_overview,
-                        content=content,
-                    )
-                    derived_abstract = self._derive_abstract_from_overview(
-                        user_abstract=user_abstract,
-                        overview=resolved_overview,
-                        content=content,
-                    )
-                    return {
-                        "abstract": derived_abstract,
-                        "overview": resolved_overview,
-                        "keywords": keywords,
-                        "entities": entities,
-                        "anchor_handles": anchor_handles,
-                        "fact_points": fact_points,
-                    }
+                return await self._derive_layers_split_fields(
+                    user_abstract=user_abstract,
+                    content=content,
+                    user_overview=user_overview,
+                )
             except Exception as e:
                 logger.warning("[Orchestrator] _derive_layers LLM failed: %s", e)
 
@@ -1757,6 +1820,114 @@ class MemoryOrchestrator:
             "fact_points": [],
         }
 
+    @staticmethod
+    def _coerce_derived_string(value: Any) -> str:
+        """Normalize a derived string field."""
+        return str(value or "").strip()
+
+    @staticmethod
+    def _coerce_derived_list(
+        value: Any,
+        *,
+        limit: int,
+        lowercase: bool = False,
+    ) -> List[str]:
+        """Normalize a derived list field."""
+        if not isinstance(value, list):
+            return []
+        result: List[str] = []
+        for item in value:
+            normalized = str(item).strip()
+            if not normalized:
+                continue
+            result.append(normalized.lower() if lowercase else normalized)
+            if len(result) >= limit:
+                break
+        return result
+
+    async def _derive_layers_split_fields(
+        self,
+        *,
+        user_abstract: str,
+        content: str,
+        user_overview: str,
+    ) -> Dict[str, Any]:
+        """Derive memory fields with split prompts and bounded inner concurrency."""
+        semaphore = asyncio.Semaphore(3)
+        prompt_builders = {
+            "abstract": build_layer_abstract_prompt,
+            "overview": build_layer_overview_only_prompt,
+            "keywords": build_layer_keywords_prompt,
+            "entities": build_layer_entities_prompt,
+            "anchor_handles": build_layer_anchor_handles_prompt,
+            "fact_points": build_layer_fact_points_prompt,
+        }
+
+        async def _run_field(field_name: str, prompt: str) -> tuple[str, Dict[str, Any]]:
+            async with semaphore:
+                response = await self._derive_layers_llm_completion(prompt)
+            parsed = parse_json_from_response(response)
+            return field_name, parsed if isinstance(parsed, dict) else {}
+
+        tasks = [
+            asyncio.create_task(
+                _run_field(
+                    field_name,
+                    prompt_builder(content, user_abstract),
+                )
+            )
+            for field_name, prompt_builder in prompt_builders.items()
+        ]
+        parsed_results = await asyncio.gather(*tasks)
+        derived_fields = {field_name: data for field_name, data in parsed_results}
+
+        llm_abstract = self._coerce_derived_string(
+            derived_fields.get("abstract", {}).get("abstract")
+        )
+        llm_overview = self._coerce_derived_string(
+            derived_fields.get("overview", {}).get("overview")
+        )
+        keywords = ", ".join(
+            self._coerce_derived_list(
+                derived_fields.get("keywords", {}).get("keywords"),
+                limit=15,
+            )
+        )
+        entities = self._coerce_derived_list(
+            derived_fields.get("entities", {}).get("entities"),
+            limit=20,
+            lowercase=True,
+        )
+        anchor_handles = self._coerce_derived_list(
+            derived_fields.get("anchor_handles", {}).get("anchor_handles"),
+            limit=6,
+        )
+        fact_points = self._coerce_derived_list(
+            derived_fields.get("fact_points", {}).get("fact_points"),
+            limit=8,
+        )
+        resolved_overview = self._fallback_overview_from_content(
+            user_overview=user_overview or llm_overview,
+            content=content,
+        )
+        derived_abstract = (
+            user_abstract
+            or llm_abstract
+            or self._derive_abstract_from_overview(
+                user_abstract=user_abstract,
+                overview=resolved_overview,
+                content=content,
+            )
+        )
+        return {
+            "abstract": derived_abstract,
+            "overview": resolved_overview,
+            "keywords": keywords,
+            "entities": entities,
+            "anchor_handles": anchor_handles,
+            "fact_points": fact_points,
+        }
+
     async def _complete_deferred_derive(
         self,
         uri: str,
@@ -1766,6 +1937,7 @@ class MemoryOrchestrator:
         session_id: str = "",
         meta: Optional[Dict[str, Any]] = None,
         context_type: str = "memory",
+        raise_on_error: bool = False,
     ) -> None:
         """Run LLM derive for a previously deferred record and update Qdrant + CortexFS."""
         self._deferred_derive_count += 1
@@ -1862,6 +2034,8 @@ class MemoryOrchestrator:
             logger.warning(
                 "[Orchestrator] deferred derive failed for %s: %s", uri, exc,
             )
+            if raise_on_error:
+                raise
         finally:
             self._deferred_derive_count -= 1
 
@@ -2469,7 +2643,7 @@ class MemoryOrchestrator:
         if not parent_uri:
             parent_uri = self._derive_parent_uri(uri)
 
-        # Derive L0/L1/keywords from L2 in a single structured LLM call
+        # Derive L0/L1/keywords from L2 via structured LLM calls
         keywords = ""
         layers = {}
         if content and is_leaf and not defer_derive:
@@ -5530,6 +5704,10 @@ class MemoryOrchestrator:
 
         if self._context_manager:
             await self._context_manager.close()
+        if self._immediate_fallback_embedder:
+            self._immediate_fallback_embedder.close()
+        self._immediate_fallback_embedder = None
+        self._immediate_fallback_embedder_attempted = False
         if self._storage:
             await self._storage.close()
         self._initialized = False

@@ -47,6 +47,7 @@ class TestDocumentMode(unittest.TestCase):
                         category="documents",
                         context_type="resource",
                     )
+                    await orch._drain_derive_queue()
                     self.assertIsNotNone(result)
                     self.assertIsNotNone(result.uri)
                     records = await orch._storage.filter("context", None, limit=50)

@@ -337,7 +337,6 @@ async def run_mode(
     if not args.collection:
         await oc.create_collection(collection_id, admin_token=admin_token)
     log(f"Isolated collection: {collection_id}")
-    _admin_token = admin_token  # capture for finally block
 
     llm = None
     if not args.retrieval_only:
@@ -801,7 +800,6 @@ async def run_mode(
         return report
 
     finally:
-        await oc.delete_collection(collection_id, admin_token=_admin_token)
         await oc.close()
         await llm.close() if llm else None
 

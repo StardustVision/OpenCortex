@@ -7,6 +7,7 @@ class TestAlphaConfig(unittest.TestCase):
     def test_default_alpha_config(self):
         cfg = CortexConfig()
         self.assertIsNotNone(cfg.cortex_alpha)
+        self.assertTrue(cfg.cognition_enabled)
         self.assertTrue(cfg.cortex_alpha.observer_enabled)
         self.assertEqual(cfg.immediate_event_ttl_hours, 24)
         self.assertEqual(cfg.merged_event_ttl_hours, 168)
@@ -32,6 +33,7 @@ class TestAlphaConfig(unittest.TestCase):
         cfg = CortexConfig()
         d = cfg.to_dict()
         self.assertIn("cortex_alpha", d)
+        self.assertIn("cognition_enabled", d)
         self.assertIsInstance(d["cortex_alpha"], dict)
 
     def test_max_context_tokens_default(self):

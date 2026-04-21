@@ -165,7 +165,7 @@ class CortexConfig:
     small_to_big_sibling_count: int = 2
     context_flattening_enabled: bool = True
     document_derive_concurrency: int = 3
-    conversation_merge_token_budget: int = 8192
+    conversation_merge_token_budget: int = 6144
     time_filter_enabled: bool = True
     time_filter_fallback_threshold: int = 3
     rerank_gate_score_gap_threshold: float = 0.15
@@ -183,6 +183,8 @@ class CortexConfig:
     cone_edge_miss_cost: float = 0.9
     cone_entity_degree_cap: int = 50
 
+    # Cognition / autophagy maintenance
+    cognition_enabled: bool = True
     # Autophagy (cognition maintenance)
     # Periodic sweep interval for paged metabolism maintenance.
     autophagy_sweep_interval_seconds: int = 900  # 15 minutes
