@@ -1,0 +1,171 @@
+================================================================================
+OPENCORTEX AUDIT: STORE & RECALL PATH CONSISTENCY SUMMARY
+================================================================================
+
+AUDIT SCOPE
+-----------
+Three ingest modes: memory, document, conversation (immediate + merged)
+Focus: fact_point and anchor_projection derived records consistency
+
+KEY FINDINGS
+============
+
+1. OVERALL CONSISTENCY: 85%
+   - Write paths properly converge at _sync_anchor_projection_records()
+   - Three-layer search correctly filters all modes
+   - Scope field inheritance working
+
+2. CRITICAL GAPS (P0): 2 Issues
+   ✗ Conversation immediate mode has NO fact_points (by design per R23)
+     - Trade-off: speed over retrieval quality
+     - Intentional but creates immediate/merged asymmetry
+   
+   ✗ Immediate + merged records have different retrieval surfaces
+     - Immediate: anchors only
+     - Merged: anchors + fact_points
+     - Conversation history not uniformly enriched
+
+3. HIGH SEVERITY BUGS (P1): 2 Issues
+   
+   🔴 BUG ADV-001: update() does NOT regenerate fact_points
+      Location: orchestrator.py, update() method [L2304-2470]
+      Root cause: fact_points field never injected into abstract_json
+      Impact: Edited memories lose fact_point derivations, degrade in quality
+      
+      Expected behavior: When content changes, _derive_layers() is called [L2370]
+                         but fact_points result is discarded
+      
+      Proposed fix: Inject derive_result.get("fact_points", []) into 
+                    abstract_json before _sync_anchor_projection_records()
+   
+   ⚠️  Directory nodes (document mode) skip derivation
+      Location: _sync_anchor_projection_records() [L1737-1738]
+      Issue: is_leaf=False records don't get anchors/fp
+      Status: Likely intentional (directories are structural containers)
+      Action: Verify design intent, add clarifying comment
+
+4. MEDIUM RISKS (P2): 5 Issues
+   - Scope field inheritance pattern not explicit (fragile, works now)
+   - Batch_add ingest_mode marking ambiguous (likely OK)
+   - Fact_point quality gate applied twice (defense-in-depth, OK)
+   - Immediate records can't be enriched later (design choice)
+
+WRITE PATH CONSISTENCY
+======================
+
+Memory Mode:
+  ✓ add() → _derive_layers() → fact_points injected → _sync_anchor_projection_records()
+  ✓ Both anchor + fact_point records generated
+  ⚠️ update() path broken (P1 bug)
+
+Document Mode:
+  ✓ add() → _add_document() → per-chunk add() → normal memory flow
+  ✓ Each leaf chunk: fact_points injected, both record types generated
+  ⚠️ Directory nodes: skip derivation (intentional)
+
+Conversation Immediate:
+  ✓ _write_immediate() → record write → _sync_anchor_projection_records()
+  ✗ NO _derive_layers() call (intentional per R23)
+  ✗ NO fact_points generated (design trade-off)
+  ✓ Anchor records only
+
+Conversation Merged:
+  ✓ _merge_buffer() → add() → _derive_layers() → fact_points injected
+  ✓ Both anchor + fact_point records generated
+  ✓ Converges to memory mode path
+
+READ PATH CONSISTENCY
+=====================
+
+Three-layer search working correctly across all modes:
+  ✓ Layer 1: is_leaf=True records (retrieval_surface="l0_object")
+  ✓ Layer 2: anchor_projection records (retrieval_surface="anchor_projection")
+  ✓ Layer 3: fact_point records (retrieval_surface="fact_point")
+
+Scope filters per mode:
+  ✓ Memory: parent_uri filter (empty session_id, source_doc_id)
+  ✓ Document: source_doc_id filter (inherited by chunks and derived records)
+  ✓ Conversation: session_id filter (inherited by all records and derived records)
+
+QUALITY GATES
+=============
+
+Anchor projection (R11):
+  ✓ Minimum length: ≥4 characters [L1636]
+  ✓ Applied uniformly across all modes
+  ✓ Enforcement in _anchor_projection_records()
+
+Fact_point validation:
+  ✓ _is_valid_fact_point() applied in _fact_point_records() [L1570]
+  ✓ Checks: length 8-80 chars, no newlines, concrete signal (digit/CamelCase/ALLCAPS/paths/CJK)
+  ✓ Applied uniformly to all modes that generate fact_points
+  ⚠️ Pre-filtering in _derive_layers() [L1278] makes quality gate secondary
+
+ACTION ITEMS (PRIORITY ORDER)
+=============================
+
+URGENT (P1):
+  1. Fix update() to inject fact_points into abstract_json
+     - This cascades to _merge_into() which uses update()
+     - Restores consistency between add() and update() paths
+
+HIGH:
+  2. Verify directory node design intent (document mode)
+     - Confirm is_leaf=False records should skip derivation
+     - Add code comment explaining design
+  
+  3. Document R23 immediate/fact_point trade-off
+     - Add design decision to code comments
+     - Consider if trade-off is still acceptable (speed vs quality)
+
+MEDIUM:
+  4. Strengthen scope field inheritance documentation
+     - Create inheritance table per mode
+     - Document which fields are inherited vs empty
+
+FILES TO REVIEW
+===============
+
+Core orchestrator paths:
+  - src/opencortex/orchestrator.py [~5366 lines]
+    * add() [L1826]
+    * _write_immediate() [L936]
+    * _merge_into() [L2277]
+    * update() [L2304] ← BUG HERE
+    * _sync_anchor_projection_records() [L1725]
+    * _execute_object_query() [L3011] ← read path
+    * _derive_layers() [L1224]
+    * _anchor_projection_records() [L1611]
+    * _fact_point_records() [L1550]
+
+Conversation mode:
+  - src/opencortex/context/manager.py [~2500 lines]
+    * _write_immediate() call [L1482]
+    * _merge_buffer() [L1811]
+
+Document mode:
+  - src/opencortex/orchestrator.py [L1068]
+    * _add_document()
+  - src/opencortex/parse/parsers/markdown.py
+    * chunk generation
+
+Mode resolution:
+  - src/opencortex/ingest/resolver.py [~60 lines]
+    * IngestModeResolver.resolve()
+
+DETAILED FINDINGS LOCATION
+==========================
+
+Full audit report: AUDIT_STORE_RECALL_PATHS.md
+
+Contains:
+  - Path diagrams (ASCII) for all write paths
+  - Read path three-layer search flow
+  - Consistency table with 16 behavioral dimensions
+  - Detailed issue descriptions (8 issues, P0-P2)
+  - Scope field inheritance per mode
+  - Quality gate verification
+  - Mode-specific observations
+  - Recommendations with proposed fixes
+
+================================================================================
