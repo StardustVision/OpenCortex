@@ -26,6 +26,8 @@ benchmark_*/
 .ace/
 .mcp.json
 mcp.json
+.context/
+.qdrant-initialized
 data_hotpotqa/
 .vite/
 docs/benchmark/*.json
