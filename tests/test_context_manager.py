@@ -85,6 +85,53 @@ class TestContextManager(unittest.TestCase):
 
         self._run(orch.close())
 
+    def test_commit_appends_to_live_buffer_after_merge_rollover(self):
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        cm = orch._context_manager
+
+        sk = cm._make_session_key("testteam", "alice", "sess_rollover")
+        stale_buffer = ConversationBuffer(
+            messages=["existing"],
+            token_count=1,
+            start_msg_index=0,
+            immediate_uris=["old-uri"],
+        )
+        cm._conversation_buffers[sk] = stale_buffer
+
+        swapped = False
+
+        async def fake_write_immediate(**kwargs):
+            nonlocal swapped
+            if not swapped:
+                swapped = True
+                cm._conversation_buffers[sk] = ConversationBuffer(start_msg_index=1)
+            return "new-uri"
+
+        orch._write_immediate = fake_write_immediate
+
+        result = self._run(
+            cm._commit(
+                session_id="sess_rollover",
+                turn_id="turn-1",
+                messages=[{"role": "user", "content": "new message"}],
+                tenant_id="testteam",
+                user_id="alice",
+            )
+        )
+
+        live_buffer = cm._conversation_buffers[sk]
+        self.assertTrue(result["accepted"])
+        self.assertIsNot(live_buffer, stale_buffer)
+        self.assertEqual(live_buffer.start_msg_index, 1)
+        self.assertEqual(live_buffer.messages, ["new message"])
+        self.assertEqual(live_buffer.immediate_uris, ["new-uri"])
+        self.assertGreater(live_buffer.token_count, 0)
+        self.assertEqual(stale_buffer.messages, ["existing"])
+        self.assertEqual(stale_buffer.immediate_uris, ["old-uri"])
+
+        self._run(orch.close())
+
     def test_prepare_cache_hit_rewrites_stage_timing(self):
         orch = self._make_orchestrator()
         self._run(orch.init())

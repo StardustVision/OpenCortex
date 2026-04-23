@@ -1680,29 +1680,49 @@ class ContextManager:
                 finally:
                     reset_request_identity(tokens_for_identity)
 
-                for (text, idx, tc, _msg_meta), result in zip(write_items, results):
-                    if isinstance(result, Exception):
-                        logger.warning(
-                            "[ContextManager] Immediate write failed sid=%s turn=%s msg_index=%d chars=%d exc_type=%s exc=%r",
+                merge_lock = self._session_merge_locks.setdefault(sk, asyncio.Lock())
+                async with merge_lock:
+                    active_buffer = self._conversation_buffers.get(sk)
+                    if active_buffer is None:
+                        active_buffer = buffer
+                        self._conversation_buffers[sk] = active_buffer
+                    elif active_buffer is not buffer:
+                        logger.debug(
+                            "[ContextManager] commit detected buffer rollover "
+                            "sid=%s turn=%s tenant=%s user=%s old_start=%d new_start=%d",
                             session_id,
                             turn_id,
-                            idx,
-                            len(text),
-                            type(result).__name__,
-                            result,
-                            exc_info=(
-                                type(result),
-                                result,
-                                result.__traceback__,
-                            ),
+                            tenant_id,
+                            user_id,
+                            buffer.start_msg_index,
+                            active_buffer.start_msg_index,
                         )
-                        continue
-                    buffer.messages.append(text)
-                    buffer.immediate_uris.append(result)
-                    buffer.token_count += self._estimate_tokens(text)
 
-                if tool_calls:
-                    buffer.tool_calls_per_turn.append(tool_calls)
+                    for (text, idx, tc, _msg_meta), result in zip(write_items, results):
+                        if isinstance(result, Exception):
+                            logger.warning(
+                                "[ContextManager] Immediate write failed sid=%s turn=%s msg_index=%d chars=%d exc_type=%s exc=%r",
+                                session_id,
+                                turn_id,
+                                idx,
+                                len(text),
+                                type(result).__name__,
+                                result,
+                                exc_info=(
+                                    type(result),
+                                    result,
+                                    result.__traceback__,
+                                ),
+                            )
+                            continue
+                        active_buffer.messages.append(text)
+                        active_buffer.immediate_uris.append(result)
+                        active_buffer.token_count += self._estimate_tokens(text)
+
+                    if tool_calls:
+                        active_buffer.tool_calls_per_turn.append(tool_calls)
+
+                    buffer = active_buffer
 
             if buffer.token_count >= self._merge_trigger_threshold():
                 self._spawn_merge_task(sk, session_id, tenant_id, user_id)
