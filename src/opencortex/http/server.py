@@ -28,6 +28,7 @@ from opencortex.auth.token import (
 )
 from opencortex.config import get_config
 from opencortex.http.models import (
+    BenchmarkConversationIngestRequest,
     # Context Protocol
     ContextPrepareResponse,
     ContextRequest,
@@ -389,6 +390,12 @@ def _register_routes(app: FastAPI) -> None:
                 "field": "category",
                 "conds": [req.category],
             }
+        if req.metadata_filter:
+            metadata_filter = (
+                {"op": "and", "conds": [metadata_filter, req.metadata_filter]}
+                if metadata_filter
+                else req.metadata_filter
+            )
 
         result = await _orchestrator.search(
             query=req.query,
@@ -468,6 +475,26 @@ def _register_routes(app: FastAPI) -> None:
         """Wait until all in-flight deferred derives complete. Returns count of completed derives."""
         await _orchestrator.wait_deferred_derives()
         return {"status": "ok"}
+
+    @app.post("/api/v1/benchmark/conversation_ingest")
+    async def benchmark_conversation_ingest(
+        req: BenchmarkConversationIngestRequest,
+    ) -> Dict[str, Any]:
+        """Benchmark-only offline conversation ingest endpoint."""
+        from opencortex.http.request_context import get_effective_identity
+
+        tid, uid = get_effective_identity()
+        return await _orchestrator._context_manager.benchmark_ingest_conversation(
+            session_id=req.session_id,
+            tenant_id=tid,
+            user_id=uid,
+            segments=[
+                [message.model_dump() for message in segment.messages]
+                for segment in req.segments
+            ],
+            include_session_summary=req.include_session_summary,
+            ingest_shape=req.ingest_shape,
+        )
 
     @app.post("/api/v1/memory/forget")
     async def memory_forget(req: MemoryForgetRequest) -> Dict[str, Any]:

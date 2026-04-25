@@ -67,6 +67,10 @@ class MemorySearchRequest(BaseModel):
         ),
     )
     detail_level: str = "l1"
+    metadata_filter: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optional structured metadata filter for benchmark-scoped search.",
+    )
 
 
 class MemorySearchResultItem(BaseModel):
@@ -283,6 +287,29 @@ class ContextRequest(BaseModel):
     tool_calls: Optional[List[ToolCallRecord]] = None
     cited_uris: Optional[List[str]] = None
     config: Optional[ContextConfig] = None
+
+
+class BenchmarkConversationSegment(BaseModel):
+    """One offline conversation segment used for benchmark ingest."""
+
+    messages: List[ContextMessage]
+
+
+class BenchmarkConversationIngestRequest(BaseModel):
+    """Benchmark-only offline conversation ingest request."""
+
+    session_id: str = Field(..., pattern=r"^[a-zA-Z0-9_-]{1,128}$")
+    segments: List[BenchmarkConversationSegment]
+    include_session_summary: bool = True
+    ingest_shape: str = Field(
+        default="merged_recompose",
+        description=(
+            "Benchmark ingest shape. 'merged_recompose' stores merged offline "
+            "conversation leaves and runs full recomposition; 'direct_evidence' "
+            "stores each supplied segment as a searchable evidence unit without "
+            "full session recomposition."
+        ),
+    )
 
 
 class ContextPrepareIntent(BaseModel):

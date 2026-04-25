@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""
-ContextManager — three-phase lifecycle for the Memory Context Protocol.
+"""ContextManager — three-phase lifecycle for the Memory Context Protocol.
 
 Manages prepare/commit/end phases for platform-agnostic memory recall and
 session recording.  Replaces Claude Code hooks with a single MCP tool.
@@ -10,20 +9,20 @@ Design doc: docs/memory-context-protocol.md v1.2
 
 import asyncio
 import contextlib
-from copy import deepcopy
 import hashlib
-import re
 import logging
-import orjson as json
+import re
 import time
+from copy import deepcopy
+from dataclasses import dataclass
+from dataclasses import field as dc_field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from dataclasses import dataclass, field as dc_field
+import orjson as json
 
 from opencortex.http.request_context import (
     get_collection_name,
-    get_effective_identity,
     get_effective_project_id,
     reset_collection_name,
     reset_request_identity,
@@ -35,11 +34,11 @@ from opencortex.http.request_context import (
 from opencortex.intent import RetrievalPlan, SearchResult
 from opencortex.intent.retrieval_support import build_probe_scope_input
 from opencortex.intent.timing import StageTimingCollector, measure_async, measure_sync
-from opencortex.utils.text import smart_truncate
 from opencortex.retrieve.types import (
     ContextType,
     DetailLevel,
 )
+from opencortex.utils.text import smart_truncate
 
 logger = logging.getLogger(__name__)
 
@@ -59,13 +58,16 @@ _COARSE_WEEKDAY_RE = re.compile(
 )
 
 # Type aliases — all internal state keyed by these to prevent cross-collection collision
-SessionKey = Tuple[str, str, str, str]         # (collection, tenant_id, user_id, session_id)
-CacheKey = Tuple[str, str, str, str, str]      # (collection, tenant_id, user_id, session_id, turn_id)
+SessionKey = Tuple[str, str, str, str]  # (collection, tenant_id, user_id, session_id)
+CacheKey = Tuple[
+    str, str, str, str, str
+]  # (collection, tenant_id, user_id, session_id, turn_id)
 
 
 @dataclass
 class ConversationBuffer:
     """Per-session buffer for conversation mode incremental chunking."""
+
     messages: list = dc_field(default_factory=list)
     token_count: int = 0
     start_msg_index: int = 0
@@ -124,7 +126,7 @@ class ContextManager:
     def __init__(
         self,
         orchestrator,  # MemoryOrchestrator (avoid circular import)
-        observer,      # Observer
+        observer,  # Observer
         *,
         prepare_cache_ttl: float = 300.0,
         session_idle_ttl: float = 1800.0,
@@ -151,7 +153,9 @@ class ContextManager:
         self._session_merge_task_failures: Dict[SessionKey, List[BaseException]] = {}
         # Deferred follow-up tasks spawned by session merge workers.
         self._session_merge_followup_tasks: Dict[SessionKey, Set[asyncio.Task]] = {}
-        self._session_merge_followup_failures: Dict[SessionKey, List[BaseException]] = {}
+        self._session_merge_followup_failures: Dict[
+            SessionKey, List[BaseException]
+        ] = {}
         # At most one background full-session recomposition worker per session.
         self._session_full_recompose_tasks: Dict[SessionKey, asyncio.Task] = {}
         # Session project id snapshot for explicit/idle/background end flows.
@@ -222,24 +226,33 @@ class ContextManager:
             if not messages or not any(m.get("role") == "user" for m in messages):
                 raise ValueError("prepare requires at least one user message")
             return await self._prepare(
-                session_id, turn_id, messages, tenant_id, user_id, config,
+                session_id,
+                turn_id,
+                messages,
+                tenant_id,
+                user_id,
+                config,
             )
 
-        elif phase == "commit":
+        if phase == "commit":
             if not turn_id:
                 raise ValueError("turn_id is required for commit")
             if not messages or len(messages) < 2:
                 raise ValueError("commit requires at least user + assistant messages")
             return await self._commit(
-                session_id, turn_id, messages, tenant_id, user_id, cited_uris,
+                session_id,
+                turn_id,
+                messages,
+                tenant_id,
+                user_id,
+                cited_uris,
                 tool_calls,
             )
 
-        elif phase == "end":
+        if phase == "end":
             return await self._end(session_id, tenant_id, user_id, config)
 
-        else:
-            raise ValueError(f"Unknown phase: {phase}")
+        raise ValueError(f"Unknown phase: {phase}")
 
     # =========================================================================
     # Phase: prepare
@@ -392,9 +405,7 @@ class ContextManager:
                         query,
                         context_type=options.context_type,
                         session_context=options.session_context,
-                        metadata_filter=self._prepare_category_filter(
-                            options.category
-                        ),
+                        metadata_filter=self._prepare_category_filter(options.category),
                     ),
                     timeout=10.0,
                 )
@@ -447,9 +458,7 @@ class ContextManager:
                 )
         intent_timings = stage_timings.snapshot()
         intent_ms = (
-            intent_timings["probe"]
-            + intent_timings["plan"]
-            + intent_timings["bind"]
+            intent_timings["probe"] + intent_timings["plan"] + intent_timings["bind"]
         )
         return PreparePlanningState(
             query=query,
@@ -757,7 +766,10 @@ class ContextManager:
                 runtime_trace["stage_timing_ms"] = cache_stage_timings.snapshot()
             logger.debug(
                 "[ContextManager] prepare CACHE_HIT sid=%s turn=%s tenant=%s user=%s",
-                session_id, turn_id, tenant_id, user_id,
+                session_id,
+                turn_id,
+                tenant_id,
+                user_id,
             )
             return cached_result
 
@@ -808,9 +820,9 @@ class ContextManager:
         total_ms = int((time.monotonic() - prepare_started) * 1000)
         stage_timings.record_elapsed("aggregate", aggregate_started)
         stage_timings.record_ms("total", total_ms)
-        result["intent"]["memory_pipeline"]["runtime"]["trace"][
-            "stage_timing_ms"
-        ] = stage_timings.snapshot()
+        result["intent"]["memory_pipeline"]["runtime"]["trace"]["stage_timing_ms"] = (
+            stage_timings.snapshot()
+        )
         logger.info(
             "[ContextManager] prepare sid=%s turn=%s tenant=%s user=%s "
             "probe_candidates=%d recall=%s memory=%d knowledge=%d "
@@ -998,6 +1010,25 @@ class ContextManager:
         if not transcript:
             return None
 
+        return await self._persist_rendered_conversation_source(
+            session_id=session_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            transcript=transcript,
+        )
+
+    async def _persist_rendered_conversation_source(
+        self,
+        *,
+        session_id: str,
+        tenant_id: str,
+        user_id: str,
+        transcript: List[Dict[str, Any]],
+    ) -> Optional[str]:
+        """Persist one transcript payload as the stable conversation source."""
+        if not transcript:
+            return None
+
         source_uri = self._conversation_source_uri(tenant_id, user_id, session_id)
         existing = await self._orchestrator._get_record_by_uri(source_uri)
         if existing:
@@ -1030,6 +1061,386 @@ class ContextManager:
                 is_leaf=False,
             )
         return source_uri
+
+    @classmethod
+    def _benchmark_segment_meta(
+        cls,
+        messages: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Aggregate segment-level anchors for offline benchmark leaves."""
+        entities: List[str] = []
+        topics: List[str] = []
+        time_refs: List[str] = []
+        event_date = ""
+        tool_calls: List[Dict[str, Any]] = []
+        benchmark_meta: Dict[str, Any] = {}
+
+        for message in messages:
+            meta = dict(message.get("meta") or {})
+            for key, value in meta.items():
+                if key.startswith("lme_") and value not in (None, ""):
+                    if key not in benchmark_meta:
+                        benchmark_meta[key] = value
+                    elif benchmark_meta[key] != value:
+                        benchmark_meta[key] = cls._merge_unique_strings(
+                            benchmark_meta[key],
+                            value,
+                        )
+            entities = cls._merge_unique_strings(
+                entities,
+                meta.get("entities"),
+            )
+            topics = cls._merge_unique_strings(
+                topics,
+                meta.get("topics"),
+            )
+            time_refs = cls._merge_unique_strings(
+                time_refs,
+                meta.get("time_refs"),
+                meta.get("event_date"),
+            )
+            if not event_date:
+                event_date = str(meta.get("event_date") or "").strip()
+            for call in meta.get("tool_calls", []) or []:
+                if isinstance(call, dict):
+                    tool_calls.append(call)
+
+        aggregated: Dict[str, Any] = {}
+        if entities:
+            aggregated["entities"] = entities
+        if topics:
+            aggregated["topics"] = topics
+        if time_refs:
+            aggregated["time_refs"] = time_refs
+        if event_date:
+            aggregated["event_date"] = event_date
+        if tool_calls:
+            aggregated["tool_calls"] = tool_calls
+        aggregated.update(benchmark_meta)
+        return aggregated
+
+    @staticmethod
+    def _export_memory_record(record: Dict[str, Any]) -> Dict[str, Any]:
+        """Return one adapter-friendly memory payload from a stored record."""
+        meta = dict(record.get("meta") or {})
+        return {
+            "uri": str(record.get("uri", "") or ""),
+            "abstract": str(record.get("abstract", "") or ""),
+            "overview": str(record.get("overview", "") or ""),
+            "content": str(record.get("content", "") or ""),
+            "meta": meta,
+            "abstract_json": record.get("abstract_json", {}),
+            "session_id": str(record.get("session_id", "") or ""),
+            "speaker": str(record.get("speaker", "") or ""),
+            "event_date": record.get("event_date", ""),
+            "msg_range": meta.get("msg_range"),
+            "recomposition_stage": meta.get("recomposition_stage"),
+            "source_uri": meta.get("source_uri"),
+        }
+
+    def _benchmark_recomposition_entries(
+        self,
+        normalized_segments: List[List[Dict[str, Any]]],
+    ) -> List[Dict[str, Any]]:
+        """Build message-level entries for benchmark offline chunking."""
+        entries: List[Dict[str, Any]] = []
+        msg_index = 0
+        for segment in normalized_segments:
+            segment_meta = self._benchmark_segment_meta(segment)
+            for message in segment:
+                meta = {
+                    **segment_meta,
+                    **dict(message.get("meta") or {}),
+                }
+                rendered = self._decorate_message_text(
+                    str(message.get("content", "") or ""),
+                    meta,
+                )
+                if not rendered:
+                    continue
+                record = {
+                    "uri": "",
+                    "abstract": rendered,
+                    "content": rendered,
+                    "overview": "",
+                    "meta": {
+                        **meta,
+                        "msg_range": [msg_index, msg_index],
+                    },
+                    "keywords": ", ".join(
+                        str(topic)
+                        for topic in self._merge_unique_strings(meta.get("topics"))
+                    ),
+                    "entities": self._merge_unique_strings(meta.get("entities")),
+                }
+                entries.append(
+                    {
+                        "text": rendered,
+                        "uri": "",
+                        "msg_start": msg_index,
+                        "msg_end": msg_index,
+                        "token_count": max(self._estimate_tokens(rendered), 1),
+                        "anchor_terms": self._segment_anchor_terms(record),
+                        "time_refs": self._segment_time_refs(record),
+                        "source_record": record,
+                        "immediate_uris": [],
+                        "superseded_merged_uris": [],
+                    }
+                )
+                msg_index += 1
+        return entries
+
+    async def benchmark_ingest_conversation(
+        self,
+        *,
+        session_id: str,
+        tenant_id: str,
+        user_id: str,
+        segments: List[List[Dict[str, Any]]],
+        include_session_summary: bool = True,
+        ingest_shape: str = "merged_recompose",
+    ) -> Dict[str, Any]:
+        """Benchmark-only offline conversation ingest."""
+        shape = str(ingest_shape or "merged_recompose").strip().lower()
+        if shape not in {"merged_recompose", "direct_evidence"}:
+            raise ValueError(f"unsupported benchmark ingest_shape: {ingest_shape}")
+
+        sk = self._make_session_key(tenant_id, user_id, session_id)
+        self._touch_session(sk)
+        self._remember_session_project(sk)
+        lock = self._session_locks.setdefault(sk, asyncio.Lock())
+
+        async with lock:
+            normalized_segments: List[List[Dict[str, Any]]] = []
+            transcript: List[Dict[str, Any]] = []
+
+            for segment in segments:
+                normalized_messages: List[Dict[str, Any]] = []
+                for message in segment:
+                    role = str(message.get("role", "") or "").strip()
+                    content = str(message.get("content", "") or "").strip()
+                    if not role or not content:
+                        continue
+                    normalized = {
+                        "role": role,
+                        "content": content,
+                        "meta": dict(message.get("meta") or {}),
+                    }
+                    normalized_messages.append(normalized)
+                    transcript.append(normalized)
+                if normalized_messages:
+                    normalized_segments.append(normalized_messages)
+
+            if not normalized_segments:
+                return {
+                    "status": "ok",
+                    "session_id": session_id,
+                    "source_uri": None,
+                    "summary_uri": None,
+                    "records": [],
+                    "layer_counts": {},
+                }
+
+            source_uri = await self._persist_rendered_conversation_source(
+                session_id=session_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                transcript=transcript,
+            )
+
+            if shape == "direct_evidence":
+                return await self._benchmark_ingest_direct_evidence(
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    source_uri=source_uri,
+                    normalized_segments=normalized_segments,
+                )
+
+            created_merged_uris: List[str] = []
+            summary_uri: Optional[str] = None
+
+            try:
+                entries = self._benchmark_recomposition_entries(normalized_segments)
+                offline_segments = self._build_recomposition_segments(entries)
+
+                for segment in offline_segments:
+                    segment_texts = [str(text) for text in segment.get("messages", [])]
+                    if not segment_texts:
+                        continue
+
+                    msg_range = list(segment["msg_range"])
+                    source_records = segment.get("source_records", [])
+                    merged_meta = await self._aggregate_records_metadata(source_records)
+                    all_tool_calls: List[Dict[str, Any]] = []
+                    for record in source_records:
+                        meta = dict(record.get("meta") or {})
+                        for call in meta.get("tool_calls", []) or []:
+                            if isinstance(call, dict):
+                                all_tool_calls.append(call)
+
+                    merged_context = await self._orchestrator.add(
+                        uri=self._merged_leaf_uri(
+                            tenant_id,
+                            user_id,
+                            session_id,
+                            msg_range,
+                        ),
+                        abstract="",
+                        content="\n\n".join(segment_texts),
+                        category="events",
+                        context_type="memory",
+                        meta={
+                            **merged_meta,
+                            "layer": "merged",
+                            "ingest_mode": "memory",
+                            "msg_range": list(msg_range),
+                            "source_uri": source_uri or "",
+                            "session_id": session_id,
+                            "recomposition_stage": "benchmark_offline",
+                            "tool_calls": all_tool_calls if all_tool_calls else [],
+                        },
+                        session_id=session_id,
+                        dedup=False,
+                        defer_derive=True,
+                    )
+                    created_merged_uris.append(merged_context.uri)
+
+                if created_merged_uris:
+                    await self._run_full_session_recomposition(
+                        session_id=session_id,
+                        tenant_id=tenant_id,
+                        user_id=user_id,
+                        source_uri=source_uri,
+                        raise_on_error=True,
+                    )
+                    if include_session_summary:
+                        summary_uri = await self._generate_session_summary(
+                            session_id=session_id,
+                            tenant_id=tenant_id,
+                            user_id=user_id,
+                            source_uri=source_uri,
+                        )
+
+                merged_records = await self._load_session_merged_records(
+                    session_id=session_id,
+                    source_uri=source_uri,
+                )
+                layer_counts = await self._session_layer_counts(session_id)
+                return {
+                    "status": "ok",
+                    "session_id": session_id,
+                    "source_uri": source_uri,
+                    "summary_uri": summary_uri,
+                    "records": [
+                        self._export_memory_record(record) for record in merged_records
+                    ],
+                    "layer_counts": layer_counts,
+                }
+            except Exception:
+                if summary_uri:
+                    with contextlib.suppress(Exception):
+                        await self._orchestrator.remove(summary_uri)
+                if created_merged_uris:
+                    with contextlib.suppress(Exception):
+                        await self._delete_immediate_families(created_merged_uris)
+                raise
+
+    @staticmethod
+    def _benchmark_evidence_uri(
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+        segment_index: int,
+        msg_range: List[int],
+    ) -> str:
+        """Return a stable benchmark evidence URI for one direct segment."""
+        tenant = tenant_id or "public"
+        user = user_id or "default"
+        return (
+            f"opencortex://{tenant}/{user}/memory/events/{session_id}/"
+            f"benchmark_evidence_{segment_index}_{msg_range[0]}_{msg_range[1]}"
+        )
+
+    async def _benchmark_ingest_direct_evidence(
+        self,
+        *,
+        session_id: str,
+        tenant_id: str,
+        user_id: str,
+        source_uri: Optional[str],
+        normalized_segments: List[List[Dict[str, Any]]],
+    ) -> Dict[str, Any]:
+        """Store benchmark segments directly as searchable evidence records."""
+        created_uris: List[str] = []
+        records: List[Dict[str, Any]] = []
+        next_msg_index = 0
+
+        try:
+            for segment_index, segment in enumerate(normalized_segments):
+                segment_texts: List[str] = []
+                segment_start = next_msg_index
+                for message in segment:
+                    meta = dict(message.get("meta") or {})
+                    role = str(message.get("role", "") or "").strip()
+                    content = str(message.get("content", "") or "").strip()
+                    if not content:
+                        continue
+                    rendered = f"{role}: {content}" if role else content
+                    segment_texts.append(self._decorate_message_text(rendered, meta))
+                    next_msg_index += 1
+
+                if not segment_texts:
+                    continue
+
+                msg_range = [segment_start, next_msg_index - 1]
+                segment_meta = self._benchmark_segment_meta(segment)
+                meta = {
+                    **segment_meta,
+                    "layer": "benchmark_evidence",
+                    "ingest_mode": "memory",
+                    "msg_range": list(msg_range),
+                    "source_uri": source_uri or "",
+                    "session_id": session_id,
+                    "recomposition_stage": "benchmark_direct_evidence",
+                }
+                evidence_uri = self._benchmark_evidence_uri(
+                    tenant_id,
+                    user_id,
+                    session_id,
+                    segment_index,
+                    msg_range,
+                )
+                stored = await self._orchestrator.add(
+                    uri=evidence_uri,
+                    abstract="",
+                    content="\n".join(segment_texts),
+                    category="events",
+                    context_type="memory",
+                    meta=meta,
+                    session_id=session_id,
+                    dedup=False,
+                    defer_derive=True,
+                )
+                created_uris.append(stored.uri)
+                record = await self._orchestrator._get_record_by_uri(stored.uri)
+                if record:
+                    records.append(record)
+
+            return {
+                "status": "ok",
+                "session_id": session_id,
+                "source_uri": source_uri,
+                "summary_uri": None,
+                "ingest_shape": "direct_evidence",
+                "records": [self._export_memory_record(record) for record in records],
+                "layer_counts": await self._session_layer_counts(session_id),
+            }
+        except Exception:
+            if created_uris:
+                with contextlib.suppress(Exception):
+                    await self._delete_immediate_families(created_uris)
+            raise
 
     async def _load_immediate_records(
         self,
@@ -1202,9 +1613,7 @@ class ContextManager:
         meta = dict(record.get("meta") or {})
         abstract_json = record.get("abstract_json")
         slots = (
-            abstract_json.get("slots", {})
-            if isinstance(abstract_json, dict)
-            else {}
+            abstract_json.get("slots", {}) if isinstance(abstract_json, dict) else {}
         )
         return set(
             cls._merge_unique_strings(
@@ -1223,9 +1632,7 @@ class ContextManager:
         meta = dict(record.get("meta") or {})
         abstract_json = record.get("abstract_json")
         slots = (
-            abstract_json.get("slots", {})
-            if isinstance(abstract_json, dict)
-            else {}
+            abstract_json.get("slots", {}) if isinstance(abstract_json, dict) else {}
         )
         return set(
             cls._merge_unique_strings(
@@ -1256,7 +1663,9 @@ class ContextManager:
             return False
 
         left_specific = {value for value in left if not cls._is_coarse_time_ref(value)}
-        right_specific = {value for value in right if not cls._is_coarse_time_ref(value)}
+        right_specific = {
+            value for value in right if not cls._is_coarse_time_ref(value)
+        }
         if not left_specific or not right_specific:
             return True
 
@@ -1333,9 +1742,7 @@ class ContextManager:
 
         fs = getattr(self._orchestrator, "_fs", None)
         tail_uris = [
-            str(r.get("uri", "") or "").strip()
-            for r in tail_records
-            if r.get("uri")
+            str(r.get("uri", "") or "").strip() for r in tail_records if r.get("uri")
         ]
 
         async def _read_l2(uri: str) -> str:
@@ -1443,17 +1850,17 @@ class ContextManager:
                 current_time_refs: Set[str] = set()
                 for item in current:
                     current_time_refs.update(item["time_refs"])
-                if current_messages >= _SEGMENT_MAX_MESSAGES:
-                    should_split = True
-                elif current_tokens + int(entry["token_count"]) > _SEGMENT_MAX_TOKENS:
-                    should_split = True
-                elif (
-                    current_messages >= _SEGMENT_MIN_MESSAGES
-                    and current_time_refs
-                    and entry["time_refs"]
-                    and not self._time_refs_overlap(
-                        current_time_refs,
-                        entry["time_refs"],
+                if (
+                    current_messages >= _SEGMENT_MAX_MESSAGES
+                    or current_tokens + int(entry["token_count"]) > _SEGMENT_MAX_TOKENS
+                    or (
+                        current_messages >= _SEGMENT_MIN_MESSAGES
+                        and current_time_refs
+                        and entry["time_refs"]
+                        and not self._time_refs_overlap(
+                            current_time_refs,
+                            entry["time_refs"],
+                        )
                     )
                 ):
                     should_split = True
@@ -1483,13 +1890,9 @@ class ContextManager:
 
         segments: List[Dict[str, Any]] = []
         current: List[Dict[str, Any]] = [entries[0]]
-        current_anchors: Set[str] = (
-            entries[0]["anchor_terms"] | entries[0]["time_refs"]
-        )
+        current_anchors: Set[str] = entries[0]["anchor_terms"] | entries[0]["time_refs"]
         current_tokens = int(entries[0]["token_count"])
-        current_messages = (
-            int(entries[0]["msg_end"]) - int(entries[0]["msg_start"]) + 1
-        )
+        current_messages = int(entries[0]["msg_end"]) - int(entries[0]["msg_start"]) + 1
 
         for entry in entries[1:]:
             entry_anchors: Set[str] = entry["anchor_terms"] | entry["time_refs"]
@@ -1504,9 +1907,7 @@ class ContextManager:
 
             union = current_anchors | entry_anchors
             jaccard = (
-                len(current_anchors & entry_anchors) / len(union)
-                if union
-                else 0.0
+                len(current_anchors & entry_anchors) / len(union) if union else 0.0
             )
 
             within_caps = (
@@ -1550,7 +1951,9 @@ class ContextManager:
                 source_uris.add(uri)
             source_records.append(record)
         return {
-            "messages": [str(entry["text"]) for entry in entries if str(entry["text"]).strip()],
+            "messages": [
+                str(entry["text"]) for entry in entries if str(entry["text"]).strip()
+            ],
             "immediate_uris": self._merge_unique_strings(
                 *[entry.get("immediate_uris", []) for entry in entries]
             ),
@@ -1580,7 +1983,10 @@ class ContextManager:
             if turn_id in self._committed_turns.get(sk, set()):
                 logger.debug(
                     "[ContextManager] commit DUPLICATE sid=%s turn=%s tenant=%s user=%s",
-                    session_id, turn_id, tenant_id, user_id,
+                    session_id,
+                    turn_id,
+                    tenant_id,
+                    user_id,
                 )
                 return {
                     "accepted": True,
@@ -1758,6 +2164,7 @@ class ContextManager:
     def _estimate_tokens(text: str) -> int:
         """Estimate token count for merge threshold."""
         from opencortex.parse.base import estimate_tokens
+
         return estimate_tokens(text)
 
     def _spawn_merge_task(
@@ -1938,10 +2345,17 @@ class ContextManager:
                 llm_abstract = derived.get("abstract", "")
                 llm_overview = derived.get("overview", "")
                 keywords_list = derived.get("keywords", [])
-                keywords_str = ", ".join(str(k) for k in keywords_list if k) if isinstance(keywords_list, list) else ""
+                keywords_str = (
+                    ", ".join(str(k) for k in keywords_list if k)
+                    if isinstance(keywords_list, list)
+                    else ""
+                )
 
                 dir_uri = self._directory_uri(
-                    tenant_id, user_id, session_id, directory_index,
+                    tenant_id,
+                    user_id,
+                    session_id,
+                    directory_index,
                 )
 
                 aggregated_meta = await self._aggregate_records_metadata(source_records)
@@ -1993,7 +2407,9 @@ class ContextManager:
                                 {"keywords": keywords_str},
                             )
                     except Exception:
-                        logger.warning("[ContextManager] Failed to patch keywords for %s", dir_uri)
+                        logger.warning(
+                            "[ContextManager] Failed to patch keywords for %s", dir_uri
+                        )
 
                 fs = getattr(self._orchestrator, "_fs", None)
                 if fs is not None:
@@ -2103,7 +2519,11 @@ class ContextManager:
         llm_abstract = derived.get("abstract", "")
         llm_overview = derived.get("overview", "")
         keywords_list = derived.get("keywords", [])
-        keywords_str = ", ".join(str(k) for k in keywords_list if k) if isinstance(keywords_list, list) else ""
+        keywords_str = (
+            ", ".join(str(k) for k in keywords_list if k)
+            if isinstance(keywords_list, list)
+            else ""
+        )
 
         content = "\n\n".join(abstracts)
 
@@ -2140,7 +2560,9 @@ class ContextManager:
                         {"keywords": keywords_str},
                     )
             except Exception:
-                logger.warning("[ContextManager] Failed to patch keywords for %s", summary_uri)
+                logger.warning(
+                    "[ContextManager] Failed to patch keywords for %s", summary_uri
+                )
 
         fs = getattr(self._orchestrator, "_fs", None)
         if fs is not None:
@@ -2218,7 +2640,9 @@ class ContextManager:
 
         task.add_done_callback(_cleanup)
 
-    async def _wait_for_merge_followup_tasks(self, sk: SessionKey) -> List[BaseException]:
+    async def _wait_for_merge_followup_tasks(
+        self, sk: SessionKey
+    ) -> List[BaseException]:
         """Wait until deferred follow-up tasks for the session merge finish."""
         failures: List[BaseException] = list(
             self._session_merge_followup_failures.pop(sk, []),
@@ -2330,7 +2754,8 @@ class ContextManager:
             for record in records
             if (
                 str(record.get("uri", "")).strip()
-                and str((record.get("meta") or {}).get("layer", "") or "") == "immediate"
+                and str((record.get("meta") or {}).get("layer", "") or "")
+                == "immediate"
             )
         ]
 
@@ -2456,17 +2881,22 @@ class ContextManager:
                     )
                     self._track_session_merge_followup_task(sk, _defer_task)
                     _defer_task.add_done_callback(
-                        lambda t: None if t.cancelled() else (
-                            logger.warning("[ContextManager] deferred derive failed: %s", t.exception())
-                            if t.exception() else None
+                        lambda t: (
+                            None
+                            if t.cancelled()
+                            else (
+                                logger.warning(
+                                    "[ContextManager] deferred derive failed: %s",
+                                    t.exception(),
+                                )
+                                if t.exception()
+                                else None
+                            )
                         )
                     )
 
                 superseded_merged_uris = self._merge_unique_strings(
-                    *[
-                        segment.get("superseded_merged_uris", [])
-                        for segment in segments
-                    ]
+                    *[segment.get("superseded_merged_uris", []) for segment in segments]
                 )
                 superseded_merged_uris = [
                     uri
@@ -2499,11 +2929,19 @@ class ContextManager:
                 self._orchestrator._get_collection(),
                 flush_all,
                 locals().get("source_uri"),
-                len(snapshot.messages) if "snapshot" in locals() and snapshot is not None else None,
+                len(snapshot.messages)
+                if "snapshot" in locals() and snapshot is not None
+                else None,
                 len(records) if "records" in locals() and records is not None else None,
-                len(tail_records) if "tail_records" in locals() and tail_records is not None else None,
-                len(segments) if "segments" in locals() and segments is not None else None,
-                len(created_merged_uris) if "created_merged_uris" in locals() and created_merged_uris is not None else None,
+                len(tail_records)
+                if "tail_records" in locals() and tail_records is not None
+                else None,
+                len(segments)
+                if "segments" in locals() and segments is not None
+                else None,
+                len(created_merged_uris)
+                if "created_merged_uris" in locals() and created_merged_uris is not None
+                else None,
                 exc,
                 exc_info=True,
             )
@@ -2519,6 +2957,7 @@ class ContextManager:
                 reset_request_identity(tokens_for_identity)
             if coll_token is not None:
                 reset_collection_name(coll_token)
+
     # =========================================================================
 
     async def _end(
@@ -2530,7 +2969,9 @@ class ContextManager:
     ) -> Dict[str, Any]:
         sk = self._make_session_key(tenant_id, user_id, session_id)
         total_turns = len(self._committed_turns.get(sk, set()))
-        session_project_id = self._session_project_ids.get(sk) or get_effective_project_id()
+        session_project_id = (
+            self._session_project_ids.get(sk) or get_effective_project_id()
+        )
         project_token = set_request_project_id(session_project_id)
         lock = self._session_locks.setdefault(sk, asyncio.Lock())
 
@@ -2628,7 +3069,8 @@ class ContextManager:
 
                     if (
                         session_owner_ids
-                        and getattr(self._orchestrator, "_autophagy_kernel", None) is not None
+                        and getattr(self._orchestrator, "_autophagy_kernel", None)
+                        is not None
                     ):
                         task = asyncio.create_task(
                             self._run_autophagy_metabolism(
@@ -2796,7 +3238,8 @@ class ContextManager:
         # LRU eviction: over 1000 entries → evict oldest
         if len(self._prepare_cache) >= 1000:
             oldest_key = min(
-                self._prepare_cache, key=lambda k: self._prepare_cache[k][1],
+                self._prepare_cache,
+                key=lambda k: self._prepare_cache[k][1],
             )
             self._prepare_cache.pop(oldest_key)
             for keys in self._session_cache_keys.values():
@@ -2825,7 +3268,10 @@ class ContextManager:
         return self._orchestrator._get_collection()
 
     def _make_session_key(
-        self, tenant_id: str, user_id: str, session_id: str,
+        self,
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
     ) -> SessionKey:
         return (
             self._current_collection_name(),
@@ -2923,14 +3369,18 @@ class ContextManager:
             await asyncio.sleep(self._idle_check_interval)
             now = time.time()
             expired = [
-                sk for sk, ts in self._session_activity.items()
+                sk
+                for sk, ts in self._session_activity.items()
                 if now - ts > self._session_idle_ttl
             ]
             for sk in expired:
                 collection, tid, uid, sid = sk
                 logger.info(
                     "[ContextManager] idle-close sid=%s (collection=%s tenant=%s, user=%s)",
-                    sid, collection, tid, uid,
+                    sid,
+                    collection,
+                    tid,
+                    uid,
                 )
                 try:
                     # Set contextvars for orchestrator.session_end()
@@ -2941,7 +3391,9 @@ class ContextManager:
                         reset_request_identity(tokens)
                 except Exception as exc:
                     logger.warning(
-                        "[ContextManager] Auto-close failed for %s: %s", sid, exc,
+                        "[ContextManager] Auto-close failed for %s: %s",
+                        sid,
+                        exc,
                     )
 
     # =========================================================================
@@ -2972,7 +3424,8 @@ class ContextManager:
         }
 
     async def _expand_directory_hits(
-        self, find_result,
+        self,
+        find_result,
     ) -> list:
         """Replace directory records with their children leaf records.
 
@@ -2980,6 +3433,7 @@ class ContextManager:
         When hit, we expand to the actual leaf records for content delivery.
         """
         from opencortex.retrieve.types import DetailLevel
+
         expanded = []
         seen_uris: set = set()
 
@@ -3011,10 +3465,13 @@ class ContextManager:
             try:
                 children = await self._orchestrator._storage.filter(
                     self._orchestrator._get_collection(),
-                    {"op": "or", "conds": [
-                        {"op": "must", "field": "uri", "conds": [uri]}
-                        for uri in child_uris
-                    ]},
+                    {
+                        "op": "or",
+                        "conds": [
+                            {"op": "must", "field": "uri", "conds": [uri]}
+                            for uri in child_uris
+                        ],
+                    },
                     limit=len(child_uris),
                 )
             except Exception:
@@ -3043,7 +3500,9 @@ class ContextManager:
         return expanded
 
     def _format_memories(
-        self, find_result, detail_level: str,
+        self,
+        find_result,
+        detail_level: str,
     ) -> List[Dict[str, Any]]:
         """Format FindResult into response items."""
         items = []
@@ -3076,17 +3535,20 @@ class ContextManager:
         return items
 
     def _format_knowledge(
-        self, results: List[Dict[str, Any]],
+        self,
+        results: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
         """Format knowledge search results."""
         items = []
         for r in results:
-            items.append({
-                "knowledge_id": r.get("knowledge_id", r.get("id", "")),
-                "type": r.get("knowledge_type", ""),
-                "abstract": r.get("abstract", ""),
-                "confidence": r.get("confidence", 0.0),
-            })
+            items.append(
+                {
+                    "knowledge_id": r.get("knowledge_id", r.get("id", "")),
+                    "type": r.get("knowledge_type", ""),
+                    "abstract": r.get("abstract", ""),
+                    "confidence": r.get("confidence", 0.0),
+                }
+            )
         return items
 
     def _clamp(self, text: str) -> str:
@@ -3109,8 +3571,8 @@ class ContextManager:
         if total_items == 0:
             return self._empty_instructions()
 
-        avg_score = (
-            sum(m.get("score", 0) for m in memory_items) / max(len(memory_items), 1)
+        avg_score = sum(m.get("score", 0) for m in memory_items) / max(
+            len(memory_items), 1
         )
         max_confidence = max(
             [k.get("confidence", 0) for k in knowledge_items],
@@ -3150,25 +3612,37 @@ class ContextManager:
     # =========================================================================
 
     async def _append_skill_event(
-        self, session_id: str, turn_id: str, skill_uri: str,
-        tenant_id: str, user_id: str, event_type: str,
+        self,
+        session_id: str,
+        turn_id: str,
+        skill_uri: str,
+        tenant_id: str,
+        user_id: str,
+        event_type: str,
     ) -> None:
         """Append a single skill event to the event store (fire-and-forget safe)."""
         try:
-            from opencortex.skill_engine.types import SkillEvent, extract_skill_id_from_uri
-            from uuid import uuid4
             from datetime import datetime, timezone
-            await self._orchestrator._skill_event_store.append(SkillEvent(
-                event_id=uuid4().hex,
-                session_id=session_id,
-                turn_id=turn_id,
-                skill_id=extract_skill_id_from_uri(skill_uri),
-                skill_uri=skill_uri,
-                tenant_id=tenant_id,
-                user_id=user_id,
-                event_type=event_type,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-            ))
+            from uuid import uuid4
+
+            from opencortex.skill_engine.types import (
+                SkillEvent,
+                extract_skill_id_from_uri,
+            )
+
+            await self._orchestrator._skill_event_store.append(
+                SkillEvent(
+                    event_id=uuid4().hex,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    skill_id=extract_skill_id_from_uri(skill_uri),
+                    skill_uri=skill_uri,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    event_type=event_type,
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                )
+            )
         except Exception:
             pass
 
@@ -3200,7 +3674,8 @@ class ContextManager:
                 f.write(json.dumps(entry) + b"\n")
         except Exception as exc:
             logger.error(
-                "[ContextManager] Failed to write fallback log: %s", exc,
+                "[ContextManager] Failed to write fallback log: %s",
+                exc,
             )
 
     # =========================================================================
@@ -3214,5 +3689,7 @@ class ContextManager:
                 await self._orchestrator.feedback(uri=uri, reward=0.1)
             except Exception as exc:
                 logger.debug(
-                    "[ContextManager] Reward feedback failed for %s: %s", uri, exc,
+                    "[ContextManager] Reward feedback failed for %s: %s",
+                    uri,
+                    exc,
                 )

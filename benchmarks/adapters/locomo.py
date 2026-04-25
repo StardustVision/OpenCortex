@@ -288,6 +288,7 @@ class LoCoMoBench(EvalAdapter):
 
     def __init__(self) -> None:
         super().__init__()
+        self._ingest_method = "mcp"
         self._retrieve_method = "recall"
         self._conversation_uris_by_id: Dict[str, List[str]] = {}
         self._conversation_by_id: Dict[str, Dict[str, Any]] = {}
@@ -447,6 +448,9 @@ class LoCoMoBench(EvalAdapter):
             max_conv=kwargs.get("max_conv", 0),
             max_qa=kwargs.get("max_qa", 0),
         )
+        ingest_method = str(
+            kwargs.get("ingest_method") or getattr(self, "_ingest_method", "mcp")
+        ).lower()
         self._conversation_uris_by_id = {}
         self._session_uris_by_key = {}
         self._session_candidates_by_key = {}
@@ -462,8 +466,10 @@ class LoCoMoBench(EvalAdapter):
             next_msg_index = 0
             session_spans: Dict[int, Tuple[int, int]] = {}
             session_time_refs: Dict[int, Set[str]] = {}
+            segments: List[List[Dict[str, Any]]] = []
             try:
-                before_records = await self._memory_record_snapshot(oc)
+                if ingest_method == "mcp":
+                    before_records = await self._memory_record_snapshot(oc)
                 for session in _parse_locomo_sessions(conv):
                     session_num = int(session["session_num"])
                     normalized_event_date, time_refs = _normalize_locomo_datetime(
@@ -498,23 +504,37 @@ class LoCoMoBench(EvalAdapter):
                     )
                     next_msg_index = end_index + 1
 
-                    await oc.context_commit(
-                        session_id=conversation_session_id,
-                        turn_id=f"turn-{session_num}",
-                        messages=messages,
-                    )
+                    if ingest_method == "store":
+                        segments.append(messages)
+                    else:
+                        await oc.context_commit(
+                            session_id=conversation_session_id,
+                            turn_id=f"turn-{session_num}",
+                            messages=messages,
+                        )
                     committed_segments += 1
 
                 if committed_segments == 0:
                     continue
 
-                await oc.context_end(session_id=conversation_session_id)
-                after_records = await self._memory_record_snapshot(oc)
-                new_records = {
-                    uri: record
-                    for uri, record in after_records.items()
-                    if uri not in before_records
-                }
+                if ingest_method == "store":
+                    payload = await oc.benchmark_conversation_ingest(
+                        session_id=conversation_session_id,
+                        segments=segments,
+                    )
+                    new_records = {
+                        str(record.get("uri", "") or ""): dict(record)
+                        for record in payload.get("records", [])
+                        if str(record.get("uri", "") or "")
+                    }
+                else:
+                    await oc.context_end(session_id=conversation_session_id)
+                    after_records = await self._memory_record_snapshot(oc)
+                    new_records = {
+                        uri: record
+                        for uri, record in after_records.items()
+                        if uri not in before_records
+                    }
                 new_uris = sorted(new_records)
                 self._conversation_uris_by_id[conv_id] = (
                     new_uris or [self._conversation_uri(conv_id)]
@@ -540,6 +560,12 @@ class LoCoMoBench(EvalAdapter):
             total_items=total,
             ingested_items=ingested,
             errors=errors,
+            meta={
+                "benchmark_flavor": "recall-eval"
+                if self._retrieve_method == "recall"
+                else "internal",
+                "ingest_method": ingest_method,
+            },
         )
 
     @classmethod
@@ -636,24 +662,44 @@ class LoCoMoBench(EvalAdapter):
         qa_item: QAItem,
         top_k: int,
     ) -> Tuple[List[Dict[str, Any]], float]:
-        """Retrieve LoCoMo sessions through context recall and collapse per session."""
+        """Retrieve LoCoMo sessions via search or production context recall."""
         started = time.perf_counter()
         conv_id = str(qa_item.meta.get("conv_id", ""))
         session_id = self._conversation_session_id(conv_id)
-        result = await oc.context_recall(
-            session_id=session_id,
-            turn_id="q-" + md5(qa_item.question.encode()).hexdigest()[:12],
-            query=qa_item.question,
-            limit=top_k,
-            session_scope=True,
-        )
-        self._set_last_retrieval_meta(
-            result,
-            endpoint="context_recall",
-            session_scope=True,
-        )
 
-        raw_items = result.get("memory", [])
+        if self._retrieve_method == "search":
+            result = await oc.search_payload(
+                query=qa_item.question,
+                limit=top_k,
+                context_type="memory",
+                detail_level="l2",
+                metadata_filter={
+                    "op": "must",
+                    "field": "session_id",
+                    "conds": [session_id],
+                },
+            )
+            self._set_last_retrieval_meta(
+                result,
+                endpoint="memory_search",
+                session_scope=True,
+            )
+            raw_items = result.get("results", [])
+        else:
+            result = await oc.context_recall(
+                session_id=session_id,
+                turn_id="q-" + md5(qa_item.question.encode()).hexdigest()[:12],
+                query=qa_item.question,
+                limit=top_k,
+                session_scope=True,
+            )
+            self._set_last_retrieval_meta(
+                result,
+                endpoint="context_recall",
+                session_scope=True,
+            )
+            raw_items = result.get("memory", [])
+
         deduped: List[Dict[str, Any]] = []
         seen_uris: Set[str] = set()
         for item in raw_items:

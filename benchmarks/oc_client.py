@@ -1,5 +1,4 @@
-"""
-OpenCortex evaluation HTTP client.
+"""OpenCortex evaluation HTTP client.
 
 Extracted from benchmarks/locomo_eval.py with extended parameters:
 - store() gains meta and context_type parameters
@@ -113,7 +112,9 @@ class OCClient:
             payload["meta"] = meta
         if embed_text:
             payload["embed_text"] = embed_text
-        return await self._post("/api/v1/memory/store", payload, timeout=300.0, retry_on_timeout=False)
+        return await self._post(
+            "/api/v1/memory/store", payload, timeout=300.0, retry_on_timeout=False
+        )
 
     async def search(
         self,
@@ -140,6 +141,7 @@ class OCClient:
         category: str = "",
         detail_level: str = "l2",
         context_type: Optional[str] = None,
+        metadata_filter: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Search memories and return the raw response payload."""
         payload: Dict[str, Any] = {
@@ -151,6 +153,8 @@ class OCClient:
             payload["category"] = category
         if context_type:
             payload["context_type"] = context_type
+        if metadata_filter:
+            payload["metadata_filter"] = metadata_filter
         return await self._post("/api/v1/memory/search", payload)
 
     async def derive_status(self, uri: str) -> Dict:
@@ -232,6 +236,26 @@ class OCClient:
             payload,
         )
 
+    async def benchmark_conversation_ingest(
+        self,
+        session_id: str,
+        segments: List[List[Dict[str, Any]]],
+        include_session_summary: bool = True,
+        ingest_shape: str = "merged_recompose",
+    ) -> Dict:
+        """Offline benchmark ingest for one conversation-shaped session."""
+        return await self._post(
+            "/api/v1/benchmark/conversation_ingest",
+            {
+                "session_id": session_id,
+                "segments": [{"messages": list(messages)} for messages in segments],
+                "include_session_summary": include_session_summary,
+                "ingest_shape": ingest_shape,
+            },
+            timeout=600.0,
+            retry_on_timeout=False,
+        )
+
     # ------------------------------------------------------------------
     # Knowledge / Archivist
     # ------------------------------------------------------------------
@@ -256,11 +280,15 @@ class OCClient:
 
     async def knowledge_approve(self, knowledge_id: str) -> Dict:
         """Approve a knowledge item (VERIFIED -> ACTIVE)."""
-        return await self._post("/api/v1/knowledge/approve", {"knowledge_id": knowledge_id})
+        return await self._post(
+            "/api/v1/knowledge/approve", {"knowledge_id": knowledge_id}
+        )
 
     async def knowledge_reject(self, knowledge_id: str) -> Dict:
         """Reject a knowledge item."""
-        return await self._post("/api/v1/knowledge/reject", {"knowledge_id": knowledge_id})
+        return await self._post(
+            "/api/v1/knowledge/reject", {"knowledge_id": knowledge_id}
+        )
 
     async def archivist_trigger(self) -> Dict:
         """Manually trigger the Archivist pipeline."""
@@ -283,7 +311,9 @@ class OCClient:
     ) -> Dict:
         """POST with retry logic (retryable on 429/5xx and transport errors)."""
         url = f"{self._base}{path}"
-        effective_timeout = timeout if timeout is not None else self._client.timeout.read
+        effective_timeout = (
+            timeout if timeout is not None else self._client.timeout.read
+        )
         last_error: Optional[Exception] = None
         for attempt in range(1, self._retries + 1):
             try:
@@ -317,7 +347,9 @@ class OCClient:
                 response = await self._client.get(
                     url,
                     params=params,
-                    headers={k: v for k, v in self._hdrs.items() if k != "Content-Type"},
+                    headers={
+                        k: v for k, v in self._hdrs.items() if k != "Content-Type"
+                    },
                 )
                 response.raise_for_status()
                 return response.json()
