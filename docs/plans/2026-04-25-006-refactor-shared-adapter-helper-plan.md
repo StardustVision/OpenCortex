@@ -115,7 +115,7 @@ None — this is pure refactor; no external library guidance needed.
 
 ## Implementation Units
 
-- [ ] U1. **Create `benchmarks/adapters/conversation_mapping.py` with five pure free helpers**
+- [x] U1. **Create `benchmarks/adapters/conversation_mapping.py` with five pure free helpers**
 
 **Goal:** Stand up the new module with the five byte-identical free helpers (`normalize_text_set`, `message_span`, `ranges_overlap`, `overlap_width`, `record_time_refs`) so subsequent units have somewhere to land.
 
@@ -156,7 +156,7 @@ None — this is pure refactor; no external library guidance needed.
 
 ---
 
-- [ ] U2. **Add `memory_record_snapshot` and `extract_records_by_uri` to the new module**
+- [x] U2. **Add `memory_record_snapshot` and `extract_records_by_uri` to the new module**
 
 **Goal:** Lift the two reusable I/O-adjacent helpers into the shared module. `memory_record_snapshot` is byte-identical between adapters; `extract_records_by_uri` is the new abstraction over the `{str(r["uri"]): dict(r) for r in payload["records"] if r["uri"]}` pattern that appears in both store and mainstream branches.
 
@@ -189,7 +189,7 @@ None — this is pure refactor; no external library guidance needed.
 
 ---
 
-- [ ] U3. **Add `map_session_uris` with `return_all` parameter**
+- [x] U3. **Add `map_session_uris` with `return_all` parameter**
 
 **Goal:** Extract the structurally-identical `_map_session_uris` from both adapters into a single function that exposes the divergent return shape via a kwarg. Conversation.py default (`return_all=False`) returns a single-element list with the tightest-overlap URI; locomo.py (`return_all=True`) returns the full sorted list so the caller can apply its own tie-break.
 
@@ -226,7 +226,7 @@ None — this is pure refactor; no external library guidance needed.
 
 ---
 
-- [ ] U4. **Wire both adapters to use `conversation_mapping`; delete local copies**
+- [x] U4. **Wire both adapters to use `conversation_mapping`; delete local copies**
 
 **Goal:** Switch `LongMemEvalBench` and `LoCoMoBench` to import the seven helpers from `benchmarks.adapters.conversation_mapping`. Delete the local copies from both adapters. Verify byte-identical behavior via the existing benchmark suite.
 
@@ -266,7 +266,7 @@ None — this is pure refactor; no external library guidance needed.
 
 ---
 
-- [ ] U5. **TG-3 — store/mcp URI mapping equivalence regression test**
+- [x] U5. **TG-3 — store/mcp URI mapping equivalence regression test**
 
 **Goal:** Add `tests/test_conversation_mapping.py::test_store_and_mcp_paths_produce_equivalent_uri_mapping` — closes TG-3 from the closure tracker. Asserts the store-path and mcp-path produce the same per-session URI mapping for the same fixture, locking the equivalence the refactor preserves and catching any future drift between the two ingest paths.
 
