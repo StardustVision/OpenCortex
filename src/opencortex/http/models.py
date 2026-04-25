@@ -421,9 +421,11 @@ class BenchmarkConversationIngestResponse(BaseModel):
     JSON shape continue to round-trip cleanly.
 
     The optional ``ingest_shape`` field is set to ``"direct_evidence"``
-    on that path and omitted on ``merged_recompose`` (preserving the
-    pre-DTO behavior where the merged path's response did not carry
-    the field).
+    on that path. On ``merged_recompose`` the service does not set the
+    field; FastAPI serializes the model attribute as ``null`` in JSON
+    (a minor wire change from the pre-DTO behavior where the key was
+    absent entirely — adapters consume ``payload.get("ingest_shape")``
+    so neither shape changes their behavior).
     """
 
     status: str = Field(

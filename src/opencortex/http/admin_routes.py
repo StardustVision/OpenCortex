@@ -19,8 +19,8 @@ from opencortex.auth.token import (
 from opencortex.context.manager import SourceConflictError
 from opencortex.context.session_records import SessionRecordOverflowError
 from opencortex.http.models import (
-    BenchmarkConversationIngestRequest, CreateTokenRequest,
-    MemorySearchRequest, RevokeTokenRequest,
+    BenchmarkConversationIngestRequest, BenchmarkConversationIngestResponse,
+    CreateTokenRequest, MemorySearchRequest, RevokeTokenRequest,
 )
 from opencortex.http.request_context import (
     get_effective_identity, get_effective_role, is_admin,
@@ -240,10 +240,13 @@ async def delete_bench_collection(name: str):
 # Admin — Benchmark (admin-only, benchmark infrastructure)
 # =========================================================================
 
-@router.post("/api/v1/admin/benchmark/conversation_ingest")
+@router.post(
+    "/api/v1/admin/benchmark/conversation_ingest",
+    response_model=BenchmarkConversationIngestResponse,
+)
 async def admin_benchmark_conversation_ingest(
     req: BenchmarkConversationIngestRequest,
-) -> Dict[str, Any]:
+) -> BenchmarkConversationIngestResponse:
     """Benchmark-only offline conversation ingest.
 
     This is benchmark infrastructure: it triggers per-leaf embeds, full-session
@@ -252,11 +255,16 @@ async def admin_benchmark_conversation_ingest(
     it is admin-gated and wrapped in a server-side timeout that sits ~10%
     under the client timeout to ensure the in-process cleanup tracker runs
     before the client disconnects.
+
+    §25 Phase 6 / U5: response is validated through
+    ``BenchmarkConversationIngestResponse`` so any drift in the dict
+    shape returned by ``BenchmarkConversationIngestService`` surfaces
+    here rather than at adapter parse time.
     """
     _require_admin()
     tid, uid = get_effective_identity()
     try:
-        return await asyncio.wait_for(
+        result = await asyncio.wait_for(
             _orchestrator.benchmark_conversation_ingest(
                 session_id=req.session_id,
                 tenant_id=tid,
@@ -270,6 +278,7 @@ async def admin_benchmark_conversation_ingest(
             ),
             timeout=_BENCHMARK_INGEST_TIMEOUT_SECONDS,
         )
+        return BenchmarkConversationIngestResponse.model_validate(result)
     except asyncio.TimeoutError:
         raise HTTPException(
             status_code=504,
