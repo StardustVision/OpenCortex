@@ -33,3 +33,9 @@ data_hotpotqa/
 docs/benchmark/*.json
 docs/benchmark/*.log
 docs/benchmark/*.md
+
+# macOS Finder metadata
+.DS_Store
+
+# Cloned reference material kept locally for inspection, not part of this repo
+ai-agents-for-beginners/
