@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
@@ -305,12 +306,20 @@ class LongMemEvalBench(EvalAdapter):
         return result
 
     async def ingest(self, oc: Any, **kwargs: Any) -> IngestResult:
-        """Ingest each LongMemEval item using mainstream or internal mode."""
+        """Ingest each LongMemEval item using mainstream or internal mode.
+
+        Mainstream and store paths run with bounded concurrency so the
+        benchmark suite finishes in operationally feasible time. The mcp
+        path stays serial because it relies on per-session live buffers.
+        """
         max_qa = int(kwargs.get("max_qa", 0) or 0)
         per_type = int(kwargs.get("per_type", 0) or 0)
         ingest_method = str(
             kwargs.get("ingest_method") or getattr(self, "_ingest_method", "mcp")
         ).lower()
+        ingest_concurrency = max(
+            1, int(kwargs.get("ingest_concurrency", getattr(self, "_ingest_concurrency", 4)))
+        )
         selected_indices = self._select_dataset_indices(
             self._dataset,
             max_qa=max_qa,
@@ -320,134 +329,152 @@ class LongMemEvalBench(EvalAdapter):
         self._lme_session_to_uri = {}
         errors: List[str] = []
         ingested = 0
+        # Store / mainstream paths get bounded concurrency; mcp stays
+        # effectively serial via Semaphore(1) because each context_commit
+        # mutates per-session live state.
+        concurrent_paths = _MAINSTREAM_INGEST_METHODS | {"store"}
+        semaphore = asyncio.Semaphore(
+            ingest_concurrency if ingest_method in concurrent_paths else 1
+        )
 
-        for item_index in selected_indices:
+        async def _process_one(item_index: int) -> Tuple[bool, Optional[str]]:
             item = self._dataset[item_index]
             conversation_session_id = f"lme-item-{item_index}"
             session_ids = item.get("haystack_session_ids", [])
             sessions = item.get("haystack_sessions", [])
             dates = item.get("haystack_dates", [])
 
-            try:
-                next_msg_index = 0
-                session_spans: Dict[int, Tuple[int, int]] = {}
-                session_time_refs: Dict[int, Set[str]] = {}
-                committed_segments = 0
-                segments: List[List[Dict[str, Any]]] = []
+            async with semaphore:
+                try:
+                    next_msg_index = 0
+                    session_spans: Dict[int, Tuple[int, int]] = {}
+                    session_time_refs: Dict[int, Set[str]] = {}
+                    committed_segments = 0
+                    segments: List[List[Dict[str, Any]]] = []
 
-                if ingest_method == "mcp":
-                    before_records = await self._memory_record_snapshot(oc)
+                    if ingest_method == "mcp":
+                        before_records = await self._memory_record_snapshot(oc)
 
-                for session_index, session_messages in enumerate(sessions):
-                    if not isinstance(session_messages, list):
-                        continue
-                    date = (
-                        str(dates[session_index]) if session_index < len(dates) else ""
-                    )
-                    lme_session_id = (
-                        str(session_ids[session_index])
-                        if session_index < len(session_ids)
-                        else str(session_index)
-                    )
+                    for session_index, session_messages in enumerate(sessions):
+                        if not isinstance(session_messages, list):
+                            continue
+                        date = (
+                            str(dates[session_index]) if session_index < len(dates) else ""
+                        )
+                        lme_session_id = (
+                            str(session_ids[session_index])
+                            if session_index < len(session_ids)
+                            else str(session_index)
+                        )
+
+                        if ingest_method in _MAINSTREAM_INGEST_METHODS:
+                            session_segments = self._pair_segments(
+                                session_messages=session_messages,
+                                date=date,
+                                item_index=item_index,
+                                session_index=session_index,
+                                session_id=lme_session_id,
+                            )
+                            messages = [
+                                message
+                                for segment in session_segments
+                                for message in segment
+                            ]
+                            segments.extend(session_segments)
+                        else:
+                            messages = self._session_messages(
+                                session_messages=session_messages,
+                                date=date,
+                                item_index=item_index,
+                                session_index=session_index,
+                                session_id=lme_session_id,
+                            )
+
+                        if not messages:
+                            continue
+
+                        start_index = next_msg_index
+                        end_index = start_index + len(messages) - 1
+                        session_spans[session_index] = (start_index, end_index)
+                        session_time_refs[session_index] = _normalize_text_set(
+                            [date] if date else []
+                        )
+                        next_msg_index = end_index + 1
+
+                        if ingest_method == "store":
+                            segments.append(messages)
+                        elif ingest_method == "mcp":
+                            await oc.context_commit(
+                                session_id=conversation_session_id,
+                                turn_id=f"turn-{session_index}",
+                                messages=messages,
+                            )
+                        committed_segments += 1
+
+                    if committed_segments == 0:
+                        return (False, None)
 
                     if ingest_method in _MAINSTREAM_INGEST_METHODS:
-                        session_segments = self._pair_segments(
-                            session_messages=session_messages,
-                            date=date,
-                            item_index=item_index,
-                            session_index=session_index,
-                            session_id=lme_session_id,
-                        )
-                        messages = [
-                            message
-                            for segment in session_segments
-                            for message in segment
-                        ]
-                        segments.extend(session_segments)
-                    else:
-                        messages = self._session_messages(
-                            session_messages=session_messages,
-                            date=date,
-                            item_index=item_index,
-                            session_index=session_index,
-                            session_id=lme_session_id,
-                        )
-
-                    if not messages:
-                        continue
-
-                    start_index = next_msg_index
-                    end_index = start_index + len(messages) - 1
-                    session_spans[session_index] = (start_index, end_index)
-                    session_time_refs[session_index] = _normalize_text_set(
-                        [date] if date else []
-                    )
-                    next_msg_index = end_index + 1
-
-                    if ingest_method == "store":
-                        segments.append(messages)
-                    elif ingest_method == "mcp":
-                        await oc.context_commit(
+                        payload = await oc.benchmark_conversation_ingest(
                             session_id=conversation_session_id,
-                            turn_id=f"turn-{session_index}",
-                            messages=messages,
+                            segments=segments,
+                            include_session_summary=False,
+                            ingest_shape="direct_evidence",
                         )
-                    committed_segments += 1
+                        new_records = {
+                            str(record.get("uri", "") or ""): dict(record)
+                            for record in payload.get("records", [])
+                            if str(record.get("uri", "") or "")
+                        }
+                    elif ingest_method == "store":
+                        # Benchmark scoring does not consume session_summary
+                        # leaves; opting out matches the mainstream branch
+                        # above and shaves ~1 LLM call + 2 filter scans per
+                        # conversation. Direct API callers keep default-True.
+                        payload = await oc.benchmark_conversation_ingest(
+                            session_id=conversation_session_id,
+                            segments=segments,
+                            include_session_summary=False,
+                        )
+                        new_records = {
+                            str(record.get("uri", "") or ""): dict(record)
+                            for record in payload.get("records", [])
+                            if str(record.get("uri", "") or "")
+                        }
+                    else:
+                        await oc.context_end(session_id=conversation_session_id)
+                        after_records = await self._memory_record_snapshot(oc)
+                        new_records = {
+                            uri: record
+                            for uri, record in after_records.items()
+                            if uri not in before_records
+                        }
 
-                if committed_segments == 0:
-                    continue
-
-                if ingest_method in _MAINSTREAM_INGEST_METHODS:
-                    payload = await oc.benchmark_conversation_ingest(
-                        session_id=conversation_session_id,
-                        segments=segments,
-                        include_session_summary=False,
-                        ingest_shape="direct_evidence",
+                    session_uris_by_index = self._map_session_uris(
+                        session_spans=session_spans,
+                        session_time_refs=session_time_refs,
+                        records_by_uri=new_records,
+                        conversation_session_id=conversation_session_id,
                     )
-                    new_records = {
-                        str(record.get("uri", "") or ""): dict(record)
-                        for record in payload.get("records", [])
-                        if str(record.get("uri", "") or "")
-                    }
-                elif ingest_method == "store":
-                    # Benchmark scoring does not consume session_summary
-                    # leaves; opting out matches the mainstream branch
-                    # above and shaves ~1 LLM call + 2 filter scans per
-                    # conversation. Direct API callers keep default-True.
-                    payload = await oc.benchmark_conversation_ingest(
-                        session_id=conversation_session_id,
-                        segments=segments,
-                        include_session_summary=False,
-                    )
-                    new_records = {
-                        str(record.get("uri", "") or ""): dict(record)
-                        for record in payload.get("records", [])
-                        if str(record.get("uri", "") or "")
-                    }
-                else:
-                    await oc.context_end(session_id=conversation_session_id)
-                    after_records = await self._memory_record_snapshot(oc)
-                    new_records = {
-                        uri: record
-                        for uri, record in after_records.items()
-                        if uri not in before_records
-                    }
 
-                session_uris_by_index = self._map_session_uris(
-                    session_spans=session_spans,
-                    session_time_refs=session_time_refs,
-                    records_by_uri=new_records,
-                    conversation_session_id=conversation_session_id,
-                )
+                    for session_index, session_id in enumerate(session_ids):
+                        uris = session_uris_by_index.get(session_index, [])
+                        if session_id not in self._lme_session_to_uri and uris:
+                            self._lme_session_to_uri[session_id] = uris[0]
 
-                for session_index, session_id in enumerate(session_ids):
-                    uris = session_uris_by_index.get(session_index, [])
-                    if session_id not in self._lme_session_to_uri and uris:
-                        self._lme_session_to_uri[session_id] = uris[0]
+                    return (True, None)
+                except Exception as exc:
+                    return (False, f"item={item_index}: {exc}")
 
+        results = await asyncio.gather(
+            *[_process_one(idx) for idx in selected_indices],
+            return_exceptions=False,
+        )
+        for ok, err in results:
+            if ok:
                 ingested += 1
-            except Exception as exc:
-                errors.append(f"item={item_index}: {exc}")
+            elif err:
+                errors.append(err)
 
         return IngestResult(
             total_items=len(selected_indices),

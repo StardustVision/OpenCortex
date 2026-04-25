@@ -500,6 +500,8 @@ async def run_mode(
             adapter._retrieve_method = run_options.retrieve_method
         if hasattr(adapter, "_ingest_method"):
             adapter._ingest_method = run_options.ingest_method
+        if hasattr(adapter, "_ingest_concurrency"):
+            adapter._ingest_concurrency = int(getattr(args, "ingest_concurrency", 4))
 
         # Knowledge mode has its own evaluation flow
         if mode == "knowledge":
@@ -515,6 +517,7 @@ async def run_mode(
                 per_type=args.per_type,
                 beam_tier=getattr(args, "beam_tier", ""),
                 ingest_method=run_options.ingest_method,
+                ingest_concurrency=int(getattr(args, "ingest_concurrency", 4)),
             )
             log(
                 f"  Ingested {ingest_result.ingested_items}/{ingest_result.total_items}"
@@ -1129,8 +1132,19 @@ def main():
         choices=["store", "mcp", "longmemeval-mainstream", "mainstream", "pairs"],
         help=(
             "Ingest method for conversation mode: store "
-            "(benchmark-only offline merged-leaf ingest) or mcp "
+            "(benchmark-only offline ingest) or mcp "
             "(prepare/commit/end lifecycle)"
+        ),
+    )
+    p.add_argument(
+        "--ingest-concurrency",
+        type=int,
+        default=4,
+        help=(
+            "Number of conversations to ingest concurrently when "
+            "ingest-method is store / mainstream / longmemeval-mainstream / "
+            "pairs. mcp stays serial. Raise on faster machines once the "
+            "embedded Qdrant + local embedder show headroom."
         ),
     )
     p.add_argument(

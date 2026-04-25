@@ -1515,6 +1515,21 @@ class ContextManager:
             # response can return raw text without racing the fire-and-
             # forget CortexFS write that ``_orchestrator.add`` schedules.
             merged_content_by_uri: Dict[str, str] = {}
+            # Deferred-derive completion tasks scheduled per leaf (U8).
+            # Awaited as a batch BEFORE returning so the response carries
+            # post-derive L0 / L1 / anchors — matching production
+            # conversation-mode parity. This is what closes the LoCoMo
+            # F1 0.49 -> 0.33 regression: previously the leaves stayed
+            # frozen on smart_truncate placeholders forever (R2-01 /
+            # R3-P-12).
+            derive_tasks: List[Tuple[str, asyncio.Task]] = []
+
+            async def _bounded_complete(
+                sem: asyncio.Semaphore,
+                **dkw: Any,
+            ) -> None:
+                async with sem:
+                    await self._orchestrator._complete_deferred_derive(**dkw)
 
             try:
                 entries = self._benchmark_recomposition_entries(normalized_segments)
@@ -1536,6 +1551,16 @@ class ContextManager:
                                 all_tool_calls.append(call)
 
                     combined = "\n\n".join(segment_texts)
+                    leaf_meta = {
+                        **merged_meta,
+                        "layer": "merged",
+                        "ingest_mode": "memory",
+                        "msg_range": list(msg_range),
+                        "source_uri": source_uri or "",
+                        "session_id": session_id,
+                        "recomposition_stage": "benchmark_offline",
+                        "tool_calls": all_tool_calls if all_tool_calls else [],
+                    }
                     merged_context = await self._orchestrator.add(
                         uri=self._merged_leaf_uri(
                             tenant_id,
@@ -1547,22 +1572,38 @@ class ContextManager:
                         content=combined,
                         category="events",
                         context_type="memory",
-                        meta={
-                            **merged_meta,
-                            "layer": "merged",
-                            "ingest_mode": "memory",
-                            "msg_range": list(msg_range),
-                            "source_uri": source_uri or "",
-                            "session_id": session_id,
-                            "recomposition_stage": "benchmark_offline",
-                            "tool_calls": all_tool_calls if all_tool_calls else [],
-                        },
+                        meta=leaf_meta,
                         session_id=session_id,
                         dedup=False,
                         defer_derive=True,
                     )
                     cleanup.merged_uris.append(merged_context.uri)
                     merged_content_by_uri[merged_context.uri] = combined
+
+                    # Schedule the LLM derive on the same semaphore the
+                    # production lifecycle uses so we never exceed the
+                    # global concurrency budget for merged-leaf derives.
+                    task = asyncio.create_task(
+                        _bounded_complete(
+                            self._derive_semaphore,
+                            uri=merged_context.uri,
+                            content=combined,
+                            abstract="",
+                            overview="",
+                            session_id=session_id,
+                            meta=dict(leaf_meta),
+                            raise_on_error=True,
+                        )
+                    )
+                    derive_tasks.append((merged_context.uri, task))
+
+                if derive_tasks:
+                    # Wait for every scheduled derive so the response
+                    # represents the post-derive Qdrant + CortexFS state.
+                    # If any derive fails the gathered exception fires
+                    # the rollback path (cleanup tracker covers leaves
+                    # plus any partially-written derives).
+                    await asyncio.gather(*[task for _, task in derive_tasks])
 
                 if cleanup.merged_uris:
                     directory_uris = await self._run_full_session_recomposition(

@@ -8,6 +8,7 @@ conversation into many isolated OpenCortex sessions.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from datetime import datetime, timezone
@@ -443,7 +444,15 @@ class LoCoMoBench(EvalAdapter):
         return [best_uri] if best_uri else []
 
     async def ingest(self, oc: Any, **kwargs) -> IngestResult:
-        """Ingest LoCoMo conversations via one session lifecycle each."""
+        """Ingest LoCoMo conversations via one session lifecycle each.
+
+        For ingest_method='store' the per-conversation work is independent
+        (each conversation has its own session_id, source_uri, and merged
+        leaves) so we dispatch with bounded concurrency to amortize the
+        ~30-60s of LLM + embed time per conversation. The 'mcp' path uses
+        the legacy serial loop because each conversation's
+        context_commit / context_end touches the live conversation buffer.
+        """
         conversations = self._selected_conversations(
             max_conv=kwargs.get("max_conv", 0),
             max_qa=kwargs.get("max_qa", 0),
@@ -451,6 +460,9 @@ class LoCoMoBench(EvalAdapter):
         ingest_method = str(
             kwargs.get("ingest_method") or getattr(self, "_ingest_method", "mcp")
         ).lower()
+        ingest_concurrency = max(
+            1, int(kwargs.get("ingest_concurrency", getattr(self, "_ingest_concurrency", 4)))
+        )
         self._conversation_uris_by_id = {}
         self._session_uris_by_key = {}
         self._session_candidates_by_key = {}
@@ -458,108 +470,124 @@ class LoCoMoBench(EvalAdapter):
         total = len(conversations)
         ingested = 0
         errors: List[str] = []
+        # Local concurrency knob; mcp path stays serial. Semaphore is
+        # only consulted by store-path dispatch below.
+        semaphore = asyncio.Semaphore(
+            ingest_concurrency if ingest_method == "store" else 1
+        )
 
-        for conv in conversations:
-            conv_id = str(conv.get("sample_id", len(self._conversation_uris_by_id)))
+        async def _process_one(conv: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+            conv_id = str(conv.get("sample_id", id(conv)))
             conversation_session_id = self._conversation_session_id(conv_id)
             committed_segments = 0
             next_msg_index = 0
             session_spans: Dict[int, Tuple[int, int]] = {}
             session_time_refs: Dict[int, Set[str]] = {}
             segments: List[List[Dict[str, Any]]] = []
-            try:
-                if ingest_method == "mcp":
-                    before_records = await self._memory_record_snapshot(oc)
-                for session in _parse_locomo_sessions(conv):
-                    session_num = int(session["session_num"])
-                    normalized_event_date, time_refs = _normalize_locomo_datetime(
-                        str(session.get("date_time", ""))
-                    )
+            async with semaphore:
+                try:
+                    if ingest_method == "mcp":
+                        before_records = await self._memory_record_snapshot(oc)
+                    for session in _parse_locomo_sessions(conv):
+                        session_num = int(session["session_num"])
+                        normalized_event_date, time_refs = _normalize_locomo_datetime(
+                            str(session.get("date_time", ""))
+                        )
 
-                    messages = [
-                        {
-                            "role": "user",
-                            "content": f"[{turn.get('speaker', 'unknown')}]: {_turn_text(turn)}",
-                            "meta": {
-                                "speaker": str(turn.get("speaker", "unknown")),
-                                **(
-                                    {"event_date": normalized_event_date}
-                                    if normalized_event_date
-                                    else {}
-                                ),
-                                **({"time_refs": list(time_refs)} if time_refs else {}),
-                            },
-                        }
-                        for turn in session["turns"]
-                        if _turn_text(turn)
-                    ]
-                    if not messages:
-                        continue
+                        messages = [
+                            {
+                                "role": "user",
+                                "content": f"[{turn.get('speaker', 'unknown')}]: {_turn_text(turn)}",
+                                "meta": {
+                                    "speaker": str(turn.get("speaker", "unknown")),
+                                    **(
+                                        {"event_date": normalized_event_date}
+                                        if normalized_event_date
+                                        else {}
+                                    ),
+                                    **({"time_refs": list(time_refs)} if time_refs else {}),
+                                },
+                            }
+                            for turn in session["turns"]
+                            if _turn_text(turn)
+                        ]
+                        if not messages:
+                            continue
 
-                    start_index = next_msg_index
-                    end_index = start_index + len(messages) - 1
-                    session_spans[session_num] = (start_index, end_index)
-                    session_time_refs[session_num] = _normalize_text_set(
-                        [normalized_event_date, *time_refs]
-                    )
-                    next_msg_index = end_index + 1
+                        start_index = next_msg_index
+                        end_index = start_index + len(messages) - 1
+                        session_spans[session_num] = (start_index, end_index)
+                        session_time_refs[session_num] = _normalize_text_set(
+                            [normalized_event_date, *time_refs]
+                        )
+                        next_msg_index = end_index + 1
+
+                        if ingest_method == "store":
+                            segments.append(messages)
+                        else:
+                            await oc.context_commit(
+                                session_id=conversation_session_id,
+                                turn_id=f"turn-{session_num}",
+                                messages=messages,
+                            )
+                        committed_segments += 1
+
+                    if committed_segments == 0:
+                        return (False, None)
 
                     if ingest_method == "store":
-                        segments.append(messages)
-                    else:
-                        await oc.context_commit(
+                        # Benchmark scoring does not consume session_summary
+                        # leaves; opting out shaves ~1 LLM call + 2 filter
+                        # scans + 1 add per conversation. Direct API callers
+                        # keep the default-True behavior.
+                        payload = await oc.benchmark_conversation_ingest(
                             session_id=conversation_session_id,
-                            turn_id=f"turn-{session_num}",
-                            messages=messages,
+                            segments=segments,
+                            include_session_summary=False,
                         )
-                    committed_segments += 1
-
-                if committed_segments == 0:
-                    continue
-
-                if ingest_method == "store":
-                    # Benchmark scoring does not consume session_summary
-                    # leaves; opting out shaves ~1 LLM call + 2 filter
-                    # scans + 1 add per conversation. Direct API callers
-                    # keep the default-True behavior.
-                    payload = await oc.benchmark_conversation_ingest(
-                        session_id=conversation_session_id,
-                        segments=segments,
-                        include_session_summary=False,
+                        new_records = {
+                            str(record.get("uri", "") or ""): dict(record)
+                            for record in payload.get("records", [])
+                            if str(record.get("uri", "") or "")
+                        }
+                    else:
+                        await oc.context_end(session_id=conversation_session_id)
+                        after_records = await self._memory_record_snapshot(oc)
+                        new_records = {
+                            uri: record
+                            for uri, record in after_records.items()
+                            if uri not in before_records
+                        }
+                    new_uris = sorted(new_records)
+                    self._conversation_uris_by_id[conv_id] = (
+                        new_uris or [self._conversation_uri(conv_id)]
                     )
-                    new_records = {
-                        str(record.get("uri", "") or ""): dict(record)
-                        for record in payload.get("records", [])
-                        if str(record.get("uri", "") or "")
-                    }
-                else:
-                    await oc.context_end(session_id=conversation_session_id)
-                    after_records = await self._memory_record_snapshot(oc)
-                    new_records = {
-                        uri: record
-                        for uri, record in after_records.items()
-                        if uri not in before_records
-                    }
-                new_uris = sorted(new_records)
-                self._conversation_uris_by_id[conv_id] = (
-                    new_uris or [self._conversation_uri(conv_id)]
-                )
-                session_uris_by_num = self._map_session_uris(
-                    session_spans=session_spans,
-                    session_time_refs=session_time_refs,
-                    records_by_uri=new_records,
-                    conversation_session_id=conversation_session_id,
-                )
-                for session_num, uris in session_uris_by_num.items():
-                    self._session_uris_by_key[(conv_id, session_num)] = list(uris)
-                    self._session_candidates_by_key[(conv_id, session_num)] = [
-                        dict(new_records[uri])
-                        for uri in uris
-                        if uri in new_records
-                    ]
+                    session_uris_by_num = self._map_session_uris(
+                        session_spans=session_spans,
+                        session_time_refs=session_time_refs,
+                        records_by_uri=new_records,
+                        conversation_session_id=conversation_session_id,
+                    )
+                    for session_num, uris in session_uris_by_num.items():
+                        self._session_uris_by_key[(conv_id, session_num)] = list(uris)
+                        self._session_candidates_by_key[(conv_id, session_num)] = [
+                            dict(new_records[uri])
+                            for uri in uris
+                            if uri in new_records
+                        ]
+                    return (True, None)
+                except Exception as exc:
+                    return (False, f"conv={conv_id}: {exc}")
+
+        results = await asyncio.gather(
+            *[_process_one(conv) for conv in conversations],
+            return_exceptions=False,
+        )
+        for ok, err in results:
+            if ok:
                 ingested += 1
-            except Exception as exc:
-                errors.append(f"conv={conv_id}: {exc}")
+            elif err:
+                errors.append(err)
 
         return IngestResult(
             total_items=total,

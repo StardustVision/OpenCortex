@@ -243,9 +243,18 @@ class OCClient:
         include_session_summary: bool = True,
         ingest_shape: str = "merged_recompose",
     ) -> Dict:
-        """Offline benchmark ingest for one conversation-shaped session."""
+        """Offline benchmark ingest for one conversation-shaped session.
+
+        The endpoint moved under the admin namespace (U1) so this method
+        targets ``/api/v1/admin/benchmark/conversation_ingest`` and
+        requires the configured client token to carry the admin role.
+        ``timeout=600.0`` and ``retry_on_timeout=False`` are deliberate:
+        retries would mask real latency regressions in benchmark runs,
+        and the server-side timeout (U15) sits ~10% under the client to
+        ensure compensation runs before the client disconnects.
+        """
         return await self._post(
-            "/api/v1/benchmark/conversation_ingest",
+            "/api/v1/admin/benchmark/conversation_ingest",
             {
                 "session_id": session_id,
                 "segments": [{"messages": list(messages)} for messages in segments],
