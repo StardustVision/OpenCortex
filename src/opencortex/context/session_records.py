@@ -390,12 +390,26 @@ class SessionRecordsRepository:
         self,
         session_id: str,
         *,
+        source_uri: Optional[str] = None,
         tenant_id: Optional[str] = None,
         user_id: Optional[str] = None,
     ) -> Dict[str, int]:
-        """Return per-layer record counts for one session."""
+        """Return per-layer record counts for one session.
+
+        ``source_uri`` (REVIEW closure tracker RR-01): API alignment
+        with ``load_merged`` / ``load_directories`` / ``load_layers`` —
+        callers that already scope by source can now pass it here too,
+        which prevents cross-source aggregation when a single
+        ``session_id`` carries records from more than one source (e.g.
+        a torn-run state or manual re-ingest). Empty string is treated
+        as falsy and omitted from the filter, matching the truthiness
+        guard the other repository entry points use.
+        """
         where = self._build_session_filter(
-            session_id=session_id, tenant_id=tenant_id, user_id=user_id
+            session_id=session_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            source_uri=source_uri,
         )
         records = await self._scroll_all(
             session_id=session_id, where=where, method="layer_counts"

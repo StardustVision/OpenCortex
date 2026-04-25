@@ -35,6 +35,7 @@ from opencortex.storage.storage_interface import (
     StorageInterface,
 )
 from opencortex.utils.uri import CortexURI
+from tests._helpers import resolve_field
 
 
 class TestContextTypeEnum(unittest.TestCase):
@@ -449,29 +450,6 @@ class InMemoryStorage(StorageInterface):
             return 0.0
         return dot / (norm_a * norm_b)
 
-    @staticmethod
-    def _resolve_field(record: Dict[str, Any], field_name: str) -> Any:
-        """Resolve a (possibly dot-path) field name into a record value.
-
-        Mirrors Qdrant's nested-field filter semantics so the in-memory
-        test fixture stays consistent with the real adapter. Bare names
-        like ``session_id`` use direct ``.get``; dot-paths like
-        ``meta.source_uri`` walk the nested dict step by step. Missing
-        intermediate keys collapse to ``None`` so the caller's
-        ``in conds`` check handles them the same way Qdrant would.
-        """
-        if "." not in field_name:
-            return record.get(field_name)
-        cursor: Any = record
-        for part in field_name.split("."):
-            if isinstance(cursor, dict):
-                cursor = cursor.get(part)
-            else:
-                return None
-            if cursor is None:
-                return None
-        return cursor
-
     def _eval_filter(self, record: Dict[str, Any], filt: Dict[str, Any]) -> bool:
         """Evaluate filter DSL against a record."""
         if not filt:
@@ -481,7 +459,7 @@ class InMemoryStorage(StorageInterface):
         if op == "must":
             field_name = filt.get("field", "")
             conds = filt.get("conds", [])
-            val = self._resolve_field(record, field_name)
+            val = resolve_field(record, field_name)
             # Treat None as "" so records missing a field match empty-string conds
             if val is None and "" in conds:
                 return True
@@ -492,12 +470,12 @@ class InMemoryStorage(StorageInterface):
         elif op == "prefix":
             field_name = filt.get("field", "")
             prefix = filt.get("prefix", "")
-            val = self._resolve_field(record, field_name) or ""
+            val = resolve_field(record, field_name) or ""
             return str(val).startswith(prefix)
 
         elif op == "range":
             field_name = filt.get("field", "")
-            val = self._resolve_field(record, field_name)
+            val = resolve_field(record, field_name)
             if val is None:
                 val = 0
             if "gte" in filt and val < filt["gte"]:
@@ -513,7 +491,7 @@ class InMemoryStorage(StorageInterface):
         elif op == "contains":
             field_name = filt.get("field", "")
             substring = filt.get("substring", "")
-            val = str(self._resolve_field(record, field_name) or "")
+            val = str(resolve_field(record, field_name) or "")
             return substring in val
 
         elif op == "and":
@@ -525,7 +503,7 @@ class InMemoryStorage(StorageInterface):
         elif op == "must_not":
             field_name = filt.get("field", "")
             conds = filt.get("conds", [])
-            val = self._resolve_field(record, field_name)
+            val = resolve_field(record, field_name)
             if isinstance(val, list):
                 return all(item not in conds for item in val)
             return val not in conds

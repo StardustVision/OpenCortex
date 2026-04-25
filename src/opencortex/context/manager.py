@@ -3489,7 +3489,12 @@ class ContextManager:
 
                     layer_counts: Optional[Dict[str, int]] = None
                     try:
-                        layer_counts = await self._session_records.layer_counts(session_id)
+                        layer_counts = await self._session_records.layer_counts(
+                            session_id,
+                            source_uri=source_uri,
+                            tenant_id=tenant_id,
+                            user_id=user_id,
+                        )
                         logger.info(
                             "[ContextManager] End state sid=%s source_uri=%s layer_counts=%s",
                             session_id,

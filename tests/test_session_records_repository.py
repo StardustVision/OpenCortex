@@ -23,6 +23,7 @@ from opencortex.context.session_records import (
     record_text,
 )
 from opencortex.storage.qdrant.adapter import QdrantStorageAdapter
+from tests._helpers import resolve_field
 
 
 class _FakeStorage:
@@ -39,34 +40,12 @@ class _FakeStorage:
     def __init__(self, records: List[Dict[str, Any]]) -> None:
         self._records = records
 
-    @staticmethod
-    def _resolve_field(record: Dict[str, Any], field_name: str) -> Any:
-        """Walk dot-paths into nested dicts; mirrors Qdrant's nested key."""
-        if "." not in field_name:
-            # session_id may live at the top level OR inside meta —
-            # check meta first because that's where session_records
-            # writes set it.
-            if field_name == "session_id":
-                meta = record.get("meta") or {}
-                if isinstance(meta, dict) and meta.get("session_id"):
-                    return meta["session_id"]
-            return record.get(field_name)
-        cursor: Any = record
-        for part in field_name.split("."):
-            if isinstance(cursor, dict):
-                cursor = cursor.get(part)
-            else:
-                return None
-            if cursor is None:
-                return None
-        return cursor
-
     def _eval(self, record: Dict[str, Any], filt: Dict[str, Any]) -> bool:
         op = filt.get("op", "")
         if op == "and":
             return all(self._eval(record, c) for c in filt.get("conds", []) or [])
         if op == "must":
-            val = self._resolve_field(record, filt.get("field", ""))
+            val = resolve_field(record, filt.get("field", ""))
             return val in (filt.get("conds") or [])
         # Unknown ops are a test-fixture bug, not a silent match — if a
         # production caller starts passing ``or``/``range``/``contains``
@@ -615,6 +594,89 @@ class TestSessionRecordsRepositorySourceUriPushdown(unittest.TestCase):
 
         self._run(check())
 
+    def test_layer_counts_pushes_source_uri_into_filter(self):
+        """layer_counts(source_uri=...) appends meta.source_uri must-cond.
+
+        REVIEW closure tracker RR-01: API alignment with the other
+        repository entry points so callers that already have source
+        scope can prevent cross-source aggregation when a single
+        session_id carries records from more than one source."""
+
+        async def check():
+            captured: List[Dict[str, Any]] = []
+
+            class _CapturingStorage:
+                async def filter(self, _coll, where, limit=10000):
+                    captured.append(where)
+                    return []
+
+            repo = SessionRecordsRepository(
+                storage=_CapturingStorage(), collection_resolver=lambda: "context"
+            )
+            await repo.layer_counts(
+                "s1", source_uri="opencortex://t/u/src"
+            )
+            self.assertEqual(len(captured), 1)
+            source_conds = [
+                c for c in captured[0]["conds"]
+                if c.get("field") == "meta.source_uri"
+            ]
+            self.assertEqual(len(source_conds), 1)
+            self.assertEqual(source_conds[0]["op"], "must")
+            self.assertEqual(
+                source_conds[0]["conds"], ["opencortex://t/u/src"]
+            )
+
+        self._run(check())
+
+    def test_layer_counts_omits_source_uri_when_not_provided(self):
+        """layer_counts() without source_uri preserves legacy filter shape."""
+
+        async def check():
+            captured: List[Dict[str, Any]] = []
+
+            class _CapturingStorage:
+                async def filter(self, _coll, where, limit=10000):
+                    captured.append(where)
+                    return []
+
+            repo = SessionRecordsRepository(
+                storage=_CapturingStorage(), collection_resolver=lambda: "context"
+            )
+            await repo.layer_counts("s1")
+            await repo.layer_counts("s2", source_uri="")  # falsy
+            self.assertEqual(len(captured), 2)
+            for where in captured:
+                fields = {c["field"] for c in where["conds"]}
+                self.assertNotIn("meta.source_uri", fields)
+
+        self._run(check())
+
+    def test_layer_counts_buckets_by_source_uri_in_practice(self):
+        """End-to-end: with a fixture that has two sources for one session,
+        layer_counts(source_uri='A') only counts records from source A."""
+
+        async def check():
+            records = [
+                _merged("u1", "s1", [0, 1], source_uri="A"),
+                _merged("u2", "s1", [2, 3], source_uri="A"),
+                _merged("u3", "s1", [4, 5], source_uri="B"),
+                _directory("d1", "s1", [0, 5], source_uri="A"),
+                _directory("d2", "s1", [0, 5], source_uri="B"),
+            ]
+            storage = _FakeStorage(records)
+            repo = SessionRecordsRepository(
+                storage=storage, collection_resolver=lambda: "context"
+            )
+            counts_a = await repo.layer_counts("s1", source_uri="A")
+            counts_b = await repo.layer_counts("s1", source_uri="B")
+            counts_all = await repo.layer_counts("s1")
+            self.assertEqual(counts_a, {"merged": 2, "directory": 1})
+            self.assertEqual(counts_b, {"merged": 1, "directory": 1})
+            self.assertEqual(counts_all, {"merged": 3, "directory": 2})
+
+        self._run(check())
+
 
 class TestEnsureScalarIndexes(unittest.TestCase):
     """U1 verification: payload index ensure runs idempotently on every
@@ -697,6 +759,37 @@ class TestEnsureScalarIndexes(unittest.TestCase):
                     for call in mock_client.create_payload_index.call_args_list
                 }
                 self.assertEqual(indexed_fields, {"uri", "meta.source_uri"})
+
+        self._run(check())
+
+    def test_index_ensure_failure_logs_at_info_not_debug(self):
+        """REVIEW closure tracker CORR-PERF02-005: per-field index-ensure
+        failures must surface at INFO so operators can see when a
+        production filter has degraded to full-scan. DEBUG is too quiet
+        for the typical production log threshold."""
+
+        async def check():
+            adapter, mock_client = self._build_adapter_with_mock_client(exists=True)
+            mock_client.create_payload_index = AsyncMock(
+                side_effect=RuntimeError("simulated qdrant outage")
+            )
+            with patch.object(
+                adapter, "_ensure_client", AsyncMock(return_value=mock_client)
+            ):
+                schema = {
+                    "Fields": [{"FieldName": "uri", "FieldType": "string"}],
+                    "ScalarIndex": ["meta.source_uri"],
+                }
+                with self.assertLogs(
+                    "opencortex.storage.qdrant.adapter", level="INFO"
+                ) as cm:
+                    # Should NOT raise — failures degrade gracefully.
+                    await adapter.create_collection("ctx", schema)
+                # At least one INFO line about the index ensure failure.
+                joined = "\n".join(cm.output)
+                self.assertIn("Index ensure", joined)
+                self.assertIn("meta.source_uri", joined)
+                self.assertIn("simulated qdrant outage", joined)
 
         self._run(check())
 
