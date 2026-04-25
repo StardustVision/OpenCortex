@@ -451,7 +451,7 @@ Key boundary properties:
 
 ### Phase 5 — Repository / Gateway
 
-- [ ] U1. **Extract `SessionRecordsRepository` (mechanical move, behavior-preserving)**
+- [x] U1. **Extract `SessionRecordsRepository` (mechanical move, behavior-preserving)**
 
 **Goal:** Create `src/opencortex/context/session_records.py` housing
 `SessionRecordsRepository`. Move `_load_session_merged_records`,
@@ -498,7 +498,7 @@ constructs a single repo instance once `_orchestrator` is set.
 
 ---
 
-- [ ] U2. **Add scope discipline + pagination + overflow guard to Repository**
+- [x] U2. **Add scope discipline + pagination + overflow guard to Repository**
 
 **Goal:** Each repository method enforces `(tenant_id, user_id, source_uri)`
 filter discipline — closing PE-6 / R3-RC-03 — and replaces
@@ -578,7 +578,7 @@ post-U2 repo must NOT mix them.
 
 ### Phase 6 — DTO / Response Model
 
-- [ ] U3. **Define `BenchmarkConversationIngestResponse` Pydantic models**
+- [x] U3. **Define `BenchmarkConversationIngestResponse` Pydantic models**
 
 **Goal:** Add `BenchmarkConversationIngestResponse` and
 `BenchmarkConversationIngestRecord` to `src/opencortex/http/models.py`.
@@ -640,7 +640,7 @@ relative to them, but easiest after U1 to avoid context-switching).
 
 ### Phase 3 — Service Layer
 
-- [ ] U4. **Extract `BenchmarkConversationIngestService`**
+- [x] U4. **Extract `BenchmarkConversationIngestService`**
 
 **Goal:** Pull the body of `ContextManager.benchmark_ingest_conversation`
 (391 lines) and `_benchmark_ingest_direct_evidence` into a new
@@ -774,7 +774,7 @@ byte-equal response dicts. Land that test, then refactor.
 
 ### Phase 6 (continued) — Wire DTO through the public path
 
-- [ ] U5. **Wire `BenchmarkConversationIngestResponse` through Service + admin route**
+- [x] U5. **Wire `BenchmarkConversationIngestResponse` through Service + admin route**
 
 **Goal:** `Service.ingest` returns `BenchmarkConversationIngestResponse`
 instead of `Dict[str, Any]`. Admin route declares the DTO as the
