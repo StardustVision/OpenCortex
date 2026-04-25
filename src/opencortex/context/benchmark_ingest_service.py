@@ -672,9 +672,27 @@ class BenchmarkConversationIngestService:
                 )
                 created_uris.append(stored.uri)
                 evidence_content_by_uri[stored.uri] = combined
-                record = await manager._orchestrator._get_record_by_uri(stored.uri)
-                if record:
-                    records.append(record)
+                # REVIEW closure tracker PERF-03 — the legacy code did
+                # one ``_get_record_by_uri(stored.uri)`` per segment to
+                # re-fetch the just-written record as a dict; that
+                # paid N extra sequential Qdrant point lookups on the
+                # critical path (10–100ms per ingest at typical
+                # benchmark scale). The record's payload is fully known
+                # locally — meta is what we just wrote, content is
+                # ``combined``, and abstract/overview are empty until
+                # the deferred derive runs (which this path never
+                # awaits). Construct directly from local state.
+                records.append({
+                    "uri": stored.uri,
+                    "abstract": "",
+                    "overview": "",
+                    "content": combined,
+                    "meta": dict(meta),
+                    "session_id": session_id,
+                    "speaker": "",
+                    "event_date": meta.get("event_date", ""),
+                    "abstract_json": {},
+                })
 
             await manager._mark_source_run_complete(source_uri or "")
             hydrated = await manager._hydrate_record_contents(
