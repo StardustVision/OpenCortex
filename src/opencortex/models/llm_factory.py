@@ -2,7 +2,18 @@
 """
 LLM completion callable factory for OpenCortex.
 
-Produces an `async def(prompt: str) -> str` callable for use with IntentAnalyzer.
+Produces an `LLMCompletion` instance — a small wrapper class exposing
+`async __call__(prompt) -> str` (the existing call shape used by
+IntentAnalyzer + LLM-mode rerank) AND `async aclose()` so the
+orchestrator can release the underlying httpx connection pool on
+shutdown.
+
+PRE-PR #15 the closures returned here owned their httpx clients with
+no aclose path. Production servers accumulated CLOSE_WAIT TCP sockets
+until the asyncio event loop blocked (project memory:
+`project_connection_pool_leak.md`). The wrapper class fixes that
+without changing any call site — `await self._llm_completion(prompt)`
+still works because `LLMCompletion.__call__` is `async def`.
 
 Supports two API formats:
 - "openai" (default): OpenAI-compatible chat completions via /chat/completions
@@ -14,23 +25,92 @@ optional dependency installed.
 
 import logging
 import os
-from typing import Callable, Awaitable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 _DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 
+# REVIEW closure tracker connection-pool-leak / R2: bound the per-process
+# socket footprint for every LLM completion client. Conservative caps
+# picked from the project memory diagnosis — high enough that normal
+# concurrency (intent + rerank fan-out) does not block, low enough that
+# a future pool-leak regression triggers backpressure before it can
+# exhaust the kernel's ephemeral port pool.
+_LLM_MAX_CONNECTIONS = 20
+_LLM_MAX_KEEPALIVE_CONNECTIONS = 5
 
-def create_llm_completion(config) -> Optional[Callable[[str], Awaitable[str]]]:
-    """Create an LLM completion callable from CortexConfig.
 
-    Args:
-        config: CortexConfig instance.
+class LLMCompletion:
+    """Async-callable wrapper around an httpx-backed LLM completion fn.
+
+    Preserves the legacy callable contract (``await llm(prompt)``) while
+    adding a lifecycle hook so ``MemoryOrchestrator.close()`` can release
+    the underlying connection pool. Also exposes ``client`` so the admin
+    health endpoint can read live pool stats.
+    """
+
+    def __init__(
+        self,
+        callable_: Callable[..., Awaitable[str]],
+        client: Any,
+        *,
+        backend: str,
+        model: str,
+        base_url: str,
+    ) -> None:
+        self._callable = callable_
+        self._client = client
+        self._backend = backend
+        self._model = model
+        self._base_url = base_url
+        self._closed = False
+
+    async def __call__(self, *args: Any, **kwargs: Any) -> str:
+        """Delegate to the wrapped completion callable.
+
+        Accepts ``*args, **kwargs`` so existing call sites that pass
+        ``(prompt, max_tokens=N)`` keep working — the inner closure
+        decides which kwargs it actually uses.
+        """
+        return await self._callable(*args, **kwargs)
+
+    async def aclose(self) -> None:
+        """Release the underlying httpx connection pool. Idempotent."""
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            await self._client.aclose()
+        except Exception as exc:
+            # Non-fatal — orchestrator close path tolerates per-client
+            # failure (matches existing close pattern in
+            # ``orchestrator.close()``). Log so an operator can still
+            # see degraded shutdown.
+            logger.info(
+                "[llm_factory] LLMCompletion.aclose for backend=%s "
+                "failed: %s (degraded shutdown — process may still hold "
+                "a connection until the kernel reclaims it)",
+                self._backend, exc,
+            )
+
+    @property
+    def client(self) -> Any:
+        """Underlying httpx.AsyncClient for read-only stat extraction."""
+        return self._client
+
+    @property
+    def backend(self) -> str:
+        return self._backend
+
+
+def create_llm_completion(config) -> Optional[LLMCompletion]:
+    """Create an LLM completion wrapper from CortexConfig.
 
     Returns:
-        An async callable ``async def(prompt: str) -> str``, or None if no
-        backend is available.
+        An ``LLMCompletion`` instance (callable + ``aclose``), or
+        ``None`` when no backend is configured.
     """
     effective_api_key = (
         config.llm_api_key
@@ -66,7 +146,7 @@ def create_llm_completion(config) -> Optional[Callable[[str], Awaitable[str]]]:
     base_url = effective_base or _DEFAULT_OPENAI_BASE_URL
 
     if effective_format == "anthropic":
-        callable_ = _make_anthropic_callable(
+        wrapper = _make_anthropic_completion(
             api_key=openai_api_key, model=model, base_url=base_url,
         )
         logger.info(
@@ -74,7 +154,7 @@ def create_llm_completion(config) -> Optional[Callable[[str], Awaitable[str]]]:
             model, base_url,
         )
     else:
-        callable_ = _make_openai_callable(
+        wrapper = _make_openai_completion(
             api_key=openai_api_key, model=model, base_url=base_url,
         )
         logger.info(
@@ -82,16 +162,29 @@ def create_llm_completion(config) -> Optional[Callable[[str], Awaitable[str]]]:
             model, base_url,
         )
 
-    return callable_
+    return wrapper
 
 
-def _make_openai_callable(api_key: str, model: str, base_url: str) -> Callable[[str], Awaitable[str]]:
-    """Return an async callable that calls an OpenAI-compatible chat endpoint."""
+def _build_httpx_client(timeout: float) -> Any:
+    """Construct an ``httpx.AsyncClient`` with the project's standard caps."""
     import httpx
 
-    _client = httpx.AsyncClient(timeout=60.0)
-    _url = base_url.rstrip("/") + "/chat/completions"
-    _headers = {
+    return httpx.AsyncClient(
+        timeout=timeout,
+        limits=httpx.Limits(
+            max_connections=_LLM_MAX_CONNECTIONS,
+            max_keepalive_connections=_LLM_MAX_KEEPALIVE_CONNECTIONS,
+        ),
+    )
+
+
+def _make_openai_completion(api_key: str, model: str, base_url: str) -> LLMCompletion:
+    """Build the OpenAI-compatible completion wrapper."""
+    import httpx
+
+    client = _build_httpx_client(timeout=60.0)
+    url = base_url.rstrip("/") + "/chat/completions"
+    headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
@@ -102,7 +195,7 @@ def _make_openai_callable(api_key: str, model: str, base_url: str) -> Callable[[
                 "model": model,
                 "messages": [{"role": "user", "content": prompt}],
             }
-            resp = await _client.post(_url, headers=_headers, json=payload)
+            resp = await client.post(url, headers=headers, json=payload)
             resp.raise_for_status()
             data = resp.json()
             return data["choices"][0]["message"]["content"] or ""
@@ -116,16 +209,22 @@ def _make_openai_callable(api_key: str, model: str, base_url: str) -> Callable[[
             logger.warning("[llm_factory] OpenAI completion error: %r", exc)
             raise
 
-    return _openai_completion
+    return LLMCompletion(
+        _openai_completion,
+        client,
+        backend="openai",
+        model=model,
+        base_url=base_url,
+    )
 
 
-def _make_anthropic_callable(api_key: str, model: str, base_url: str) -> Callable[[str], Awaitable[str]]:
-    """Return an async callable that calls an Anthropic Messages endpoint."""
+def _make_anthropic_completion(api_key: str, model: str, base_url: str) -> LLMCompletion:
+    """Build the Anthropic Messages completion wrapper."""
     import httpx
 
-    _client = httpx.AsyncClient(timeout=60.0)
-    _url = base_url.rstrip("/") + "/messages"
-    _headers = {
+    client = _build_httpx_client(timeout=60.0)
+    url = base_url.rstrip("/") + "/messages"
+    headers = {
         "Authorization": f"Bearer {api_key}",
         "anthropic-version": "2023-06-01",
         "Content-Type": "application/json",
@@ -138,10 +237,9 @@ def _make_anthropic_callable(api_key: str, model: str, base_url: str) -> Callabl
                 "max_tokens": 4096,
                 "messages": [{"role": "user", "content": prompt}],
             }
-            resp = await _client.post(_url, headers=_headers, json=payload)
+            resp = await client.post(url, headers=headers, json=payload)
             resp.raise_for_status()
             data = resp.json()
-            # Anthropic returns content as array of blocks
             content_blocks = data.get("content", [])
             texts = [b.get("text", "") for b in content_blocks if b.get("type") == "text"]
             return "".join(texts)
@@ -155,4 +253,10 @@ def _make_anthropic_callable(api_key: str, model: str, base_url: str) -> Callabl
             logger.warning("[llm_factory] Anthropic completion error: %r", exc)
             raise
 
-    return _anthropic_completion
+    return LLMCompletion(
+        _anthropic_completion,
+        client,
+        backend="anthropic",
+        model=model,
+        base_url=base_url,
+    )
