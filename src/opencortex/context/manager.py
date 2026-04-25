@@ -1510,7 +1510,7 @@ class ContextManager:
                 result[uri] = ""
             return result
 
-        async def _read_one(uri: str) -> tuple[str, str]:
+        async def _read_one(uri: str) -> Tuple[str, str]:
             try:
                 return uri, await fs.read_file(f"{uri}/content.md")
             except Exception as exc:  # pragma: no cover - defensive

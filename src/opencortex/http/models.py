@@ -324,9 +324,12 @@ class BenchmarkConversationMessage(BaseModel):
         # always emits UTF-8 bytes — no ``ensure_ascii`` flag needed,
         # and the returned bytes are exactly what we want to count
         # against the byte budget without a separate ``.encode``.
+        # ``orjson.JSONEncodeError`` is literally ``TypeError`` so the
+        # plain TypeError catch covers both encoder failures and
+        # non-serializable values.
         try:
             serialized = orjson.dumps(value, option=orjson.OPT_SORT_KEYS)
-        except (TypeError, orjson.JSONEncodeError) as exc:
+        except TypeError as exc:
             raise ValueError("meta must be JSON-serializable") from exc
         if len(serialized) > _BENCHMARK_MAX_META_BYTES:
             raise ValueError(
