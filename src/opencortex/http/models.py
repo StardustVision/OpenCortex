@@ -5,9 +5,9 @@ Each model mirrors the parameters of the corresponding MCP tool in
 ``mcp_server.py``.
 """
 
-import json
 from typing import Any, Dict, List, Optional
 
+import orjson
 from pydantic import BaseModel, Field, field_validator
 
 # =========================================================================
@@ -320,11 +320,18 @@ class BenchmarkConversationMessage(BaseModel):
     ) -> Optional[Dict[str, Any]]:
         if value is None:
             return value
+        # Use orjson per project convention (REVIEW KP-01). orjson
+        # always emits UTF-8 bytes — no ``ensure_ascii`` flag needed,
+        # and the returned bytes are exactly what we want to count
+        # against the byte budget without a separate ``.encode``.
+        # ``orjson.JSONEncodeError`` is literally ``TypeError`` so the
+        # plain TypeError catch covers both encoder failures and
+        # non-serializable values.
         try:
-            serialized = json.dumps(value, ensure_ascii=False, sort_keys=True)
-        except (TypeError, ValueError) as exc:
+            serialized = orjson.dumps(value, option=orjson.OPT_SORT_KEYS)
+        except TypeError as exc:
             raise ValueError("meta must be JSON-serializable") from exc
-        if len(serialized.encode("utf-8")) > _BENCHMARK_MAX_META_BYTES:
+        if len(serialized) > _BENCHMARK_MAX_META_BYTES:
             raise ValueError(
                 f"meta exceeds {_BENCHMARK_MAX_META_BYTES}-byte limit"
             )

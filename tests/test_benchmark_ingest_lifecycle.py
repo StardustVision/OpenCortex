@@ -140,6 +140,81 @@ class TestBenchmarkIngestLifecycle(unittest.TestCase):
 
         self._run(check())
 
+    def test_hash_transcript_canonicalizes_meta_list_ordering(self):
+        """Reordering primitive lists inside meta does not change hash.
+
+        Two transcripts that differ only in the ordering of `time_refs`
+        list elements must produce the same SHA-256 digest, so benign
+        benchmark replays do not get false HTTP 409 conflicts (REVIEW
+        ADV-006). Lists of dicts (e.g. tool_calls) keep their order —
+        sequence is semantic for those.
+        """
+        from opencortex.context.manager import ContextManager
+
+        a = [
+            {
+                "role": "user",
+                "content": "hi",
+                "meta": {
+                    "time_refs": ["2023-05-01", "9 am on 1 May"],
+                    "entities": ["Alice", "Bob"],
+                },
+            }
+        ]
+        b = [
+            {
+                "role": "user",
+                "content": "hi",
+                "meta": {
+                    "time_refs": ["9 am on 1 May", "2023-05-01"],
+                    "entities": ["Bob", "Alice"],
+                },
+            }
+        ]
+        self.assertEqual(
+            ContextManager._hash_transcript(a),
+            ContextManager._hash_transcript(b),
+            "primitive-list reordering inside meta must not change hash",
+        )
+
+        # Genuine content difference still changes hash.
+        c = [
+            {
+                "role": "user",
+                "content": "different message",
+                "meta": {"time_refs": ["2023-05-01"]},
+            }
+        ]
+        self.assertNotEqual(
+            ContextManager._hash_transcript(a),
+            ContextManager._hash_transcript(c),
+        )
+
+        # tool_calls (list of dicts) — order IS semantic, hash differs.
+        d = [
+            {
+                "role": "user",
+                "content": "hi",
+                "meta": {
+                    "tool_calls": [{"name": "a"}, {"name": "b"}],
+                },
+            }
+        ]
+        e = [
+            {
+                "role": "user",
+                "content": "hi",
+                "meta": {
+                    "tool_calls": [{"name": "b"}, {"name": "a"}],
+                },
+            }
+        ]
+        self.assertNotEqual(
+            ContextManager._hash_transcript(d),
+            ContextManager._hash_transcript(e),
+            "tool_calls order is semantic; reordering must change hash",
+        )
+
     def test_torn_prior_run_is_not_treated_as_idempotent(self):
         """Hash-match without run_complete marker triggers purge + re-ingest.
 

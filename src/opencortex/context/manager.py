@@ -31,6 +31,7 @@ from opencortex.http.request_context import (
     set_request_identity,
     set_request_project_id,
 )
+from opencortex.context.recomposition_types import RecompositionEntry
 from opencortex.intent import RetrievalPlan, SearchResult
 from opencortex.intent.retrieval_support import build_probe_scope_input
 from opencortex.intent.timing import StageTimingCollector, measure_async, measure_sync
@@ -1147,13 +1148,49 @@ class ContextManager:
         )
 
     @staticmethod
+    def _canonicalize_for_hash(value: Any) -> Any:
+        """Recursively canonicalize a value so benign reordering does not
+        change the digest (REVIEW ADV-006).
+
+        - ``dict`` values: recurse on each entry. Key ordering is handled
+          downstream by ``OPT_SORT_KEYS`` during serialization.
+        - ``list`` values: when every element is a primitive
+          (``str | int | float | bool | None``), sort the list — these
+          are typically anchor sets like ``time_refs`` whose order is
+          not semantic. When elements are dicts (e.g. ``tool_calls``),
+          leave order intact: the sequence carries meaning.
+        - Everything else: returned as-is. Strings, numbers, None, and
+          any non-list/dict objects pass through unchanged.
+        """
+        if isinstance(value, dict):
+            return {k: ContextManager._canonicalize_for_hash(v) for k, v in value.items()}
+        if isinstance(value, list):
+            if all(isinstance(item, (str, int, float, bool, type(None))) for item in value):
+                # Sort by string projection to keep mixed-type lists stable;
+                # primitive lists in benchmark meta are almost always
+                # homogeneous strings.
+                return sorted(value, key=lambda x: (x is None, str(x)))
+            return [ContextManager._canonicalize_for_hash(item) for item in value]
+        return value
+
+    @staticmethod
     def _hash_transcript(transcript: List[Dict[str, Any]]) -> str:
-        """SHA-256 over the canonical normalized transcript shape."""
+        """SHA-256 over the canonical normalized transcript shape.
+
+        Message order is semantic and preserved as-is. Inside each
+        message's ``meta`` dict, list values that contain only
+        primitives are sorted so benign reordering of e.g. ``time_refs``
+        does not produce a false 409 conflict on benchmark replay
+        (REVIEW ADV-006). Lists of dicts (``tool_calls``) keep their
+        sequence — order is treated as semantic for those.
+        """
         normalized = [
             {
                 "role": str(message.get("role", "") or ""),
                 "content": str(message.get("content", "") or ""),
-                "meta": message.get("meta") or {},
+                "meta": ContextManager._canonicalize_for_hash(
+                    message.get("meta") or {}
+                ),
             }
             for message in transcript
         ]
@@ -1436,19 +1473,24 @@ class ContextManager:
     async def _hydrate_record_contents(
         self,
         records: List[Dict[str, Any]],
+        overrides: Optional[Dict[str, str]] = None,
     ) -> Dict[str, str]:
-        """Batch-read L2 content for a record set; missing files map to ''.
+        """Return URI -> L2 content for a record set.
 
-        Used by the benchmark response builder so adapters can fall back
-        on raw conversation text when L0/L1 are short. Sequential or
-        gather-based read is fine here: per-conversation set is dozens of
-        records, not thousands. Failures are logged once per URI and the
-        record falls back to an empty string rather than failing the
-        whole ingest.
+        ``overrides`` short-circuits the FS read for URIs already in
+        memory (REVIEW KP-06). The benchmark merged_recompose path
+        passes the in-memory write-time map so the response avoids
+        racing the orchestrator's fire-and-forget CortexFS write; the
+        direct_evidence path passes its own captured map. Records whose
+        URI is not in ``overrides`` go through the existing CortexFS
+        ``read_file(uri/content.md)`` path; missing files map to
+        empty string so a single FS hiccup does not fail the response.
+
+        Returned dict contains every URI extracted from ``records`` so
+        the caller can do a flat ``hydrated.get(uri, "")`` instead of
+        layering 3 fallback dicts at the comprehension site.
         """
-        fs = getattr(self._orchestrator, "_fs", None)
-        if fs is None:
-            return {}
+        overrides = overrides or {}
         uris = [
             str(record.get("uri", "") or "").strip()
             for record in records
@@ -1457,7 +1499,18 @@ class ContextManager:
         if not uris:
             return {}
 
-        async def _read_one(uri: str) -> tuple[str, str]:
+        result: Dict[str, str] = {uri: overrides[uri] for uri in uris if uri in overrides}
+        missing = [uri for uri in uris if uri not in overrides]
+        if not missing:
+            return result
+
+        fs = getattr(self._orchestrator, "_fs", None)
+        if fs is None:
+            for uri in missing:
+                result[uri] = ""
+            return result
+
+        async def _read_one(uri: str) -> Tuple[str, str]:
             try:
                 return uri, await fs.read_file(f"{uri}/content.md")
             except Exception as exc:  # pragma: no cover - defensive
@@ -1468,15 +1521,16 @@ class ContextManager:
                 )
                 return uri, ""
 
-        results = await asyncio.gather(*[_read_one(u) for u in uris])
-        return dict(results)
+        fs_results = await asyncio.gather(*[_read_one(u) for u in missing])
+        result.update(dict(fs_results))
+        return result
 
     def _benchmark_recomposition_entries(
         self,
         normalized_segments: List[List[Dict[str, Any]]],
-    ) -> List[Dict[str, Any]]:
+    ) -> List[RecompositionEntry]:
         """Build message-level entries for benchmark offline chunking."""
-        entries: List[Dict[str, Any]] = []
+        entries: List[RecompositionEntry] = []
         msg_index = 0
         for segment in normalized_segments:
             segment_meta = self._benchmark_segment_meta(segment)
@@ -1515,18 +1569,18 @@ class ContextManager:
                     "entities": self._merge_unique_strings(meta.get("entities")),
                 }
                 entries.append(
-                    {
-                        "text": rendered,
-                        "uri": "",
-                        "msg_start": msg_index,
-                        "msg_end": msg_index,
-                        "token_count": max(self._estimate_tokens(rendered), 1),
-                        "anchor_terms": self._segment_anchor_terms(record),
-                        "time_refs": self._segment_time_refs(record),
-                        "source_record": record,
-                        "immediate_uris": [],
-                        "superseded_merged_uris": [],
-                    }
+                    RecompositionEntry(
+                        text=rendered,
+                        uri="",
+                        msg_start=msg_index,
+                        msg_end=msg_index,
+                        token_count=max(self._estimate_tokens(rendered), 1),
+                        anchor_terms=self._segment_anchor_terms(record),
+                        time_refs=self._segment_time_refs(record),
+                        source_record=record,
+                        immediate_uris=[],
+                        superseded_merged_uris=[],
+                    )
                 )
                 msg_index += 1
         return entries
@@ -1848,22 +1902,15 @@ class ContextManager:
                 # records by guessing session_ids (R2-04). Adapter doesn't
                 # consume it; dropping is cheaper than scoping correctly.
                 #
-                # ``_orchestrator.add`` writes content via fire-and-forget
-                # to CortexFS, so a FS-only readback here would race; we
-                # use the in-memory map captured during the write loop.
-                # FS read is the fallback for records that came back from
-                # ``_load_session_merged_records`` outside our write set
-                # (e.g. directory records added during recomposition).
-                fallback_targets = [
-                    record
-                    for record in merged_records
-                    if str(record.get("uri", "") or "")
-                    not in merged_content_by_uri
-                ]
-                fallback_hydrated = (
-                    await self._hydrate_record_contents(fallback_targets)
-                    if fallback_targets
-                    else {}
+                # Single-call hydration: in-memory map captured during the
+                # write loop short-circuits the FS read for our own
+                # leaves, while ``_load_session_merged_records`` may
+                # surface records (directories, late writes) that need
+                # the FS fallback. ``_hydrate_record_contents`` returns
+                # a complete URI -> content map so the comprehension
+                # below stays a flat lookup.
+                hydrated = await self._hydrate_record_contents(
+                    merged_records, overrides=merged_content_by_uri
                 )
                 # Mark the source as run_complete BEFORE returning so an
                 # immediate retry sees the marker and short-circuits via
@@ -1880,12 +1927,9 @@ class ContextManager:
                     "records": [
                         self._export_memory_record(
                             record,
-                            hydrated_content=merged_content_by_uri.get(
+                            hydrated_content=hydrated.get(
                                 str(record.get("uri", "") or ""),
-                                fallback_hydrated.get(
-                                    str(record.get("uri", "") or ""),
-                                    "",
-                                ),
+                                "",
                             ),
                         )
                         for record in merged_records
@@ -2007,6 +2051,14 @@ class ContextManager:
             # via the idempotent path (REVIEW F5 / ADV-007). Symmetric with
             # the merged_recompose return path above.
             await self._mark_source_run_complete(source_uri or "")
+            # Single-call hydration via the in-memory write-time map
+            # (REVIEW KP-06). All evidence URIs are in the override map,
+            # so this avoids any FS read in the happy path while the
+            # helper still falls back gracefully if records leak in
+            # from elsewhere.
+            hydrated = await self._hydrate_record_contents(
+                records, overrides=evidence_content_by_uri
+            )
             return {
                 "status": "ok",
                 "session_id": session_id,
@@ -2016,7 +2068,7 @@ class ContextManager:
                 "records": [
                     self._export_memory_record(
                         record,
-                        hydrated_content=evidence_content_by_uri.get(
+                        hydrated_content=hydrated.get(
                             str(record.get("uri", "") or ""),
                             "",
                         ),
@@ -2333,9 +2385,9 @@ class ContextManager:
         snapshot: ConversationBuffer,
         immediate_records: List[Dict[str, Any]],
         tail_records: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+    ) -> List[RecompositionEntry]:
         """Build ordered recomposition entries from merged-tail + immediates."""
-        entries: List[Dict[str, Any]] = []
+        entries: List[RecompositionEntry] = []
 
         fs = getattr(self._orchestrator, "_fs", None)
         tail_uris = [
@@ -2363,18 +2415,18 @@ class ContextManager:
             if not text:
                 continue
             entries.append(
-                {
-                    "text": text,
-                    "uri": uri,
-                    "msg_start": msg_range[0],
-                    "msg_end": msg_range[1],
-                    "token_count": max(self._estimate_tokens(text), 1),
-                    "anchor_terms": self._segment_anchor_terms(record),
-                    "time_refs": self._segment_time_refs(record),
-                    "source_record": record,
-                    "immediate_uris": [],
-                    "superseded_merged_uris": ([uri] if uri else []),
-                }
+                RecompositionEntry(
+                    text=text,
+                    uri=uri,
+                    msg_start=msg_range[0],
+                    msg_end=msg_range[1],
+                    token_count=max(self._estimate_tokens(text), 1),
+                    anchor_terms=self._segment_anchor_terms(record),
+                    time_refs=self._segment_time_refs(record),
+                    source_record=record,
+                    immediate_uris=[],
+                    superseded_merged_uris=([uri] if uri else []),
+                )
             )
 
         by_uri = {
@@ -2404,18 +2456,18 @@ class ContextManager:
                 msg_index = snapshot.start_msg_index + offset
                 msg_range = (msg_index, msg_index)
             entries.append(
-                {
-                    "text": str(text),
-                    "uri": normalized_uri,
-                    "msg_start": msg_range[0],
-                    "msg_end": msg_range[1],
-                    "token_count": max(self._estimate_tokens(text), 1),
-                    "anchor_terms": self._segment_anchor_terms(record),
-                    "time_refs": self._segment_time_refs(record),
-                    "source_record": record,
-                    "immediate_uris": ([normalized_uri] if normalized_uri else []),
-                    "superseded_merged_uris": [],
-                }
+                RecompositionEntry(
+                    text=str(text),
+                    uri=normalized_uri,
+                    msg_start=msg_range[0],
+                    msg_end=msg_range[1],
+                    token_count=max(self._estimate_tokens(text), 1),
+                    anchor_terms=self._segment_anchor_terms(record),
+                    time_refs=self._segment_time_refs(record),
+                    source_record=record,
+                    immediate_uris=([normalized_uri] if normalized_uri else []),
+                    superseded_merged_uris=[],
+                )
             )
 
         entries.sort(
@@ -2429,14 +2481,14 @@ class ContextManager:
 
     def _build_recomposition_segments(
         self,
-        entries: List[Dict[str, Any]],
+        entries: List[RecompositionEntry],
     ) -> List[Dict[str, Any]]:
         """Split ordered recomposition entries into bounded semantic segments."""
         if not entries:
             return []
 
         segments: List[Dict[str, Any]] = []
-        current: List[Dict[str, Any]] = []
+        current: List[RecompositionEntry] = []
         current_tokens = 0
         current_messages = 0
 
@@ -2479,7 +2531,7 @@ class ContextManager:
 
     def _build_anchor_clustered_segments(
         self,
-        entries: List[Dict[str, Any]],
+        entries: List[RecompositionEntry],
     ) -> List[Dict[str, Any]]:
         """Cluster entries by anchor Jaccard similarity for full_recompose."""
         if not entries:
@@ -2495,7 +2547,7 @@ class ContextManager:
         # APPEND, never SPLIT. Now an oversized seed flushes immediately
         # as its own single-entry segment and the next entry becomes the
         # new seed.
-        current: List[Dict[str, Any]] = []
+        current: List[RecompositionEntry] = []
         current_anchors: Set[str] = set()
         current_tokens = 0
         current_messages = 0
@@ -2507,7 +2559,7 @@ class ContextManager:
                 <= _RECOMPOSE_CLUSTER_MAX_MESSAGES
             )
 
-        def _seed_with(entry: Dict[str, Any]) -> None:
+        def _seed_with(entry: RecompositionEntry) -> None:
             nonlocal current, current_anchors, current_tokens, current_messages
             entry_msgs = int(entry["msg_end"]) - int(entry["msg_start"]) + 1
             current = [entry]
@@ -2582,7 +2634,7 @@ class ContextManager:
 
     def _finalize_recomposition_segment(
         self,
-        entries: List[Dict[str, Any]],
+        entries: List[RecompositionEntry],
     ) -> Dict[str, Any]:
         """Materialize one recomposition segment payload."""
         msg_starts = [int(entry["msg_start"]) for entry in entries]
@@ -2933,7 +2985,7 @@ class ContextManager:
             if len(merged_records) <= 1:
                 return [] if return_created_uris else None
 
-            entries: List[Dict[str, Any]] = []
+            entries: List[RecompositionEntry] = []
             for record in merged_records:
                 msg_range = self._record_msg_range(record)
                 if msg_range is None:
@@ -2943,18 +2995,18 @@ class ContextManager:
                 if not text:
                     continue
                 entries.append(
-                    {
-                        "text": text,
-                        "uri": uri,
-                        "msg_start": msg_range[0],
-                        "msg_end": msg_range[1],
-                        "token_count": max(self._estimate_tokens(text), 1),
-                        "anchor_terms": self._segment_anchor_terms(record),
-                        "time_refs": self._segment_time_refs(record),
-                        "source_record": record,
-                        "immediate_uris": [],
-                        "superseded_merged_uris": [],
-                    }
+                    RecompositionEntry(
+                        text=text,
+                        uri=uri,
+                        msg_start=msg_range[0],
+                        msg_end=msg_range[1],
+                        token_count=max(self._estimate_tokens(text), 1),
+                        anchor_terms=self._segment_anchor_terms(record),
+                        time_refs=self._segment_time_refs(record),
+                        source_record=record,
+                        immediate_uris=[],
+                        superseded_merged_uris=[],
+                    )
                 )
 
             segments = self._build_anchor_clustered_segments(entries)
