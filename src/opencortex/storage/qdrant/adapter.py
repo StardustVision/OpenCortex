@@ -135,6 +135,14 @@ class QdrantStorageAdapter(StorageInterface):
             # after a server restart)
             if has_sparse:
                 self._sparse_collections.add(name)
+            # PERF-02 (REVIEW closure tracker): always run the scalar
+            # index ensure loop, even for existing collections. Qdrant's
+            # ``create_payload_index`` is idempotent, so this is safe to
+            # run on every startup. The migration story for new schema-
+            # declared indexes (e.g. ``meta.source_uri``) becomes "redeploy"
+            # rather than "recreate the collection" or "manual operator
+            # action".
+            await self._ensure_scalar_indexes(name, schema)
             return False
 
         vector_dim = schema.get("Dimension", self._dim)
@@ -163,6 +171,29 @@ class QdrantStorageAdapter(StorageInterface):
         )
 
         # Create payload indices for scalar-indexed fields
+        await self._ensure_scalar_indexes(name, schema)
+
+        logger.info("[QdrantAdapter] Collection created: %s (dim=%d, sparse=%s)",
+                     name, vector_dim, has_sparse)
+        return True
+
+    async def _ensure_scalar_indexes(
+        self, name: str, schema: Dict[str, Any]
+    ) -> None:
+        """Idempotently create payload indices for every ScalarIndex field.
+
+        Called from both the new-collection path and the existing-collection
+        path of ``create_collection`` (PERF-02). Qdrant's
+        ``create_payload_index`` is no-op when the index already exists;
+        running this on every startup is safe and gives schema-declared
+        new indexes a deploy-driven migration path without operator
+        intervention.
+
+        Failures per field are logged at debug and don't abort: a missing
+        index degrades the relevant filter to a full-scan but doesn't
+        break correctness, and the next startup will retry.
+        """
+        client = await self._ensure_client()
         for field_name in schema.get("ScalarIndex", []):
             schema_type = self._infer_payload_type(schema, field_name)
             try:
@@ -173,13 +204,9 @@ class QdrantStorageAdapter(StorageInterface):
                 )
             except Exception as exc:
                 logger.debug(
-                    "[QdrantAdapter] Index creation for %s.%s failed: %s",
+                    "[QdrantAdapter] Index ensure for %s.%s failed: %s",
                     name, field_name, exc,
                 )
-
-        logger.info("[QdrantAdapter] Collection created: %s (dim=%d, sparse=%s)",
-                     name, vector_dim, has_sparse)
-        return True
 
     async def drop_collection(self, name: str) -> bool:
         client = await self._ensure_client()

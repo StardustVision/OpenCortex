@@ -152,6 +152,7 @@ class SessionRecordsRepository:
         session_id: str,
         tenant_id: Optional[str] = None,
         user_id: Optional[str] = None,
+        source_uri: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Compose the storage filter dict for a session-scoped query.
 
@@ -163,9 +164,19 @@ class SessionRecordsRepository:
         names on the context collection are ``source_tenant_id`` /
         ``source_user_id`` (see ``storage/collection_schemas.py``).
 
-        Callers that do not have identity (legacy or maintenance paths)
-        can still pass ``tenant_id=None`` / ``user_id=None`` to preserve
-        the U1 behavior — the filter simply omits those conds.
+        ``source_uri`` (REVIEW closure tracker PERF-02) is also pushed
+        into the storage filter via the nested-field key
+        ``meta.source_uri``. Qdrant supports dot-path field names
+        natively; the matching payload index is declared on the context
+        collection's ``ScalarIndex`` list. Empty string is treated as
+        falsy and omitted from the filter (preserves the legacy
+        ``if source_uri:`` truthiness check from the in-memory filter
+        this push-down replaces).
+
+        Callers that do not have identity / source scope (legacy or
+        maintenance paths) can pass any of these kwargs as ``None`` /
+        empty string to preserve the unscoped behavior — the filter
+        simply omits the corresponding conds.
         """
         conds: List[Dict[str, Any]] = [
             {"op": "must", "field": "session_id", "conds": [session_id]},
@@ -177,6 +188,10 @@ class SessionRecordsRepository:
         if user_id:
             conds.append(
                 {"op": "must", "field": "source_user_id", "conds": [user_id]}
+            )
+        if source_uri:
+            conds.append(
+                {"op": "must", "field": "meta.source_uri", "conds": [source_uri]}
             )
         return {"op": "and", "conds": conds}
 
@@ -256,14 +271,18 @@ class SessionRecordsRepository:
     ) -> List[Dict[str, Any]]:
         """Load merged conversation leaves for one session in msg-range order.
 
-        ``tenant_id`` / ``user_id`` (optional) push the cross-tenant
-        scope into the storage filter — see ``_build_session_filter``.
-        ``source_uri`` (optional) is filtered in-memory after fetch
-        because it lives on ``meta.source_uri`` (not a top-level
-        indexed field on the context collection).
+        ``tenant_id`` / ``user_id`` / ``source_uri`` (all optional) are
+        pushed into the storage filter via ``_build_session_filter``.
+        REVIEW closure tracker PERF-02: ``source_uri`` previously ran
+        as an in-memory post-filter; it is now an indexed Qdrant filter
+        on ``meta.source_uri`` so non-matching records are dropped
+        server-side before scrolling.
         """
         where = self._build_session_filter(
-            session_id=session_id, tenant_id=tenant_id, user_id=user_id
+            session_id=session_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            source_uri=source_uri,
         )
         records = await self._scroll_all(
             session_id=session_id, where=where, method="load_merged"
@@ -273,9 +292,6 @@ class SessionRecordsRepository:
             meta = dict(record.get("meta") or {})
             if str(meta.get("layer", "") or "") != "merged":
                 continue
-            if source_uri:
-                if str(meta.get("source_uri", "") or "") != source_uri:
-                    continue
             msg_range = record_msg_range(record)
             if msg_range is None:
                 continue
@@ -293,7 +309,10 @@ class SessionRecordsRepository:
     ) -> List[Dict[str, Any]]:
         """Load directory parent records for one session in msg-range order."""
         where = self._build_session_filter(
-            session_id=session_id, tenant_id=tenant_id, user_id=user_id
+            session_id=session_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            source_uri=source_uri,
         )
         records = await self._scroll_all(
             session_id=session_id, where=where, method="load_directories"
@@ -303,9 +322,6 @@ class SessionRecordsRepository:
             meta = dict(record.get("meta") or {})
             if str(meta.get("layer", "") or "") != "directory":
                 continue
-            if source_uri:
-                if str(meta.get("source_uri", "") or "") != source_uri:
-                    continue
             msg_range = record_msg_range(record)
             if msg_range is None:
                 continue
@@ -336,9 +352,16 @@ class SessionRecordsRepository:
         for the same session on the same input parameters; previously
         paid two full scrolls on every benchmark cold-ingest and every
         production ``session_end`` that generated a summary.
+
+        ``source_uri`` (PERF-02) is pushed into the storage filter via
+        ``_build_session_filter``; non-matching records are dropped
+        server-side before scrolling.
         """
         where = self._build_session_filter(
-            session_id=session_id, tenant_id=tenant_id, user_id=user_id
+            session_id=session_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            source_uri=source_uri,
         )
         records = await self._scroll_all(
             session_id=session_id, where=where, method="load_layers"
@@ -353,9 +376,6 @@ class SessionRecordsRepository:
             layer = str(meta.get("layer", "") or "")
             if layer not in wanted:
                 continue
-            if source_uri:
-                if str(meta.get("source_uri", "") or "") != source_uri:
-                    continue
             msg_range = record_msg_range(record)
             if msg_range is None:
                 continue

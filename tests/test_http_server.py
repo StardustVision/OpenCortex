@@ -323,18 +323,39 @@ class InMemoryStorage(StorageInterface):
             return 0.0
         return dot / (na * nb)
 
+    @staticmethod
+    def _resolve_field(record: Dict[str, Any], field_name: str) -> Any:
+        # PERF-02: dot-path support for nested field filter
+        # (e.g. ``meta.source_uri``). Mirrors test_e2e_phase1's
+        # InMemoryStorage._resolve_field.
+        if "." not in field_name:
+            return record.get(field_name)
+        cursor: Any = record
+        for part in field_name.split("."):
+            if isinstance(cursor, dict):
+                cursor = cursor.get(part)
+            else:
+                return None
+            if cursor is None:
+                return None
+        return cursor
+
     def _eval_filter(self, record, filt):
         if not filt:
             return True
         op = filt.get("op", "")
         if op == "must":
-            return record.get(filt.get("field", "")) in filt.get("conds", [])
-        elif op == "prefix":
-            return str(record.get(filt.get("field", ""), "")).startswith(
-                filt.get("prefix", "")
+            return self._resolve_field(record, filt.get("field", "")) in filt.get(
+                "conds", []
             )
+        elif op == "prefix":
+            return str(
+                self._resolve_field(record, filt.get("field", "")) or ""
+            ).startswith(filt.get("prefix", ""))
         elif op == "range":
-            val = record.get(filt.get("field", ""), 0)
+            val = self._resolve_field(record, filt.get("field", ""))
+            if val is None:
+                val = 0
             if "gte" in filt and val < filt["gte"]:
                 return False
             if "gt" in filt and val <= filt["gt"]:
@@ -346,7 +367,7 @@ class InMemoryStorage(StorageInterface):
             return True
         elif op == "contains":
             return filt.get("substring", "") in str(
-                record.get(filt.get("field", ""), "")
+                self._resolve_field(record, filt.get("field", "")) or ""
             )
         elif op == "and":
             return all(self._eval_filter(record, c) for c in filt.get("conds", []))
