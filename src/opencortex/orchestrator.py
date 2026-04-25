@@ -5234,6 +5234,35 @@ class MemoryOrchestrator:
             "message_count": message_count,
         }
 
+    async def benchmark_conversation_ingest(
+        self,
+        *,
+        session_id: str,
+        tenant_id: str,
+        user_id: str,
+        segments: List[List[Dict[str, Any]]],
+        include_session_summary: bool = True,
+        ingest_shape: str = "merged_recompose",
+    ) -> Dict[str, Any]:
+        """Public facade for benchmark-only offline conversation ingest.
+
+        Delegates to :meth:`ContextManager.benchmark_ingest_conversation`.
+        Admin-gated at the HTTP layer; this method itself does not enforce
+        identity policy because non-HTTP callers (tests, in-process
+        benchmark drivers) are trusted by construction.
+        """
+        self._ensure_init()
+        if not self._context_manager:
+            raise RuntimeError("ContextManager not initialized")
+        return await self._context_manager.benchmark_ingest_conversation(
+            session_id=session_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            segments=segments,
+            include_session_summary=include_session_summary,
+            ingest_shape=ingest_shape,
+        )
+
     async def session_end(
         self,
         session_id: str,

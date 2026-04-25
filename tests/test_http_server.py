@@ -388,9 +388,18 @@ async def _test_app_context():
     Yields an httpx.AsyncClient bound to the ASGI app.
     Manually manages the orchestrator lifecycle since httpx ASGITransport
     does not trigger ASGI lifespan events.
+
+    Includes both business and admin routers so admin-gated endpoints
+    (e.g. ``/api/v1/admin/benchmark/conversation_ingest``) are reachable;
+    tests that need admin privilege call :func:`set_request_role("admin")`
+    before issuing the request.
     """
     from fastapi import FastAPI
     import opencortex.http.server as http_server
+    from opencortex.http.admin_routes import (
+        register_admin_routes,
+        router as admin_router,
+    )
 
     temp_dir = tempfile.mkdtemp(prefix="http_test_")
     config = CortexConfig(
@@ -408,8 +417,10 @@ async def _test_app_context():
     orch = MemoryOrchestrator(config=config, storage=storage, embedder=embedder)
     await orch.init()
     http_server._orchestrator = orch
+    register_admin_routes(orch, jwt_secret="test-secret")
 
     app = FastAPI()
+    app.include_router(admin_router)
     http_server._register_routes(app)
 
     transport = ASGITransport(app=app)
@@ -787,59 +798,68 @@ class TestHTTPServer(unittest.TestCase):
         self._run(check())
 
     def test_04d_benchmark_conversation_ingest_preserves_traceability_contract(self):
-        """POST `/api/v1/benchmark/conversation_ingest` writes merged session leaves."""
+        """POST `/api/v1/admin/benchmark/conversation_ingest` writes merged session leaves."""
 
         async def check():
+            from opencortex.http.request_context import (
+                reset_request_role,
+                set_request_role,
+            )
+
             async with _test_app_context() as client:
-                ingest_resp = await client.post(
-                    "/api/v1/benchmark/conversation_ingest",
-                    json={
-                        "session_id": "bench_conv_01",
-                        "segments": [
-                            {
-                                "messages": [
-                                    {
-                                        "role": "user",
-                                        "content": "[Alice]: I moved to Hangzhou.",
-                                        "meta": {
-                                            "event_date": "2023-05-01T09:00:00Z",
-                                            "time_refs": [
-                                                "9:00 am on 1 May, 2023",
-                                                "2023-05-01T09:00:00Z",
-                                            ],
+                role_token = set_request_role("admin")
+                try:
+                    ingest_resp = await client.post(
+                        "/api/v1/admin/benchmark/conversation_ingest",
+                        json={
+                            "session_id": "bench_conv_01",
+                            "segments": [
+                                {
+                                    "messages": [
+                                        {
+                                            "role": "user",
+                                            "content": "[Alice]: I moved to Hangzhou.",
+                                            "meta": {
+                                                "event_date": "2023-05-01T09:00:00Z",
+                                                "time_refs": [
+                                                    "9:00 am on 1 May, 2023",
+                                                    "2023-05-01T09:00:00Z",
+                                                ],
+                                            },
                                         },
-                                    },
-                                    {
-                                        "role": "user",
-                                        "content": "[Bob]: You also stopped eating spicy food.",
-                                        "meta": {
-                                            "event_date": "2023-05-01T09:00:00Z",
-                                            "time_refs": [
-                                                "9:00 am on 1 May, 2023",
-                                                "2023-05-01T09:00:00Z",
-                                            ],
+                                        {
+                                            "role": "user",
+                                            "content": "[Bob]: You also stopped eating spicy food.",
+                                            "meta": {
+                                                "event_date": "2023-05-01T09:00:00Z",
+                                                "time_refs": [
+                                                    "9:00 am on 1 May, 2023",
+                                                    "2023-05-01T09:00:00Z",
+                                                ],
+                                            },
                                         },
-                                    },
-                                ]
-                            },
-                            {
-                                "messages": [
-                                    {
-                                        "role": "user",
-                                        "content": "[Alice]: I will visit West Lake next week.",
-                                        "meta": {
-                                            "event_date": "2023-05-03T10:00:00Z",
-                                            "time_refs": [
-                                                "10:00 am on 3 May, 2023",
-                                                "2023-05-03T10:00:00Z",
-                                            ],
-                                        },
-                                    }
-                                ]
-                            },
-                        ],
-                    },
-                )
+                                    ]
+                                },
+                                {
+                                    "messages": [
+                                        {
+                                            "role": "user",
+                                            "content": "[Alice]: I will visit West Lake next week.",
+                                            "meta": {
+                                                "event_date": "2023-05-03T10:00:00Z",
+                                                "time_refs": [
+                                                    "10:00 am on 3 May, 2023",
+                                                    "2023-05-03T10:00:00Z",
+                                                ],
+                                            },
+                                        }
+                                    ]
+                                },
+                            ],
+                        },
+                    )
+                finally:
+                    reset_request_role(role_token)
                 self.assertEqual(ingest_resp.status_code, 200)
                 ingest_data = ingest_resp.json()
                 self.assertEqual(ingest_data["status"], "ok")
@@ -893,44 +913,53 @@ class TestHTTPServer(unittest.TestCase):
         self._run(check())
 
     def test_04e_benchmark_conversation_ingest_direct_evidence_shape(self):
-        """POST `/api/v1/benchmark/conversation_ingest` can store direct evidence."""
+        """POST `/api/v1/admin/benchmark/conversation_ingest` can store direct evidence."""
 
         async def check():
+            from opencortex.http.request_context import (
+                reset_request_role,
+                set_request_role,
+            )
+
             async with _test_app_context() as client:
-                ingest_resp = await client.post(
-                    "/api/v1/benchmark/conversation_ingest",
-                    json={
-                        "session_id": "bench_lme_01",
-                        "ingest_shape": "direct_evidence",
-                        "include_session_summary": False,
-                        "segments": [
-                            {
-                                "messages": [
-                                    {
-                                        "role": "user",
-                                        "content": "I moved to Hangzhou.",
-                                        "meta": {
-                                            "event_date": "2023-05-01",
-                                            "time_refs": ["2023-05-01"],
-                                            "lme_session_id": "s1",
-                                            "lme_segment_kind": "pair",
+                role_token = set_request_role("admin")
+                try:
+                    ingest_resp = await client.post(
+                        "/api/v1/admin/benchmark/conversation_ingest",
+                        json={
+                            "session_id": "bench_lme_01",
+                            "ingest_shape": "direct_evidence",
+                            "include_session_summary": False,
+                            "segments": [
+                                {
+                                    "messages": [
+                                        {
+                                            "role": "user",
+                                            "content": "I moved to Hangzhou.",
+                                            "meta": {
+                                                "event_date": "2023-05-01",
+                                                "time_refs": ["2023-05-01"],
+                                                "lme_session_id": "s1",
+                                                "lme_segment_kind": "pair",
+                                            },
                                         },
-                                    },
-                                    {
-                                        "role": "assistant",
-                                        "content": "Noted.",
-                                        "meta": {
-                                            "event_date": "2023-05-01",
-                                            "time_refs": ["2023-05-01"],
-                                            "lme_session_id": "s1",
-                                            "lme_segment_kind": "pair",
+                                        {
+                                            "role": "assistant",
+                                            "content": "Noted.",
+                                            "meta": {
+                                                "event_date": "2023-05-01",
+                                                "time_refs": ["2023-05-01"],
+                                                "lme_session_id": "s1",
+                                                "lme_segment_kind": "pair",
+                                            },
                                         },
-                                    },
-                                ]
-                            }
-                        ],
-                    },
-                )
+                                    ]
+                                }
+                            ],
+                        },
+                    )
+                finally:
+                    reset_request_role(role_token)
                 self.assertEqual(ingest_resp.status_code, 200)
                 ingest_data = ingest_resp.json()
                 self.assertEqual(ingest_data["status"], "ok")
@@ -978,6 +1007,104 @@ class TestHTTPServer(unittest.TestCase):
                         for item in list_resp.json().get("results", [])
                     )
                 )
+
+        self._run(check())
+
+    def test_04f_benchmark_ingest_requires_admin(self):
+        """Non-admin token receives 403 from benchmark ingest endpoint."""
+
+        async def check():
+            async with _test_app_context() as client:
+                # No admin role set; default role is 'user'.
+                resp = await client.post(
+                    "/api/v1/admin/benchmark/conversation_ingest",
+                    json={
+                        "session_id": "bench_unauth_01",
+                        "segments": [
+                            {
+                                "messages": [
+                                    {"role": "user", "content": "hello"},
+                                ],
+                            },
+                        ],
+                    },
+                )
+                self.assertEqual(resp.status_code, 403)
+                self.assertEqual(
+                    resp.json().get("detail"), "Admin access required"
+                )
+
+        self._run(check())
+
+    def test_04g_benchmark_ingest_payload_bounds(self):
+        """Pydantic caps reject oversized benchmark payloads with 422."""
+
+        async def check():
+            from opencortex.http.request_context import (
+                reset_request_role,
+                set_request_role,
+            )
+
+            async with _test_app_context() as client:
+                role_token = set_request_role("admin")
+                try:
+                    # 201 segments — exceeds _BENCHMARK_MAX_SEGMENTS (200).
+                    too_many_segments = {
+                        "session_id": "bench_bounds_segs",
+                        "segments": [
+                            {"messages": [{"role": "user", "content": "x"}]}
+                            for _ in range(201)
+                        ],
+                    }
+                    resp = await client.post(
+                        "/api/v1/admin/benchmark/conversation_ingest",
+                        json=too_many_segments,
+                    )
+                    self.assertEqual(resp.status_code, 422)
+
+                    # content > 64 KB — exceeds per-message cap.
+                    too_long_content = {
+                        "session_id": "bench_bounds_content",
+                        "segments": [
+                            {
+                                "messages": [
+                                    {
+                                        "role": "user",
+                                        "content": "a" * 65_000,
+                                    }
+                                ]
+                            }
+                        ],
+                    }
+                    resp = await client.post(
+                        "/api/v1/admin/benchmark/conversation_ingest",
+                        json=too_long_content,
+                    )
+                    self.assertEqual(resp.status_code, 422)
+
+                    # meta dict > 16 KB serialized — exceeds meta budget.
+                    huge_meta_value = "v" * 17_000
+                    too_big_meta = {
+                        "session_id": "bench_bounds_meta",
+                        "segments": [
+                            {
+                                "messages": [
+                                    {
+                                        "role": "user",
+                                        "content": "ok",
+                                        "meta": {"k": huge_meta_value},
+                                    }
+                                ]
+                            }
+                        ],
+                    }
+                    resp = await client.post(
+                        "/api/v1/admin/benchmark/conversation_ingest",
+                        json=too_big_meta,
+                    )
+                    self.assertEqual(resp.status_code, 422)
+                finally:
+                    reset_request_role(role_token)
 
         self._run(check())
 

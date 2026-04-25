@@ -18,11 +18,16 @@ from opencortex.auth.token import (
     generate_token, load_token_records, revoke_token, save_token_record,
 )
 from opencortex.http.models import (
-    CreateTokenRequest, MemorySearchRequest, RevokeTokenRequest,
+    BenchmarkConversationIngestRequest, CreateTokenRequest,
+    MemorySearchRequest, RevokeTokenRequest,
 )
 from opencortex.http.request_context import (
     get_effective_identity, get_effective_role, is_admin,
 )
+
+# Server-side ceiling, ~10% under the client 600s timeout in oc_client.py.
+# Cleanup tracker (U4) compensates on TimeoutError via CancelledError handler (U3).
+_BENCHMARK_INGEST_TIMEOUT_SECONDS = 540.0
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +223,51 @@ async def delete_bench_collection(name: str):
         return JSONResponse({"error": "Can only delete bench_ collections"}, status_code=400)
     await _orchestrator._storage.drop_collection(name)
     return {"status": "deleted", "collection": name}
+
+
+# =========================================================================
+# Admin — Benchmark (admin-only, benchmark infrastructure)
+# =========================================================================
+
+@router.post("/api/v1/admin/benchmark/conversation_ingest")
+async def admin_benchmark_conversation_ingest(
+    req: BenchmarkConversationIngestRequest,
+) -> Dict[str, Any]:
+    """Benchmark-only offline conversation ingest.
+
+    This is benchmark infrastructure: it triggers per-leaf embeds, full-session
+    recomposition, and (optionally) a session summary LLM call. A single
+    request can fan out to dozens of LLM calls and run for many seconds, so
+    it is admin-gated and wrapped in a server-side timeout that sits ~10%
+    under the client timeout to ensure the in-process cleanup tracker runs
+    before the client disconnects.
+    """
+    _require_admin()
+    tid, uid = get_effective_identity()
+    try:
+        return await asyncio.wait_for(
+            _orchestrator.benchmark_conversation_ingest(
+                session_id=req.session_id,
+                tenant_id=tid,
+                user_id=uid,
+                segments=[
+                    [message.model_dump() for message in segment.messages]
+                    for segment in req.segments
+                ],
+                include_session_summary=req.include_session_summary,
+                ingest_shape=req.ingest_shape,
+            ),
+            timeout=_BENCHMARK_INGEST_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                "Benchmark ingest exceeded server timeout "
+                f"({_BENCHMARK_INGEST_TIMEOUT_SECONDS:.0f}s); "
+                "in-process cleanup ran"
+            ),
+        )
 
 
 # =========================================================================
