@@ -12,9 +12,13 @@ mcp-path produce identical session→URI mappings for the same fixture.
 
 from __future__ import annotations
 
+import asyncio
 import unittest
+from typing import Any, Dict, List
 
 from benchmarks.adapters.conversation_mapping import (
+    extract_records_by_uri,
+    memory_record_snapshot,
     message_span,
     normalize_text_set,
     overlap_width,
@@ -152,6 +156,137 @@ class TestRecordTimeRefs(unittest.TestCase):
     def test_meta_not_dict_skipped(self):
         # Defensive: meta as string should not crash.
         self.assertEqual(record_time_refs({"meta": "garbage"}), set())
+
+
+class TestExtractRecordsByUri(unittest.TestCase):
+    """Drains payload[records] into {uri: dict(record)}."""
+
+    def test_happy_path_two_records(self):
+        payload = {
+            "records": [
+                {"uri": "u1", "content": "x", "msg_range": [0, 1]},
+                {"uri": "u2", "content": "y", "msg_range": [2, 3]},
+            ]
+        }
+        out = extract_records_by_uri(payload)
+        self.assertEqual(set(out.keys()), {"u1", "u2"})
+        self.assertEqual(out["u1"]["content"], "x")
+        self.assertEqual(out["u2"]["msg_range"], [2, 3])
+
+    def test_missing_records_key_returns_empty_dict(self):
+        self.assertEqual(extract_records_by_uri({}), {})
+
+    def test_empty_records_list_returns_empty_dict(self):
+        self.assertEqual(extract_records_by_uri({"records": []}), {})
+
+    def test_records_none_returns_empty_dict(self):
+        self.assertEqual(extract_records_by_uri({"records": None}), {})
+
+    def test_filters_empty_uri(self):
+        payload = {
+            "records": [
+                {"uri": "", "content": "x"},
+                {"uri": "u1", "content": "y"},
+            ]
+        }
+        self.assertEqual(set(extract_records_by_uri(payload).keys()), {"u1"})
+
+    def test_filters_missing_uri(self):
+        payload = {"records": [{"content": "no uri"}, {"uri": "u1"}]}
+        self.assertEqual(set(extract_records_by_uri(payload).keys()), {"u1"})
+
+    def test_returns_shallow_copy_of_each_record(self):
+        original = {"uri": "u1", "meta": {"a": 1}}
+        payload = {"records": [original]}
+        out = extract_records_by_uri(payload)
+        # Mutating top-level keys on the copy must not touch the input.
+        out["u1"]["new_key"] = "added"
+        self.assertNotIn("new_key", original)
+
+
+class _StubOC:
+    """Minimal oc stand-in that satisfies memory_record_snapshot's contract."""
+
+    def __init__(self, pages: List[List[Dict[str, Any]]]) -> None:
+        # Each `pages[i]` is the ``results`` list returned for offset i*limit.
+        self._pages = pages
+        self._limit = 500
+        self.calls: List[Dict[str, Any]] = []
+
+    async def memory_list(
+        self,
+        *,
+        context_type: str,
+        category: str,
+        limit: int,
+        offset: int,
+        include_payload: bool,
+    ) -> Dict[str, Any]:
+        self.calls.append({
+            "context_type": context_type,
+            "category": category,
+            "limit": limit,
+            "offset": offset,
+            "include_payload": include_payload,
+        })
+        # Pages indexed by offset / limit; out-of-range returns an empty
+        # results list (so the loop terminates).
+        page_idx = offset // limit
+        if page_idx < len(self._pages):
+            return {"results": list(self._pages[page_idx])}
+        return {"results": []}
+
+
+class TestMemoryRecordSnapshot(unittest.TestCase):
+    """Pages oc.memory_list until exhausted; keys by uri."""
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def test_single_page_returns_record_dict(self):
+        async def check():
+            oc = _StubOC([[{"uri": "u1", "content": "a"}, {"uri": "u2"}]])
+            result = await memory_record_snapshot(oc)
+            self.assertEqual(set(result.keys()), {"u1", "u2"})
+            self.assertEqual(result["u1"]["content"], "a")
+            # Single call because the result count was below the limit.
+            self.assertEqual(len(oc.calls), 1)
+            self.assertEqual(oc.calls[0]["context_type"], "memory")
+            self.assertEqual(oc.calls[0]["category"], "events")
+            self.assertTrue(oc.calls[0]["include_payload"])
+
+        self._run(check())
+
+    def test_pages_until_partial_page(self):
+        async def check():
+            # First page is full (500), second page is partial → loop exits.
+            full_page = [{"uri": f"u{i}"} for i in range(500)]
+            partial_page = [{"uri": "u500"}, {"uri": "u501"}]
+            oc = _StubOC([full_page, partial_page])
+            result = await memory_record_snapshot(oc)
+            self.assertEqual(len(result), 502)
+            self.assertEqual(len(oc.calls), 2)
+            self.assertEqual(oc.calls[0]["offset"], 0)
+            self.assertEqual(oc.calls[1]["offset"], 500)
+
+        self._run(check())
+
+    def test_filters_records_with_empty_uri(self):
+        async def check():
+            oc = _StubOC([[{"uri": ""}, {"uri": "u1"}, {"content": "no uri"}]])
+            result = await memory_record_snapshot(oc)
+            self.assertEqual(set(result.keys()), {"u1"})
+
+        self._run(check())
+
+    def test_empty_first_page_returns_empty_dict(self):
+        async def check():
+            oc = _StubOC([[]])
+            result = await memory_record_snapshot(oc)
+            self.assertEqual(result, {})
+            self.assertEqual(len(oc.calls), 1)
+
+        self._run(check())
 
 
 if __name__ == "__main__":

@@ -83,3 +83,54 @@ def record_time_refs(record: Dict[str, Any]) -> Set[str]:
 
     values.append(record.get("event_date"))
     return normalize_text_set(values)
+
+
+async def memory_record_snapshot(oc: Any) -> Dict[str, Dict[str, Any]]:
+    """Snapshot current memory records for diff-based ground-truth mapping.
+
+    Pages through ``oc.memory_list(context_type="memory", category="events")``
+    in 500-record batches until exhausted. Used by both adapters' mcp-path
+    branch to capture the before/after record set so the new ingest's
+    URIs can be derived by set difference.
+    """
+    offset = 0
+    limit = 500
+    records_by_uri: Dict[str, Dict[str, Any]] = {}
+    while True:
+        payload = await oc.memory_list(
+            context_type="memory",
+            category="events",
+            limit=limit,
+            offset=offset,
+            include_payload=True,
+        )
+        results = payload.get("results", [])
+        for item in results:
+            uri = str(item.get("uri", "") or "")
+            if uri:
+                records_by_uri[uri] = dict(item)
+        if len(results) < limit:
+            break
+        offset += limit
+    return records_by_uri
+
+
+def extract_records_by_uri(
+    payload: Dict[str, Any],
+) -> Dict[str, Dict[str, Any]]:
+    """Drain ``payload["records"]`` into the canonical ``{uri: dict(record)}``.
+
+    Replaces the inline comprehension that appears in every store-path and
+    mainstream-path response handler in both adapters. Pure mapping —
+    does not bake in any ``ingest_shape`` assumption (callers vary on
+    that knob); just normalizes the response into a URI-keyed dict.
+
+    Records with empty / missing / non-string ``uri`` are filtered out.
+    The returned dicts are shallow copies so callers can mutate them
+    without aliasing the input payload.
+    """
+    return {
+        str(record.get("uri", "") or ""): dict(record)
+        for record in payload.get("records", []) or []
+        if str(record.get("uri", "") or "")
+    }
