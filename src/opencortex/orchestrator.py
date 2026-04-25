@@ -220,6 +220,14 @@ class MemoryOrchestrator:
         # admin call. Lifted here so ``MemoryOrchestrator.close()`` can
         # call ``aclose()`` exactly once on shutdown.
         self._rerank_client: Optional["RerankClient"] = None
+        # Plan 009 / R5 — connection sweeper bookkeeping. Set None at
+        # construction; ``_start_connection_sweeper()`` populates them.
+        # Read by /admin/health/connections so the endpoint can show
+        # the last sweep status.
+        self._connection_sweep_task: Optional[asyncio.Task] = None
+        self._connection_sweep_guard: Optional[asyncio.Lock] = None
+        self._last_connection_sweep_at: Optional[Any] = None
+        self._last_connection_sweep_status: str = "not_started"
 
         self._fs: Optional[CortexFS] = None
         self._analyzer: Optional[IntentAnalyzer] = None
@@ -416,6 +424,15 @@ class MemoryOrchestrator:
             await self._init_cognition()
             self._start_autophagy_sweeper()
 
+        # 9b. Plan 009 / R5 — periodic sweeper that watches the
+        # pooled httpx clients (LLM + rerank) for the leak shape that
+        # caused the original CLOSE_WAIT incident. Defense-in-depth:
+        # even if a future code path forgets to ``aclose()`` a client,
+        # the sweeper logs WARNING when any pool exceeds 80% of its
+        # max_connections cap so operators see the rise before it
+        # blocks the event loop.
+        self._start_connection_sweeper()
+
         # 10. Cortex Alpha components
         await self._init_alpha()
 
@@ -534,6 +551,125 @@ class MemoryOrchestrator:
             while True:
                 await asyncio.sleep(interval)
                 await self._run_autophagy_sweep_once()
+        except asyncio.CancelledError:
+            raise
+
+    # =========================================================================
+    # Connection sweeper (plan 009 / R5)
+    # =========================================================================
+
+    # Threshold above which a single pool's open count triggers a
+    # WARNING log. Mirrors the /admin/health/connections "degraded"
+    # threshold so operator alerts stay consistent.
+    _CONNECTION_POOL_WARN_RATIO = 0.8
+
+    def _start_connection_sweeper(self) -> None:
+        """Start the periodic httpx-pool inspector in background.
+
+        Mirrors ``_start_autophagy_sweeper`` exactly — same naming
+        convention, same re-entrancy lock, same defensive ``getattr``
+        for orchestrators built via ``__new__`` bypass.
+        """
+        # Be resilient to unit tests that bypass __init__ via __new__.
+        if not hasattr(self, "_connection_sweep_task"):
+            self._connection_sweep_task = None
+        if not hasattr(self, "_connection_sweep_guard"):
+            self._connection_sweep_guard = asyncio.Lock()
+        if not hasattr(self, "_last_connection_sweep_at"):
+            self._last_connection_sweep_at = None
+        if not hasattr(self, "_last_connection_sweep_status"):
+            self._last_connection_sweep_status = "not_started"
+
+        if (
+            self._connection_sweep_task is not None
+            and not self._connection_sweep_task.done()
+        ):
+            return
+
+        self._connection_sweep_task = asyncio.create_task(
+            self._connection_sweep_loop(),
+            name="opencortex.connections.periodic_sweep",
+        )
+
+    async def _run_connection_sweep_once(self) -> None:
+        """Inspect every pooled client; log WARN when pool nears cap."""
+        # Be resilient to unit tests that bypass __init__ via __new__.
+        if (
+            not hasattr(self, "_connection_sweep_guard")
+            or self._connection_sweep_guard is None
+        ):
+            self._connection_sweep_guard = asyncio.Lock()
+
+        # Lazy import — admin_routes already owns the helper, no need
+        # to duplicate. Importing inside the function keeps orchestrator
+        # init fast and avoids a circular-import risk if admin_routes
+        # ever imports orchestrator-level types.
+        from opencortex.http.admin_routes import _extract_pool_stats
+
+        async with self._connection_sweep_guard:
+            from datetime import datetime, timezone
+            warn_count = 0
+
+            llm_completion = getattr(self, "_llm_completion", None)
+            llm_client = getattr(llm_completion, "client", None) if llm_completion else None
+            if llm_client is not None:
+                stats = _extract_pool_stats(llm_client)
+                warn_count += self._maybe_warn_pool("llm_completion", stats)
+
+            rerank_singleton = getattr(self, "_rerank_client", None)
+            rerank_inner = (
+                getattr(rerank_singleton, "_http_client", None)
+                if rerank_singleton is not None
+                else None
+            )
+            if rerank_inner is not None:
+                stats = _extract_pool_stats(rerank_inner)
+                warn_count += self._maybe_warn_pool("rerank", stats)
+
+            self._last_connection_sweep_at = datetime.now(timezone.utc)
+            self._last_connection_sweep_status = "warn" if warn_count else "ok"
+
+    def _maybe_warn_pool(self, label: str, stats: Dict[str, Any]) -> int:
+        """Emit a WARNING when the pool exceeds the warn ratio. Returns 0/1."""
+        if stats.get("stats_source") != "transport_pool":
+            return 0
+        open_count = stats.get("open_connections")
+        limits = stats.get("limits") or {}
+        max_conn = limits.get("max_connections")
+        if not isinstance(open_count, int) or not isinstance(max_conn, int) or max_conn <= 0:
+            return 0
+        if open_count > self._CONNECTION_POOL_WARN_RATIO * max_conn:
+            logger.warning(
+                "[ConnectionSweeper] %s pool nearing cap: open=%d, "
+                "limit=%d, keepalive=%s. If this rises further the "
+                "process will start refusing connections — investigate "
+                "for a missing aclose() on a request path.",
+                label, open_count, max_conn,
+                stats.get("keepalive_connections"),
+            )
+            return 1
+        return 0
+
+    async def _connection_sweep_loop(self) -> None:
+        """Sleep-then-inspect loop. Mirrors ``_autophagy_sweep_loop``."""
+        interval = float(
+            getattr(self._config, "connection_sweep_interval_seconds", 600)
+        )
+        if interval <= 0:
+            interval = 0.01  # allow fast unit tests; never busy-loop.
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                try:
+                    await self._run_connection_sweep_once()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    # A failure inside the inspector must not kill the
+                    # sweep loop — log and try again next tick.
+                    logger.warning(
+                        "[ConnectionSweeper] sweep tick failed: %s", exc,
+                    )
         except asyncio.CancelledError:
             raise
 
@@ -5765,6 +5901,16 @@ class MemoryOrchestrator:
 
     async def close(self) -> None:
         """Close storage and release resources."""
+        # Plan 009 — cancel the connection sweeper FIRST so it doesn't
+        # try to inspect a half-closed pool while the per-client
+        # aclose() calls below are running.
+        connection_sweep_task = getattr(self, "_connection_sweep_task", None)
+        if connection_sweep_task is not None and not connection_sweep_task.done():
+            connection_sweep_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await connection_sweep_task
+        self._connection_sweep_task = None
+
         startup_task = getattr(self, "_autophagy_startup_sweep_task", None)
         if startup_task is not None and not startup_task.done():
             startup_task.cancel()
