@@ -5,6 +5,8 @@ Each model mirrors the parameters of the corresponding MCP tool in
 ``mcp_server.py``.
 """
 
+from __future__ import annotations
+
 from typing import Any, Dict, List, Optional
 
 import orjson
@@ -404,7 +406,7 @@ class BenchmarkConversationIngestRecord(BaseModel):
     abstract_json: Dict[str, Any] = Field(default_factory=dict)
     session_id: str = Field(default="")
     speaker: str = Field(default="")
-    event_date: Optional[Any] = Field(default=None)
+    event_date: Optional[str] = Field(default=None)
     msg_range: Optional[List[int]] = Field(default=None)
     recomposition_stage: Optional[str] = Field(default=None)
     source_uri: Optional[str] = Field(default=None)

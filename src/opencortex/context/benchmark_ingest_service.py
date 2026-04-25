@@ -53,7 +53,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:
-    from opencortex.context.manager import ContextManager
+    from opencortex.context.manager import ContextManager, _BenchmarkRunCleanup
     from opencortex.context.session_records import SessionRecordsRepository
 
 logger = logging.getLogger(__name__)
@@ -381,7 +381,7 @@ class BenchmarkConversationIngestService:
         user_id: str,
         source_uri: str,
         normalized_segments: List[List[Dict[str, Any]]],
-        cleanup: Any,
+        cleanup: "_BenchmarkRunCleanup",
     ) -> Dict[str, str]:
         """Per-segment merged-leaf writes + bounded-concurrency derive.
 
@@ -490,7 +490,7 @@ class BenchmarkConversationIngestService:
         user_id: str,
         source_uri: str,
         include_session_summary: bool,
-        cleanup: Any,
+        cleanup: "_BenchmarkRunCleanup",
     ) -> None:
         """Run full-session recomposition; optionally generate summary.
 
@@ -538,7 +538,7 @@ class BenchmarkConversationIngestService:
         tenant_id: str,
         user_id: str,
         source_uri: str,
-        cleanup: Any,
+        cleanup: "_BenchmarkRunCleanup",
         merged_content_by_uri: Dict[str, str],
     ) -> Dict[str, Any]:
         """Load final merged records, hydrate content, mark run_complete."""
@@ -675,12 +675,16 @@ class BenchmarkConversationIngestService:
                     for record in records
                 ],
             }
-        except asyncio.CancelledError:
-            if created_uris:
-                with contextlib.suppress(Exception):
-                    await manager._delete_immediate_families(created_uris)
-            raise
-        except Exception:
+        except BaseException:
+            # Single handler covers both ``asyncio.CancelledError`` (a
+            # ``BaseException`` since Python 3.8) and ``Exception``: the
+            # cleanup body is identical and the bare ``raise`` re-raises
+            # the active exception unchanged. Catching ``BaseException``
+            # also ensures cleanup runs on a second cancellation, where
+            # ``except Exception`` would let the ingest leak created
+            # URIs (REVIEW KP-09 / closely related to REL-03 — kept as
+            # ``Exception`` suppress in the cleanup body so a transient
+            # storage error during cleanup does not mask the original).
             if created_uris:
                 with contextlib.suppress(Exception):
                     await manager._delete_immediate_families(created_uris)

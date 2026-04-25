@@ -288,7 +288,12 @@ class TestSessionRecordsRepositoryScopeAndOverflow(unittest.TestCase):
                 await repo.load_merged(session_id="huge")
             self.assertEqual(ctx.exception.session_id, "huge")
             self.assertEqual(ctx.exception.method, "load_merged")
-            self.assertEqual(ctx.exception.count_at_stop, 20)
+            # cap = page_size * max_pages = 20. Repo requests cap+1 = 21
+            # records and only raises when len(page) > cap, so the
+            # storage returns 21 and count_at_stop reflects that.
+            # REVIEW correctness-002 / ADV-U-002: the legacy ``>=`` check
+            # raised at exactly cap, a false-positive boundary case.
+            self.assertEqual(ctx.exception.count_at_stop, 21)
 
         self._run(check())
 

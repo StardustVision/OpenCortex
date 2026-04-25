@@ -31,7 +31,10 @@ pagination + overflow guard.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from opencortex.storage.storage_interface import StorageInterface
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +135,7 @@ class SessionRecordsRepository:
 
     def __init__(
         self,
-        storage: Any,
+        storage: "StorageInterface",
         collection_resolver: Callable[[], str],
         *,
         page_size: int = _DEFAULT_PAGE_SIZE,
@@ -203,14 +206,18 @@ class SessionRecordsRepository:
         scroll = getattr(self._storage, "scroll", None)
         if scroll is None or not callable(scroll):
             # Fallback for storage adapters without scroll: one filter
-            # call with a page-size * max-pages limit. Overflow guard
-            # still fires when the result set hits the cap.
+            # call with a page-size * max-pages limit. Request limit+1
+            # so the overflow guard fires only when the result set
+            # genuinely exceeds the cap (REVIEW correctness-002 /
+            # ADV-U-002 — equality at the cap was a false-positive
+            # boundary).
+            cap = self._page_size * self._max_pages
             page = await self._storage.filter(
                 self._collection(),
                 where,
-                limit=self._page_size * self._max_pages,
+                limit=cap + 1,
             )
-            if len(page) >= self._page_size * self._max_pages:
+            if len(page) > cap:
                 raise SessionRecordOverflowError(
                     session_id=session_id,
                     count_at_stop=len(page),
@@ -220,7 +227,7 @@ class SessionRecordsRepository:
             return list(page)
 
         cursor: Optional[str] = None
-        for page_index in range(self._max_pages):
+        for _ in range(self._max_pages):
             page, cursor = await scroll(
                 self._collection(),
                 filter=where,
