@@ -3,10 +3,12 @@
 import asyncio
 import httpx
 import os
+import re
 import shutil
 import sys
 import tempfile
 import unittest
+from typing import Any, Dict, List
 from unittest.mock import AsyncMock, Mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -955,7 +957,7 @@ class TestContextManager(unittest.TestCase):
         # Two adjacent input segments, both dated 2026-04-25, sized to
         # stay under _SEGMENT_MAX_MESSAGES=16 and _SEGMENT_MAX_TOKENS=1200
         # so the existing split conditions never fire.
-        def _seg(message_count: int, label: str):
+        def _seg(message_count: int, label: str) -> List[Dict[str, Any]]:
             return [
                 {
                     "role": "user" if i % 2 == 0 else "assistant",
@@ -979,7 +981,21 @@ class TestContextManager(unittest.TestCase):
         )
 
         offline_segments = cm._build_recomposition_segments(entries)
-        self.assertGreater(len(offline_segments), 0)
+        # The fixture stays under every soft cap (10 messages < 16,
+        # ~120 tokens < 1200, time_refs overlap), so post-fix the ONLY
+        # split that fires is the input-segment boundary at msg_index=6.
+        # Asserting exactly 2 segments (vs ``> 0``) catches both the
+        # pre-fix bug (1 cross-boundary segment) AND a future regression
+        # that over-splits (e.g. 10 single-message segments would also
+        # satisfy the boundary invariant). REVIEW closure-tracker T-01.
+        self.assertEqual(
+            len(offline_segments),
+            2,
+            f"expected exactly 2 segments (one per input segment); got "
+            f"{len(offline_segments)} — soft caps shouldn't fire on this "
+            f"fixture and over-split would silently pass the per-segment "
+            f"boundary check below",
+        )
 
         # Input segment ranges: A covers msg_range [0, 5]; B covers [6, 9].
         # Every output segment must be a subset of exactly one of these.
@@ -1009,8 +1025,6 @@ class TestContextManager(unittest.TestCase):
         downstream session→URI mapping would shuffle. This test makes
         any such format change explicit by failing loudly.
         """
-        import re
-
         orch = self._make_orchestrator()
         self._run(orch.init())
         cm = orch._context_manager

@@ -3,20 +3,22 @@
 
 Defined in its own module so ``ContextManager`` and consumers can import
 the type without pulling each other into a circular import. The shape
-is enforced at construction time across three sites in ``manager.py``:
+is enforced at construction time across four sites in ``manager.py``:
 
-- ``ContextManager._benchmark_recomposition_entries`` — message-level
-  entries from the benchmark offline ingest path. **Sets**
-  ``source_segment_index`` to the input-segment index the entry came
-  from (R3-RC-02 fix); the splitter uses this to force a hard split at
-  input-segment boundaries.
-- ``ContextManager._build_recomposition_entries`` — production
-  conversation lifecycle entries. **Sets** ``source_segment_index`` to
-  ``None``: live messages stream from ``Observer`` with no input-segment
-  notion, so the boundary check is a strict no-op for this path.
+- ``ContextManager._benchmark_recomposition_entries`` (1 site) —
+  message-level entries from the benchmark offline ingest path.
+  **Sets** ``source_segment_index`` to the input-segment index the
+  entry came from (R3-RC-02 fix); the splitter uses this to force a
+  hard split at input-segment boundaries.
+- ``ContextManager._build_recomposition_entries`` (2 sites — the tail
+  records loop and the immediate records loop within the same method)
+  — production conversation lifecycle entries. **Sets**
+  ``source_segment_index`` to ``None``: live messages stream from
+  ``Observer`` with no input-segment notion, so the boundary check is
+  a strict no-op for this path.
 - The inline builder inside ``ContextManager._run_full_session_recomposition``
-  that re-derives entries from already-stored merged records. **Sets**
-  ``source_segment_index`` to ``None`` for the same reason.
+  (1 site) that re-derives entries from already-stored merged records.
+  **Sets** ``source_segment_index`` to ``None`` for the same reason.
 
 Keeping a single ``RecompositionEntry`` TypedDict instead of bare
 ``Dict[str, Any]`` lets consumers (``_build_anchor_clustered_segments``,
@@ -33,7 +35,7 @@ from typing import Any, Dict, List, Optional, Set, TypedDict
 class RecompositionEntry(TypedDict):
     """Single entry consumed by anchor-clustered recomposition.
 
-    Every field is set unconditionally at all three construction sites
+    Every field is set unconditionally at all four construction sites
     today. ``immediate_uris`` and ``superseded_merged_uris`` are
     populated for production conversation entries and stay as empty
     lists for benchmark and re-derived entries — the lists are
