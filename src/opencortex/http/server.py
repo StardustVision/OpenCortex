@@ -324,6 +324,39 @@ def create_app() -> FastAPI:
 def _register_routes(app: FastAPI) -> None:
     """Register all REST endpoints on *app*."""
     # =====================================================================
+    # Deprecation shims
+    # =====================================================================
+
+    @app.api_route(
+        "/api/v1/benchmark/conversation_ingest",
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        include_in_schema=False,
+    )
+    async def _legacy_benchmark_conversation_ingest_gone() -> Dict[str, Any]:
+        """Return 410 Gone for the pre-admin-gate URL.
+
+        The benchmark ingest endpoint moved under the admin namespace in
+        v0.7.x to add ``_require_admin()`` enforcement (see
+        ``CHANGELOG.md``). This shim makes the move discoverable for any
+        out-of-tree caller still pointing at the old path; FastAPI's
+        default 404 carries no migration breadcrumb. Drop after one or
+        two releases of grace.
+        """
+        raise HTTPException(
+            status_code=410,
+            detail={
+                "reason": "moved",
+                "new_url": "/api/v1/admin/benchmark/conversation_ingest",
+                "removed_in": "0.8.0",
+                "note": (
+                    "Endpoint relocated under the admin namespace and now "
+                    "requires admin role. Use the new URL with an admin "
+                    "Bearer token."
+                ),
+            },
+        )
+
+    # =====================================================================
     # Core Memory
     # =====================================================================
 

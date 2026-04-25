@@ -1026,6 +1026,108 @@ class TestHTTPServer(unittest.TestCase):
 
         self._run(check())
 
+    def test_04i_admin_collection_uses_detail_envelope(self):
+        """Admin collection routes use {"detail": ...} on 400, matching admin convention."""
+
+        async def check():
+            from opencortex.http.request_context import (
+                reset_request_role,
+                set_request_role,
+            )
+
+            async with _test_app_context() as client:
+                role_token = set_request_role("admin")
+                try:
+                    # Bad name → 400 with detail envelope (was {"error": ...} before).
+                    resp = await client.post(
+                        "/api/v1/admin/collection",
+                        json={"name": "not_a_bench_prefix"},
+                    )
+                    self.assertEqual(resp.status_code, 400)
+                    body = resp.json()
+                    self.assertIn("detail", body)
+                    self.assertNotIn("error", body)
+                    self.assertIn("bench_", str(body["detail"]))
+
+                    # DELETE with non-bench name follows same shape.
+                    resp_d = await client.delete(
+                        "/api/v1/admin/collection/not_a_bench_prefix"
+                    )
+                    self.assertEqual(resp_d.status_code, 400)
+                    body_d = resp_d.json()
+                    self.assertIn("detail", body_d)
+                    self.assertNotIn("error", body_d)
+                finally:
+                    reset_request_role(role_token)
+
+        self._run(check())
+
+    def test_04h_legacy_benchmark_url_returns_410_gone(self):
+        """Legacy URL `/api/v1/benchmark/conversation_ingest` returns 410.
+
+        The endpoint moved under /api/v1/admin/ in v0.7.x; the shim
+        keeps a discoverable migration breadcrumb for out-of-tree
+        callers (REVIEW api-contract-001).
+        """
+
+        async def check():
+            async with _test_app_context() as client:
+                # POST is the original verb the endpoint accepted.
+                resp = await client.post(
+                    "/api/v1/benchmark/conversation_ingest",
+                    json={"session_id": "x", "segments": []},
+                )
+                self.assertEqual(resp.status_code, 410)
+                detail = resp.json().get("detail", {})
+                self.assertEqual(detail.get("reason"), "moved")
+                self.assertEqual(
+                    detail.get("new_url"),
+                    "/api/v1/admin/benchmark/conversation_ingest",
+                )
+
+                # Other verbs hit the same shim — useful for clients
+                # that probe with HEAD/OPTIONS before POSTing.
+                for method in ("get", "put", "patch", "delete"):
+                    resp_v = await getattr(client, method)(
+                        "/api/v1/benchmark/conversation_ingest"
+                    )
+                    self.assertEqual(
+                        resp_v.status_code,
+                        410,
+                        f"{method.upper()} on legacy URL must also 410",
+                    )
+
+                # New admin URL still works (regression lock so the shim
+                # does not accidentally shadow the live endpoint).
+                from opencortex.http.request_context import (
+                    reset_request_role,
+                    set_request_role,
+                )
+
+                role_token = set_request_role("admin")
+                try:
+                    live = await client.post(
+                        "/api/v1/admin/benchmark/conversation_ingest",
+                        json={
+                            "session_id": "bench_legacy_lock",
+                            "segments": [
+                                {
+                                    "messages": [
+                                        {
+                                            "role": "user",
+                                            "content": "ok",
+                                        }
+                                    ]
+                                }
+                            ],
+                        },
+                    )
+                    self.assertEqual(live.status_code, 200)
+                finally:
+                    reset_request_role(role_token)
+
+        self._run(check())
+
     def test_04f_benchmark_ingest_requires_admin(self):
         """Non-admin token receives 403 from benchmark ingest endpoint."""
 
@@ -1117,6 +1219,54 @@ class TestHTTPServer(unittest.TestCase):
                     resp = await client.post(
                         "/api/v1/admin/benchmark/conversation_ingest",
                         json=too_big_meta,
+                    )
+                    self.assertEqual(resp.status_code, 422)
+
+                    # CJK content near the meta byte budget — orjson
+                    # always emits UTF-8 so the byte count is the real
+                    # ceiling, not a Python-string-length proxy
+                    # (REVIEW KP-01 regression).
+                    cjk_value = "你" * 5_000  # ~15 KB UTF-8, under 16 KB
+                    cjk_meta_ok = {
+                        "session_id": "bench_cjk_ok",
+                        "segments": [
+                            {
+                                "messages": [
+                                    {
+                                        "role": "user",
+                                        "content": "ok",
+                                        "meta": {"k": cjk_value},
+                                    }
+                                ]
+                            }
+                        ],
+                    }
+                    resp = await client.post(
+                        "/api/v1/admin/benchmark/conversation_ingest",
+                        json=cjk_meta_ok,
+                    )
+                    # validates (200 success path; happy path body
+                    # detail not in scope here, only schema acceptance).
+                    self.assertEqual(resp.status_code, 200)
+
+                    cjk_value_over = "你" * 6_000  # ~18 KB UTF-8
+                    cjk_meta_over = {
+                        "session_id": "bench_cjk_over",
+                        "segments": [
+                            {
+                                "messages": [
+                                    {
+                                        "role": "user",
+                                        "content": "ok",
+                                        "meta": {"k": cjk_value_over},
+                                    }
+                                ]
+                            }
+                        ],
+                    }
+                    resp = await client.post(
+                        "/api/v1/admin/benchmark/conversation_ingest",
+                        json=cjk_meta_over,
                     )
                     self.assertEqual(resp.status_code, 422)
                 finally:

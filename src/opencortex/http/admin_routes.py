@@ -12,7 +12,6 @@ import logging
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse
 
 from opencortex.auth.token import (
     generate_token, load_token_records, revoke_token, save_token_record,
@@ -208,7 +207,14 @@ async def create_bench_collection(request: Request):
     body = await request.json()
     name = body.get("name", "")
     if not name.startswith("bench_"):
-        return JSONResponse({"error": "Collection name must start with bench_"}, status_code=400)
+        # REVIEW api-contract-004: standardize on FastAPI's
+        # ``{"detail": ...}`` envelope across every admin route. The
+        # prior ``JSONResponse({"error": ...})`` was the only third
+        # style in this file.
+        raise HTTPException(
+            status_code=400,
+            detail="Collection name must start with bench_",
+        )
     dim = _orchestrator._config.embedding_dimension
     from opencortex.storage.collection_schemas import CollectionSchemas
     schema = CollectionSchemas.context_collection(name, dim)
@@ -221,7 +227,10 @@ async def delete_bench_collection(name: str):
     """Delete a benchmark-isolated collection (name must start with bench_)."""
     _require_admin()
     if not name.startswith("bench_"):
-        return JSONResponse({"error": "Can only delete bench_ collections"}, status_code=400)
+        raise HTTPException(
+            status_code=400,
+            detail="Can only delete bench_ collections",
+        )
     await _orchestrator._storage.drop_collection(name)
     return {"status": "deleted", "collection": name}
 
