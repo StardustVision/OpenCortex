@@ -163,14 +163,14 @@ async def admin_search_debug(req: MemorySearchRequest) -> Dict[str, Any]:
     )
 
     rerank_scores = None
+    # Plan 009 — use the orchestrator's RerankClient singleton instead
+    # of constructing a fresh client per request. The previous shape
+    # leaked one TCP socket per admin_search_debug call (no aclose path
+    # on RerankClient before this PR). Lazy-built so non-admin code
+    # paths don't pay the ``_init_local_reranker`` cold-start cost.
     rerank_cfg = _orchestrator._build_rerank_config()
     if rerank_cfg.is_available():
-        from opencortex.retrieve.rerank_client import RerankClient
-
-        rerank_client = RerankClient(
-            rerank_cfg,
-            llm_completion=_orchestrator._llm_completion,
-        )
+        rerank_client = _orchestrator._get_or_create_rerank_client()
         docs = [r.get("abstract", "") for r in raw_results]
         rerank_scores = await rerank_client.rerank(req.query, docs)
 

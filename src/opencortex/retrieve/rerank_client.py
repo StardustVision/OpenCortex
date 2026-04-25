@@ -200,12 +200,53 @@ class RerankClient:
                 return await self._rerank_via_llm(query, documents)
             return [0.0] * len(documents)
 
+    # REVIEW closure tracker connection-pool-leak / R2 (plan 009): bound
+    # the per-process socket footprint for the rerank API client. The
+    # caps mirror the LLM completion client (see ``llm_factory.py``) —
+    # high enough that normal rerank fan-out does not block, low enough
+    # that a future leak triggers backpressure before exhausting the
+    # kernel's ephemeral port pool.
+    _MAX_CONNECTIONS = 20
+    _MAX_KEEPALIVE_CONNECTIONS = 5
+
     def _get_http_client(self):
         """Return a reusable httpx.AsyncClient (lazy-created)."""
         if self._http_client is None:
             import httpx
-            self._http_client = httpx.AsyncClient(timeout=30.0)
+            self._http_client = httpx.AsyncClient(
+                timeout=30.0,
+                limits=httpx.Limits(
+                    max_connections=self._MAX_CONNECTIONS,
+                    max_keepalive_connections=self._MAX_KEEPALIVE_CONNECTIONS,
+                ),
+            )
         return self._http_client
+
+    async def aclose(self) -> None:
+        """Release the underlying httpx connection pool. Idempotent.
+
+        Plan 009 / R1: ``MemoryOrchestrator.close()`` invokes this so
+        the rerank client's TCP sockets are returned to the kernel on
+        graceful shutdown. Pre-fix this client had no cleanup path and
+        every per-request instantiation in the admin route leaked one
+        socket into CLOSE_WAIT.
+        """
+        if self._http_client is None:
+            return
+        client = self._http_client
+        # Null the attribute first so a late retry sees "already closed"
+        # and does not race with another aclose() in flight.
+        self._http_client = None
+        try:
+            await client.aclose()
+        except Exception as exc:
+            # Match the orchestrator close-path tolerance — log but
+            # don't propagate so the rest of teardown completes.
+            logger.info(
+                "[RerankClient] aclose failed: %s (degraded shutdown — "
+                "process may still hold a socket until the kernel "
+                "reclaims it)", exc,
+            )
 
     async def _rerank_via_api(self, query: str, documents: List[str]) -> List[float]:
         """Call Rerank API (Jina/Cohere compatible).

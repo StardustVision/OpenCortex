@@ -110,6 +110,7 @@ from opencortex.core.message import Message
 from opencortex.core.user_id import UserIdentifier
 from opencortex.models.embedder.base import EmbedderBase
 from opencortex.retrieve.intent_analyzer import IntentAnalyzer, LLMCompletionCallable
+from opencortex.retrieve.rerank_client import RerankClient
 from opencortex.retrieve.rerank_config import RerankConfig
 from opencortex.retrieve.types import (
     ContextType,
@@ -212,6 +213,13 @@ class MemoryOrchestrator:
         self._embedder = embedder
         self._rerank_config = rerank_config or RerankConfig()
         self._llm_completion = llm_completion
+        # Plan 009 / RR-01 (PERF-02 follow-up) — process-lifetime
+        # RerankClient singleton owned by the orchestrator. Pre-fix
+        # ``admin_search_debug`` constructed a new RerankClient per
+        # request and never closed it, leaking one TCP connection per
+        # admin call. Lifted here so ``MemoryOrchestrator.close()`` can
+        # call ``aclose()`` exactly once on shutdown.
+        self._rerank_client: Optional["RerankClient"] = None
 
         self._fs: Optional[CortexFS] = None
         self._analyzer: Optional[IntentAnalyzer] = None
@@ -368,6 +376,15 @@ class MemoryOrchestrator:
 
         if self._llm_completion:
             self._analyzer = IntentAnalyzer(llm_completion=self._llm_completion)
+
+        # Plan 009 — RerankClient is created lazily by
+        # ``_get_or_create_rerank_client()`` on first use. Eager
+        # construction would trigger ``_init_local_reranker`` (fastembed
+        # model download) for every orchestrator init, including in
+        # tests that never need it. Lazy keeps the singleton invariant
+        # (one instance per process across all admin requests) without
+        # imposing the cold-start cost. ``MemoryOrchestrator.close()``
+        # checks for ``None`` before invoking ``aclose`` (U3).
 
         # 6. Cone Retrieval: entity index + scorer (BEFORE retriever, so retriever gets live reference)
         if self._config.cone_retrieval_enabled:
@@ -1330,6 +1347,23 @@ class MemoryOrchestrator:
         marker = Path(self._config.data_root) / ".embedding_model"
         marker.write_text(getattr(self._embedder, "model_name", ""))
         return count
+
+    def _get_or_create_rerank_client(self) -> RerankClient:
+        """Return the process-lifetime RerankClient singleton (lazy).
+
+        Plan 009: Constructed on first access so the orchestrator's
+        normal init path stays cheap (eager construction would fire
+        ``_init_local_reranker`` -> fastembed model download in every
+        test). Once built, the same instance serves every caller for
+        the process lifetime — closes the per-request leak that
+        triggered the original CLOSE_WAIT incident.
+        """
+        if self._rerank_client is None:
+            self._rerank_client = RerankClient(
+                self._build_rerank_config(),
+                llm_completion=self._llm_completion,
+            )
+        return self._rerank_client
 
     def _build_rerank_config(self) -> RerankConfig:
         """Build RerankConfig by merging explicit rerank_config with CortexConfig fields.
