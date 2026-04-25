@@ -263,6 +263,15 @@ class ContextManager:
         self._conversation_buffers: Dict[SessionKey, ConversationBuffer] = {}
         # Semaphore limiting concurrent fire-and-forget deferred derives
         self._derive_semaphore = asyncio.Semaphore(3)
+        # Hoisted from per-call construction in
+        # ``_run_full_session_recomposition`` (REVIEW PERF-001 / KP-09):
+        # a per-call semaphore meant U13's cross-conversation concurrency
+        # multiplied the in-flight directory-derive count
+        # (concurrency × 3). Instance-scoped enforces the same global cap
+        # regardless of how many sessions are recomposing in parallel.
+        self._directory_derive_semaphore = asyncio.Semaphore(
+            _DIRECTORY_DERIVE_CONCURRENCY
+        )
         # Skill selection tracking: (session_key, turn_id) -> set of skill URIs
         # Turn-scoped to prevent stale selections leaking across turns
         self._selected_skill_uris: Dict[tuple, Set[str]] = {}
@@ -1600,10 +1609,23 @@ class ContextManager:
                 if derive_tasks:
                     # Wait for every scheduled derive so the response
                     # represents the post-derive Qdrant + CortexFS state.
-                    # If any derive fails the gathered exception fires
-                    # the rollback path (cleanup tracker covers leaves
-                    # plus any partially-written derives).
-                    await asyncio.gather(*[task for _, task in derive_tasks])
+                    #
+                    # Plain ``asyncio.gather`` propagates the first exception
+                    # but does not cancel siblings — the surviving tasks
+                    # then call ``_complete_deferred_derive`` against URIs
+                    # that the cleanup tracker has already removed,
+                    # leaving orphan CortexFS subtrees (REVIEW F1 / REL-01
+                    # / ADV-001). Cancel the siblings explicitly and wait
+                    # for them to unwind before re-raising.
+                    pending = [task for _, task in derive_tasks]
+                    try:
+                        await asyncio.gather(*pending)
+                    except BaseException:
+                        for task in pending:
+                            if not task.done():
+                                task.cancel()
+                        await asyncio.gather(*pending, return_exceptions=True)
+                        raise
 
                 if cleanup.merged_uris:
                     directory_uris = await self._run_full_session_recomposition(
@@ -2262,21 +2284,58 @@ class ContextManager:
             return []
 
         segments: List[Dict[str, Any]] = []
-        current: List[Dict[str, Any]] = [entries[0]]
-        current_anchors: Set[str] = entries[0]["anchor_terms"] | entries[0]["time_refs"]
-        current_tokens = int(entries[0]["token_count"])
-        current_messages = int(entries[0]["msg_end"]) - int(entries[0]["msg_start"]) + 1
+        # Treat the seed entry the same way the cap check treats any
+        # subsequent append (REVIEW ADV-002): the prior implementation
+        # initialized ``current`` from ``entries[0]`` unconditionally, so
+        # a single oversized leaf — possible under U2's 64 KB content
+        # cap — could seed a cluster already larger than
+        # ``_RECOMPOSE_CLUSTER_MAX_TOKENS``. The cap then only stopped
+        # APPEND, never SPLIT. Now an oversized seed flushes immediately
+        # as its own single-entry segment and the next entry becomes the
+        # new seed.
+        current: List[Dict[str, Any]] = []
+        current_anchors: Set[str] = set()
+        current_tokens = 0
+        current_messages = 0
 
-        for entry in entries[1:]:
-            entry_anchors: Set[str] = entry["anchor_terms"] | entry["time_refs"]
-            entry_messages = int(entry["msg_end"]) - int(entry["msg_start"]) + 1
-            entry_tokens = int(entry["token_count"])
-
-            within_caps = (
+        def _within_caps_with(entry_tokens: int, entry_messages: int) -> bool:
+            return (
                 current_tokens + entry_tokens <= _RECOMPOSE_CLUSTER_MAX_TOKENS
                 and current_messages + max(entry_messages, 1)
                 <= _RECOMPOSE_CLUSTER_MAX_MESSAGES
             )
+
+        def _seed_with(entry: Dict[str, Any]) -> None:
+            nonlocal current, current_anchors, current_tokens, current_messages
+            entry_msgs = int(entry["msg_end"]) - int(entry["msg_start"]) + 1
+            current = [entry]
+            current_anchors = set(entry["anchor_terms"] | entry["time_refs"])
+            current_tokens = int(entry["token_count"])
+            current_messages = max(entry_msgs, 1)
+
+        for entry in entries:
+            entry_anchors: Set[str] = entry["anchor_terms"] | entry["time_refs"]
+            entry_messages = int(entry["msg_end"]) - int(entry["msg_start"]) + 1
+            entry_tokens = int(entry["token_count"])
+
+            if not current:
+                _seed_with(entry)
+                # An oversized seed is its own single-entry cluster:
+                # downstream ``_run_full_session_recomposition`` skips
+                # clusters with ``len(source_records) < 2``, so emitting
+                # it alone keeps every multi-entry cluster within caps.
+                if (
+                    current_tokens > _RECOMPOSE_CLUSTER_MAX_TOKENS
+                    or current_messages > _RECOMPOSE_CLUSTER_MAX_MESSAGES
+                ):
+                    segments.append(self._finalize_recomposition_segment(current))
+                    current = []
+                    current_anchors = set()
+                    current_tokens = 0
+                    current_messages = 0
+                continue
+
+            within_caps = _within_caps_with(entry_tokens, entry_messages)
 
             if not entry_anchors:
                 # Anchorless entries used to bypass the caps unconditionally
@@ -2733,7 +2792,11 @@ class ContextManager:
                 )
                 return [] if return_created_uris else None
 
-            derive_semaphore = asyncio.Semaphore(_DIRECTORY_DERIVE_CONCURRENCY)
+            # Use the instance-scoped semaphore so cross-conversation
+            # concurrency (U13) does not multiply in-flight LLM derives:
+            # one global cap of _DIRECTORY_DERIVE_CONCURRENCY across all
+            # sessions, not concurrency × 3.
+            derive_semaphore = self._directory_derive_semaphore
 
             async def _derive_one(
                 directory_index: int,
