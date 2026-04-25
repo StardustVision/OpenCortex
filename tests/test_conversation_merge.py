@@ -283,7 +283,7 @@ class TestBuildAnchorClusteredSegments(unittest.TestCase):
 
 
 class TestDeleteImmediateFamiliesCortexFS(unittest.TestCase):
-    """Test _delete_immediate_families also cleans CortexFS directories."""
+    """Test _purge_records_and_fs_subtree also cleans CortexFS directories."""
 
     def test_deletes_both_qdrant_and_cortexfs(self):
         """Both Qdrant and CortexFS should be cleaned."""
@@ -293,7 +293,7 @@ class TestDeleteImmediateFamiliesCortexFS(unittest.TestCase):
         cm._orchestrator._storage.remove_by_uri = AsyncMock()
         cm._orchestrator._get_collection.return_value = "context"
 
-        asyncio.run(cm._delete_immediate_families([
+        asyncio.run(cm._purge_records_and_fs_subtree([
             "opencortex://t/u/memories/events/imm-001",
         ]))
 
@@ -312,7 +312,7 @@ class TestDeleteImmediateFamiliesCortexFS(unittest.TestCase):
         cm._orchestrator._storage.remove_by_uri = AsyncMock()
         cm._orchestrator._get_collection.return_value = "context"
 
-        asyncio.run(cm._delete_immediate_families([
+        asyncio.run(cm._purge_records_and_fs_subtree([
             "opencortex://t/u/memories/events/imm-001",
             "opencortex://t/u/memories/events/imm-002",
         ]))
@@ -326,7 +326,7 @@ class TestDeleteImmediateFamiliesCortexFS(unittest.TestCase):
         cm._orchestrator._storage.remove_by_uri = AsyncMock()
         cm._orchestrator._get_collection.return_value = "context"
 
-        asyncio.run(cm._delete_immediate_families([
+        asyncio.run(cm._purge_records_and_fs_subtree([
             "opencortex://t/u/memories/events/imm-001",
         ]))
 

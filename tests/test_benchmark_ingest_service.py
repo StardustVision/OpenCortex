@@ -217,7 +217,7 @@ class _FakeManager:
     ) -> str:
         return f"opencortex://{tenant_id}/{user_id}/session/{session_id}/summary"
 
-    async def _delete_immediate_families(self, _uris: List[str]) -> None:
+    async def _purge_records_and_fs_subtree(self, _uris: List[str]) -> None:
         pass
 
 
