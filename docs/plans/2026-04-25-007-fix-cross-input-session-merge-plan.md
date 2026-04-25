@@ -121,7 +121,7 @@ None — pure internal correctness fix.
 
 ## Implementation Units
 
-- [ ] U1. **Failing regression test for cross-input-session merge**
+- [x] U1. **Failing regression test for cross-input-session merge**
 
 **Goal:** Lock the bug by writing a test that fails on master and will pass after U2 + U3. Establishes the verification gate the fix is graded against.
 
@@ -161,7 +161,7 @@ None — pure internal correctness fix.
 
 ---
 
-- [ ] U2. **Add `source_segment_index` to `RecompositionEntry` and populate it on the benchmark path**
+- [x] U2. **Add `source_segment_index` to `RecompositionEntry` and populate it on the benchmark path**
 
 **Goal:** Tag every benchmark recomposition entry with its source input-segment index so the splitter can see where boundaries fall. Production-lifecycle and re-derived entries continue to set the field to `None`.
 
@@ -196,7 +196,7 @@ None — pure internal correctness fix.
 
 ---
 
-- [ ] U3. **Force input-segment boundary split in `_build_recomposition_segments`**
+- [x] U3. **Force input-segment boundary split in `_build_recomposition_segments`**
 
 **Goal:** Add the split condition that closes R3-RC-02 / R2-14. After this unit, the U1 regression test passes.
 
@@ -229,7 +229,7 @@ None — pure internal correctness fix.
 
 ---
 
-- [ ] U4. **R3-RC-08 — assert `recomposition_stage='benchmark_offline'` in HTTP test**
+- [x] U4. **R3-RC-08 — assert `recomposition_stage='benchmark_offline'` in HTTP test**
 
 **Goal:** Lock the contract that benchmark merged leaves carry `recomposition_stage="benchmark_offline"`. Future code paths that filter by `recomposition_stage in {online_tail, final_full}` would silently exclude benchmark records — this assertion makes the regression visible.
 
@@ -257,7 +257,7 @@ None — pure internal correctness fix.
 
 ---
 
-- [ ] U5. **R3-RC-09 — lock `_merged_leaf_uri` zero-padded URI format**
+- [x] U5. **R3-RC-09 — lock `_merged_leaf_uri` zero-padded URI format**
 
 **Goal:** Add a regression test that locks `_merged_leaf_uri`'s `f"conversation-{hash}-{start:06d}-{end:06d}"` format. The LoCoMo adapter's `sorted(new_records)` relies on lex sort = numeric sort, which only holds with zero padding. A future change to use `{start}-{end}` (no padding) would silently break URI ordering for any session with `>9` merged leaves.
 
