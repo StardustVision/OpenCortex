@@ -926,6 +926,77 @@ class TestContextManager(unittest.TestCase):
 
         self._run(orch.close())
 
+    def test_benchmark_splitter_does_not_cross_input_segment_boundary(self):
+        """REVIEW closure tracker R3-RC-02 / R2-14 regression.
+
+        ``_benchmark_recomposition_entries`` builds entries off a single
+        ``msg_index`` stream across all input segments, and
+        ``_build_recomposition_segments`` re-splits those entries by
+        token / time_refs / message-count caps. If two adjacent input
+        segments share an ``event_date`` and their combined size stays
+        under the caps, the splitter silently merges them into one
+        segment whose ``msg_range`` crosses the input-segment boundary.
+        Downstream the LoCoMo adapter ties on the wide leaf and
+        LongMemEval's ``cm.map_session_uris(return_all=False)`` drops
+        one session's mapping entirely.
+
+        This test asserts the invariant: every output segment's
+        ``msg_range`` is a subset of exactly one input segment's range.
+
+        The test MUST fail on master (no boundary check exists) and
+        will pass once U2 + U3 land — adds ``source_segment_index`` to
+        ``RecompositionEntry`` and a hard split when adjacent entries
+        cross segments.
+        """
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        cm = orch._context_manager
+
+        # Two adjacent input segments, both dated 2026-04-25, sized to
+        # stay under _SEGMENT_MAX_MESSAGES=16 and _SEGMENT_MAX_TOKENS=1200
+        # so the existing split conditions never fire.
+        def _seg(message_count: int, label: str):
+            return [
+                {
+                    "role": "user" if i % 2 == 0 else "assistant",
+                    "content": f"{label} message {i} short body",
+                    "meta": {
+                        "event_date": "2026-04-25",
+                        "time_refs": ["2026-04-25"],
+                    },
+                }
+                for i in range(message_count)
+            ]
+
+        normalized_segments = [_seg(6, "session-A"), _seg(4, "session-B")]
+
+        entries = cm._benchmark_recomposition_entries(normalized_segments)
+        # Sanity-check construction: 10 entries, msg_index 0..9 contiguous.
+        self.assertEqual(len(entries), 10)
+        self.assertEqual(
+            [(e["msg_start"], e["msg_end"]) for e in entries],
+            [(i, i) for i in range(10)],
+        )
+
+        offline_segments = cm._build_recomposition_segments(entries)
+        self.assertGreater(len(offline_segments), 0)
+
+        # Input segment ranges: A covers msg_range [0, 5]; B covers [6, 9].
+        # Every output segment must be a subset of exactly one of these.
+        for seg in offline_segments:
+            msg_range = seg["msg_range"]
+            start, end = int(msg_range[0]), int(msg_range[1])
+            in_a = start >= 0 and end <= 5
+            in_b = start >= 6 and end <= 9
+            self.assertTrue(
+                in_a or in_b,
+                f"Output segment msg_range={msg_range} crosses the input "
+                f"boundary at msg_index=6 — same-date adjacent input "
+                f"sessions silently merged into one leaf. R3-RC-02.",
+            )
+
+        self._run(orch.close())
+
     def test_full_recompose_creates_directory_records(self):
         """Directory records have correct layer, is_leaf, abstract, overview."""
         async def mock_llm(prompt, **kwargs):
