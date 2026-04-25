@@ -264,6 +264,10 @@ class TestLoCoMoBench(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(oc.benchmark_ingest_calls), 1)
         self.assertEqual(oc.benchmark_ingest_calls[0]["session_id"], "locomo-conv-1")
         self.assertEqual(len(oc.benchmark_ingest_calls[0]["segments"]), 2)
+        # U11: adapter must opt out of session_summary on the store path
+        # so benchmark scoring is not paying for an unused LLM call per
+        # conversation.
+        self.assertFalse(oc.benchmark_ingest_calls[0]["include_session_summary"])
         self.assertFalse(oc.commit_calls)
         self.assertFalse(oc.end_calls)
         self.assertFalse(oc.memory_list_calls)
@@ -606,6 +610,8 @@ class TestLongMemEvalBench(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(oc.benchmark_ingest_calls), 1)
         self.assertEqual(oc.benchmark_ingest_calls[0]["session_id"], "lme-item-0")
         self.assertEqual(len(oc.benchmark_ingest_calls[0]["segments"]), 2)
+        # U11: LongMemEval store path also opts out of session_summary.
+        self.assertFalse(oc.benchmark_ingest_calls[0]["include_session_summary"])
         self.assertFalse(oc.commit_calls)
         self.assertFalse(oc.end_calls)
         self.assertFalse(oc.memory_list_calls)

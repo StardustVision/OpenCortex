@@ -1120,14 +1120,27 @@ class ContextManager:
         return aggregated
 
     @staticmethod
-    def _export_memory_record(record: Dict[str, Any]) -> Dict[str, Any]:
-        """Return one adapter-friendly memory payload from a stored record."""
+    def _export_memory_record(
+        record: Dict[str, Any],
+        *,
+        hydrated_content: str = "",
+    ) -> Dict[str, Any]:
+        """Return one adapter-friendly memory payload from a stored record.
+
+        ``Context.to_dict`` does not include the L2 content (it lives in
+        CortexFS, not on the Qdrant payload). Callers that need raw
+        content for benchmark scoring or recall fallback must pre-hydrate
+        it from the filesystem and pass ``hydrated_content``; otherwise
+        the field falls back to whatever the stored record carries (or
+        empty string).
+        """
         meta = dict(record.get("meta") or {})
+        content = hydrated_content or str(record.get("content", "") or "")
         return {
             "uri": str(record.get("uri", "") or ""),
             "abstract": str(record.get("abstract", "") or ""),
             "overview": str(record.get("overview", "") or ""),
-            "content": str(record.get("content", "") or ""),
+            "content": content,
             "meta": meta,
             "abstract_json": record.get("abstract_json", {}),
             "session_id": str(record.get("session_id", "") or ""),
@@ -1137,6 +1150,44 @@ class ContextManager:
             "recomposition_stage": meta.get("recomposition_stage"),
             "source_uri": meta.get("source_uri"),
         }
+
+    async def _hydrate_record_contents(
+        self,
+        records: List[Dict[str, Any]],
+    ) -> Dict[str, str]:
+        """Batch-read L2 content for a record set; missing files map to ''.
+
+        Used by the benchmark response builder so adapters can fall back
+        on raw conversation text when L0/L1 are short. Sequential or
+        gather-based read is fine here: per-conversation set is dozens of
+        records, not thousands. Failures are logged once per URI and the
+        record falls back to an empty string rather than failing the
+        whole ingest.
+        """
+        fs = getattr(self._orchestrator, "_fs", None)
+        if fs is None:
+            return {}
+        uris = [
+            str(record.get("uri", "") or "").strip()
+            for record in records
+            if record.get("uri")
+        ]
+        if not uris:
+            return {}
+
+        async def _read_one(uri: str) -> tuple[str, str]:
+            try:
+                return uri, await fs.read_file(f"{uri}/content.md")
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "benchmark_ingest content hydration failed for %s: %s",
+                    uri,
+                    exc,
+                )
+                return uri, ""
+
+        results = await asyncio.gather(*[_read_one(u) for u in uris])
+        return {uri: text for uri, text in results}
 
     def _benchmark_recomposition_entries(
         self,
@@ -1148,9 +1199,17 @@ class ContextManager:
         for segment in normalized_segments:
             segment_meta = self._benchmark_segment_meta(segment)
             for message in segment:
+                # Segment-level aggregation (entities/topics/time_refs/
+                # event_date/tool_calls/lme_*) MUST win over per-message
+                # meta — the aggregation is the canonical anchor source
+                # for the merged leaf. Inverted from the original order
+                # to fix R2-03: the prior {**segment_meta, **message_meta}
+                # silently let one message's narrow meta overwrite the
+                # whole segment's anchors, leaving _benchmark_segment_meta
+                # as dead code on the hot path.
                 meta = {
-                    **segment_meta,
                     **dict(message.get("meta") or {}),
+                    **segment_meta,
                 }
                 rendered = self._decorate_message_text(
                     str(message.get("content", "") or ""),
@@ -1232,13 +1291,17 @@ class ContextManager:
                     normalized_segments.append(normalized_messages)
 
             if not normalized_segments:
+                logger.info(
+                    "benchmark_ingest_conversation: no normalized segments "
+                    "for session %s — returning empty record set",
+                    session_id,
+                )
                 return {
                     "status": "ok",
                     "session_id": session_id,
                     "source_uri": None,
                     "summary_uri": None,
                     "records": [],
-                    "layer_counts": {},
                 }
 
             source_uri = await self._persist_rendered_conversation_source(
@@ -1258,6 +1321,11 @@ class ContextManager:
                 )
 
             created_merged_uris: List[str] = []
+            # In-memory map URI -> raw conversation text for U10 content
+            # hydration. Captured as we write each merged leaf so the
+            # response can return raw text without racing the fire-and-
+            # forget CortexFS write that ``_orchestrator.add`` schedules.
+            merged_content_by_uri: Dict[str, str] = {}
             summary_uri: Optional[str] = None
 
             try:
@@ -1279,6 +1347,7 @@ class ContextManager:
                             if isinstance(call, dict):
                                 all_tool_calls.append(call)
 
+                    combined = "\n\n".join(segment_texts)
                     merged_context = await self._orchestrator.add(
                         uri=self._merged_leaf_uri(
                             tenant_id,
@@ -1287,7 +1356,7 @@ class ContextManager:
                             msg_range,
                         ),
                         abstract="",
-                        content="\n\n".join(segment_texts),
+                        content=combined,
                         category="events",
                         context_type="memory",
                         meta={
@@ -1305,6 +1374,7 @@ class ContextManager:
                         defer_derive=True,
                     )
                     created_merged_uris.append(merged_context.uri)
+                    merged_content_by_uri[merged_context.uri] = combined
 
                 if created_merged_uris:
                     await self._run_full_session_recomposition(
@@ -1326,16 +1396,48 @@ class ContextManager:
                     session_id=session_id,
                     source_uri=source_uri,
                 )
-                layer_counts = await self._session_layer_counts(session_id)
+                # `layer_counts` was previously returned to the client but
+                # the helper that produced it (_session_layer_counts) is
+                # session-id-only — not tenant/user/source scoped. Returning
+                # it allowed any admin caller to enumerate other tenants'
+                # records by guessing session_ids (R2-04). Adapter doesn't
+                # consume it; dropping is cheaper than scoping correctly.
+                #
+                # ``_orchestrator.add`` writes content via fire-and-forget
+                # to CortexFS, so a FS-only readback here would race; we
+                # use the in-memory map captured during the write loop.
+                # FS read is the fallback for records that came back from
+                # ``_load_session_merged_records`` outside our write set
+                # (e.g. directory records added during recomposition).
+                fallback_targets = [
+                    record
+                    for record in merged_records
+                    if str(record.get("uri", "") or "")
+                    not in merged_content_by_uri
+                ]
+                fallback_hydrated = (
+                    await self._hydrate_record_contents(fallback_targets)
+                    if fallback_targets
+                    else {}
+                )
                 return {
                     "status": "ok",
                     "session_id": session_id,
                     "source_uri": source_uri,
                     "summary_uri": summary_uri,
                     "records": [
-                        self._export_memory_record(record) for record in merged_records
+                        self._export_memory_record(
+                            record,
+                            hydrated_content=merged_content_by_uri.get(
+                                str(record.get("uri", "") or ""),
+                                fallback_hydrated.get(
+                                    str(record.get("uri", "") or ""),
+                                    "",
+                                ),
+                            ),
+                        )
+                        for record in merged_records
                     ],
-                    "layer_counts": layer_counts,
                 }
             except Exception:
                 if summary_uri:
@@ -1374,6 +1476,10 @@ class ContextManager:
         """Store benchmark segments directly as searchable evidence records."""
         created_uris: List[str] = []
         records: List[Dict[str, Any]] = []
+        # See merged-recompose path: capture combined text per URI so the
+        # benchmark response can hydrate ``content`` without racing the
+        # fire-and-forget CortexFS write.
+        evidence_content_by_uri: Dict[str, str] = {}
         next_msg_index = 0
 
         try:
@@ -1411,10 +1517,11 @@ class ContextManager:
                     segment_index,
                     msg_range,
                 )
+                combined = "\n".join(segment_texts)
                 stored = await self._orchestrator.add(
                     uri=evidence_uri,
                     abstract="",
-                    content="\n".join(segment_texts),
+                    content=combined,
                     category="events",
                     context_type="memory",
                     meta=meta,
@@ -1423,6 +1530,7 @@ class ContextManager:
                     defer_derive=True,
                 )
                 created_uris.append(stored.uri)
+                evidence_content_by_uri[stored.uri] = combined
                 record = await self._orchestrator._get_record_by_uri(stored.uri)
                 if record:
                     records.append(record)
@@ -1433,8 +1541,16 @@ class ContextManager:
                 "source_uri": source_uri,
                 "summary_uri": None,
                 "ingest_shape": "direct_evidence",
-                "records": [self._export_memory_record(record) for record in records],
-                "layer_counts": await self._session_layer_counts(session_id),
+                "records": [
+                    self._export_memory_record(
+                        record,
+                        hydrated_content=evidence_content_by_uri.get(
+                            str(record.get("uri", "") or ""),
+                            "",
+                        ),
+                    )
+                    for record in records
+                ],
             }
         except Exception:
             if created_uris:

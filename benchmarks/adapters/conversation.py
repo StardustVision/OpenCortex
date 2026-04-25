@@ -410,9 +410,14 @@ class LongMemEvalBench(EvalAdapter):
                         if str(record.get("uri", "") or "")
                     }
                 elif ingest_method == "store":
+                    # Benchmark scoring does not consume session_summary
+                    # leaves; opting out matches the mainstream branch
+                    # above and shaves ~1 LLM call + 2 filter scans per
+                    # conversation. Direct API callers keep default-True.
                     payload = await oc.benchmark_conversation_ingest(
                         session_id=conversation_session_id,
                         segments=segments,
+                        include_session_summary=False,
                     )
                     new_records = {
                         str(record.get("uri", "") or ""): dict(record)

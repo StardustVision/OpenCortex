@@ -870,6 +870,18 @@ class TestHTTPServer(unittest.TestCase):
                     [record["msg_range"] for record in ingest_data["records"]],
                     [[0, 1], [2, 2]],
                 )
+                # U6: response no longer leaks `layer_counts` (cross-tenant
+                # enumeration risk).
+                self.assertNotIn("layer_counts", ingest_data)
+                # U10: each record carries the raw conversation text the
+                # adapter wrote, not the empty string previously returned by
+                # ``_export_memory_record`` (Context.to_dict() omits content).
+                for record in ingest_data["records"]:
+                    self.assertNotEqual(
+                        record["content"],
+                        "",
+                        f"benchmark record {record['uri']} returned empty content",
+                    )
 
                 list_resp = await client.get(
                     "/api/v1/memory/list",
@@ -973,6 +985,10 @@ class TestHTTPServer(unittest.TestCase):
                     record["recomposition_stage"], "benchmark_direct_evidence"
                 )
                 self.assertEqual(record["meta"]["lme_session_id"], "s1")
+                self.assertNotIn("layer_counts", ingest_data)
+                # U10 also covers the direct_evidence path: content must
+                # not be empty just because Context.to_dict drops it.
+                self.assertNotEqual(record["content"], "")
 
                 search_resp = await client.post(
                     "/api/v1/memory/search",

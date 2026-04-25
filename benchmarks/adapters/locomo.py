@@ -518,9 +518,14 @@ class LoCoMoBench(EvalAdapter):
                     continue
 
                 if ingest_method == "store":
+                    # Benchmark scoring does not consume session_summary
+                    # leaves; opting out shaves ~1 LLM call + 2 filter
+                    # scans + 1 add per conversation. Direct API callers
+                    # keep the default-True behavior.
                     payload = await oc.benchmark_conversation_ingest(
                         session_id=conversation_session_id,
                         segments=segments,
+                        include_session_summary=False,
                     )
                     new_records = {
                         str(record.get("uri", "") or ""): dict(record)
