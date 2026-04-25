@@ -32,6 +32,11 @@ from opencortex.http.request_context import (
     set_request_project_id,
 )
 from opencortex.context.recomposition_types import RecompositionEntry
+from opencortex.context.session_records import (
+    SessionRecordsRepository,
+    record_msg_range,
+    record_text,
+)
 from opencortex.intent import RetrievalPlan, SearchResult
 from opencortex.intent.retrieval_support import build_probe_scope_input
 from opencortex.intent.timing import StageTimingCollector, measure_async, measure_sync
@@ -256,6 +261,15 @@ class ContextManager:
     ):
         self._orchestrator = orchestrator
         self._observer = observer
+
+        # Session-scoped record queries (§25 Phase 5 — REVIEW closure
+        # tracker U1). Constructed once per ContextManager so callers go
+        # through a single gateway instead of reaching into the storage
+        # adapter directly.
+        self._session_records = SessionRecordsRepository(
+            storage=orchestrator._storage,
+            collection_resolver=orchestrator._get_collection,
+        )
 
         # Prepare cache: {(collection, tid, uid, sid, turn_id): (result, timestamp)}
         self._prepare_cache: Dict[CacheKey, Tuple[Dict, float]] = {}
@@ -1353,7 +1367,7 @@ class ContextManager:
             if rec.get("uri")
         ]
         try:
-            directory_records = await self._load_session_directory_records(
+            directory_records = await self._session_records.load_directories(
                 session_id=session_id,
                 source_uri=source_uri,
             )
@@ -1666,7 +1680,7 @@ class ContextManager:
             # rewriting. Avoids creating duplicate leaves with identical
             # msg_range URIs and avoids paying recompose / summary costs
             # again for an already-ingested transcript.
-            existing_records = await self._load_session_merged_records(
+            existing_records = await self._session_records.load_merged(
                 session_id=session_id,
                 source_uri=source_uri,
             )
@@ -1713,10 +1727,8 @@ class ContextManager:
                     existing_summary_uri = self._session_summary_uri(
                         tenant_id, user_id, session_id
                     )
-                    existing_summary = await (
-                        self._orchestrator._get_record_by_uri(
-                            existing_summary_uri
-                        )
+                    existing_summary = await self._session_records.load_summary(
+                        existing_summary_uri
                     )
                     summary_uri_for_response = (
                         existing_summary_uri if existing_summary else None
@@ -1891,7 +1903,7 @@ class ContextManager:
                             source_uri=source_uri,
                         )
 
-                merged_records = await self._load_session_merged_records(
+                merged_records = await self._session_records.load_merged(
                     session_id=session_id,
                     source_uri=source_uri,
                 )
@@ -2115,113 +2127,17 @@ class ContextManager:
                 ordered.append(record)
         return ordered
 
-    @staticmethod
-    def _record_msg_range(record: Dict[str, Any]) -> Optional[Tuple[int, int]]:
-        """Extract one normalized inclusive ``msg_range`` from a record payload."""
-        meta = dict(record.get("meta") or {})
-        raw_range = meta.get("msg_range", record.get("msg_range"))
-        if not isinstance(raw_range, list) or len(raw_range) != 2:
-            msg_index = meta.get("msg_index")
-            try:
-                index = int(msg_index)
-            except (TypeError, ValueError):
-                return None
-            return index, index
-        try:
-            start = int(raw_range[0])
-            end = int(raw_range[1])
-        except (TypeError, ValueError):
-            return None
-        if start > end:
-            return None
-        return start, end
-
-    @staticmethod
-    def _record_text(record: Dict[str, Any]) -> str:
-        """Choose the best available record text for recomposition input."""
-        for key in ("content", "overview", "abstract"):
-            value = str(record.get(key, "") or "").strip()
-            if value:
-                return value
-        return ""
-
-    async def _load_session_merged_records(
-        self,
-        *,
-        session_id: str,
-        source_uri: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
-        """Load merged conversation leaves for one session in msg-range order."""
-        conds: List[Dict[str, Any]] = [
-            {"op": "must", "field": "session_id", "conds": [session_id]},
-        ]
-        records = await self._orchestrator._storage.filter(
-            self._orchestrator._get_collection(),
-            {"op": "and", "conds": conds},
-            limit=10000,
-        )
-        sortable: List[Tuple[int, int, Dict[str, Any]]] = []
-        for record in records:
-            meta = dict(record.get("meta") or {})
-            if str(meta.get("layer", "") or "") != "merged":
-                continue
-            if source_uri:
-                if str(meta.get("source_uri", "") or "") != source_uri:
-                    continue
-            msg_range = self._record_msg_range(record)
-            if msg_range is None:
-                continue
-            sortable.append((msg_range[0], msg_range[1], record))
-        sortable.sort(key=lambda item: (item[0], item[1]))
-        return [record for _, _, record in sortable]
-
-    async def _load_session_directory_records(
-        self,
-        *,
-        session_id: str,
-        source_uri: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
-        """Load directory parent records for one session in msg-range order."""
-        conds: List[Dict[str, Any]] = [
-            {"op": "must", "field": "session_id", "conds": [session_id]},
-        ]
-        records = await self._orchestrator._storage.filter(
-            self._orchestrator._get_collection(),
-            {"op": "and", "conds": conds},
-            limit=10000,
-        )
-        sortable: List[Tuple[int, int, Dict[str, Any]]] = []
-        for record in records:
-            meta = dict(record.get("meta") or {})
-            if str(meta.get("layer", "") or "") != "directory":
-                continue
-            if source_uri:
-                if str(meta.get("source_uri", "") or "") != source_uri:
-                    continue
-            msg_range = self._record_msg_range(record)
-            if msg_range is None:
-                continue
-            sortable.append((msg_range[0], msg_range[1], record))
-        sortable.sort(key=lambda item: (item[0], item[1]))
-        return [record for _, _, record in sortable]
-
-    async def _session_layer_counts(self, session_id: str) -> Dict[str, int]:
-        """Return per-layer record counts for one session."""
-        records = await self._orchestrator._storage.filter(
-            self._orchestrator._get_collection(),
-            {
-                "op": "must",
-                "field": "session_id",
-                "conds": [session_id],
-            },
-            limit=10000,
-        )
-        counts: Dict[str, int] = {}
-        for record in records:
-            meta = dict(record.get("meta") or {})
-            layer = str(meta.get("layer", "") or "<none>")
-            counts[layer] = counts.get(layer, 0) + 1
-        return counts
+    # NOTE: ``_record_msg_range`` and ``_record_text`` previously lived
+    # here as staticmethods. They moved to
+    # ``src/opencortex/context/session_records.py`` as module-level
+    # ``record_msg_range`` / ``record_text`` (REVIEW §25 Phase 5 / U1)
+    # so the new ``SessionRecordsRepository`` can reuse them without a
+    # circular import. ContextManager imports them from there.
+    #
+    # ``_load_session_merged_records``, ``_load_session_directory_records``,
+    # and ``_session_layer_counts`` similarly moved to the repository as
+    # ``load_merged`` / ``load_directories`` / ``layer_counts``. Call
+    # sites use ``self._session_records`` instead.
 
     async def _select_tail_merged_records(
         self,
@@ -2230,7 +2146,7 @@ class ContextManager:
         source_uri: str,
     ) -> List[Dict[str, Any]]:
         """Select a bounded recent merged-tail window for online recomposition."""
-        merged_records = await self._load_session_merged_records(
+        merged_records = await self._session_records.load_merged(
             session_id=session_id,
             source_uri=source_uri,
         )
@@ -2240,7 +2156,7 @@ class ContextManager:
         selected: List[Dict[str, Any]] = []
         selected_message_count = 0
         for record in reversed(merged_records):
-            msg_range = self._record_msg_range(record)
+            msg_range = record_msg_range(record)
             if msg_range is None:
                 continue
             width = (msg_range[1] - msg_range[0]) + 1
@@ -2407,11 +2323,11 @@ class ContextManager:
             l2_by_uri = {}
 
         for record in tail_records:
-            msg_range = self._record_msg_range(record)
+            msg_range = record_msg_range(record)
             if msg_range is None:
                 continue
             uri = str(record.get("uri", "") or "").strip()
-            text = l2_by_uri.get(uri, "") or self._record_text(record)
+            text = l2_by_uri.get(uri, "") or record_text(record)
             if not text:
                 continue
             entries.append(
@@ -2451,7 +2367,7 @@ class ContextManager:
                     "keywords": "",
                     "entities": [],
                 }
-            msg_range = self._record_msg_range(record)
+            msg_range = record_msg_range(record)
             if msg_range is None:
                 msg_index = snapshot.start_msg_index + offset
                 msg_range = (msg_index, msg_index)
@@ -2969,7 +2885,7 @@ class ContextManager:
         coll_token = set_collection_name(collection_name) if collection_name else None
         created_directory_uris: List[str] = []
         try:
-            merged_records = await self._load_session_merged_records(
+            merged_records = await self._session_records.load_merged(
                 session_id=session_id,
                 source_uri=source_uri,
             )
@@ -2987,11 +2903,11 @@ class ContextManager:
 
             entries: List[RecompositionEntry] = []
             for record in merged_records:
-                msg_range = self._record_msg_range(record)
+                msg_range = record_msg_range(record)
                 if msg_range is None:
                     continue
                 uri = str(record.get("uri", "") or "").strip()
-                text = self._record_text(record)
+                text = record_text(record)
                 if not text:
                     continue
                 entries.append(
@@ -3230,7 +3146,7 @@ class ContextManager:
         source_uri: Optional[str],
     ) -> Optional[str]:
         """Generate a session-level summary from directory abstracts (or leaf abstracts as fallback)."""
-        directory_records = await self._load_session_directory_records(
+        directory_records = await self._session_records.load_directories(
             session_id=session_id,
             source_uri=source_uri,
         )
@@ -3250,7 +3166,7 @@ class ContextManager:
                     abstracts.append(abstract)
 
             # Include ungrouped leaf abstracts (leaves not in any directory)
-            merged_records = await self._load_session_merged_records(
+            merged_records = await self._session_records.load_merged(
                 session_id=session_id,
                 source_uri=source_uri,
             )
@@ -3262,7 +3178,7 @@ class ContextManager:
                         abstracts.append(abstract)
         else:
             # Fallback: use leaf abstracts directly
-            merged_records = await self._load_session_merged_records(
+            merged_records = await self._session_records.load_merged(
                 session_id=session_id,
                 source_uri=source_uri,
             )
@@ -3910,7 +3826,7 @@ class ContextManager:
 
                     layer_counts: Optional[Dict[str, int]] = None
                     try:
-                        layer_counts = await self._session_layer_counts(session_id)
+                        layer_counts = await self._session_records.layer_counts(session_id)
                         logger.info(
                             "[ContextManager] End state sid=%s source_uri=%s layer_counts=%s",
                             session_id,
