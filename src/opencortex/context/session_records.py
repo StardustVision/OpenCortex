@@ -30,7 +30,59 @@ pagination + overflow guard.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
+
+
+# Default page size when paging through filter results. Picked to keep
+# round-trip count low on typical conversation sessions (~50 records)
+# while staying well below any single-page memory pressure.
+_DEFAULT_PAGE_SIZE = 1_000
+
+# Safety stop on the pagination loop. 50 pages × 1 000 rows = 50 000
+# records — orders of magnitude above any realistic single-session
+# benchmark or production conversation. Hitting this almost certainly
+# means a runaway query (cross-tenant session_id collision in storage,
+# session_id payload corruption, or a session that should be rotated).
+_DEFAULT_MAX_PAGES = 50
+
+
+class SessionRecordOverflowError(Exception):
+    """Raised when a session-scoped query exceeds the safety stop.
+
+    Carries enough context to debug the source: the session_id under
+    query, the running count when the stop fired, and the next cursor
+    from the storage adapter (so an operator can resume the scroll
+    manually if they need the full result set).
+
+    The HTTP admin layer maps this to 507 Insufficient Storage with a
+    structured detail payload. Production lifecycle callers can catch
+    it themselves to decide between paging through or surfacing a
+    diagnostic.
+    """
+
+    def __init__(
+        self,
+        *,
+        session_id: str,
+        count_at_stop: int,
+        next_cursor: Optional[str],
+        method: str,
+    ) -> None:
+        super().__init__(
+            f"SessionRecordsRepository.{method}(session_id={session_id!r}) "
+            f"exceeded the {_DEFAULT_MAX_PAGES}-page safety stop after "
+            f"{count_at_stop} records (next_cursor={next_cursor!r}). "
+            "This usually indicates a session_id payload anomaly or a "
+            "cross-tenant collision; rotate the session_id or audit "
+            "the storage payload before retrying."
+        )
+        self.session_id = session_id
+        self.count_at_stop = count_at_stop
+        self.next_cursor = next_cursor
+        self.method = method
 
 
 def record_msg_range(record: Dict[str, Any]) -> Optional[Tuple[int, int]]:
@@ -82,26 +134,132 @@ class SessionRecordsRepository:
         self,
         storage: Any,
         collection_resolver: Callable[[], str],
+        *,
+        page_size: int = _DEFAULT_PAGE_SIZE,
+        max_pages: int = _DEFAULT_MAX_PAGES,
     ) -> None:
         self._storage = storage
         self._collection = collection_resolver
+        self._page_size = page_size
+        self._max_pages = max_pages
+
+    def _build_session_filter(
+        self,
+        *,
+        session_id: str,
+        tenant_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Compose the storage filter dict for a session-scoped query.
+
+        ``session_id`` is always required. ``tenant_id`` / ``user_id``
+        are optional and pushed into the storage filter as additional
+        ``must`` conditions when provided — this closes the cross-tenant
+        ``session_id`` collision footgun (REVIEW PE-6) for callers that
+        have identity available. The relevant indexed payload field
+        names on the context collection are ``source_tenant_id`` /
+        ``source_user_id`` (see ``storage/collection_schemas.py``).
+
+        Callers that do not have identity (legacy or maintenance paths)
+        can still pass ``tenant_id=None`` / ``user_id=None`` to preserve
+        the U1 behavior — the filter simply omits those conds.
+        """
+        conds: List[Dict[str, Any]] = [
+            {"op": "must", "field": "session_id", "conds": [session_id]},
+        ]
+        if tenant_id:
+            conds.append(
+                {"op": "must", "field": "source_tenant_id", "conds": [tenant_id]}
+            )
+        if user_id:
+            conds.append(
+                {"op": "must", "field": "source_user_id", "conds": [user_id]}
+            )
+        return {"op": "and", "conds": conds}
+
+    async def _scroll_all(
+        self,
+        *,
+        session_id: str,
+        where: Dict[str, Any],
+        method: str,
+    ) -> List[Dict[str, Any]]:
+        """Page through ``storage.scroll`` with the safety stop guard.
+
+        Replaces the legacy ``limit=10_000`` silent truncation. Loops
+        until the scroll cursor is exhausted OR ``_max_pages`` pages
+        have been read; the latter raises ``SessionRecordOverflowError``
+        with the cursor + count so the caller can decide whether to
+        keep paging or surface a diagnostic. Page size is configurable
+        per repo instance (constructor kwarg).
+
+        Falls back to ``storage.filter`` with ``limit=page_size *
+        max_pages`` when the storage adapter does not support scroll
+        (in-memory test fixtures, for example) — this preserves
+        single-call semantics for those backends while still providing
+        the overflow signal.
+        """
+        all_records: List[Dict[str, Any]] = []
+        scroll = getattr(self._storage, "scroll", None)
+        if scroll is None or not callable(scroll):
+            # Fallback for storage adapters without scroll: one filter
+            # call with a page-size * max-pages limit. Overflow guard
+            # still fires when the result set hits the cap.
+            page = await self._storage.filter(
+                self._collection(),
+                where,
+                limit=self._page_size * self._max_pages,
+            )
+            if len(page) >= self._page_size * self._max_pages:
+                raise SessionRecordOverflowError(
+                    session_id=session_id,
+                    count_at_stop=len(page),
+                    next_cursor=None,
+                    method=method,
+                )
+            return list(page)
+
+        cursor: Optional[str] = None
+        for page_index in range(self._max_pages):
+            page, cursor = await scroll(
+                self._collection(),
+                filter=where,
+                limit=self._page_size,
+                cursor=cursor,
+            )
+            all_records.extend(page)
+            if cursor is None:
+                return all_records
+        # Hit the safety stop — the next cursor is non-None so there
+        # are more records out there. Surface as overflow.
+        raise SessionRecordOverflowError(
+            session_id=session_id,
+            count_at_stop=len(all_records),
+            next_cursor=cursor,
+            method=method,
+        )
 
     async def load_merged(
         self,
         *,
         session_id: str,
         source_uri: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Load merged conversation leaves for one session in msg-range order."""
-        records = await self._storage.filter(
-            self._collection(),
-            {
-                "op": "and",
-                "conds": [
-                    {"op": "must", "field": "session_id", "conds": [session_id]},
-                ],
-            },
-            limit=10000,
+        """Load merged conversation leaves for one session in msg-range order.
+
+        ``tenant_id`` / ``user_id`` (optional) push the cross-tenant
+        scope into the storage filter — see ``_build_session_filter``.
+        ``source_uri`` (optional) is filtered in-memory after fetch
+        because it lives on ``meta.source_uri`` (not a top-level
+        indexed field on the context collection).
+        """
+        where = self._build_session_filter(
+            session_id=session_id, tenant_id=tenant_id, user_id=user_id
+        )
+        records = await self._scroll_all(
+            session_id=session_id, where=where, method="load_merged"
         )
         sortable: List[Tuple[int, int, Dict[str, Any]]] = []
         for record in records:
@@ -123,17 +281,15 @@ class SessionRecordsRepository:
         *,
         session_id: str,
         source_uri: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Load directory parent records for one session in msg-range order."""
-        records = await self._storage.filter(
-            self._collection(),
-            {
-                "op": "and",
-                "conds": [
-                    {"op": "must", "field": "session_id", "conds": [session_id]},
-                ],
-            },
-            limit=10000,
+        where = self._build_session_filter(
+            session_id=session_id, tenant_id=tenant_id, user_id=user_id
+        )
+        records = await self._scroll_all(
+            session_id=session_id, where=where, method="load_directories"
         )
         sortable: List[Tuple[int, int, Dict[str, Any]]] = []
         for record in records:
@@ -150,16 +306,19 @@ class SessionRecordsRepository:
         sortable.sort(key=lambda item: (item[0], item[1]))
         return [record for _, _, record in sortable]
 
-    async def layer_counts(self, session_id: str) -> Dict[str, int]:
+    async def layer_counts(
+        self,
+        session_id: str,
+        *,
+        tenant_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> Dict[str, int]:
         """Return per-layer record counts for one session."""
-        records = await self._storage.filter(
-            self._collection(),
-            {
-                "op": "must",
-                "field": "session_id",
-                "conds": [session_id],
-            },
-            limit=10000,
+        where = self._build_session_filter(
+            session_id=session_id, tenant_id=tenant_id, user_id=user_id
+        )
+        records = await self._scroll_all(
+            session_id=session_id, where=where, method="layer_counts"
         )
         counts: Dict[str, int] = {}
         for record in records:
@@ -171,10 +330,9 @@ class SessionRecordsRepository:
     async def load_summary(self, summary_uri: str) -> Optional[Dict[str, Any]]:
         """Fetch the session_summary record at ``summary_uri`` if present.
 
-        Thin wrapper around the orchestrator's URI lookup. The benchmark
-        idempotent-hit path uses this to decide whether to surface the
-        prior run's ``summary_uri`` in the response. Returns ``None``
-        when no such record exists.
+        Returns ``None`` when no such record exists. URI lookup is
+        always exactly-one-record, so this method does not paginate
+        and no overflow guard applies.
         """
         records = await self._storage.filter(
             self._collection(),

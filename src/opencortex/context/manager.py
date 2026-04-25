@@ -1683,6 +1683,8 @@ class ContextManager:
             existing_records = await self._session_records.load_merged(
                 session_id=session_id,
                 source_uri=source_uri,
+                tenant_id=tenant_id,
+                user_id=user_id,
             )
             if existing_records:
                 # Verify the prior run actually completed (REVIEW F5 /
@@ -1906,6 +1908,8 @@ class ContextManager:
                 merged_records = await self._session_records.load_merged(
                     session_id=session_id,
                     source_uri=source_uri,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
                 )
                 # `layer_counts` was previously returned to the client but
                 # the helper that produced it (_session_layer_counts) is

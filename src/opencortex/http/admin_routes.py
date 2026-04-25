@@ -17,6 +17,7 @@ from opencortex.auth.token import (
     generate_token, load_token_records, revoke_token, save_token_record,
 )
 from opencortex.context.manager import SourceConflictError
+from opencortex.context.session_records import SessionRecordOverflowError
 from opencortex.http.models import (
     BenchmarkConversationIngestRequest, CreateTokenRequest,
     MemorySearchRequest, RevokeTokenRequest,
@@ -289,6 +290,27 @@ async def admin_benchmark_conversation_ingest(
                 "session_id": req.session_id,
                 "existing_hash": exc.existing_hash,
                 "supplied_hash": exc.supplied_hash,
+            },
+        )
+    except SessionRecordOverflowError as exc:
+        # SessionRecordsRepository safety stop fired — almost certainly a
+        # session_id payload anomaly or cross-tenant collision in
+        # storage. Surface 507 with the cursor + count so an operator
+        # can resume the scroll manually if they actually need the full
+        # set. (REVIEW closure tracker U2.)
+        raise HTTPException(
+            status_code=507,
+            detail={
+                "reason": "session_record_overflow",
+                "session_id": exc.session_id,
+                "method": exc.method,
+                "count_at_stop": exc.count_at_stop,
+                "next_cursor": exc.next_cursor,
+                "hint": (
+                    "Rotate session_id, audit the storage payload for "
+                    "cross-tenant collision, or page manually from "
+                    "next_cursor."
+                ),
             },
         )
 

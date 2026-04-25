@@ -16,6 +16,7 @@ import unittest
 from typing import Any, Dict, List
 
 from opencortex.context.session_records import (
+    SessionRecordOverflowError,
     SessionRecordsRepository,
     record_msg_range,
     record_text,
@@ -207,6 +208,120 @@ class TestSessionRecordsRepository(unittest.TestCase):
         self.assertEqual(record_text({"abstract": "a"}), "a")
         self.assertEqual(record_text({}), "")
         self.assertEqual(record_text({"content": "  "}), "")  # whitespace stripped
+
+
+class TestSessionRecordsRepositoryScopeAndOverflow(unittest.TestCase):
+    """U2: tenant/user scope discipline + cursor pagination + overflow guard."""
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def test_tenant_user_kwargs_push_scope_into_filter(self):
+        """``load_merged(tenant_id=..., user_id=...)`` adds source_tenant_id/user_id conds."""
+
+        async def check():
+            captured: List[Dict[str, Any]] = []
+
+            class _CapturingStorage:
+                async def filter(self, _coll, where, limit=10000):
+                    captured.append(where)
+                    return []
+
+            repo = SessionRecordsRepository(
+                storage=_CapturingStorage(), collection_resolver=lambda: "context"
+            )
+            await repo.load_merged(
+                session_id="s1", tenant_id="t1", user_id="u1"
+            )
+            self.assertEqual(len(captured), 1)
+            conds = captured[0]["conds"]
+            fields = {c["field"] for c in conds}
+            self.assertIn("session_id", fields)
+            self.assertIn("source_tenant_id", fields)
+            self.assertIn("source_user_id", fields)
+
+        self._run(check())
+
+    def test_no_tenant_user_preserves_legacy_filter_shape(self):
+        """When tenant/user not provided, only session_id cond is pushed."""
+
+        async def check():
+            captured: List[Dict[str, Any]] = []
+
+            class _CapturingStorage:
+                async def filter(self, _coll, where, limit=10000):
+                    captured.append(where)
+                    return []
+
+            repo = SessionRecordsRepository(
+                storage=_CapturingStorage(), collection_resolver=lambda: "context"
+            )
+            await repo.load_merged(session_id="s1")
+            self.assertEqual(len(captured), 1)
+            conds = captured[0]["conds"]
+            fields = {c["field"] for c in conds}
+            self.assertEqual(fields, {"session_id"})
+
+        self._run(check())
+
+    def test_overflow_raises_session_record_overflow_error(self):
+        """Filter-fallback path: hitting the page-size * max-pages cap raises."""
+
+        async def check():
+            class _SaturatedStorage:
+                # No `scroll` attribute → falls through to filter() path.
+                async def filter(self, _coll, _where, limit=10000):
+                    # Return exactly `limit` records — triggers overflow.
+                    return [
+                        {"meta": {"layer": "merged", "msg_range": [i, i]}}
+                        for i in range(limit)
+                    ]
+
+            # Tiny budget so the test runs fast.
+            repo = SessionRecordsRepository(
+                storage=_SaturatedStorage(),
+                collection_resolver=lambda: "context",
+                page_size=10,
+                max_pages=2,
+            )
+            with self.assertRaises(SessionRecordOverflowError) as ctx:
+                await repo.load_merged(session_id="huge")
+            self.assertEqual(ctx.exception.session_id, "huge")
+            self.assertEqual(ctx.exception.method, "load_merged")
+            self.assertEqual(ctx.exception.count_at_stop, 20)
+
+        self._run(check())
+
+    def test_scroll_pagination_loops_until_cursor_none(self):
+        """Scroll-supporting storage: loop continues until cursor exhausted."""
+
+        async def check():
+            class _ScrollingStorage:
+                def __init__(self):
+                    # Three pages worth of data.
+                    self._pages = [
+                        ([{"meta": {"layer": "merged", "msg_range": [0, 0]}}], "c1"),
+                        ([{"meta": {"layer": "merged", "msg_range": [1, 1]}}], "c2"),
+                        ([{"meta": {"layer": "merged", "msg_range": [2, 2]}}], None),
+                    ]
+                    self._index = 0
+
+                async def scroll(self, _coll, filter=None, limit=10, cursor=None):
+                    page = self._pages[self._index]
+                    self._index += 1
+                    return page
+
+            repo = SessionRecordsRepository(
+                storage=_ScrollingStorage(),
+                collection_resolver=lambda: "context",
+                page_size=1,
+                max_pages=10,
+            )
+            out = await repo.load_merged(session_id="s")
+            # 3 records collected across 3 scroll calls; sorted by msg_range.
+            self.assertEqual([r["meta"]["msg_range"] for r in out], [[0, 0], [1, 1], [2, 2]])
+
+        self._run(check())
 
 
 if __name__ == "__main__":
