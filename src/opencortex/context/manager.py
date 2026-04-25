@@ -1585,10 +1585,15 @@ class ContextManager:
         self,
         normalized_segments: List[List[Dict[str, Any]]],
     ) -> List[RecompositionEntry]:
-        """Build message-level entries for benchmark offline chunking."""
+        """Build message-level entries for benchmark offline chunking.
+
+        Each entry is tagged with its source input-segment index so
+        ``_build_recomposition_segments`` can hard-split at input-segment
+        boundaries (REVIEW closure tracker R3-RC-02 / R2-14).
+        """
         entries: List[RecompositionEntry] = []
         msg_index = 0
-        for segment in normalized_segments:
+        for segment_index, segment in enumerate(normalized_segments):
             segment_meta = self._benchmark_segment_meta(segment)
             for message in segment:
                 # Segment-level aggregation (entities/topics/time_refs/
@@ -1636,6 +1641,7 @@ class ContextManager:
                         source_record=record,
                         immediate_uris=[],
                         superseded_merged_uris=[],
+                        source_segment_index=segment_index,
                     )
                 )
                 msg_index += 1
@@ -1923,6 +1929,7 @@ class ContextManager:
                     source_record=record,
                     immediate_uris=[],
                     superseded_merged_uris=([uri] if uri else []),
+                    source_segment_index=None,
                 )
             )
 
@@ -1964,6 +1971,7 @@ class ContextManager:
                     source_record=record,
                     immediate_uris=([normalized_uri] if normalized_uri else []),
                     superseded_merged_uris=[],
+                    source_segment_index=None,
                 )
             )
 
@@ -2503,6 +2511,7 @@ class ContextManager:
                         source_record=record,
                         immediate_uris=[],
                         superseded_merged_uris=[],
+                        source_segment_index=None,
                     )
                 )
 
