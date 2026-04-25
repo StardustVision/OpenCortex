@@ -1336,7 +1336,7 @@ class ContextManager:
                 return uri, ""
 
         results = await asyncio.gather(*[_read_one(u) for u in uris])
-        return {uri: text for uri, text in results}
+        return dict(results)
 
     def _benchmark_recomposition_entries(
         self,
@@ -1800,6 +1800,15 @@ class ContextManager:
                     for record in records
                 ],
             }
+        except asyncio.CancelledError:
+            # Symmetric with the merged_recompose path: CancelledError
+            # descends from BaseException, so the prior `except Exception`
+            # let cancellation bypass cleanup. Run compensation then
+            # re-raise so cancellation semantics propagate unchanged.
+            if created_uris:
+                with contextlib.suppress(Exception):
+                    await self._delete_immediate_families(created_uris)
+            raise
         except Exception:
             if created_uris:
                 with contextlib.suppress(Exception):
@@ -2661,7 +2670,7 @@ class ContextManager:
                 len(merged_records),
             )
             if len(merged_records) <= 1:
-                return
+                return [] if return_created_uris else None
 
             entries: List[Dict[str, Any]] = []
             for record in merged_records:
@@ -2696,7 +2705,7 @@ class ContextManager:
                 [segment.get("msg_range") for segment in segments[:8]],
             )
             if not segments:
-                return
+                return [] if return_created_uris else None
 
             # Pre-compute eligible segments and their stable directory_index
             # so the bounded-concurrency derive loop below has deterministic
@@ -2722,7 +2731,7 @@ class ContextManager:
                     "[ContextManager] Full recompose: no eligible directories sid=%s",
                     session_id,
                 )
-                return
+                return [] if return_created_uris else None
 
             derive_semaphore = asyncio.Semaphore(_DIRECTORY_DERIVE_CONCURRENCY)
 
