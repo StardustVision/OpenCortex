@@ -47,8 +47,21 @@ _SEGMENT_MAX_TOKENS = 1200
 _SEGMENT_MIN_MESSAGES = 2
 _RECOMPOSE_TAIL_MAX_MERGED_LEAVES = 6
 _RECOMPOSE_TAIL_MAX_MESSAGES = 24
-_RECOMPOSE_CLUSTER_MAX_TOKENS = 1_000_000
-_RECOMPOSE_CLUSTER_MAX_MESSAGES = 1_000_000
+# Anchor-clustered recomposition caps. Previous values (1_000_000) were
+# effectively no limit, so anchorless or low-jaccard inputs could grow a
+# single cluster until ``_derive_parent_summary`` blew the LLM context
+# window. Targets here match production conversation-mode budget headroom
+# for the typical ``children_abstracts`` prompt.
+_RECOMPOSE_CLUSTER_MAX_TOKENS = 6_000
+_RECOMPOSE_CLUSTER_MAX_MESSAGES = 60
+
+# Bounded concurrency for ``_derive_parent_summary`` calls inside
+# ``_run_full_session_recomposition``. Production conversation lifecycle
+# also benefits — the loop used to be serial (R3-P-02), so an 8-directory
+# session paid 8 × ~4s LLM latency. Three concurrent derives cuts this
+# to roughly ``ceil(N/3) × derive_latency`` without saturating downstream
+# LLM rate limits at the typical benchmark fan-out.
+_DIRECTORY_DERIVE_CONCURRENCY = 3
 _RECOMPOSE_CLUSTER_JACCARD_THRESHOLD = 0.15
 _COARSE_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _COARSE_HUMAN_DATE_RE = re.compile(r"^\d{1,2}\s+[A-Za-z]+,\s+\d{4}$")
@@ -2015,21 +2028,34 @@ class ContextManager:
             entry_messages = int(entry["msg_end"]) - int(entry["msg_start"]) + 1
             entry_tokens = int(entry["token_count"])
 
+            within_caps = (
+                current_tokens + entry_tokens <= _RECOMPOSE_CLUSTER_MAX_TOKENS
+                and current_messages + max(entry_messages, 1)
+                <= _RECOMPOSE_CLUSTER_MAX_MESSAGES
+            )
+
             if not entry_anchors:
-                current.append(entry)
-                current_tokens += entry_tokens
-                current_messages += max(entry_messages, 1)
+                # Anchorless entries used to bypass the caps unconditionally
+                # (R2-13). For inputs without entities/topics — e.g. some
+                # LongMemEval samples — that grew a single cluster until
+                # ``_derive_parent_summary`` blew its context window. Now
+                # anchorless entries still cluster greedily but respect the
+                # same token / message caps as anchored entries.
+                if within_caps:
+                    current.append(entry)
+                    current_tokens += entry_tokens
+                    current_messages += max(entry_messages, 1)
+                else:
+                    segments.append(self._finalize_recomposition_segment(current))
+                    current = [entry]
+                    current_anchors = set()
+                    current_tokens = entry_tokens
+                    current_messages = max(entry_messages, 1)
                 continue
 
             union = current_anchors | entry_anchors
             jaccard = (
                 len(current_anchors & entry_anchors) / len(union) if union else 0.0
-            )
-
-            within_caps = (
-                current_tokens + entry_tokens <= _RECOMPOSE_CLUSTER_MAX_TOKENS
-                and current_messages + max(entry_messages, 1)
-                <= _RECOMPOSE_CLUSTER_MAX_MESSAGES
             )
 
             if jaccard >= _RECOMPOSE_CLUSTER_JACCARD_THRESHOLD and within_caps:
@@ -2429,11 +2455,61 @@ class ContextManager:
             if not segments:
                 return
 
-            directory_index = 0
+            # Pre-compute eligible segments and their stable directory_index
+            # so the bounded-concurrency derive loop below has deterministic
+            # URIs regardless of which derive future resolves first.
+            eligible: List[Tuple[int, Dict[str, Any], List[str]]] = []
             for segment in segments:
                 source_records = segment.get("source_records", [])
                 if len(source_records) < 2:
                     continue
+                children_abstracts = [
+                    str(rec.get("abstract") or "").strip()
+                    for rec in source_records
+                    if str(rec.get("abstract") or "").strip()
+                ]
+                if not children_abstracts:
+                    continue
+                eligible.append(
+                    (len(eligible), segment, children_abstracts)
+                )
+
+            if not eligible:
+                logger.info(
+                    "[ContextManager] Full recompose: no eligible directories sid=%s",
+                    session_id,
+                )
+                return
+
+            derive_semaphore = asyncio.Semaphore(_DIRECTORY_DERIVE_CONCURRENCY)
+
+            async def _derive_one(
+                directory_index: int,
+                children_abstracts: List[str],
+            ) -> Tuple[int, Optional[Dict[str, Any]]]:
+                cluster_title = f"Directory-{directory_index:03d}"
+                async with derive_semaphore:
+                    return directory_index, await (
+                        self._orchestrator._derive_parent_summary(
+                            doc_title=cluster_title,
+                            children_abstracts=children_abstracts,
+                        )
+                    )
+
+            derive_results = await asyncio.gather(
+                *[
+                    _derive_one(idx, kids)
+                    for idx, _, kids in eligible
+                ]
+            )
+            derived_by_index: Dict[int, Optional[Dict[str, Any]]] = dict(derive_results)
+
+            # Sequential write phase preserves storage-order invariants the
+            # production lifecycle relied on (URIs are written in
+            # directory_index order; keywords-patch and FS writes happen
+            # right after each Qdrant upsert).
+            for directory_index, segment, children_abstracts in eligible:
+                source_records = segment.get("source_records", [])
                 logger.info(
                     "[ContextManager] Full recompose segment sid=%s dir_index=%d msg_range=%s children=%d",
                     session_id,
@@ -2442,19 +2518,7 @@ class ContextManager:
                     len(source_records),
                 )
 
-                children_abstracts: List[str] = []
-                for rec in source_records:
-                    abstract = str(rec.get("abstract") or "").strip()
-                    if abstract:
-                        children_abstracts.append(abstract)
-                if not children_abstracts:
-                    continue
-
-                cluster_title = f"Directory-{directory_index:03d}"
-                derived = await self._orchestrator._derive_parent_summary(
-                    doc_title=cluster_title,
-                    children_abstracts=children_abstracts,
-                )
+                derived = derived_by_index.get(directory_index)
                 if not derived:
                     continue
 
@@ -2507,7 +2571,6 @@ class ContextManager:
                 )
 
                 created_directory_uris.append(dir_uri)
-                directory_index += 1
 
                 if keywords_str:
                     try:
