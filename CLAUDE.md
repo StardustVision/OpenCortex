@@ -87,6 +87,13 @@ src/opencortex/
   utils/
     uri.py                       # CortexURI tenant-isolated URI scheme
 
+benchmarks/adapters/             # Benchmark eval adapters (LongMemEval, LoCoMo, beam, etc.)
+  base.py                        # EvalAdapter ABC + IngestResult/QAItem dataclasses
+  conversation_mapping.py        # Shared mapping helpers used by ≥2 conversation-style adapters
+  conversation.py                # LongMemEvalBench
+  locomo.py                      # LoCoMoBench
+  beam.py                        # BeamBench
+
 plugins/opencortex-memory/       # Git submodule → github.com/StardustVision/OpenCortex-Memory
 
 tests/
