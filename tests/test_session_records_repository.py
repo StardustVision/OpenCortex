@@ -24,42 +24,57 @@ from opencortex.context.session_records import (
 
 
 class _FakeStorage:
-    """Minimal storage stand-in: holds records in a single collection."""
+    """Minimal storage stand-in: holds records in a single collection.
+
+    Evaluates the filter DSL recursively so every cond pushed into
+    ``_build_session_filter`` (session_id, source_tenant_id,
+    source_user_id, meta.source_uri) actually filters records — this
+    is required for repository tests to faithfully exercise the
+    server-side filter (PERF-02) instead of accidentally relying on
+    an in-memory post-filter that no longer exists.
+    """
 
     def __init__(self, records: List[Dict[str, Any]]) -> None:
         self._records = records
 
-    async def filter(self, _collection, where, limit=10000):
-        # Mirror the in-memory test storage: emit records matching the
-        # ``session_id`` / ``uri`` conds the legacy helpers used.
-        targets: List[str] = []
-        field = ""
-        if isinstance(where, dict) and where.get("op") == "and":
-            for cond in where.get("conds", []) or []:
-                if cond.get("field") == "session_id":
-                    field = "session_id"
-                    targets = list(cond.get("conds") or [])
-                    break
-        elif isinstance(where, dict) and where.get("op") == "must":
-            field = where.get("field", "")
-            targets = list(where.get("conds") or [])
-        if not field:
-            return list(self._records)[:limit]
+    @staticmethod
+    def _resolve_field(record: Dict[str, Any], field_name: str) -> Any:
+        """Walk dot-paths into nested dicts; mirrors Qdrant's nested key."""
+        if "." not in field_name:
+            # session_id may live at the top level OR inside meta —
+            # check meta first because that's where session_records
+            # writes set it.
+            if field_name == "session_id":
+                meta = record.get("meta") or {}
+                if isinstance(meta, dict) and meta.get("session_id"):
+                    return meta["session_id"]
+            return record.get(field_name)
+        cursor: Any = record
+        for part in field_name.split("."):
+            if isinstance(cursor, dict):
+                cursor = cursor.get(part)
+            else:
+                return None
+            if cursor is None:
+                return None
+        return cursor
 
+    def _eval(self, record: Dict[str, Any], filt: Dict[str, Any]) -> bool:
+        op = filt.get("op", "")
+        if op == "and":
+            return all(self._eval(record, c) for c in filt.get("conds", []) or [])
+        if op == "must":
+            val = self._resolve_field(record, filt.get("field", ""))
+            return val in (filt.get("conds") or [])
+        # Unknown ops pass through (test fixtures don't use them today).
+        return True
+
+    async def filter(self, _collection, where, limit=10000):
+        if not isinstance(where, dict):
+            return list(self._records)[:limit]
         out: List[Dict[str, Any]] = []
         for record in self._records:
-            value = (
-                record.get(field)
-                if field != "uri"
-                else str(record.get("uri", "") or "")
-            )
-            if field == "session_id":
-                value = (
-                    str((record.get("meta") or {}).get("session_id"))
-                    if "meta" in record and record["meta"].get("session_id")
-                    else value
-                )
-            if value in targets:
+            if self._eval(record, where):
                 out.append(record)
             if len(out) >= limit:
                 break
