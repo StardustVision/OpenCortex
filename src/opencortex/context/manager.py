@@ -1300,14 +1300,14 @@ class ContextManager:
             session_id=session_id,
             meta=meta,
         )
-        if getattr(self._orchestrator, "_fs", None) is not None:
-            await self._orchestrator._fs.write_context(
-                uri=source_uri,
-                content=content,
-                abstract=f"Conversation transcript for {session_id}",
-                abstract_json={},
-                is_leaf=False,
-            )
+        # REVIEW closure tracker R2-23 / R4-P2-6 — orchestrator.add()
+        # already schedules the CortexFS write as a fire-and-forget
+        # task (see orchestrator.py: ``asyncio.create_task(self._fs.
+        # write_context(...))`` after the storage upsert). The previous
+        # explicit follow-up ``await self._orchestrator._fs.write_context(...)``
+        # here was a redundant double-write — same uri, same content —
+        # that doubled the FS I/O for source persistence and could race
+        # with the scheduled task on slow filesystems.
         return source_uri
 
     async def _mark_source_run_complete(self, source_uri: str) -> None:
