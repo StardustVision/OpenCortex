@@ -1,0 +1,160 @@
+# Repo-Wide God Object + Google Python Style Audit
+
+**Date:** 2026-04-25
+**Scope:** `src/opencortex/**/*.py` and `benchmarks/**/*.py` (~144 files, ~33K LOC). Excludes tests, Node.js plugin, third-party.
+**Origin:** User asked the in-flight `MemoryOrchestrator` decomposition (plan 010) to widen — "记得全仓库扫描，不只是 MemoryOrchestrator 这一个类哈" (don't just scan MemoryOrchestrator — scan the whole repo).
+
+This document is the canonical findings list. It does NOT propose fixes — it enumerates targets. Follow-up plans (011, 012, ...) cite this audit and execute remediation phase-by-phase.
+
+---
+
+## God Object Candidates (ranked by sprawl)
+
+| Rank | File | Lines | Methods | self.\_ attrs | Verdict |
+|------|------|-------|---------|---------------|---------|
+| 1 | `src/opencortex/orchestrator.py` | 6261 | 132 | 39+ | **God Object** (11+ unrelated responsibilities). Active decomposition: plan 010 / Phase 1 in flight |
+| 2 | `src/opencortex/context/manager.py` | 4047 | 52 | 102 | **God Object** (9 responsibilities). Partially decomposed via §25 (BenchmarkConversationIngestService, SessionRecordsRepository extracted) but core lifecycle + recomposition still sprawling |
+| 3 | `src/opencortex/storage/cortex_fs.py` | 1198 | 12 | 20 | **Large but cohesive** (filesystem adapter + semantic layer — single domain). Acceptable |
+| 4 | `src/opencortex/storage/qdrant/adapter.py` | 1064 | 8 | 17 | **Large but cohesive** (Qdrant adapter — single domain). Acceptable |
+| 5 | `src/opencortex/context/benchmark_ingest_service.py` | 731 | 2 public | 9 | **Large but cohesive** (6-phase ingest workflow). Acceptable |
+| 6 | `benchmarks/adapters/locomo.py` | 625 | 9 | 13 | **Large but cohesive** (single dataset adapter). Acceptable |
+| 7 | `benchmarks/unified_eval.py` | 1209 | 1 | 0 | **Acceptable** — script-like, not class-based |
+
+**Bottom line:** TWO confirmed God Objects requiring decomposition. Everything else is large-but-cohesive.
+
+---
+
+## Top Style Violations (frequency-ordered)
+
+### 1. Missing docstrings on public/protected methods (~120+ instances)
+
+Systematic gaps across the codebase. Representative offenders:
+
+- `src/opencortex/intent/probe.py:147` — `_detect_hard_keywords` (no docstring)
+- `src/opencortex/insights/agent.py:772, 809` — `_generate_at_a_glance`, `_empty_report`
+- `benchmarks/adapters/locomo.py:236, 245, 260` — three undocumented methods
+- `benchmarks/adapters/conversation.py:33, 56, 78` — three undocumented methods
+
+Root cause: methods <10 lines treated as "self-explanatory". No enforced convention.
+
+### 2. Methods >100 lines (Google Style suggests ≤40) — 22 instances
+
+The absolute monsters live in the two confirmed God Objects:
+
+- `src/opencortex/orchestrator.py:4478-5931` — `_recall_bookkeeping_tasks_set` (**1454 lines** in one method — a quarter of the entire file)
+- `src/opencortex/orchestrator.py:3711-4454` — `_matched_record_anchors` (744 lines)
+- `src/opencortex/context/manager.py:2946-3585` — `_track_session_merge_followup_task` (640 lines)
+- `src/opencortex/context/manager.py:2427-2917` — `_spawn_full_recompose_task` (491 lines)
+- 18 additional methods >100 lines across orchestrator.py + manager.py
+
+Root cause: complex async workflows inlined; orchestrator/manager decomposition incomplete.
+
+### 3. Bare `Any` type hints where the type is knowable (~40+ instances)
+
+Examples:
+
+- `src/opencortex/orchestrator.py:142` — `def _merge_unique_strings(*groups: Any) -> List[str]` (groups is `Union[List[str], str]`)
+- `src/opencortex/orchestrator.py:2038, 2044` — `_coerce_derived_string(value: Any)` (value is string-like)
+- Multiple `Optional[Dict[str, Any]]` in `context/manager.py` where inner shape is knowable
+
+Root cause: LLM integration (json.loads, async callables) pushes `Any` for lazy typing.
+
+### 4. Lines >100 chars (~50 instances)
+
+- `src/opencortex/context/manager.py` — 17 lines exceed 100 chars
+- `src/opencortex/orchestrator.py` — 9 lines exceed 100 chars
+- Mostly long string literals, complex comprehensions, URI construction
+
+### 5. Relative imports in `cognition/` package (15 instances)
+
+- `src/opencortex/cognition/__init__.py:3-12` — all relative
+
+**Verdict:** Acceptable per PEP 8 for package-local re-exports. Not a violation in context. Listed for completeness.
+
+---
+
+## Cross-Class Coupling Notes (relevant to in-flight decomposition)
+
+**Back-references to `MemoryOrchestrator`:**
+
+1. `src/opencortex/http/server.py:60, 66, 194, 198` — module-level singleton, REST gateway. Tight coupling, no planned decoupling.
+2. `src/opencortex/services/memory_service.py:55` — TYPE_CHECKING import only (avoids circular at runtime). Holds `self._orch` back-reference. **This is the new pattern.**
+3. `src/opencortex/context/manager.py:245, 255` — receives `orchestrator` in `__init__`, stored as `self._orchestrator`. Comment says "avoid circular import" — confirms ContextManager respects the boundary.
+
+**Circular import risk:** None today. `manager.py` does NOT import `orchestrator.py` at module level (only docstrings + TYPE_CHECKING). The `services/memory_service.py` pattern can be replicated for KnowledgeService, BackgroundTaskManager, etc. without risk.
+
+**Other manager-like classes (already focused, no decomposition needed):**
+
+- `src/opencortex/skill_engine/skill_manager.py` — 206 lines, manages skill registry only
+- `src/opencortex/cognition/mutation_engine.py` — 213 lines, focused mutation logic
+- `src/opencortex/insights/report.py` — 345 lines, report I/O only
+
+---
+
+## Prioritized Follow-Up Targets
+
+After Phase 1 (MemoryService extraction, plan 010) lands:
+
+### Priority A — High impact, moderate scope
+
+**A1. Extract Knowledge Management → `KnowledgeService`**
+- Source: `src/opencortex/orchestrator.py` methods `knowledge_*`, `archivist_*`
+- Scope: medium (~300-400 lines)
+- Independent of further orchestrator decomposition
+- Mirrors plan 010's MemoryService pattern
+
+**A2. Extract Background Task Orchestration → `BackgroundTaskManager`**
+- Source: `src/opencortex/orchestrator.py` `_start_autophagy_sweeper`, `_start_derive_worker`, `_start_connection_sweeper`, `_recall_bookkeeping_tasks_set` (the 1454-line monster)
+- Scope: medium-large (~500 lines)
+- Independent of Phase 1
+- Highest impact per line moved — collapses the single biggest method in the codebase
+
+**A3. Extract Observability & Diagnostics → `ObservabilityReporter`**
+- Source: orchestrator's `_maybe_warn_pool`, pool stats integration, trace collection
+- Scope: small (~200 lines)
+- Independent
+
+### Priority B — Larger but high-value
+
+**B1. ContextManager Recomposition Refactor**
+- Source: `src/opencortex/context/manager.py` recomposition state machine (`_track_session_merge_followup_task` 640 lines, `_spawn_full_recompose_task` 491 lines, plus ~8 other >100-line methods)
+- Target shape: `SessionRecompositionEngine` + `ContextFilterBuilder`
+- Scope: large (~1500 lines across multiple new classes)
+- Independent of orchestrator refactor — ContextManager is the second God Object
+
+**B2. Google Style Remediation Sweep**
+- Add ~120 docstrings, type-tighten ~40 `Any`s, hard-break ~50 long lines
+- Target files: orchestrator.py, manager.py, insights/agent.py, benchmark adapters
+- Scope: medium (mechanical, but spans many files)
+- Use linting (`pylint --disable=all --enable=missing-docstring`) + manual review
+- Should land AFTER Phase 1-3 of orchestrator decomposition (fewer lines to process)
+
+### Priority C — Technical debt cleanup
+
+**C1. Consolidate Benchmark Adapters → `UnifiedBenchmarkAdapter`**
+- Source: `benchmarks/adapters/locomo.py` (625L), `conversation.py` (516L), `knowledge.py` (410L)
+- Common interface already exists (`BaseAdapter`)
+- Scope: medium (~300 lines refactoring)
+- Lowest priority — adapters are large but cohesive; refactor only if shared logic genuinely diverges
+
+---
+
+## Recommended Sequence
+
+1. **Plan 010 (in flight)** — MemoryService extraction (Phase 1 of orchestrator decomposition)
+2. **Plan 011** — KnowledgeService extraction (Priority A1)
+3. **Plan 012** — BackgroundTaskManager extraction (Priority A2 — biggest single win)
+4. **Plan 013** — ObservabilityReporter (Priority A3)
+5. **Plan 014** — ContextManager Recomposition Refactor (Priority B1 — second God Object)
+6. **Plan 015** — Google Style Remediation Sweep (Priority B2 — spans multiple files)
+
+Each plan = one PR. Each PR independently mergeable. Total: ~6 PRs to fully remediate the architecture + style debt.
+
+---
+
+## What this audit explicitly does NOT recommend
+
+- Don't decompose `cortex_fs.py`, `qdrant/adapter.py`, `benchmark_ingest_service.py`, or `locomo.py` — they are large but single-responsibility.
+- Don't enforce arbitrary line limits on already-cohesive methods. The 1454-line and 744-line monsters are different — they really are doing too much. A 150-line method that's tightly cohesive (e.g., a parser state machine) is acceptable.
+- Don't churn the `cognition/` package's relative imports — they're correct per PEP 8 for package-local re-exports.
+- Don't try to land all 6 follow-up plans in one mega-PR. Phased disciplined rollout is exactly what the user asked for.
