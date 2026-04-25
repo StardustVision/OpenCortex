@@ -2776,30 +2776,45 @@ class ContextManager:
             return None
 
         # REVIEW closure tracker R2-21 — 1-directory short-circuit.
-        # When recomposition produced exactly one directory and there
-        # are no ungrouped merged leaves, ``abstracts`` is just
-        # ``[directory.abstract]`` and the LLM call below would
-        # summarize one already-summarized abstract. Wasteful: 1 LLM
-        # call + 2 storage scans per session_end with single-cluster
-        # recomposition. Promote the directory's existing
-        # abstract / overview / topics to the session_summary
+        # When recomposition produced exactly one directory whose
+        # abstract is the sole contributor to ``abstracts``, the LLM
+        # call below would summarize one already-summarized abstract.
+        # Wasteful: 1 LLM call + 2 storage scans per session_end with
+        # single-cluster recomposition. Promote the directory's
+        # existing abstract / overview / topics to the session_summary
         # verbatim instead.
+        #
+        # The guard requires THREE conditions because a less strict
+        # check would shadow ungrouped-leaf content:
+        #
+        #  1. ``len(directory_records) == 1`` — exactly one directory
+        #  2. ``only_dir_abstract`` is non-empty — otherwise the
+        #     directory loop's ``.strip()`` filter dropped it from
+        #     ``abstracts`` and the single entry came from an
+        #     ungrouped leaf (correctness bug if we promote the dir's
+        #     empty abstract over the leaf's content).
+        #  3. ``len(abstracts) == 1`` AND ``abstracts[0] ==
+        #     only_dir_abstract`` — belt+braces: the only entry IS
+        #     the directory's abstract, not a coincidentally-equal
+        #     leaf abstract.
+        only_dir_abstract = (
+            str(directory_records[0].get("abstract") or "").strip()
+            if len(directory_records) == 1
+            else ""
+        )
         summary_uri = self._session_summary_uri(tenant_id, user_id, session_id)
         if (
             len(directory_records) == 1
+            and only_dir_abstract
             and len(abstracts) == 1
+            and abstracts[0] == only_dir_abstract
         ):
             only_dir = directory_records[0]
             only_dir_meta = dict(only_dir.get("meta") or {})
-            llm_abstract = str(only_dir.get("abstract") or "")
+            llm_abstract = only_dir_abstract
             llm_overview = str(only_dir.get("overview") or "")
             topics = only_dir_meta.get("topics") or []
             keywords_list = list(topics) if isinstance(topics, list) else []
-            derived = {
-                "abstract": llm_abstract,
-                "overview": llm_overview,
-                "keywords": keywords_list,
-            }
         else:
             derived = await self._orchestrator._derive_parent_summary(
                 doc_title=session_id,

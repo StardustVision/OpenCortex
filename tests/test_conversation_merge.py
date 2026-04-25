@@ -282,7 +282,7 @@ class TestBuildAnchorClusteredSegments(unittest.TestCase):
         self.assertEqual(seg["msg_range"], [0, 5])
 
 
-class TestDeleteImmediateFamiliesCortexFS(unittest.TestCase):
+class TestPurgeRecordsAndFsSubtree(unittest.TestCase):
     """Test _purge_records_and_fs_subtree also cleans CortexFS directories."""
 
     def test_deletes_both_qdrant_and_cortexfs(self):

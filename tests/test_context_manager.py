@@ -1110,9 +1110,11 @@ class TestContextManager(unittest.TestCase):
             )
         )
 
-        # Reset call count: the orchestrator.add above doesn't invoke
-        # the configured llm_completion (only _generate_session_summary
-        # path does for this fixture's purpose).
+        # Reset call count: the orch.add() calls above invoke the LLM
+        # via the orchestrator's _derive_layers_split_fields path
+        # (multiple calls per leaf record). Reset so the assertion
+        # below captures only calls originating from
+        # _generate_session_summary.
         llm_call_count[0] = 0
 
         summary_uri = self._run(
@@ -1209,6 +1211,209 @@ class TestContextManager(unittest.TestCase):
             llm_call_count[0],
             1,
             "2-directory case must still call LLM exactly once "
+            f"(got {llm_call_count[0]})",
+        )
+
+        self._run(orch.close())
+
+    def test_session_summary_falls_through_to_llm_when_dir_has_empty_abstract(self):
+        """Regression: empty-dir-abstract + ungrouped leaf must NOT short-circuit.
+
+        Caught in CE review of plan 007 cleanup PR: the original guard
+        ``len(directory_records) == 1 and len(abstracts) == 1`` would
+        fire incorrectly when a single directory has an empty abstract
+        AND there's exactly one ungrouped merged leaf:
+
+        1. Directory loop tries to append empty abstract → ``.strip()``
+           filter at line ~2755 drops it → abstracts stays empty
+        2. Ungrouped-leaves loop appends one leaf abstract →
+           len(abstracts) == 1
+        3. Old guard: ``len(directory_records) == 1 AND
+           len(abstracts) == 1`` → both true → fires
+        4. Short-circuit promotes the directory's empty abstract to
+           the session_summary record, **silently losing the leaf's
+           content**
+
+        Fixed by adding two stricter conditions: ``only_dir_abstract``
+        is non-empty AND ``abstracts[0] == only_dir_abstract``.
+        """
+        llm_call_count = [0]
+
+        async def counting_llm(prompt, **kwargs):
+            llm_call_count[0] += 1
+            return '{"abstract": "LLM merged abstract", "overview": "LLM overview", "keywords": ["llm-kw"]}'
+
+        orch = self._make_orchestrator(llm_completion=counting_llm)
+        self._run(orch.init())
+        cm = orch._context_manager
+        session_id = "sess_r2_21_empty_dir_regression"
+        source_uri = cm._conversation_source_uri("testteam", "alice", session_id)
+
+        # One leaf that is NOT in the directory's child_uris (ungrouped).
+        ungrouped_leaf_uri = (
+            "opencortex://testteam/alice/memories/events/leaf-ungrouped"
+        )
+        self._run(
+            orch.add(
+                uri=ungrouped_leaf_uri,
+                abstract="ungrouped leaf important content",
+                content="ungrouped leaf body",
+                category="events",
+                context_type="memory",
+                session_id=session_id,
+                meta={
+                    "layer": "merged",
+                    "msg_range": [0, 0],
+                    "source_uri": source_uri,
+                    "session_id": session_id,
+                },
+            )
+        )
+        # One directory with EMPTY abstract and child_uris that don't
+        # include the ungrouped leaf.
+        directory_uri = (
+            "opencortex://testteam/alice/memories/events/dir-empty-abstract"
+        )
+        self._run(
+            orch.add(
+                uri=directory_uri,
+                abstract="",  # the bug trigger
+                overview="",
+                content="cluster content",
+                category="events",
+                context_type="memory",
+                session_id=session_id,
+                is_leaf=False,
+                meta={
+                    "layer": "directory",
+                    "msg_range": [0, 0],
+                    "source_uri": source_uri,
+                    "session_id": session_id,
+                    # Empty child_uris — leaf is ungrouped.
+                    "child_uris": [],
+                    "topics": ["dir-topic"],
+                },
+            )
+        )
+
+        llm_call_count[0] = 0
+
+        summary_uri = self._run(
+            cm._generate_session_summary(
+                session_id=session_id,
+                tenant_id="testteam",
+                user_id="alice",
+                source_uri=source_uri,
+            )
+        )
+
+        self.assertIsNotNone(summary_uri)
+        # The leaf abstract MUST drive the summary — short-circuit must
+        # NOT have fired with the directory's empty abstract.
+        self.assertEqual(
+            llm_call_count[0],
+            1,
+            "LLM must be called exactly once because the only non-empty "
+            "abstract in this fixture is the ungrouped leaf, not the "
+            "directory. Pre-fix, the short-circuit fired and lost the "
+            f"leaf content. Got {llm_call_count[0]} LLM call(s).",
+        )
+
+        # The summary record must reflect the LLM-derived abstract,
+        # NOT the directory's empty one.
+        summary_records = [
+            record
+            for record in self.storage._records.get("context", {}).values()
+            if record.get("meta", {}).get("layer") == "session_summary"
+            and record.get("session_id") == session_id
+        ]
+        self.assertEqual(len(summary_records), 1)
+        self.assertEqual(summary_records[0]["abstract"], "LLM merged abstract")
+
+        self._run(orch.close())
+
+    def test_session_summary_uses_llm_when_dir_plus_ungrouped_leaf(self):
+        """Counter-test: 1 dir (non-empty abstract) + 1 ungrouped leaf → LLM still fires.
+
+        len(abstracts) == 2 in this fixture (dir abstract + ungrouped
+        leaf abstract), so the short-circuit's ``len(abstracts) == 1``
+        clause already gates this case. This test pins the contract
+        explicitly so a future change that loosens the abstracts-count
+        check (e.g. switches to len-of-directory-records only) gets
+        caught.
+        """
+        llm_call_count = [0]
+
+        async def counting_llm(prompt, **kwargs):
+            llm_call_count[0] += 1
+            return '{"abstract": "merged of two", "overview": "merged overview", "keywords": []}'
+
+        orch = self._make_orchestrator(llm_completion=counting_llm)
+        self._run(orch.init())
+        cm = orch._context_manager
+        session_id = "sess_r2_21_dir_plus_ungrouped"
+        source_uri = cm._conversation_source_uri("testteam", "alice", session_id)
+
+        ungrouped_leaf_uri = (
+            "opencortex://testteam/alice/memories/events/leaf-outside-dir"
+        )
+        self._run(
+            orch.add(
+                uri=ungrouped_leaf_uri,
+                abstract="ungrouped leaf abstract",
+                content="ungrouped body",
+                category="events",
+                context_type="memory",
+                session_id=session_id,
+                meta={
+                    "layer": "merged",
+                    "msg_range": [1, 1],
+                    "source_uri": source_uri,
+                    "session_id": session_id,
+                },
+            )
+        )
+        directory_uri = (
+            "opencortex://testteam/alice/memories/events/dir-with-one-child"
+        )
+        # Directory covers a DIFFERENT leaf (not the ungrouped one above)
+        # so the ungrouped count is 1.
+        self._run(
+            orch.add(
+                uri=directory_uri,
+                abstract="dir abstract non-empty",
+                overview="dir overview",
+                content="dir content",
+                category="events",
+                context_type="memory",
+                session_id=session_id,
+                is_leaf=False,
+                meta={
+                    "layer": "directory",
+                    "msg_range": [0, 0],
+                    "source_uri": source_uri,
+                    "session_id": session_id,
+                    "child_uris": [
+                        "opencortex://testteam/alice/memories/events/some-other-leaf"
+                    ],
+                    "topics": ["dir-topic"],
+                },
+            )
+        )
+
+        llm_call_count[0] = 0
+        self._run(
+            cm._generate_session_summary(
+                session_id=session_id,
+                tenant_id="testteam",
+                user_id="alice",
+                source_uri=source_uri,
+            )
+        )
+        self.assertEqual(
+            llm_call_count[0],
+            1,
+            "1 dir + 1 ungrouped leaf must call LLM exactly once "
             f"(got {llm_call_count[0]})",
         )
 
