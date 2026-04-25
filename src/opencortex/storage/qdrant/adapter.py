@@ -189,9 +189,11 @@ class QdrantStorageAdapter(StorageInterface):
         new indexes a deploy-driven migration path without operator
         intervention.
 
-        Failures per field are logged at debug and don't abort: a missing
-        index degrades the relevant filter to a full-scan but doesn't
-        break correctness, and the next startup will retry.
+        Failures per field are logged at info (REVIEW closure tracker
+        CORR-PERF02-005 — operators need visibility into degraded filter
+        paths even when the process keeps running) and don't abort: a
+        missing index degrades the relevant filter to a full-scan but
+        doesn't break correctness, and the next startup will retry.
         """
         client = await self._ensure_client()
         for field_name in schema.get("ScalarIndex", []):
@@ -203,8 +205,10 @@ class QdrantStorageAdapter(StorageInterface):
                     field_schema=schema_type,
                 )
             except Exception as exc:
-                logger.debug(
-                    "[QdrantAdapter] Index ensure for %s.%s failed: %s",
+                logger.info(
+                    "[QdrantAdapter] Index ensure for %s.%s failed: %s "
+                    "(filter on this field will degrade to full-scan; "
+                    "next startup will retry)",
                     name, field_name, exc,
                 )
 
