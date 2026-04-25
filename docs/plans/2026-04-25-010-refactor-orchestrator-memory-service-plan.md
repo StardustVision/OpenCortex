@@ -203,6 +203,19 @@ Reviewers can scan-confirm that no behavior changed by reading the diff: each pu
 
 ---
 
+## Scope Adjustment (post-audit, 2026-04-25)
+
+After the user requested a repo-wide audit (see `docs/refactor/2026-04-25-repo-wide-god-object-audit.md`), the audit identified TWO God Objects (this orchestrator + `ContextManager` 4047 lines) and 7 prioritized follow-up phases. To stay aligned with the "no mega-refactor" constraint, this PR's actual scope shrinks from "all of U1-U5" to:
+
+- **Ship in this PR**: U1 (scaffolding + smoke tests) + U2 *partial* (`remove` + `update` moved — validates the back-reference + delegate pattern at meaningful scale, ~250 lines moved) + the repo-wide audit document.
+- **Defer to plan 011**: the rest of U2 (`add` ~470 lines + `batch_add`), U3 (queries), U4 (scoring), U5 (style polish on MemoryService).
+
+Plan 011 will pick up MemoryService where this PR leaves off. Plans 012-016 follow the audit's prioritized roadmap (KnowledgeService, BackgroundTaskManager, ObservabilityReporter, ContextManager refactor, repo-wide style sweep). Each = one PR.
+
+The pattern this PR validates is now usable verbatim by every future phase: `Service(orchestrator)` constructor + back-reference to `self._orch` + module-top imports + Google-style docstrings on the moved methods + 1-line delegate stubs on the orchestrator.
+
+---
+
 ## Implementation Units
 
 - [ ] U1. **Scaffolding: create `services/` namespace + empty `MemoryService` shell**
@@ -238,7 +251,7 @@ Reviewers can scan-confirm that no behavior changed by reading the diff: each pu
 
 ---
 
-- [ ] U2. **Move CRUD methods (add, update, remove, batch_add)**
+- [ ] U2. **Move CRUD methods (add, update, remove, batch_add)** — *Partial: remove + update done in this PR; add + batch_add deferred to plan 011 alongside Phase 2 (KnowledgeService) — see scope adjustment below.*
 
 **Goal:** Move the 4 write-side memory methods into `MemoryService`, replace the orchestrator originals with one-line delegates.
 
