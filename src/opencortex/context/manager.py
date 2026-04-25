@@ -2775,17 +2775,41 @@ class ContextManager:
         if not abstracts:
             return None
 
-        derived = await self._orchestrator._derive_parent_summary(
-            doc_title=session_id,
-            children_abstracts=abstracts,
-        )
-        if not derived:
-            return None
-
+        # REVIEW closure tracker R2-21 — 1-directory short-circuit.
+        # When recomposition produced exactly one directory and there
+        # are no ungrouped merged leaves, ``abstracts`` is just
+        # ``[directory.abstract]`` and the LLM call below would
+        # summarize one already-summarized abstract. Wasteful: 1 LLM
+        # call + 2 storage scans per session_end with single-cluster
+        # recomposition. Promote the directory's existing
+        # abstract / overview / topics to the session_summary
+        # verbatim instead.
         summary_uri = self._session_summary_uri(tenant_id, user_id, session_id)
-        llm_abstract = derived.get("abstract", "")
-        llm_overview = derived.get("overview", "")
-        keywords_list = derived.get("keywords", [])
+        if (
+            len(directory_records) == 1
+            and len(abstracts) == 1
+        ):
+            only_dir = directory_records[0]
+            only_dir_meta = dict(only_dir.get("meta") or {})
+            llm_abstract = str(only_dir.get("abstract") or "")
+            llm_overview = str(only_dir.get("overview") or "")
+            topics = only_dir_meta.get("topics") or []
+            keywords_list = list(topics) if isinstance(topics, list) else []
+            derived = {
+                "abstract": llm_abstract,
+                "overview": llm_overview,
+                "keywords": keywords_list,
+            }
+        else:
+            derived = await self._orchestrator._derive_parent_summary(
+                doc_title=session_id,
+                children_abstracts=abstracts,
+            )
+            if not derived:
+                return None
+            llm_abstract = derived.get("abstract", "")
+            llm_overview = derived.get("overview", "")
+            keywords_list = derived.get("keywords", [])
         keywords_str = (
             ", ".join(str(k) for k in keywords_list if k)
             if isinstance(keywords_list, list)

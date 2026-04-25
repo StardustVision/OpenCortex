@@ -1036,6 +1036,184 @@ class TestContextManager(unittest.TestCase):
 
         self._run(orch.close())
 
+    def test_session_summary_skips_llm_for_single_directory(self):
+        """REVIEW closure tracker R2-21 — 1-directory short-circuit.
+
+        When recomposition produced exactly one directory and no
+        ungrouped merged leaves remain, ``_generate_session_summary``
+        previously made an LLM call to summarize one already-summarized
+        abstract — wasteful (1 LLM round-trip + the keyword-patch
+        storage scan) per session_end with single-cluster recomposition.
+        After the fix, the directory's abstract / overview / topics get
+        promoted to the session_summary record verbatim with zero LLM
+        calls.
+        """
+        llm_call_count = [0]
+
+        async def counting_llm(prompt, **kwargs):
+            llm_call_count[0] += 1
+            return '{"abstract": "LLM-derived abstract", "overview": "LLM-derived overview", "keywords": ["llm-kw"]}'
+
+        orch = self._make_orchestrator(llm_completion=counting_llm)
+        self._run(orch.init())
+        cm = orch._context_manager
+        session_id = "sess_r2_21_short_circuit"
+        source_uri = cm._conversation_source_uri("testteam", "alice", session_id)
+
+        # Pre-create one directory record covering the only two leaves.
+        # This is the post-recomposition state — we skip running
+        # _run_full_session_recomposition to keep the test focused on the
+        # _generate_session_summary path that R2-21 actually changes.
+        leaf_uris = [
+            f"opencortex://testteam/alice/memories/events/leaf-{i}"
+            for i in range(2)
+        ]
+        for i, uri in enumerate(leaf_uris):
+            self._run(
+                orch.add(
+                    uri=uri,
+                    abstract=f"leaf {i} abstract",
+                    content=f"leaf {i} body",
+                    category="events",
+                    context_type="memory",
+                    session_id=session_id,
+                    meta={
+                        "layer": "merged",
+                        "msg_range": [i, i],
+                        "source_uri": source_uri,
+                        "session_id": session_id,
+                    },
+                )
+            )
+
+        directory_uri = (
+            "opencortex://testteam/alice/memories/events/dir-001"
+        )
+        self._run(
+            orch.add(
+                uri=directory_uri,
+                abstract="cluster abstract from prior recompose",
+                overview="cluster overview from prior recompose",
+                content="cluster content",
+                category="events",
+                context_type="memory",
+                session_id=session_id,
+                is_leaf=False,
+                meta={
+                    "layer": "directory",
+                    "msg_range": [0, 1],
+                    "source_uri": source_uri,
+                    "session_id": session_id,
+                    "child_uris": leaf_uris,
+                    "topics": ["topic-a", "topic-b"],
+                },
+            )
+        )
+
+        # Reset call count: the orchestrator.add above doesn't invoke
+        # the configured llm_completion (only _generate_session_summary
+        # path does for this fixture's purpose).
+        llm_call_count[0] = 0
+
+        summary_uri = self._run(
+            cm._generate_session_summary(
+                session_id=session_id,
+                tenant_id="testteam",
+                user_id="alice",
+                source_uri=source_uri,
+            )
+        )
+
+        self.assertIsNotNone(summary_uri)
+        # Critical assertion: zero LLM calls because the short-circuit
+        # promoted the directory's existing abstract verbatim.
+        self.assertEqual(
+            llm_call_count[0],
+            0,
+            "_generate_session_summary should skip LLM when len(directories)==1 "
+            "and no ungrouped leaves; got "
+            f"{llm_call_count[0]} LLM call(s)",
+        )
+
+        # Summary record must carry the directory's abstract, overview,
+        # topics — NOT the LLM-derived ones (since we never called LLM).
+        summary_records = [
+            record
+            for record in self.storage._records.get("context", {}).values()
+            if record.get("meta", {}).get("layer") == "session_summary"
+            and record.get("session_id") == session_id
+        ]
+        self.assertEqual(len(summary_records), 1)
+        summary = summary_records[0]
+        self.assertEqual(summary["abstract"], "cluster abstract from prior recompose")
+        self.assertEqual(summary["overview"], "cluster overview from prior recompose")
+        self.assertEqual(
+            summary["meta"]["topics"],
+            ["topic-a", "topic-b"],
+        )
+
+        self._run(orch.close())
+
+    def test_session_summary_uses_llm_when_multiple_directories(self):
+        """Counter-test for R2-21: ≥2 directories still trigger LLM (no short-circuit)."""
+        llm_call_count = [0]
+
+        async def counting_llm(prompt, **kwargs):
+            llm_call_count[0] += 1
+            return '{"abstract": "merged summary", "overview": "merged overview", "keywords": ["merged"]}'
+
+        orch = self._make_orchestrator(llm_completion=counting_llm)
+        self._run(orch.init())
+        cm = orch._context_manager
+        session_id = "sess_r2_21_no_shortcut"
+        source_uri = cm._conversation_source_uri("testteam", "alice", session_id)
+
+        # Two directories → falls through to LLM path.
+        for idx in range(2):
+            self._run(
+                orch.add(
+                    uri=(
+                        f"opencortex://testteam/alice/memories/events/"
+                        f"sess_r2_21_no_shortcut-dir-{idx}"
+                    ),
+                    abstract=f"dir-{idx} abstract",
+                    overview=f"dir-{idx} overview",
+                    content=f"dir-{idx} content",
+                    category="events",
+                    context_type="memory",
+                    session_id=session_id,
+                    is_leaf=False,
+                    meta={
+                        "layer": "directory",
+                        "msg_range": [idx, idx],
+                        "source_uri": source_uri,
+                        "session_id": session_id,
+                        "child_uris": [],
+                        "topics": [f"t-{idx}"],
+                    },
+                )
+            )
+
+        llm_call_count[0] = 0
+
+        self._run(
+            cm._generate_session_summary(
+                session_id=session_id,
+                tenant_id="testteam",
+                user_id="alice",
+                source_uri=source_uri,
+            )
+        )
+
+        self.assertEqual(
+            llm_call_count[0],
+            1,
+            "2-directory case must still call LLM exactly once "
+            f"(got {llm_call_count[0]})",
+        )
+
+        self._run(orch.close())
+
     def test_directory_uri_pattern(self):
         """_directory_uri produces correct URI pattern."""
         from opencortex.context.manager import ContextManager
