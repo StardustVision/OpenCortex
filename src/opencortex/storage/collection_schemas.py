@@ -107,6 +107,16 @@ class CollectionSchemas:
                 "event_date",
                 "retrieval_surface",
                 "anchor_surface",
+                # PERF-02 (REVIEW closure tracker): nested-field payload
+                # index for ``meta.source_uri`` so SessionRecordsRepository
+                # can push the source_uri filter into Qdrant instead of
+                # iterating in Python after a full session scroll. The
+                # dot-path notation is supported by Qdrant's
+                # ``create_payload_index(field_name=...)`` directly; no
+                # top-level lift or backfill needed because existing
+                # context records already have ``meta.source_uri``
+                # populated by every writer site.
+                "meta.source_uri",
             ],
         }
 
