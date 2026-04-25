@@ -997,6 +997,71 @@ class TestContextManager(unittest.TestCase):
 
         self._run(orch.close())
 
+    def test_merged_leaf_uri_locks_zero_padded_format(self):
+        """REVIEW closure tracker R3-RC-09 — lock the
+        ``f'conversation-{hash}-{start:06d}-{end:06d}'`` URI format.
+
+        The LoCoMo adapter's ``sorted(new_records)`` relies on the
+        zero-padded msg-range fields making lex sort = numeric sort.
+        Removing the padding (e.g. ``f'-{start}-{end}'``) silently
+        breaks URI ordering for any session with ≥10 merged leaves —
+        ``leaf-10-11`` would lex-sort BEFORE ``leaf-2-3`` and
+        downstream session→URI mapping would shuffle. This test makes
+        any such format change explicit by failing loudly.
+        """
+        import re
+
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        cm = orch._context_manager
+
+        # Shape: 12-hex-char session hash, two 6-digit zero-padded ranges.
+        uri = cm._merged_leaf_uri("testteam", "alice", "sess_R3_RC_09", [0, 1])
+        self.assertRegex(
+            uri,
+            r"/conversation-[0-9a-f]{12}-\d{6}-\d{6}$",
+            "merged leaf URI must end with the zero-padded "
+            "conversation-{hash}-{start:06d}-{end:06d} suffix",
+        )
+
+        # Numeric-by-lex invariant: sorting URIs lexicographically MUST
+        # match sorting by (msg_range[0], msg_range[1]). The 6-digit
+        # padding is what guarantees this; removing it would cause
+        # [10,11] to lex-sort before [2,9].
+        ranges = [(0, 1), (2, 9), (10, 11), (100, 101), (1000, 1001)]
+        uris = [
+            cm._merged_leaf_uri("testteam", "alice", "sess_R3_RC_09", list(r))
+            for r in ranges
+        ]
+        self.assertEqual(
+            sorted(uris),
+            uris,
+            "URIs built from increasing msg_range must already be "
+            "lex-sorted — this is what LoCoMo's "
+            "sorted(new_records) relies on. If this fails, the "
+            "zero-padding has likely been dropped or the digit count "
+            "has changed.",
+        )
+
+        # Edge case: zero-width range serializes as ...-000000-000000.
+        zero_uri = cm._merged_leaf_uri("testteam", "alice", "sess_R3_RC_09", [0, 0])
+        self.assertTrue(
+            zero_uri.endswith("-000000-000000"),
+            f"zero-width range must serialize as ...-000000-000000, "
+            f"got: {zero_uri}",
+        )
+
+        # Edge case: 6-digit indices fit cleanly in the field.
+        big_uri = cm._merged_leaf_uri(
+            "testteam", "alice", "sess_R3_RC_09", [123456, 123457]
+        )
+        self.assertTrue(
+            big_uri.endswith("-123456-123457"),
+            f"6-digit indices must fit the field width, got: {big_uri}",
+        )
+
+        self._run(orch.close())
+
     def test_full_recompose_creates_directory_records(self):
         """Directory records have correct layer, is_leaf, abstract, overview."""
         async def mock_llm(prompt, **kwargs):
