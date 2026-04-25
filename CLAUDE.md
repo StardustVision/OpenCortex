@@ -44,8 +44,11 @@ src/opencortex/
     __main__.py                  # CLI entry point (opencortex-server)
   context/
     manager.py                   # ContextManager — Memory Context Protocol lifecycle
+    session_records.py           # SessionRecordsRepository — session-scoped record queries (paging + scope)
+    benchmark_ingest_service.py  # BenchmarkConversationIngestService — admin benchmark ingest orchestration
+    recomposition_types.py       # RecompositionError + shared recomposition dataclasses
   storage/
-    vikingdb_interface.py        # Abstract interface (25 async methods)
+    storage_interface.py         # Abstract interface (25 async methods)
     cortex_fs.py                 # CortexFS three-layer filesystem (formerly VikingFS)
     collection_schemas.py        # Collection schemas (includes reward scoring fields)
     qdrant/
