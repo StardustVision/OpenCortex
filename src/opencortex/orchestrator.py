@@ -5814,6 +5814,32 @@ class MemoryOrchestrator:
         context_manager = getattr(self, "_context_manager", None)
         if context_manager:
             await context_manager.close()
+
+        # Plan 009 / R3 — release pooled httpx clients before storage
+        # close. Order: llm_completion -> rerank_client -> embedder ->
+        # storage. Each guarded with try/except so one failed close
+        # cannot abort the rest of teardown (matches the existing
+        # pattern above for autophagy/recall task cancellation).
+        llm_completion = getattr(self, "_llm_completion", None)
+        llm_aclose = getattr(llm_completion, "aclose", None) if llm_completion else None
+        if llm_aclose is not None:
+            try:
+                await llm_aclose()
+            except Exception as exc:
+                logger.info(
+                    "[MemoryOrchestrator] llm_completion aclose failed: %s "
+                    "(continuing teardown)", exc,
+                )
+        rerank_client = getattr(self, "_rerank_client", None)
+        if rerank_client is not None:
+            try:
+                await rerank_client.aclose()
+            except Exception as exc:
+                logger.info(
+                    "[MemoryOrchestrator] rerank_client aclose failed: %s "
+                    "(continuing teardown)", exc,
+                )
+
         immediate_fallback_embedder = getattr(
             self, "_immediate_fallback_embedder", None
         )
