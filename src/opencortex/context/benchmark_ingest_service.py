@@ -616,7 +616,7 @@ class BenchmarkConversationIngestService:
         Sibling to ``_ingest_merged_recompose``. No recompose, no
         directory writes, no session summary; one ``orchestrator.add``
         per input segment. Cleanup uses the legacy
-        ``_delete_immediate_families`` path because the cleanup tracker
+        ``_purge_records_and_fs_subtree`` path because the cleanup tracker
         is overkill for this single-write-loop pattern.
         """
         manager = self._manager
@@ -727,5 +727,5 @@ class BenchmarkConversationIngestService:
             # storage error during cleanup does not mask the original).
             if created_uris:
                 with contextlib.suppress(Exception):
-                    await manager._delete_immediate_families(created_uris)
+                    await manager._purge_records_and_fs_subtree(created_uris)
             raise

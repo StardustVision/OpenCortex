@@ -1300,14 +1300,14 @@ class ContextManager:
             session_id=session_id,
             meta=meta,
         )
-        if getattr(self._orchestrator, "_fs", None) is not None:
-            await self._orchestrator._fs.write_context(
-                uri=source_uri,
-                content=content,
-                abstract=f"Conversation transcript for {session_id}",
-                abstract_json={},
-                is_leaf=False,
-            )
+        # REVIEW closure tracker R2-23 / R4-P2-6 — orchestrator.add()
+        # already schedules the CortexFS write as a fire-and-forget
+        # task (see orchestrator.py: ``asyncio.create_task(self._fs.
+        # write_context(...))`` after the storage upsert). The previous
+        # explicit follow-up ``await self._orchestrator._fs.write_context(...)``
+        # here was a redundant double-write — same uri, same content —
+        # that doubled the FS I/O for source persistence and could race
+        # with the scheduled task on slow filesystems.
         return source_uri
 
     async def _mark_source_run_complete(self, source_uri: str) -> None:
@@ -1383,7 +1383,7 @@ class ContextManager:
         # ``session_id`` collisions cannot bleed across scope. Without
         # the kwargs the directory query loaded *every* directory record
         # carrying this ``session_id`` regardless of who owned it, and
-        # the URI list flowed straight into ``_delete_immediate_families``
+        # the URI list flowed straight into ``_purge_records_and_fs_subtree``
         # — a hard-delete path that walks URI prefixes without a layer
         # check. Pin scope here so torn-replay purge can never touch
         # another tenant's records.
@@ -1435,7 +1435,7 @@ class ContextManager:
             "present" if summary_uri else "absent",
         )
         with contextlib.suppress(Exception):
-            await self._delete_immediate_families(all_uris)
+            await self._purge_records_and_fs_subtree(all_uris)
 
     @classmethod
     def _benchmark_segment_meta(
@@ -2705,7 +2705,7 @@ class ContextManager:
             # not maintain a tracker and rely on this fallback.
             if created_directory_uris:
                 with contextlib.suppress(Exception):
-                    await self._delete_immediate_families(created_directory_uris)
+                    await self._purge_records_and_fs_subtree(created_directory_uris)
             if return_created_uris:
                 # Failure path with reporting requested: hand back what
                 # we created before the failure so the caller's tracker
@@ -2775,17 +2775,56 @@ class ContextManager:
         if not abstracts:
             return None
 
-        derived = await self._orchestrator._derive_parent_summary(
-            doc_title=session_id,
-            children_abstracts=abstracts,
+        # REVIEW closure tracker R2-21 — 1-directory short-circuit.
+        # When recomposition produced exactly one directory whose
+        # abstract is the sole contributor to ``abstracts``, the LLM
+        # call below would summarize one already-summarized abstract.
+        # Wasteful: 1 LLM call + 2 storage scans per session_end with
+        # single-cluster recomposition. Promote the directory's
+        # existing abstract / overview / topics to the session_summary
+        # verbatim instead.
+        #
+        # The guard requires THREE conditions because a less strict
+        # check would shadow ungrouped-leaf content:
+        #
+        #  1. ``len(directory_records) == 1`` — exactly one directory
+        #  2. ``only_dir_abstract`` is non-empty — otherwise the
+        #     directory loop's ``.strip()`` filter dropped it from
+        #     ``abstracts`` and the single entry came from an
+        #     ungrouped leaf (correctness bug if we promote the dir's
+        #     empty abstract over the leaf's content).
+        #  3. ``len(abstracts) == 1`` AND ``abstracts[0] ==
+        #     only_dir_abstract`` — belt+braces: the only entry IS
+        #     the directory's abstract, not a coincidentally-equal
+        #     leaf abstract.
+        only_dir_abstract = (
+            str(directory_records[0].get("abstract") or "").strip()
+            if len(directory_records) == 1
+            else ""
         )
-        if not derived:
-            return None
-
         summary_uri = self._session_summary_uri(tenant_id, user_id, session_id)
-        llm_abstract = derived.get("abstract", "")
-        llm_overview = derived.get("overview", "")
-        keywords_list = derived.get("keywords", [])
+        if (
+            len(directory_records) == 1
+            and only_dir_abstract
+            and len(abstracts) == 1
+            and abstracts[0] == only_dir_abstract
+        ):
+            only_dir = directory_records[0]
+            only_dir_meta = dict(only_dir.get("meta") or {})
+            llm_abstract = only_dir_abstract
+            llm_overview = str(only_dir.get("overview") or "")
+            topics = only_dir_meta.get("topics") or []
+            keywords_list = list(topics) if isinstance(topics, list) else []
+        else:
+            derived = await self._orchestrator._derive_parent_summary(
+                doc_title=session_id,
+                children_abstracts=abstracts,
+            )
+            if not derived:
+                return None
+            llm_abstract = derived.get("abstract", "")
+            llm_overview = derived.get("overview", "")
+            keywords_list = derived.get("keywords", [])
         keywords_str = (
             ", ".join(str(k) for k in keywords_list if k)
             if isinstance(keywords_list, list)
@@ -2985,10 +3024,28 @@ class ContextManager:
             )
             self._conversation_buffers[sk] = merged
 
-    async def _delete_immediate_families(self, immediate_uris: List[str]) -> None:
-        """Delete immediate leaf objects and any derived child records by URI prefix."""
+    async def _purge_records_and_fs_subtree(self, uris: List[str]) -> None:
+        """Purge each URI's record and CortexFS subtree by URI prefix.
+
+        For every input URI:
+        - ``storage.remove_by_uri(uri)`` deletes the URI itself AND every
+          record whose URI starts with the same prefix (so derived
+          children — fact_points, abstract.json, etc. — go with it).
+        - ``fs.rm(uri, recursive=True)`` recursively removes the
+          CortexFS subtree rooted at the URI's path.
+
+        FS failures are logged but never raise — the storage delete is
+        the source of truth, the FS write is fire-and-forget on the
+        creation path. Callers don't need to compensate.
+
+        Renamed from ``_delete_immediate_families`` (REVIEW closure
+        tracker PE-1) — the old name encoded a stale concept ("immediate
+        families" was leftover terminology from the immediate-layer era
+        that no longer exists). This function deletes records + FS
+        subtrees regardless of layer; the new name reflects that.
+        """
         unique_uris: list[str] = []
-        for uri in immediate_uris:
+        for uri in uris:
             normalized = str(uri or "").strip()
             if normalized and normalized not in unique_uris:
                 unique_uris.append(normalized)
@@ -3172,7 +3229,7 @@ class ContextManager:
                 ]
                 if superseded_merged_uris:
                     try:
-                        await self._delete_immediate_families(superseded_merged_uris)
+                        await self._purge_records_and_fs_subtree(superseded_merged_uris)
                     except Exception as exc:
                         logger.warning(
                             "[ContextManager] Superseded merged cleanup after merge: %s",
@@ -3181,7 +3238,7 @@ class ContextManager:
 
                 if snapshot.immediate_uris:
                     try:
-                        await self._delete_immediate_families(snapshot.immediate_uris)
+                        await self._purge_records_and_fs_subtree(snapshot.immediate_uris)
                     except Exception as exc:
                         self._session_pending_immediate_cleanup[sk] = True
                         logger.warning(
@@ -3214,7 +3271,7 @@ class ContextManager:
             )
             if "created_merged_uris" in locals() and created_merged_uris:
                 with contextlib.suppress(Exception):
-                    await self._delete_immediate_families(created_merged_uris)
+                    await self._purge_records_and_fs_subtree(created_merged_uris)
             if "snapshot" in locals() and snapshot is not None:
                 await self._restore_merge_snapshot(sk, snapshot)
             if raise_on_error:
@@ -3307,7 +3364,7 @@ class ContextManager:
                     if self._session_pending_immediate_cleanup.pop(sk, False):
                         try:
                             immediate_uris = await self._list_immediate_uris(session_id)
-                            await self._delete_immediate_families(immediate_uris)
+                            await self._purge_records_and_fs_subtree(immediate_uris)
                         except Exception as exc:
                             _handle_end_failure(
                                 "End cleanup immediates failed "
