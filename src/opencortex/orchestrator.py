@@ -5731,32 +5731,52 @@ class MemoryOrchestrator:
                 await task
         self._autophagy_startup_sweep_task = None
         self._autophagy_sweep_task = None
-        recall_tasks = list(self._recall_bookkeeping_tasks_set())
-        for task in recall_tasks:
-            if not task.done():
-                task.cancel()
-        for task in recall_tasks:
-            with suppress(asyncio.CancelledError):
-                await task
-        self._recall_bookkeeping_tasks_set().clear()
-
-        if self._derive_worker_task and not self._derive_worker_task.done():
-            await self._derive_queue.put(None)
-            try:
-                await asyncio.wait_for(self._derive_worker_task, timeout=30.0)
-            except asyncio.TimeoutError:
-                self._derive_worker_task.cancel()
+        # The rest of teardown mirrors the defensive autophagy pattern
+        # above: every attribute is guarded with ``getattr(...)`` so
+        # ``close()`` is safe on partially-constructed orchestrators —
+        # unit tests that build instances via ``__new__`` to skip
+        # ``__init__`` (e.g. tests/test_perf_fixes.py) used to crash
+        # here on the first attribute miss.
+        recall_tasks_set = (
+            self._recall_bookkeeping_tasks_set()
+            if hasattr(self, "_recall_bookkeeping_tasks") and self._recall_bookkeeping_tasks
+            else None
+        )
+        if recall_tasks_set is not None:
+            recall_tasks = list(recall_tasks_set)
+            for task in recall_tasks:
+                if not task.done():
+                    task.cancel()
+            for task in recall_tasks:
                 with suppress(asyncio.CancelledError):
-                    await self._derive_worker_task
+                    await task
+            recall_tasks_set.clear()
 
-        if self._context_manager:
-            await self._context_manager.close()
-        if self._immediate_fallback_embedder:
-            self._immediate_fallback_embedder.close()
+        derive_worker_task = getattr(self, "_derive_worker_task", None)
+        if derive_worker_task and not derive_worker_task.done():
+            derive_queue = getattr(self, "_derive_queue", None)
+            if derive_queue is not None:
+                await derive_queue.put(None)
+            try:
+                await asyncio.wait_for(derive_worker_task, timeout=30.0)
+            except asyncio.TimeoutError:
+                derive_worker_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await derive_worker_task
+
+        context_manager = getattr(self, "_context_manager", None)
+        if context_manager:
+            await context_manager.close()
+        immediate_fallback_embedder = getattr(
+            self, "_immediate_fallback_embedder", None
+        )
+        if immediate_fallback_embedder:
+            immediate_fallback_embedder.close()
         self._immediate_fallback_embedder = None
         self._immediate_fallback_embedder_attempted = False
-        if self._storage:
-            await self._storage.close()
+        storage = getattr(self, "_storage", None)
+        if storage:
+            await storage.close()
         self._initialized = False
         logger.info("[MemoryOrchestrator] Closed")
 
