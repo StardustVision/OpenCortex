@@ -2001,23 +2001,37 @@ class ContextManager:
             entry_messages = (int(entry["msg_end"]) - int(entry["msg_start"])) + 1
             should_split = False
             if current:
-                current_time_refs: Set[str] = set()
-                for item in current:
-                    current_time_refs.update(item["time_refs"])
+                # REVIEW closure tracker R3-RC-02 / R2-14: hard split
+                # when the new entry crosses an input-segment boundary.
+                # Benchmark entries carry source_segment_index; production
+                # / re-derived entries carry None and skip this check
+                # entirely (no behavior change for non-benchmark paths).
+                prev_segment_index = current[-1]["source_segment_index"]
+                entry_segment_index = entry["source_segment_index"]
                 if (
-                    current_messages >= _SEGMENT_MAX_MESSAGES
-                    or current_tokens + int(entry["token_count"]) > _SEGMENT_MAX_TOKENS
-                    or (
-                        current_messages >= _SEGMENT_MIN_MESSAGES
-                        and current_time_refs
-                        and entry["time_refs"]
-                        and not self._time_refs_overlap(
-                            current_time_refs,
-                            entry["time_refs"],
-                        )
-                    )
+                    prev_segment_index is not None
+                    and entry_segment_index is not None
+                    and prev_segment_index != entry_segment_index
                 ):
                     should_split = True
+                else:
+                    current_time_refs: Set[str] = set()
+                    for item in current:
+                        current_time_refs.update(item["time_refs"])
+                    if (
+                        current_messages >= _SEGMENT_MAX_MESSAGES
+                        or current_tokens + int(entry["token_count"]) > _SEGMENT_MAX_TOKENS
+                        or (
+                            current_messages >= _SEGMENT_MIN_MESSAGES
+                            and current_time_refs
+                            and entry["time_refs"]
+                            and not self._time_refs_overlap(
+                                current_time_refs,
+                                entry["time_refs"],
+                            )
+                        )
+                    ):
+                        should_split = True
 
             if should_split:
                 segments.append(self._finalize_recomposition_segment(current))
