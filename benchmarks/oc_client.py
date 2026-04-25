@@ -18,6 +18,13 @@ def _is_retryable_http_error(exc: Exception) -> bool:
         return True
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
+        # 507 Insufficient Storage is raised by SessionRecordOverflowError
+        # (REVIEW closure tracker AC-02). The condition is deterministic —
+        # the session record count cannot decrease on retry — so retrying
+        # 8 times with backoff just wastes ~4 minutes per affected
+        # session. Surface the error immediately instead.
+        if status == 507:
+            return False
         return status == 429 or status >= 500
     return False
 

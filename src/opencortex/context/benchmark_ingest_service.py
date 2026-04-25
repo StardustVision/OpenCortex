@@ -259,10 +259,32 @@ class BenchmarkConversationIngestService:
 
         # Genuine idempotent hit: surface the prior run's summary URI
         # if one was persisted (REVIEW F4 / api-contract-005).
+        #
+        # REVIEW closure tracker correctness-001: the legacy code path
+        # used ``_get_record_by_uri`` which catches ``Exception`` and
+        # returns ``None`` on transient storage failure, so summary
+        # lookup failure simply degraded to ``summary_uri=None`` instead
+        # of failing the whole idempotent replay. ``_repo.load_summary``
+        # now propagates errors directly. Wrap so summary lookup retains
+        # its tolerant degradation semantics — the idempotent response
+        # is still useful when storage hiccups on a single point lookup,
+        # and the next ingest will surface the real issue if it
+        # persists.
         existing_summary_uri = manager._session_summary_uri(
             tenant_id, user_id, session_id
         )
-        existing_summary = await self._repo.load_summary(existing_summary_uri)
+        try:
+            existing_summary = await self._repo.load_summary(existing_summary_uri)
+        except Exception:
+            logger.warning(
+                "benchmark_ingest_conversation: idempotent hit summary "
+                "lookup failed sid=%s summary_uri=%s — degrading to "
+                "summary_uri=None",
+                session_id,
+                existing_summary_uri,
+                exc_info=True,
+            )
+            existing_summary = None
         summary_uri_for_response = (
             existing_summary_uri if existing_summary else None
         )

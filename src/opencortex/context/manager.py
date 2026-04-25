@@ -33,6 +33,7 @@ from opencortex.http.request_context import (
 )
 from opencortex.context.recomposition_types import RecompositionEntry
 from opencortex.context.session_records import (
+    SessionRecordOverflowError,
     SessionRecordsRepository,
     record_msg_range,
     record_text,
@@ -1377,11 +1378,41 @@ class ContextManager:
             for rec in merged_records
             if rec.get("uri")
         ]
+        # REVIEW closure tracker ADV-U-001: every other repo call site
+        # threads (tenant_id, user_id) through so cross-tenant
+        # ``session_id`` collisions cannot bleed across scope. Without
+        # the kwargs the directory query loaded *every* directory record
+        # carrying this ``session_id`` regardless of who owned it, and
+        # the URI list flowed straight into ``_delete_immediate_families``
+        # — a hard-delete path that walks URI prefixes without a layer
+        # check. Pin scope here so torn-replay purge can never touch
+        # another tenant's records.
+        #
+        # REVIEW closure tracker REL-01: the outer ``except Exception``
+        # used to also swallow ``SessionRecordOverflowError`` (subclass
+        # of Exception). That meant a directory query exceeding the
+        # repo's safety cap would silently treat the directory list as
+        # empty, leaving every directory-layer record from the failed
+        # prior run as a permanent storage orphan with no operator
+        # signal. Surface overflow explicitly so the admin route maps it
+        # to 507 instead.
         try:
             directory_records = await self._session_records.load_directories(
                 session_id=session_id,
                 source_uri=source_uri,
+                tenant_id=tenant_id,
+                user_id=user_id,
             )
+        except SessionRecordOverflowError:
+            logger.error(
+                "benchmark_ingest: torn-run purge aborted — directory "
+                "query exceeded safety cap sid=%s source=%s. Directory "
+                "records from the failed prior run remain in storage; "
+                "rotate session_id or page manually before re-ingesting.",
+                session_id,
+                source_uri,
+            )
+            raise
         except Exception:  # pragma: no cover - defensive
             directory_records = []
         directory_uris = [
