@@ -5243,17 +5243,35 @@ class MemoryOrchestrator:
         segments: List[List[Dict[str, Any]]],
         include_session_summary: bool = True,
         ingest_shape: str = "merged_recompose",
+        enforce_admin: bool = True,
     ) -> Dict[str, Any]:
         """Public facade for benchmark-only offline conversation ingest.
 
         Delegates to :meth:`ContextManager.benchmark_ingest_conversation`.
-        Admin-gated at the HTTP layer; this method itself does not enforce
-        identity policy because non-HTTP callers (tests, in-process
-        benchmark drivers) are trusted by construction.
+
+        Defense-in-depth: by default this method requires the request
+        role contextvar to be ``admin`` (REVIEW api-contract-007). The
+        HTTP layer's ``_require_admin()`` already gates the only
+        production caller, but the facade is now public on the
+        orchestrator, so a future internal caller cannot accidentally
+        bypass the policy by skipping the HTTP route. Direct in-process
+        callers (benchmark CLI runs that pre-seed the role contextvar,
+        unit tests, or maintenance scripts) can pass
+        ``enforce_admin=False`` to opt out explicitly — the kwarg is
+        deliberately verbose so the bypass shows up in code review.
         """
         self._ensure_init()
         if not self._context_manager:
             raise RuntimeError("ContextManager not initialized")
+        if enforce_admin:
+            from opencortex.http.request_context import is_admin
+
+            if not is_admin():
+                raise PermissionError(
+                    "benchmark_conversation_ingest requires admin role "
+                    "(set request role contextvar to 'admin' or pass "
+                    "enforce_admin=False for trusted in-process callers)"
+                )
         return await self._context_manager.benchmark_ingest_conversation(
             session_id=session_id,
             tenant_id=tenant_id,
