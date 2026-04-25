@@ -29,6 +29,12 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
+# Page size for ``memory_record_snapshot``. Picked to keep mcp-path
+# snapshot round-trips bounded for typical benchmark conversation sizes
+# (~50–200 records per session) while still draining large fixtures in
+# one or two pages.
+_MEMORY_LIST_PAGE_SIZE = 500
+
 
 def normalize_text_set(values: Iterable[Any]) -> Set[str]:
     """Normalize heterogeneous string values for exact-set matching."""
@@ -89,12 +95,12 @@ async def memory_record_snapshot(oc: Any) -> Dict[str, Dict[str, Any]]:
     """Snapshot current memory records for diff-based ground-truth mapping.
 
     Pages through ``oc.memory_list(context_type="memory", category="events")``
-    in 500-record batches until exhausted. Used by both adapters' mcp-path
-    branch to capture the before/after record set so the new ingest's
-    URIs can be derived by set difference.
+    in ``_MEMORY_LIST_PAGE_SIZE``-record batches until exhausted. Used by
+    both adapters' mcp-path branch to capture the before/after record
+    set so the new ingest's URIs can be derived by set difference.
     """
     offset = 0
-    limit = 500
+    limit = _MEMORY_LIST_PAGE_SIZE
     records_by_uri: Dict[str, Dict[str, Any]] = {}
     while True:
         payload = await oc.memory_list(
@@ -184,6 +190,14 @@ def map_session_uris(
                 continue
             for uri, record in unmatched_records.items():
                 if time_refs.intersection(record_time_refs(record)):
+                    # ``record`` came from ``unmatched_records``, which only
+                    # collects records whose ``message_span`` returned None
+                    # in the span pass above. So ``span is None`` is an
+                    # invariant here and the ``span[0] if span ...`` ternary
+                    # is structurally dead — kept verbatim from the legacy
+                    # implementation for byte-equivalence (REVIEW
+                    # ADV-006-004). Future cleanup may simplify to
+                    # ``(uri, 10**9, 0, 10**9)``.
                     span = message_span(record)
                     width = span[1] - span[0] if span is not None else 10**9
                     mapped[session_num].append(
@@ -195,9 +209,20 @@ def map_session_uris(
         if not candidates:
             result[session_num] = []
             continue
+        # Sort key: ``(-overlap_width, width, span_start, uri_lex)``.
+        # The final ``uri_lex`` element makes ties deterministic
+        # regardless of dict iteration order or platform — every
+        # candidate has a unique URI string, so the sort never
+        # depends on input ordering (REVIEW ADV-006-003). Removing
+        # any of the four key elements is a behavior change.
         ordered = sorted(
             candidates,
-            key=lambda item: (-item[2], item[1], item[3], item[0]),
+            key=lambda candidate: (
+                -candidate[2],
+                candidate[1],
+                candidate[3],
+                candidate[0],
+            ),
         )
         if return_all:
             result[session_num] = [uri for uri, _, _, _ in ordered]
@@ -218,10 +243,14 @@ def extract_records_by_uri(
 
     Records with empty / missing / non-string ``uri`` are filtered out.
     The returned dicts are shallow copies so callers can mutate them
-    without aliasing the input payload.
+    without aliasing the input payload — but nested ``meta`` /
+    ``abstract_json`` dicts are still shared by reference (matches the
+    legacy inline comprehension that this helper replaces).
     """
+    # Walrus binds the normalized URI once so the dict key and the
+    # truthiness check use the exact same value (REVIEW KP-002).
     return {
-        str(record.get("uri", "") or ""): dict(record)
+        uri: dict(record)
         for record in payload.get("records", []) or []
-        if str(record.get("uri", "") or "")
+        if (uri := str(record.get("uri", "") or ""))
     }
