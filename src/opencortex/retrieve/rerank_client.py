@@ -15,6 +15,10 @@ import logging
 import re
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
+from opencortex.observability.pool_stats import (
+    HTTPX_MAX_CONNECTIONS,
+    HTTPX_MAX_KEEPALIVE_CONNECTIONS,
+)
 from opencortex.prompts import build_rerank_prompt
 from opencortex.retrieve.rerank_config import RerankConfig
 from opencortex.utils.cache import AsyncTTLCache
@@ -201,11 +205,56 @@ class RerankClient:
             return [0.0] * len(documents)
 
     def _get_http_client(self):
-        """Return a reusable httpx.AsyncClient (lazy-created)."""
+        """Return a reusable httpx.AsyncClient (lazy-created).
+
+        Pool caps come from ``observability.pool_stats`` — single
+        source of truth shared with the LLM completion client. See
+        plan 009 / R2 for the rationale.
+        """
         if self._http_client is None:
             import httpx
-            self._http_client = httpx.AsyncClient(timeout=30.0)
+            self._http_client = httpx.AsyncClient(
+                timeout=30.0,
+                limits=httpx.Limits(
+                    max_connections=HTTPX_MAX_CONNECTIONS,
+                    max_keepalive_connections=HTTPX_MAX_KEEPALIVE_CONNECTIONS,
+                ),
+            )
         return self._http_client
+
+    async def aclose(self) -> None:
+        """Release the underlying httpx connection pool. Idempotent.
+
+        Plan 009 / R1: ``MemoryOrchestrator.close()`` invokes this so
+        the rerank client's TCP sockets are returned to the kernel on
+        graceful shutdown. Pre-fix this client had no cleanup path and
+        every per-request instantiation in the admin route leaked one
+        socket into CLOSE_WAIT.
+
+        REVIEW closure tracker kieran-py-003 (plan 009 review):
+        ``self._http_client`` is nulled ONLY AFTER the inner
+        ``aclose()`` completes successfully, so a concurrent caller
+        seeing ``self._http_client is None`` can trust that the close
+        actually finished — and a transient failure leaves the
+        attribute populated so a retry can re-attempt.
+        """
+        client = self._http_client
+        if client is None:
+            return
+        try:
+            await client.aclose()
+        except Exception as exc:
+            # Match the orchestrator close-path tolerance — log but
+            # don't propagate so the rest of teardown completes.
+            # Crucially, do NOT null ``_http_client`` here: a retry
+            # must be allowed to actually close the underlying client.
+            logger.warning(
+                "[RerankClient] aclose failed: %s (degraded shutdown — "
+                "retry-safe; _http_client retained so a subsequent "
+                "aclose can re-attempt)", exc,
+            )
+            return
+        self._http_client = None
 
     async def _rerank_via_api(self, query: str, documents: List[str]) -> List[float]:
         """Call Rerank API (Jina/Cohere compatible).

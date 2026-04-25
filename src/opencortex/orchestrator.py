@@ -110,6 +110,7 @@ from opencortex.core.message import Message
 from opencortex.core.user_id import UserIdentifier
 from opencortex.models.embedder.base import EmbedderBase
 from opencortex.retrieve.intent_analyzer import IntentAnalyzer, LLMCompletionCallable
+from opencortex.retrieve.rerank_client import RerankClient
 from opencortex.retrieve.rerank_config import RerankConfig
 from opencortex.retrieve.types import (
     ContextType,
@@ -212,6 +213,27 @@ class MemoryOrchestrator:
         self._embedder = embedder
         self._rerank_config = rerank_config or RerankConfig()
         self._llm_completion = llm_completion
+        # Plan 009 / RR-01 (PERF-02 follow-up) — process-lifetime
+        # RerankClient singleton owned by the orchestrator. Pre-fix
+        # ``admin_search_debug`` constructed a new RerankClient per
+        # request and never closed it, leaking one TCP connection per
+        # admin call. Lifted here so ``MemoryOrchestrator.close()`` can
+        # call ``aclose()`` exactly once on shutdown.
+        self._rerank_client: Optional["RerankClient"] = None
+        # Plan 009 / RELY-01 — InsightsAgent (when enabled in
+        # ``server.py`` lifespan) holds a second LLMCompletion wrapper
+        # whose pool would otherwise leak on shutdown. The lifespan
+        # writes it here; close() awaits ``aclose()`` on it next to
+        # the primary ``_llm_completion``.
+        self._insights_llm_completion: Optional[Any] = None
+        # Plan 009 / R5 — connection sweeper bookkeeping. Set None at
+        # construction; ``_start_connection_sweeper()`` populates them.
+        # Read by /admin/health/connections so the endpoint can show
+        # the last sweep status.
+        self._connection_sweep_task: Optional[asyncio.Task] = None
+        self._connection_sweep_guard: Optional[asyncio.Lock] = None
+        self._last_connection_sweep_at: Optional[Any] = None
+        self._last_connection_sweep_status: str = "not_started"
 
         self._fs: Optional[CortexFS] = None
         self._analyzer: Optional[IntentAnalyzer] = None
@@ -369,6 +391,15 @@ class MemoryOrchestrator:
         if self._llm_completion:
             self._analyzer = IntentAnalyzer(llm_completion=self._llm_completion)
 
+        # Plan 009 — RerankClient is created lazily by
+        # ``_get_or_create_rerank_client()`` on first use. Eager
+        # construction would trigger ``_init_local_reranker`` (fastembed
+        # model download) for every orchestrator init, including in
+        # tests that never need it. Lazy keeps the singleton invariant
+        # (one instance per process across all admin requests) without
+        # imposing the cold-start cost. ``MemoryOrchestrator.close()``
+        # checks for ``None`` before invoking ``aclose`` (U3).
+
         # 6. Cone Retrieval: entity index + scorer (BEFORE retriever, so retriever gets live reference)
         if self._config.cone_retrieval_enabled:
             from opencortex.retrieve.entity_index import EntityIndex
@@ -398,6 +429,15 @@ class MemoryOrchestrator:
         if getattr(self._config, "cognition_enabled", True):
             await self._init_cognition()
             self._start_autophagy_sweeper()
+
+        # 9b. Plan 009 / R5 — periodic sweeper that watches the
+        # pooled httpx clients (LLM + rerank) for the leak shape that
+        # caused the original CLOSE_WAIT incident. Defense-in-depth:
+        # even if a future code path forgets to ``aclose()`` a client,
+        # the sweeper logs WARNING when any pool exceeds 80% of its
+        # max_connections cap so operators see the rise before it
+        # blocks the event loop.
+        self._start_connection_sweeper()
 
         # 10. Cortex Alpha components
         await self._init_alpha()
@@ -517,6 +557,156 @@ class MemoryOrchestrator:
             while True:
                 await asyncio.sleep(interval)
                 await self._run_autophagy_sweep_once()
+        except asyncio.CancelledError:
+            raise
+
+    # =========================================================================
+    # Connection sweeper (plan 009 / R5)
+    # =========================================================================
+
+    def _start_connection_sweeper(self) -> None:
+        """Start the periodic httpx-pool inspector in background.
+
+        Mirrors ``_start_autophagy_sweeper`` exactly — same naming
+        convention, same re-entrancy lock, same defensive ``getattr``
+        for orchestrators built via ``__new__`` bypass.
+        """
+        # Be resilient to unit tests that bypass __init__ via __new__.
+        if not hasattr(self, "_connection_sweep_task"):
+            self._connection_sweep_task = None
+        if not hasattr(self, "_connection_sweep_guard"):
+            self._connection_sweep_guard = asyncio.Lock()
+        if not hasattr(self, "_last_connection_sweep_at"):
+            self._last_connection_sweep_at = None
+        if not hasattr(self, "_last_connection_sweep_status"):
+            self._last_connection_sweep_status = "not_started"
+
+        if (
+            self._connection_sweep_task is not None
+            and not self._connection_sweep_task.done()
+        ):
+            return
+
+        self._connection_sweep_task = asyncio.create_task(
+            self._connection_sweep_loop(),
+            name="opencortex.connections.periodic_sweep",
+        )
+
+    async def _run_connection_sweep_once(self) -> None:
+        """Inspect every pooled client; log WARN when pool nears cap.
+
+        REVIEW closure tracker (plan 009 review):
+        - adv-004 / RELY-03: persistent failure of the sweep itself
+          must NOT leave ``_last_connection_sweep_status="ok"``. The
+          loop's outer try/except routes "sweep raised" through this
+          method, so we update the status field BEFORE returning,
+          including on the failure path. The loop wrapper sets the
+          status to ``"error"`` when this method raises.
+        - adv-006: when ``stats_source`` is ``"unavailable"`` for any
+          client, treat that as a warn condition (status="warn"). A
+          silent "ok" while the pool inspector is broken would re-
+          create the very invisible-leak failure mode this PR exists
+          to fix.
+        """
+        # Be resilient to unit tests that bypass __init__ via __new__.
+        if (
+            not hasattr(self, "_connection_sweep_guard")
+            or self._connection_sweep_guard is None
+        ):
+            self._connection_sweep_guard = asyncio.Lock()
+
+        from opencortex.observability.pool_stats import extract_pool_stats
+
+        async with self._connection_sweep_guard:
+            from datetime import datetime, timezone
+            warn_count = 0
+            unavailable_count = 0
+
+            llm_completion = getattr(self, "_llm_completion", None)
+            llm_client = getattr(llm_completion, "client", None) if llm_completion else None
+            if llm_client is not None:
+                stats = extract_pool_stats(llm_client)
+                warn_count += self._maybe_warn_pool("llm_completion", stats)
+                if stats.get("stats_source") != "transport_pool":
+                    unavailable_count += 1
+
+            rerank_singleton = getattr(self, "_rerank_client", None)
+            rerank_inner = (
+                getattr(rerank_singleton, "_http_client", None)
+                if rerank_singleton is not None
+                else None
+            )
+            if rerank_inner is not None:
+                stats = extract_pool_stats(rerank_inner)
+                warn_count += self._maybe_warn_pool("rerank", stats)
+                if stats.get("stats_source") != "transport_pool":
+                    unavailable_count += 1
+
+            self._last_connection_sweep_at = datetime.now(timezone.utc)
+            if warn_count:
+                self._last_connection_sweep_status = "warn"
+            elif unavailable_count:
+                # adv-006: stat extraction failed on some client. Don't
+                # silently report "ok" — operators need visibility that
+                # the inspector itself has degraded.
+                self._last_connection_sweep_status = "warn"
+                logger.warning(
+                    "[ConnectionSweeper] %d client(s) returned "
+                    "stats_source=unavailable — pool inspector "
+                    "degraded. Check for httpx version drift.",
+                    unavailable_count,
+                )
+            else:
+                self._last_connection_sweep_status = "ok"
+
+    def _maybe_warn_pool(self, label: str, stats: Dict[str, Any]) -> int:
+        """Emit a WARNING when the pool exceeds the warn ratio. Returns 0/1."""
+        from opencortex.observability.pool_stats import POOL_DEGRADED_THRESHOLD
+
+        if stats.get("stats_source") != "transport_pool":
+            return 0
+        open_count = stats.get("open_connections")
+        limits = stats.get("limits") or {}
+        max_conn = limits.get("max_connections")
+        if not isinstance(open_count, int) or not isinstance(max_conn, int) or max_conn <= 0:
+            return 0
+        if open_count > POOL_DEGRADED_THRESHOLD * max_conn:
+            logger.warning(
+                "[ConnectionSweeper] %s pool nearing cap: open=%d, "
+                "limit=%d, keepalive=%s. If this rises further the "
+                "process will start refusing connections — investigate "
+                "for a missing aclose() on a request path.",
+                label, open_count, max_conn,
+                stats.get("keepalive_connections"),
+            )
+            return 1
+        return 0
+
+    async def _connection_sweep_loop(self) -> None:
+        """Sleep-then-inspect loop. Mirrors ``_autophagy_sweep_loop``."""
+        interval = float(
+            getattr(self._config, "connection_sweep_interval_seconds", 600)
+        )
+        if interval <= 0:
+            interval = 0.01  # allow fast unit tests; never busy-loop.
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                try:
+                    await self._run_connection_sweep_once()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    # adv-004 / RELY-03: a failure inside the inspector
+                    # must not kill the sweep loop — log AND update the
+                    # status field so /admin/health/connections shows
+                    # the degraded state instead of a stale "ok".
+                    self._last_connection_sweep_status = "error"
+                    logger.warning(
+                        "[ConnectionSweeper] sweep tick failed: %s "
+                        "(status flipped to 'error' for visibility; "
+                        "next tick will retry)", exc,
+                    )
         except asyncio.CancelledError:
             raise
 
@@ -1330,6 +1520,23 @@ class MemoryOrchestrator:
         marker = Path(self._config.data_root) / ".embedding_model"
         marker.write_text(getattr(self._embedder, "model_name", ""))
         return count
+
+    def _get_or_create_rerank_client(self) -> RerankClient:
+        """Return the process-lifetime RerankClient singleton (lazy).
+
+        Plan 009: Constructed on first access so the orchestrator's
+        normal init path stays cheap (eager construction would fire
+        ``_init_local_reranker`` -> fastembed model download in every
+        test). Once built, the same instance serves every caller for
+        the process lifetime — closes the per-request leak that
+        triggered the original CLOSE_WAIT incident.
+        """
+        if self._rerank_client is None:
+            self._rerank_client = RerankClient(
+                self._build_rerank_config(),
+                llm_completion=self._llm_completion,
+            )
+        return self._rerank_client
 
     def _build_rerank_config(self) -> RerankConfig:
         """Build RerankConfig by merging explicit rerank_config with CortexConfig fields.
@@ -5731,6 +5938,16 @@ class MemoryOrchestrator:
 
     async def close(self) -> None:
         """Close storage and release resources."""
+        # Plan 009 — cancel the connection sweeper FIRST so it doesn't
+        # try to inspect a half-closed pool while the per-client
+        # aclose() calls below are running.
+        connection_sweep_task = getattr(self, "_connection_sweep_task", None)
+        if connection_sweep_task is not None and not connection_sweep_task.done():
+            connection_sweep_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await connection_sweep_task
+        self._connection_sweep_task = None
+
         startup_task = getattr(self, "_autophagy_startup_sweep_task", None)
         if startup_task is not None and not startup_task.done():
             startup_task.cancel()
@@ -5780,6 +5997,41 @@ class MemoryOrchestrator:
         context_manager = getattr(self, "_context_manager", None)
         if context_manager:
             await context_manager.close()
+
+        # Plan 009 / R3 — release pooled httpx clients before storage
+        # close. Order: llm_completion -> insights_llm_completion ->
+        # rerank_client -> embedder -> storage. Each guarded with
+        # try/except so one failed close cannot abort the rest of
+        # teardown (matches the existing pattern above for
+        # autophagy/recall task cancellation).
+        for label, attr in (
+            ("llm_completion", "_llm_completion"),
+            ("insights_llm_completion", "_insights_llm_completion"),
+        ):
+            wrapper = getattr(self, attr, None)
+            wrapper_aclose = (
+                getattr(wrapper, "aclose", None) if wrapper else None
+            )
+            if wrapper_aclose is None:
+                continue
+            try:
+                await wrapper_aclose()
+            except Exception as exc:
+                logger.warning(
+                    "[MemoryOrchestrator] %s aclose failed: %s "
+                    "(continuing teardown — pool socket may linger "
+                    "until kernel reclaims)", label, exc,
+                )
+        rerank_client = getattr(self, "_rerank_client", None)
+        if rerank_client is not None:
+            try:
+                await rerank_client.aclose()
+            except Exception as exc:
+                logger.warning(
+                    "[MemoryOrchestrator] rerank_client aclose failed: %s "
+                    "(continuing teardown)", exc,
+                )
+
         immediate_fallback_embedder = getattr(
             self, "_immediate_fallback_embedder", None
         )

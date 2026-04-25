@@ -191,6 +191,15 @@ class CortexConfig:
     # Bounded batch size per sweep tick (avoid full-collection scans).
     autophagy_sweep_batch_size: int = 200
 
+    # Plan 009 / R5 — TCP CLOSE_WAIT defense-in-depth.
+    # Periodic sweeper inspects pooled httpx clients (LLM completion +
+    # rerank), logs WARNING when any pool exceeds 80% of its
+    # max_connections cap, and exposes the last-sweep timestamp via
+    # /admin/health/connections. 600s default = more aggressive than
+    # autophagy (900s) because socket leaks accumulate fast and the
+    # cost of a no-op sweep is negligible.
+    connection_sweep_interval_seconds: int = 600  # 10 minutes
+
     def to_dict(self) -> dict:
         return asdict(self)
 

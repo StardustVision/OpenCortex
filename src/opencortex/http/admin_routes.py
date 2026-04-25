@@ -163,14 +163,14 @@ async def admin_search_debug(req: MemorySearchRequest) -> Dict[str, Any]:
     )
 
     rerank_scores = None
+    # Plan 009 — use the orchestrator's RerankClient singleton instead
+    # of constructing a fresh client per request. The previous shape
+    # leaked one TCP socket per admin_search_debug call (no aclose path
+    # on RerankClient before this PR). Lazy-built so non-admin code
+    # paths don't pay the ``_init_local_reranker`` cold-start cost.
     rerank_cfg = _orchestrator._build_rerank_config()
     if rerank_cfg.is_available():
-        from opencortex.retrieve.rerank_client import RerankClient
-
-        rerank_client = RerankClient(
-            rerank_cfg,
-            llm_completion=_orchestrator._llm_completion,
-        )
+        rerank_client = _orchestrator._get_or_create_rerank_client()
         docs = [r.get("abstract", "") for r in raw_results]
         rerank_scores = await rerank_client.rerank(req.query, docs)
 
@@ -339,3 +339,108 @@ async def migration_overview_first(
     return await migrate_overview_first(
         _orchestrator, dry_run=dry_run, batch_size=batch,
     )
+
+
+# =========================================================================
+# Health (admin only) — connection pool visibility
+# =========================================================================
+
+# Pool stat helpers and the status threshold live in
+# ``opencortex.observability.pool_stats`` — same module the
+# orchestrator's connection sweeper uses. REVIEW closure tracker
+# MAINT-001 / kieran-py-001: previously the helpers were
+# underscore-private here and the orchestrator imported them via a
+# layering inversion; now both consumers depend on the neutral module.
+from opencortex.observability.pool_stats import (
+    classify_pool_status,
+    extract_pool_stats,
+)
+
+
+@router.get("/api/v1/admin/health/connections")
+async def admin_health_connections() -> Dict[str, Any]:
+    """Report pooled-httpx-client state for ops visibility (plan 009 / R4).
+
+    The previous incident's first warning sign would have been a steady
+    rise in ``open_connections`` for one of the LLM clients. This
+    endpoint gives operators a poll target so they see the rise before
+    the event loop blocks. Also exposes the configured limits and the
+    sweeper's last-run timestamp (when U5 lands).
+
+    Auth: admin only.
+
+    Best-effort: ``stats_source`` indicates whether live pool counts
+    were readable. The endpoint never raises 5xx for a stat-extraction
+    failure — it returns ``"unavailable"`` with a reason instead.
+    """
+    _require_admin()
+
+    clients_report: Dict[str, Dict[str, Any]] = {}
+
+    # LLM completion: orchestrator holds an LLMCompletion wrapper that
+    # exposes ``.client`` (the underlying httpx.AsyncClient). Bare
+    # callables (legacy / test injections) have no ``.client`` so we
+    # report "uninitialized" rather than crash.
+    llm_completion = getattr(_orchestrator, "_llm_completion", None)
+    llm_client = getattr(llm_completion, "client", None) if llm_completion else None
+    if llm_client is None:
+        clients_report["llm_completion"] = {
+            "stats_source": "uninitialized",
+            "reason": "no LLM completion wrapper held by orchestrator",
+        }
+    else:
+        clients_report["llm_completion"] = extract_pool_stats(llm_client)
+        clients_report["llm_completion"]["backend"] = getattr(
+            llm_completion, "backend", "unknown",
+        )
+
+    # Rerank: lazy singleton; ``_http_client`` is None until first call.
+    rerank_client_singleton = getattr(_orchestrator, "_rerank_client", None)
+    if rerank_client_singleton is None:
+        clients_report["rerank"] = {
+            "stats_source": "uninitialized",
+            "reason": "RerankClient singleton not built yet (no rerank request "
+            "has fired since process start)",
+        }
+    else:
+        rerank_inner = getattr(rerank_client_singleton, "_http_client", None)
+        if rerank_inner is None:
+            clients_report["rerank"] = {
+                "stats_source": "uninitialized",
+                "reason": "RerankClient exists but no API call has built the "
+                "lazy http client yet",
+            }
+        else:
+            clients_report["rerank"] = extract_pool_stats(rerank_inner)
+
+    # Top-level status: worst case across clients. "uninitialized" does
+    # not lower the status (no pool to leak) — only "degraded" matters.
+    statuses = {classify_pool_status(s) for s in clients_report.values()}
+    if "degraded" in statuses:
+        top_status = "degraded"
+    elif "healthy" in statuses:
+        top_status = "healthy"
+    else:
+        top_status = "unavailable"
+
+    # Sweeper status — populated by U5. Until then, report "not_started".
+    sweeper = {
+        "last_sweep_at": getattr(_orchestrator, "_last_connection_sweep_at", None),
+        "last_sweep_status": getattr(
+            _orchestrator, "_last_connection_sweep_status", "not_started",
+        ),
+        "interval_seconds": getattr(
+            getattr(_orchestrator, "_config", None),
+            "connection_sweep_interval_seconds",
+            None,
+        ),
+    }
+    # ISO-format the timestamp if datetime; leave others as-is.
+    if hasattr(sweeper["last_sweep_at"], "isoformat"):
+        sweeper["last_sweep_at"] = sweeper["last_sweep_at"].isoformat()
+
+    return {
+        "status": top_status,
+        "clients": clients_report,
+        "sweeper": sweeper,
+    }
