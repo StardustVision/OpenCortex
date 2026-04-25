@@ -365,6 +365,95 @@ class BenchmarkConversationIngestRequest(BaseModel):
     )
 
 
+class BenchmarkConversationIngestRecord(BaseModel):
+    """One merged-leaf or evidence record returned by benchmark ingest.
+
+    Mirrors the per-record dict shape that ``_export_memory_record``
+    has produced since PR #3 / U10. The field set is intentionally a
+    superset of what every adapter consumes today — extra fields are
+    optional so ``direct_evidence`` records (which may not carry every
+    field a ``merged_recompose`` leaf does) still validate.
+
+    REVIEW closure tracker references: R2-28 / R4-P2-10 (typed
+    response model) and R3-RC-06 (``content`` field hydration —
+    documented below).
+    """
+
+    uri: str = Field(..., description="Stable URI of the stored record.")
+    abstract: str = Field(
+        default="",
+        description="L0 short summary. Post-defer-derive (PR #3 / U8).",
+    )
+    overview: str = Field(
+        default="",
+        description="L1 longer overview. Post-defer-derive.",
+    )
+    content: str = Field(
+        default="",
+        description=(
+            "Raw conversation text for this record. Hydrated by the "
+            "ingest service from the in-memory write-time map (REVIEW "
+            "R3-RC-06 / U10) so adapters receive the actual segment "
+            "text rather than what the orchestrator's fire-and-forget "
+            "CortexFS write may not have flushed yet. Falls back to a "
+            "CortexFS read for records the in-memory map does not "
+            "cover (e.g. directory records appended during recompose)."
+        ),
+    )
+    meta: Dict[str, Any] = Field(default_factory=dict)
+    abstract_json: Dict[str, Any] = Field(default_factory=dict)
+    session_id: str = Field(default="")
+    speaker: str = Field(default="")
+    event_date: Optional[Any] = Field(default=None)
+    msg_range: Optional[List[int]] = Field(default=None)
+    recomposition_stage: Optional[str] = Field(default=None)
+    source_uri: Optional[str] = Field(default=None)
+
+
+class BenchmarkConversationIngestResponse(BaseModel):
+    """Typed response envelope for the benchmark conversation ingest endpoint.
+
+    Replaces the bare ``Dict[str, Any]`` return that the admin route
+    used through PR #5 (REVIEW closure tracker §25 Phase 6 / R2-28 /
+    R4-P2-10). Field set is intentionally identical to the dict the
+    benchmark service has been returning — this DTO is a contract
+    lock, not a contract change. Adapters depending on the existing
+    JSON shape continue to round-trip cleanly.
+
+    The optional ``ingest_shape`` field is set to ``"direct_evidence"``
+    on that path and omitted on ``merged_recompose`` (preserving the
+    pre-DTO behavior where the merged path's response did not carry
+    the field).
+    """
+
+    status: str = Field(
+        default="ok",
+        description="Always ``ok`` on success. Errors raise HTTPException.",
+    )
+    session_id: str
+    source_uri: Optional[str] = Field(
+        default=None,
+        description="Conversation source URI. None when no segments persisted.",
+    )
+    summary_uri: Optional[str] = Field(
+        default=None,
+        description=(
+            "Session summary URI. ``None`` on the ``direct_evidence`` "
+            "path and on the merged path when ``include_session_summary`` "
+            "was False. On idempotent-hit replay, surfaces the prior "
+            "run's summary URI when one was persisted."
+        ),
+    )
+    records: List[BenchmarkConversationIngestRecord] = Field(default_factory=list)
+    ingest_shape: Optional[str] = Field(
+        default=None,
+        description=(
+            "Set to ``direct_evidence`` on that ingest path; omitted on "
+            "the default ``merged_recompose`` path."
+        ),
+    )
+
+
 class ContextPrepareIntent(BaseModel):
     """Intent envelope returned by `/api/v1/context` prepare."""
 
