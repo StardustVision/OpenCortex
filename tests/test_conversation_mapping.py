@@ -470,5 +470,161 @@ class TestMapSessionUris(unittest.TestCase):
         self.assertEqual(result, {1: [], 2: []})
 
 
+class _DualPathOCStub:
+    """OC stub that supports both store-path and mcp-path call chains.
+
+    Returns the same record set via either path so the equivalence test
+    can assert both produce identical session→URI mappings.
+    """
+
+    def __init__(self, records: List[Dict[str, Any]]) -> None:
+        self._records = records
+        self.benchmark_ingest_calls: List[Dict[str, Any]] = []
+        self.context_end_calls: List[str] = []
+        self.memory_list_calls: List[Dict[str, Any]] = []
+
+    async def benchmark_conversation_ingest(self, **kwargs: Any) -> Dict[str, Any]:
+        self.benchmark_ingest_calls.append(dict(kwargs))
+        # Store path: response carries the new records directly.
+        return {"records": [dict(r) for r in self._records]}
+
+    async def context_end(self, *, session_id: str) -> Dict[str, Any]:
+        self.context_end_calls.append(session_id)
+        return {"status": "closed"}
+
+    async def memory_list(self, **kwargs: Any) -> Dict[str, Any]:
+        self.memory_list_calls.append(dict(kwargs))
+        # mcp path: a memory_list snapshot returns the same records.
+        # First page is full result; second page empty so the loop exits.
+        offset = kwargs.get("offset", 0)
+        limit = kwargs.get("limit", 500)
+        if offset == 0:
+            return {"results": [dict(r) for r in self._records]}
+        return {"results": []}
+
+
+class TestStoreMcpEquivalence(unittest.IsolatedAsyncioTestCase):
+    """REVIEW closure tracker TG-3 — store-path and mcp-path must produce
+    identical session→URI mappings for the same fixture.
+
+    Locks the equivalence the §25 Phase 7 refactor preserves. If a future
+    change silently mutates either path's record-extraction shape,
+    this test surfaces the divergence with a clear assertion.
+    """
+
+    SESSION_SPANS = {1: (0, 1), 2: (2, 3)}
+    SESSION_TIME_REFS = {1: set(), 2: set()}
+    CONVERSATION_SESSION_ID = "conv-1"
+
+    FIXTURE_RECORDS: List[Dict[str, Any]] = [
+        {
+            "uri": "opencortex://m/sess1-tight",
+            "session_id": "conv-1",
+            "msg_range": [0, 1],
+            "content": "session 1 leaf",
+        },
+        {
+            "uri": "opencortex://m/sess2-tight",
+            "session_id": "conv-1",
+            "msg_range": [2, 3],
+            "content": "session 2 leaf",
+        },
+        {
+            "uri": "opencortex://m/cumulative",
+            "session_id": "conv-1",
+            "msg_range": [0, 3],
+            "content": "spans both sessions",
+        },
+    ]
+
+    async def _store_path_mapping(
+        self, *, return_all: bool
+    ) -> Dict[int, List[str]]:
+        """Exercise the store-path chain end-to-end with the helpers."""
+        oc = _DualPathOCStub(self.FIXTURE_RECORDS)
+        payload = await oc.benchmark_conversation_ingest(
+            session_id=self.CONVERSATION_SESSION_ID,
+            segments=[],
+            include_session_summary=False,
+        )
+        records_by_uri = extract_records_by_uri(payload)
+        return map_session_uris(
+            session_spans=self.SESSION_SPANS,
+            session_time_refs=self.SESSION_TIME_REFS,
+            records_by_uri=records_by_uri,
+            conversation_session_id=self.CONVERSATION_SESSION_ID,
+            return_all=return_all,
+        )
+
+    async def _mcp_path_mapping(
+        self, *, return_all: bool
+    ) -> Dict[int, List[str]]:
+        """Exercise the mcp-path chain: context_end + before/after diff."""
+        # before snapshot — empty (nothing ingested yet)
+        empty_oc = _DualPathOCStub([])
+        before_records = await memory_record_snapshot(empty_oc)
+        # ingest happens (mocked); then after snapshot returns the records
+        oc = _DualPathOCStub(self.FIXTURE_RECORDS)
+        await oc.context_end(session_id=self.CONVERSATION_SESSION_ID)
+        after_records = await memory_record_snapshot(oc)
+        # Diff: only records new since `before`
+        new_records = {
+            uri: record
+            for uri, record in after_records.items()
+            if uri not in before_records
+        }
+        return map_session_uris(
+            session_spans=self.SESSION_SPANS,
+            session_time_refs=self.SESSION_TIME_REFS,
+            records_by_uri=new_records,
+            conversation_session_id=self.CONVERSATION_SESSION_ID,
+            return_all=return_all,
+        )
+
+    async def test_store_and_mcp_paths_produce_equivalent_uri_mapping(self):
+        """The two paths must produce the same Dict[int, List[str]] for
+        the same fixture. Asserts both ``return_all=False`` and
+        ``return_all=True`` shapes match.
+        """
+        # Single-best (conversation.py contract)
+        store_single = await self._store_path_mapping(return_all=False)
+        mcp_single = await self._mcp_path_mapping(return_all=False)
+        self.assertEqual(store_single, mcp_single)
+
+        # Full sorted (locomo.py contract)
+        store_all = await self._store_path_mapping(return_all=True)
+        mcp_all = await self._mcp_path_mapping(return_all=True)
+        self.assertEqual(store_all, mcp_all)
+
+    async def test_empty_records_produces_empty_mapping_on_both_paths(self):
+        """Edge case: no records in either path → both return empty lists
+        per session. Confirms divergence cannot creep in via the empty
+        case (a common refactor footgun)."""
+        empty_oc = _DualPathOCStub([])
+
+        # store path with empty payload
+        payload = await empty_oc.benchmark_conversation_ingest(session_id="x")
+        store_mapping = map_session_uris(
+            session_spans=self.SESSION_SPANS,
+            session_time_refs=self.SESSION_TIME_REFS,
+            records_by_uri=extract_records_by_uri(payload),
+            conversation_session_id=self.CONVERSATION_SESSION_ID,
+            return_all=False,
+        )
+
+        # mcp path with empty memory_list
+        snapshot = await memory_record_snapshot(empty_oc)
+        mcp_mapping = map_session_uris(
+            session_spans=self.SESSION_SPANS,
+            session_time_refs=self.SESSION_TIME_REFS,
+            records_by_uri=snapshot,
+            conversation_session_id=self.CONVERSATION_SESSION_ID,
+            return_all=False,
+        )
+
+        self.assertEqual(store_mapping, mcp_mapping)
+        self.assertEqual(store_mapping, {1: [], 2: []})
+
+
 if __name__ == "__main__":
     unittest.main()
