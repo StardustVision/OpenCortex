@@ -18,6 +18,7 @@ from typing import Any, Dict, List
 
 from benchmarks.adapters.conversation_mapping import (
     extract_records_by_uri,
+    map_session_uris,
     memory_record_snapshot,
     message_span,
     normalize_text_set,
@@ -287,6 +288,186 @@ class TestMemoryRecordSnapshot(unittest.TestCase):
             self.assertEqual(len(oc.calls), 1)
 
         self._run(check())
+
+
+class TestMapSessionUris(unittest.TestCase):
+    """Two-pass span+time-ref mapping with return_all kwarg."""
+
+    def _records(self, *records: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        return {str(r["uri"]): dict(r) for r in records}
+
+    def test_return_all_false_picks_single_best_per_session(self):
+        # Two sessions, each with two candidates of varying tightness.
+        records = self._records(
+            {
+                "uri": "opencortex://m/session1-tight",
+                "session_id": "conv-1",
+                "msg_range": [0, 1],
+            },
+            {
+                "uri": "opencortex://m/cumulative",
+                "session_id": "conv-1",
+                "msg_range": [0, 2],
+            },
+        )
+        result = map_session_uris(
+            session_spans={1: (0, 1)},
+            session_time_refs={1: set()},
+            records_by_uri=records,
+            conversation_session_id="conv-1",
+            return_all=False,
+        )
+        # Tightest overlap wins (session1-tight: [0,1] vs (0,1) → width 2,
+        # cumulative: [0,2] vs (0,1) → width 2 too — tie-break on smaller
+        # record-width: session1-tight has width=1 vs cumulative width=2).
+        self.assertEqual(result[1], ["opencortex://m/session1-tight"])
+
+    def test_return_all_true_returns_full_sorted_list(self):
+        # Reproduces test_ingest_prefers_tightest_overlapping_merged_record
+        # (tests/test_locomo_bench.py:197-235) at the helper level so the
+        # locomo-side semantic is locked in this module's own tests.
+        records = self._records(
+            {
+                "uri": "opencortex://m/cumulative",
+                "session_id": "locomo-conv-1",
+                "msg_range": [0, 2],
+            },
+            {
+                "uri": "opencortex://m/session1-tight",
+                "session_id": "locomo-conv-1",
+                "msg_range": [0, 1],
+            },
+            {
+                "uri": "opencortex://m/session2-tight",
+                "session_id": "locomo-conv-1",
+                "msg_range": [2, 2],
+            },
+        )
+        result = map_session_uris(
+            session_spans={1: (0, 1), 2: (2, 2)},
+            session_time_refs={1: set(), 2: set()},
+            records_by_uri=records,
+            conversation_session_id="locomo-conv-1",
+            return_all=True,
+        )
+        # Session 1 — tightest first: session1-tight (overlap 2),
+        # cumulative (overlap 2 but wider record).
+        self.assertEqual(result[1][0], "opencortex://m/session1-tight")
+        self.assertIn("opencortex://m/cumulative", result[1])
+        # Session 2 — both session2-tight (msg_range [2,2]) and
+        # cumulative (msg_range [0,2]) overlap with span (2,2). Tightest
+        # ranks first: session2-tight has overlap_width=1 vs cumulative
+        # also overlap_width=1, but cumulative has wider record-width
+        # (2) so session2-tight wins the tie-break.
+        self.assertEqual(result[2][0], "opencortex://m/session2-tight")
+        self.assertIn("opencortex://m/cumulative", result[2])
+
+    def test_filters_records_with_mismatched_session_id(self):
+        records = self._records(
+            {
+                "uri": "opencortex://m/wrong-conv",
+                "session_id": "conv-OTHER",
+                "msg_range": [0, 1],
+            },
+            {
+                "uri": "opencortex://m/right",
+                "session_id": "conv-1",
+                "msg_range": [0, 1],
+            },
+        )
+        result = map_session_uris(
+            session_spans={1: (0, 1)},
+            session_time_refs={1: set()},
+            records_by_uri=records,
+            conversation_session_id="conv-1",
+            return_all=False,
+        )
+        self.assertEqual(result[1], ["opencortex://m/right"])
+
+    def test_record_with_missing_session_id_passes_through(self):
+        # Records without a session_id meta are not filtered out.
+        records = self._records(
+            {"uri": "opencortex://m/no-sid", "msg_range": [0, 1]},
+        )
+        result = map_session_uris(
+            session_spans={1: (0, 1)},
+            session_time_refs={1: set()},
+            records_by_uri=records,
+            conversation_session_id="conv-1",
+            return_all=False,
+        )
+        self.assertEqual(result[1], ["opencortex://m/no-sid"])
+
+    def test_session_with_no_overlap_returns_empty_list(self):
+        records = self._records(
+            {
+                "uri": "opencortex://m/far-away",
+                "session_id": "conv-1",
+                "msg_range": [100, 200],
+            },
+        )
+        result = map_session_uris(
+            session_spans={1: (0, 5)},
+            session_time_refs={1: set()},
+            records_by_uri=records,
+            conversation_session_id="conv-1",
+            return_all=False,
+        )
+        self.assertEqual(result[1], [])
+
+    def test_time_refs_fallback_when_no_msg_range_match(self):
+        # No record has overlapping msg_range, but one record has a
+        # matching time_ref so the time_refs fallback kicks in.
+        records = self._records(
+            {
+                "uri": "opencortex://m/no-range-but-time",
+                "session_id": "conv-1",
+                "meta": {"time_refs": ["2026-04-25"]},
+            },
+        )
+        result = map_session_uris(
+            session_spans={1: (0, 5)},
+            session_time_refs={1: {"2026-04-25"}},
+            records_by_uri=records,
+            conversation_session_id="conv-1",
+            return_all=False,
+        )
+        self.assertEqual(result[1], ["opencortex://m/no-range-but-time"])
+
+    def test_time_refs_fallback_skipped_when_msg_range_already_matched(self):
+        # If span-based pass found a candidate, time_refs fallback does
+        # NOT add more candidates for that session.
+        records = self._records(
+            {
+                "uri": "opencortex://m/span-match",
+                "session_id": "conv-1",
+                "msg_range": [0, 1],
+            },
+            {
+                "uri": "opencortex://m/time-only",
+                "session_id": "conv-1",
+                "meta": {"time_refs": ["2026-04-25"]},
+            },
+        )
+        result = map_session_uris(
+            session_spans={1: (0, 1)},
+            session_time_refs={1: {"2026-04-25"}},
+            records_by_uri=records,
+            conversation_session_id="conv-1",
+            return_all=True,
+        )
+        # Only span-match is returned; time-only never enters the candidate list.
+        self.assertEqual(result[1], ["opencortex://m/span-match"])
+
+    def test_empty_records_dict_returns_empty_lists_per_session(self):
+        result = map_session_uris(
+            session_spans={1: (0, 1), 2: (2, 3)},
+            session_time_refs={1: set(), 2: set()},
+            records_by_uri={},
+            conversation_session_id="conv-1",
+            return_all=False,
+        )
+        self.assertEqual(result, {1: [], 2: []})
 
 
 if __name__ == "__main__":

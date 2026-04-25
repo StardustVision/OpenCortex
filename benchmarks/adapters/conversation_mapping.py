@@ -115,6 +115,97 @@ async def memory_record_snapshot(oc: Any) -> Dict[str, Dict[str, Any]]:
     return records_by_uri
 
 
+def map_session_uris(
+    *,
+    session_spans: Dict[int, Tuple[int, int]],
+    session_time_refs: Dict[int, Set[str]],
+    records_by_uri: Dict[str, Dict[str, Any]],
+    conversation_session_id: str,
+    return_all: bool = False,
+) -> Dict[int, List[str]]:
+    """Map inner-conversation sessions to merged-leaf URIs.
+
+    Two-pass mapping over ``records_by_uri``:
+
+    1. **Span-based**: every record with a valid ``msg_range`` that
+       overlaps a session's span contributes one candidate per session
+       it overlaps. Candidates are sorted ``(-overlap_width, width,
+       span_start, uri_lex)`` so the tightest (highest overlap, smallest
+       record width, earliest start, lex-first uri on ties) ranks first.
+    2. **time_refs fallback**: for sessions still empty after step 1, a
+       record without ``msg_range`` whose ``record_time_refs`` intersects
+       the session's ``time_refs`` becomes a low-priority candidate
+       (``overlap_width=0``, ``width=10**9``).
+
+    The shared structure was previously duplicated in
+    ``conversation.py`` and ``locomo.py``; only the return shape
+    diverged:
+
+    - ``return_all=False`` (default — matches the legacy
+      ``LongMemEvalBench._map_session_uris`` contract): returns a
+      single-element list ``[best_uri]`` per session — the tightest
+      candidate after sort.
+    - ``return_all=True`` (matches the legacy ``LoCoMoBench`` contract):
+      returns the full sorted candidate list per session, deferring
+      tie-break to the caller (``LoCoMoBench._select_best_session_uri``
+      applies a question-aware lexical refinement on the head of the
+      list).
+
+    Sessions with zero candidates always map to ``[]``.
+    """
+    relevant_records: Dict[str, Dict[str, Any]] = {}
+    for uri, record in records_by_uri.items():
+        record_session_id = str(record.get("session_id", "") or "")
+        if record_session_id and record_session_id != conversation_session_id:
+            continue
+        relevant_records[uri] = record
+
+    mapped: Dict[int, List[Tuple[str, int, int, int]]] = {
+        session_num: [] for session_num in session_spans
+    }
+    unmatched_records: Dict[str, Dict[str, Any]] = {}
+
+    for uri, record in relevant_records.items():
+        span = message_span(record)
+        if span is None:
+            unmatched_records[uri] = record
+            continue
+        width = span[1] - span[0]
+        for session_num, session_span in session_spans.items():
+            if not ranges_overlap(span, session_span):
+                continue
+            mapped[session_num].append(
+                (uri, width, overlap_width(span, session_span), span[0])
+            )
+
+    if unmatched_records:
+        for session_num, time_refs in session_time_refs.items():
+            if mapped[session_num] or not time_refs:
+                continue
+            for uri, record in unmatched_records.items():
+                if time_refs.intersection(record_time_refs(record)):
+                    span = message_span(record)
+                    width = span[1] - span[0] if span is not None else 10**9
+                    mapped[session_num].append(
+                        (uri, width, 0, span[0] if span else 10**9)
+                    )
+
+    result: Dict[int, List[str]] = {}
+    for session_num, candidates in mapped.items():
+        if not candidates:
+            result[session_num] = []
+            continue
+        ordered = sorted(
+            candidates,
+            key=lambda item: (-item[2], item[1], item[3], item[0]),
+        )
+        if return_all:
+            result[session_num] = [uri for uri, _, _, _ in ordered]
+        else:
+            result[session_num] = [ordered[0][0]]
+    return result
+
+
 def extract_records_by_uri(
     payload: Dict[str, Any],
 ) -> Dict[str, Dict[str, Any]]:
