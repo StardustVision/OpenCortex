@@ -178,6 +178,64 @@ class TestSessionRecordsRepository(unittest.TestCase):
 
         self._run(check())
 
+    def test_load_layers_partitions_by_layer_in_one_scroll(self):
+        """``load_layers`` returns multiple layers from a single storage call.
+
+        REVIEW closure tracker PERF-01 — used by
+        ``_generate_session_summary`` to halve storage round-trips
+        when both ``merged`` and ``directory`` layers are needed for
+        the same session.
+        """
+
+        class _CountingStorage:
+            def __init__(self, records):
+                self._records = records
+                self.filter_calls = 0
+
+            async def filter(self, _coll, _where, limit=10000):
+                self.filter_calls += 1
+                return list(self._records)
+
+        async def check():
+            records = [
+                _merged("u1", "s1", [0, 1]),
+                _merged("u2", "s1", [2, 3]),
+                _directory("d1", "s1", [0, 3]),
+                _summary("sum1", "s1"),
+            ]
+            storage = _CountingStorage(records)
+            repo = SessionRecordsRepository(
+                storage=storage, collection_resolver=lambda: "context"
+            )
+            out = await repo.load_layers(
+                layers=["merged", "directory"],
+                session_id="s1",
+                source_uri="src",
+            )
+            self.assertEqual([r["uri"] for r in out["merged"]], ["u1", "u2"])
+            self.assertEqual([r["uri"] for r in out["directory"]], ["d1"])
+            # Single storage round-trip — the whole point of the API.
+            self.assertEqual(storage.filter_calls, 1)
+            # Non-requested layer (session_summary) absent from result.
+            self.assertNotIn("session_summary", out)
+
+        self._run(check())
+
+    def test_load_layers_returns_empty_list_for_missing_layer(self):
+        """Requested layer with zero records still gets an empty list key."""
+
+        async def check():
+            records = [_merged("u1", "s1", [0, 1])]
+            repo = self._repo(records)
+            out = await repo.load_layers(
+                layers=["merged", "directory"],
+                session_id="s1",
+            )
+            self.assertEqual([r["uri"] for r in out["merged"]], ["u1"])
+            self.assertEqual(out["directory"], [])
+
+        self._run(check())
+
     def test_load_summary_returns_record_or_none(self):
         """``load_summary`` fetches by URI; returns None when absent."""
 

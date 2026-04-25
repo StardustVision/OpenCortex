@@ -313,6 +313,59 @@ class SessionRecordsRepository:
         sortable.sort(key=lambda item: (item[0], item[1]))
         return [record for _, _, record in sortable]
 
+    async def load_layers(
+        self,
+        *,
+        layers: List[str],
+        session_id: str,
+        source_uri: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Load multiple layers in a single scroll pass.
+
+        Returns ``{layer: msg-range-sorted records}`` for each layer in
+        ``layers``. Layers with zero matching records map to an empty
+        list. Saves a full storage round-trip versus calling
+        ``load_merged`` + ``load_directories`` (or any other pair)
+        separately — the scroll is the expensive part; the in-memory
+        layer/source_uri filter is essentially free.
+
+        Used by ``_generate_session_summary`` (REVIEW closure tracker
+        PERF-01) which needs both ``merged`` and ``directory`` layers
+        for the same session on the same input parameters; previously
+        paid two full scrolls on every benchmark cold-ingest and every
+        production ``session_end`` that generated a summary.
+        """
+        where = self._build_session_filter(
+            session_id=session_id, tenant_id=tenant_id, user_id=user_id
+        )
+        records = await self._scroll_all(
+            session_id=session_id, where=where, method="load_layers"
+        )
+        # Bucketize first so we sort each requested layer independently.
+        wanted = set(layers)
+        buckets: Dict[str, List[Tuple[int, int, Dict[str, Any]]]] = {
+            layer: [] for layer in wanted
+        }
+        for record in records:
+            meta = dict(record.get("meta") or {})
+            layer = str(meta.get("layer", "") or "")
+            if layer not in wanted:
+                continue
+            if source_uri:
+                if str(meta.get("source_uri", "") or "") != source_uri:
+                    continue
+            msg_range = record_msg_range(record)
+            if msg_range is None:
+                continue
+            buckets[layer].append((msg_range[0], msg_range[1], record))
+        sorted_layers: Dict[str, List[Dict[str, Any]]] = {}
+        for layer, rows in buckets.items():
+            rows.sort(key=lambda item: (item[0], item[1]))
+            sorted_layers[layer] = [record for _, _, record in rows]
+        return sorted_layers
+
     async def layer_counts(
         self,
         session_id: str,

@@ -2726,11 +2726,21 @@ class ContextManager:
         user_id: str,
         source_uri: Optional[str],
     ) -> Optional[str]:
-        """Generate a session-level summary from directory abstracts (or leaf abstracts as fallback)."""
-        directory_records = await self._session_records.load_directories(
+        """Generate a session-level summary from directory abstracts (or leaf abstracts as fallback).
+
+        Uses ``load_layers({"merged", "directory"})`` (REVIEW closure
+        tracker PERF-01): a single storage scroll returns both layers.
+        Previously the directory-present path called
+        ``load_directories`` and then ``load_merged``, paying two full
+        session scans for the same data.
+        """
+        layers = await self._session_records.load_layers(
+            layers=["merged", "directory"],
             session_id=session_id,
             source_uri=source_uri,
         )
+        directory_records = layers.get("directory", [])
+        merged_records = layers.get("merged", [])
 
         abstracts: List[str] = []
 
@@ -2747,10 +2757,6 @@ class ContextManager:
                     abstracts.append(abstract)
 
             # Include ungrouped leaf abstracts (leaves not in any directory)
-            merged_records = await self._session_records.load_merged(
-                session_id=session_id,
-                source_uri=source_uri,
-            )
             for rec in merged_records:
                 uri = str(rec.get("uri", "") or "").strip()
                 if uri and uri not in dir_child_uris:
@@ -2759,10 +2765,6 @@ class ContextManager:
                         abstracts.append(abstract)
         else:
             # Fallback: use leaf abstracts directly
-            merged_records = await self._session_records.load_merged(
-                session_id=session_id,
-                source_uri=source_uri,
-            )
             if len(merged_records) < 2:
                 return None
             for record in merged_records:
