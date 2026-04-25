@@ -5,9 +5,21 @@ Each model mirrors the parameters of the corresponding MCP tool in
 ``mcp_server.py``.
 """
 
+import json
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+# =========================================================================
+# Benchmark ingest payload limits — comfortably above LoCoMo / LongMemEval
+# real distributions. Hard caps the per-request fan-out to keep one bad
+# admin payload from saturating the LLM and embedder pools.
+# =========================================================================
+
+_BENCHMARK_MAX_SEGMENTS = 200
+_BENCHMARK_MAX_MESSAGES_PER_SEGMENT = 2_000
+_BENCHMARK_MAX_CONTENT_LENGTH = 64_000
+_BENCHMARK_MAX_META_BYTES = 16_384
 
 # =========================================================================
 # Core Memory
@@ -67,6 +79,10 @@ class MemorySearchRequest(BaseModel):
         ),
     )
     detail_level: str = "l1"
+    metadata_filter: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optional structured metadata filter for benchmark-scoped search.",
+    )
 
 
 class MemorySearchResultItem(BaseModel):
@@ -283,6 +299,63 @@ class ContextRequest(BaseModel):
     tool_calls: Optional[List[ToolCallRecord]] = None
     cited_uris: Optional[List[str]] = None
     config: Optional[ContextConfig] = None
+
+
+class BenchmarkConversationMessage(BaseModel):
+    """One benchmark-ingest message with hard size caps.
+
+    Mirrors :class:`ContextMessage` shape but enforces ``content`` and
+    ``meta`` limits at the request boundary so a single admin payload
+    cannot fan out to unbounded embed / LLM work.
+    """
+
+    role: str = Field(..., min_length=1, max_length=64)
+    content: str = Field(..., max_length=_BENCHMARK_MAX_CONTENT_LENGTH)
+    meta: Optional[Dict[str, Any]] = None
+
+    @field_validator("meta")
+    @classmethod
+    def _meta_within_byte_budget(
+        cls, value: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        if value is None:
+            return value
+        try:
+            serialized = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("meta must be JSON-serializable") from exc
+        if len(serialized.encode("utf-8")) > _BENCHMARK_MAX_META_BYTES:
+            raise ValueError(
+                f"meta exceeds {_BENCHMARK_MAX_META_BYTES}-byte limit"
+            )
+        return value
+
+
+class BenchmarkConversationSegment(BaseModel):
+    """One offline conversation segment used for benchmark ingest."""
+
+    messages: List[BenchmarkConversationMessage] = Field(
+        ..., max_length=_BENCHMARK_MAX_MESSAGES_PER_SEGMENT
+    )
+
+
+class BenchmarkConversationIngestRequest(BaseModel):
+    """Benchmark-only offline conversation ingest request."""
+
+    session_id: str = Field(..., pattern=r"^[a-zA-Z0-9_-]{1,128}$")
+    segments: List[BenchmarkConversationSegment] = Field(
+        ..., max_length=_BENCHMARK_MAX_SEGMENTS
+    )
+    include_session_summary: bool = True
+    ingest_shape: str = Field(
+        default="merged_recompose",
+        description=(
+            "Benchmark ingest shape. 'merged_recompose' stores merged offline "
+            "conversation leaves and runs full recomposition; 'direct_evidence' "
+            "stores each supplied segment as a searchable evidence unit without "
+            "full session recomposition."
+        ),
+    )
 
 
 class ContextPrepareIntent(BaseModel):

@@ -138,7 +138,11 @@ class InMemoryStorage(StorageInterface):
 
     async def get(self, collection, ids):
         self._ensure(collection)
-        return [dict(self._records[collection][r]) for r in ids if r in self._records[collection]]
+        return [
+            dict(self._records[collection][r])
+            for r in ids
+            if r in self._records[collection]
+        ]
 
     async def exists(self, collection, id):
         self._ensure(collection)
@@ -156,7 +160,11 @@ class InMemoryStorage(StorageInterface):
 
     async def remove_by_uri(self, collection, uri):
         self._ensure(collection)
-        to_remove = [rid for rid, r in self._records[collection].items() if r.get("uri", "").startswith(uri)]
+        to_remove = [
+            rid
+            for rid, r in self._records[collection].items()
+            if r.get("uri", "").startswith(uri)
+        ]
         for rid in to_remove:
             del self._records[collection][rid]
         return len(to_remove)
@@ -187,19 +195,35 @@ class InMemoryStorage(StorageInterface):
                 scored.append(rec)
             scored.sort(key=lambda x: x["_score"], reverse=True)
             candidates = scored
-        return candidates[offset:offset + limit]
+        return candidates[offset : offset + limit]
 
-    async def filter(self, collection, filter, limit=10, offset=0,
-                     output_fields=None, order_by=None, order_desc=False):
+    async def filter(
+        self,
+        collection,
+        filter,
+        limit=10,
+        offset=0,
+        output_fields=None,
+        order_by=None,
+        order_desc=False,
+    ):
         self._ensure(collection)
-        candidates = [dict(r) for r in self._records[collection].values() if self._eval_filter(r, filter)]
+        candidates = [
+            dict(r)
+            for r in self._records[collection].values()
+            if self._eval_filter(r, filter)
+        ]
         if order_by:
             candidates.sort(key=lambda r: r.get(order_by, ""), reverse=order_desc)
-        return candidates[offset:offset + limit]
+        return candidates[offset : offset + limit]
 
-    async def scroll(self, collection, filter=None, limit=100, cursor=None, output_fields=None):
+    async def scroll(
+        self, collection, filter=None, limit=100, cursor=None, output_fields=None
+    ):
         offset = int(cursor) if cursor else 0
-        records = await self.filter(collection, filter or {}, limit=limit + 1, offset=offset)
+        records = await self.filter(
+            collection, filter or {}, limit=limit + 1, offset=offset
+        )
         if len(records) > limit:
             return records[:limit], str(offset + limit)
         return records, None
@@ -232,17 +256,27 @@ class InMemoryStorage(StorageInterface):
 
     async def get_stats(self):
         total = sum(len(recs) for recs in self._records.values())
-        return {"collections": len(self._collections), "total_records": total,
-                "storage_size": 0, "backend": "in-memory"}
+        return {
+            "collections": len(self._collections),
+            "total_records": total,
+            "storage_size": 0,
+            "backend": "in-memory",
+        }
 
     # Reinforcement Learning
     async def update_reward(self, collection, id, reward):
         key = f"{collection}::{id}"
-        p = self._rl_profiles.setdefault(key, {
-            "reward_score": 0.0, "retrieval_count": 0,
-            "positive_feedback_count": 0, "negative_feedback_count": 0,
-            "effective_score": 0.0, "is_protected": False,
-        })
+        p = self._rl_profiles.setdefault(
+            key,
+            {
+                "reward_score": 0.0,
+                "retrieval_count": 0,
+                "positive_feedback_count": 0,
+                "negative_feedback_count": 0,
+                "effective_score": 0.0,
+                "is_protected": False,
+            },
+        )
         p["reward_score"] += reward
         p["retrieval_count"] += 1
         if reward > 0:
@@ -296,7 +330,9 @@ class InMemoryStorage(StorageInterface):
         if op == "must":
             return record.get(filt.get("field", "")) in filt.get("conds", [])
         elif op == "prefix":
-            return str(record.get(filt.get("field", ""), "")).startswith(filt.get("prefix", ""))
+            return str(record.get(filt.get("field", ""), "")).startswith(
+                filt.get("prefix", "")
+            )
         elif op == "range":
             val = record.get(filt.get("field", ""), 0)
             if "gte" in filt and val < filt["gte"]:
@@ -309,7 +345,9 @@ class InMemoryStorage(StorageInterface):
                 return False
             return True
         elif op == "contains":
-            return filt.get("substring", "") in str(record.get(filt.get("field", ""), ""))
+            return filt.get("substring", "") in str(
+                record.get(filt.get("field", ""), "")
+            )
         elif op == "and":
             return all(self._eval_filter(record, c) for c in filt.get("conds", []))
         elif op == "or":
@@ -350,9 +388,18 @@ async def _test_app_context():
     Yields an httpx.AsyncClient bound to the ASGI app.
     Manually manages the orchestrator lifecycle since httpx ASGITransport
     does not trigger ASGI lifespan events.
+
+    Includes both business and admin routers so admin-gated endpoints
+    (e.g. ``/api/v1/admin/benchmark/conversation_ingest``) are reachable;
+    tests that need admin privilege call :func:`set_request_role("admin")`
+    before issuing the request.
     """
     from fastapi import FastAPI
     import opencortex.http.server as http_server
+    from opencortex.http.admin_routes import (
+        register_admin_routes,
+        router as admin_router,
+    )
 
     temp_dir = tempfile.mkdtemp(prefix="http_test_")
     config = CortexConfig(
@@ -370,12 +417,16 @@ async def _test_app_context():
     orch = MemoryOrchestrator(config=config, storage=storage, embedder=embedder)
     await orch.init()
     http_server._orchestrator = orch
+    register_admin_routes(orch, jwt_secret="test-secret")
 
     app = FastAPI()
+    app.include_router(admin_router)
     http_server._register_routes(app)
 
     transport = ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
         try:
             yield client
         finally:
@@ -401,6 +452,7 @@ class TestHTTPServer(unittest.TestCase):
 
     def test_01_health(self):
         """GET /api/v1/memory/health returns component status."""
+
         async def check():
             async with _test_app_context() as client:
                 resp = await client.get("/api/v1/memory/health")
@@ -418,12 +470,16 @@ class TestHTTPServer(unittest.TestCase):
 
     def test_02_store(self):
         """POST /api/v1/memory/store creates a context."""
+
         async def check():
             async with _test_app_context() as client:
-                resp = await client.post("/api/v1/memory/store", json={
-                    "abstract": "User prefers dark theme",
-                    "category": "preferences",
-                })
+                resp = await client.post(
+                    "/api/v1/memory/store",
+                    json={
+                        "abstract": "User prefers dark theme",
+                        "category": "preferences",
+                    },
+                )
                 self.assertEqual(resp.status_code, 200)
                 data = resp.json()
                 self.assertIn("uri", data)
@@ -438,20 +494,30 @@ class TestHTTPServer(unittest.TestCase):
 
     def test_03_search(self):
         """POST /api/v1/memory/search returns results after storing."""
+
         async def check():
             async with _test_app_context() as client:
-                await client.post("/api/v1/memory/store", json={
-                    "abstract": "User prefers dark theme in editors",
-                    "category": "preferences",
-                })
-                await client.post("/api/v1/memory/store", json={
-                    "abstract": "Project uses Python 3.12",
-                    "category": "tech",
-                })
-                resp = await client.post("/api/v1/memory/search", json={
-                    "query": "What theme does the user prefer?",
-                    "limit": 5,
-                })
+                await client.post(
+                    "/api/v1/memory/store",
+                    json={
+                        "abstract": "User prefers dark theme in editors",
+                        "category": "preferences",
+                    },
+                )
+                await client.post(
+                    "/api/v1/memory/store",
+                    json={
+                        "abstract": "Project uses Python 3.12",
+                        "category": "tech",
+                    },
+                )
+                resp = await client.post(
+                    "/api/v1/memory/search",
+                    json={
+                        "query": "What theme does the user prefer?",
+                        "limit": 5,
+                    },
+                )
                 self.assertEqual(resp.status_code, 200)
                 data = resp.json()
                 parsed = MemorySearchResponse.model_validate(data)
@@ -468,7 +534,13 @@ class TestHTTPServer(unittest.TestCase):
                 self.assertTrue(data["memory_pipeline"]["probe"]["should_recall"])
                 self.assertIn(
                     data["memory_pipeline"]["probe"]["scope_source"],
-                    {"target_uri", "session_id", "source_doc_id", "context_type", "global_root"},
+                    {
+                        "target_uri",
+                        "session_id",
+                        "source_doc_id",
+                        "context_type",
+                        "global_root",
+                    },
                 )
                 self.assertIn(
                     "scope_authoritative",
@@ -503,11 +575,7 @@ class TestHTTPServer(unittest.TestCase):
                         "scope_authoritative",
                         "selected_root_uris",
                     }.issubset(
-                        set(
-                            data["memory_pipeline"]["runtime"]["trace"][
-                                "probe"
-                            ].keys()
-                        )
+                        set(data["memory_pipeline"]["runtime"]["trace"]["probe"].keys())
                     )
                 )
                 self.assertIn(
@@ -516,9 +584,8 @@ class TestHTTPServer(unittest.TestCase):
                 )
                 self.assertEqual(
                     sorted(
-                        data["memory_pipeline"]["runtime"]["trace"][
-                            "latency_ms"
-                        ]["stages"
+                        data["memory_pipeline"]["runtime"]["trace"]["latency_ms"][
+                            "stages"
                         ].keys()
                     ),
                     [
@@ -534,9 +601,8 @@ class TestHTTPServer(unittest.TestCase):
                 )
                 self.assertEqual(
                     sorted(
-                        data["memory_pipeline"]["runtime"]["trace"][
-                            "latency_ms"
-                        ]["retrieve"
+                        data["memory_pipeline"]["runtime"]["trace"]["latency_ms"][
+                            "retrieve"
                         ].keys()
                     ),
                     ["assemble", "embed", "rerank", "search", "total"],
@@ -550,11 +616,15 @@ class TestHTTPServer(unittest.TestCase):
 
     def test_03b_intent_should_recall_returns_phase1_contract(self):
         """POST /api/v1/intent/should_recall returns phase-1 probe semantics."""
+
         async def check():
             async with _test_app_context() as client:
-                resp = await client.post("/api/v1/intent/should_recall", json={
-                    "query": "What did we discuss yesterday?",
-                })
+                resp = await client.post(
+                    "/api/v1/intent/should_recall",
+                    json={
+                        "query": "What did we discuss yesterday?",
+                    },
+                )
                 self.assertEqual(resp.status_code, 200)
                 data = resp.json()
                 self.assertTrue(
@@ -577,16 +647,23 @@ class TestHTTPServer(unittest.TestCase):
 
     def test_03c_memory_search_exposes_probe_and_runtime_contract_flags(self):
         """POST /api/v1/memory/search exposes scoped contract flags."""
+
         async def check():
             async with _test_app_context() as client:
-                await client.post("/api/v1/memory/store", json={
-                    "abstract": "Launch plan notes for the active project",
-                    "category": "events",
-                })
-                resp = await client.post("/api/v1/memory/search", json={
-                    "query": "launch notes",
-                    "limit": 5,
-                })
+                await client.post(
+                    "/api/v1/memory/store",
+                    json={
+                        "abstract": "Launch plan notes for the active project",
+                        "category": "events",
+                    },
+                )
+                resp = await client.post(
+                    "/api/v1/memory/search",
+                    json={
+                        "query": "launch notes",
+                        "limit": 5,
+                    },
+                )
                 self.assertEqual(resp.status_code, 200)
                 data = resp.json()
                 parsed = MemorySearchResponse.model_validate(data)
@@ -610,17 +687,24 @@ class TestHTTPServer(unittest.TestCase):
 
     def test_04_feedback(self):
         """POST /api/v1/memory/feedback sends reward."""
+
         async def check():
             async with _test_app_context() as client:
-                store_resp = await client.post("/api/v1/memory/store", json={
-                    "abstract": "Important design decision",
-                })
+                store_resp = await client.post(
+                    "/api/v1/memory/store",
+                    json={
+                        "abstract": "Important design decision",
+                    },
+                )
                 uri = store_resp.json()["uri"]
 
-                resp = await client.post("/api/v1/memory/feedback", json={
-                    "uri": uri,
-                    "reward": 1.0,
-                })
+                resp = await client.post(
+                    "/api/v1/memory/feedback",
+                    json={
+                        "uri": uri,
+                        "reward": 1.0,
+                    },
+                )
                 self.assertEqual(resp.status_code, 200)
                 data = resp.json()
                 self.assertEqual(data["status"], "ok")
@@ -633,18 +717,24 @@ class TestHTTPServer(unittest.TestCase):
 
         async def check():
             async with _test_app_context() as client:
-                await client.post("/api/v1/memory/store", json={
-                    "abstract": "User prefers dark theme in editors",
-                    "category": "general",
-                })
-                resp = await client.post("/api/v1/context", json={
-                    "session_id": "sess_ctx_01",
-                    "turn_id": "turn_01",
-                    "phase": "prepare",
-                    "messages": [
-                        {"role": "user", "content": "What theme do I prefer?"}
-                    ],
-                })
+                await client.post(
+                    "/api/v1/memory/store",
+                    json={
+                        "abstract": "User prefers dark theme in editors",
+                        "category": "general",
+                    },
+                )
+                resp = await client.post(
+                    "/api/v1/context",
+                    json={
+                        "session_id": "sess_ctx_01",
+                        "turn_id": "turn_01",
+                        "phase": "prepare",
+                        "messages": [
+                            {"role": "user", "content": "What theme do I prefer?"}
+                        ],
+                    },
+                )
                 self.assertEqual(resp.status_code, 200)
                 data = resp.json()
                 parsed = ContextPrepareResponse.model_validate(data)
@@ -660,28 +750,40 @@ class TestHTTPServer(unittest.TestCase):
 
         async def check():
             async with _test_app_context() as client:
-                await client.post("/api/v1/context", json={
-                    "session_id": "sess_ctx_trace_01",
-                    "turn_id": "turn_commit_01",
-                    "phase": "commit",
-                    "messages": [
-                        {"role": "user", "content": "trace-token-hangzhou-001"},
-                        {"role": "assistant", "content": "记住了 trace-token-hangzhou-001"},
-                    ],
-                })
-                await client.post("/api/v1/context", json={
-                    "session_id": "sess_ctx_trace_01",
-                    "phase": "end",
-                })
+                await client.post(
+                    "/api/v1/context",
+                    json={
+                        "session_id": "sess_ctx_trace_01",
+                        "turn_id": "turn_commit_01",
+                        "phase": "commit",
+                        "messages": [
+                            {"role": "user", "content": "trace-token-hangzhou-001"},
+                            {
+                                "role": "assistant",
+                                "content": "记住了 trace-token-hangzhou-001",
+                            },
+                        ],
+                    },
+                )
+                await client.post(
+                    "/api/v1/context",
+                    json={
+                        "session_id": "sess_ctx_trace_01",
+                        "phase": "end",
+                    },
+                )
 
-                resp = await client.post("/api/v1/context", json={
-                    "session_id": "sess_ctx_trace_query_01",
-                    "turn_id": "turn_query_01",
-                    "phase": "prepare",
-                    "messages": [
-                        {"role": "user", "content": "trace-token-hangzhou-001"}
-                    ],
-                })
+                resp = await client.post(
+                    "/api/v1/context",
+                    json={
+                        "session_id": "sess_ctx_trace_query_01",
+                        "turn_id": "turn_query_01",
+                        "phase": "prepare",
+                        "messages": [
+                            {"role": "user", "content": "trace-token-hangzhou-001"}
+                        ],
+                    },
+                )
                 self.assertEqual(resp.status_code, 200)
                 data = resp.json()
                 parsed = ContextPrepareResponse.model_validate(data)
@@ -695,12 +797,340 @@ class TestHTTPServer(unittest.TestCase):
 
         self._run(check())
 
+    def test_04d_benchmark_conversation_ingest_preserves_traceability_contract(self):
+        """POST `/api/v1/admin/benchmark/conversation_ingest` writes merged session leaves."""
+
+        async def check():
+            from opencortex.http.request_context import (
+                reset_request_role,
+                set_request_role,
+            )
+
+            async with _test_app_context() as client:
+                role_token = set_request_role("admin")
+                try:
+                    ingest_resp = await client.post(
+                        "/api/v1/admin/benchmark/conversation_ingest",
+                        json={
+                            "session_id": "bench_conv_01",
+                            "segments": [
+                                {
+                                    "messages": [
+                                        {
+                                            "role": "user",
+                                            "content": "[Alice]: I moved to Hangzhou.",
+                                            "meta": {
+                                                "event_date": "2023-05-01T09:00:00Z",
+                                                "time_refs": [
+                                                    "9:00 am on 1 May, 2023",
+                                                    "2023-05-01T09:00:00Z",
+                                                ],
+                                            },
+                                        },
+                                        {
+                                            "role": "user",
+                                            "content": "[Bob]: You also stopped eating spicy food.",
+                                            "meta": {
+                                                "event_date": "2023-05-01T09:00:00Z",
+                                                "time_refs": [
+                                                    "9:00 am on 1 May, 2023",
+                                                    "2023-05-01T09:00:00Z",
+                                                ],
+                                            },
+                                        },
+                                    ]
+                                },
+                                {
+                                    "messages": [
+                                        {
+                                            "role": "user",
+                                            "content": "[Alice]: I will visit West Lake next week.",
+                                            "meta": {
+                                                "event_date": "2023-05-03T10:00:00Z",
+                                                "time_refs": [
+                                                    "10:00 am on 3 May, 2023",
+                                                    "2023-05-03T10:00:00Z",
+                                                ],
+                                            },
+                                        }
+                                    ]
+                                },
+                            ],
+                        },
+                    )
+                finally:
+                    reset_request_role(role_token)
+                self.assertEqual(ingest_resp.status_code, 200)
+                ingest_data = ingest_resp.json()
+                self.assertEqual(ingest_data["status"], "ok")
+                self.assertEqual(ingest_data["session_id"], "bench_conv_01")
+                self.assertIsNotNone(ingest_data["source_uri"])
+                self.assertEqual(len(ingest_data["records"]), 2)
+                self.assertEqual(
+                    [record["msg_range"] for record in ingest_data["records"]],
+                    [[0, 1], [2, 2]],
+                )
+                # U6: response no longer leaks `layer_counts` (cross-tenant
+                # enumeration risk).
+                self.assertNotIn("layer_counts", ingest_data)
+                # U10: each record carries the raw conversation text the
+                # adapter wrote, not the empty string previously returned by
+                # ``_export_memory_record`` (Context.to_dict() omits content).
+                for record in ingest_data["records"]:
+                    self.assertNotEqual(
+                        record["content"],
+                        "",
+                        f"benchmark record {record['uri']} returned empty content",
+                    )
+
+                list_resp = await client.get(
+                    "/api/v1/memory/list",
+                    params={
+                        "context_type": "memory",
+                        "category": "events",
+                        "include_payload": True,
+                        "limit": 20,
+                    },
+                )
+                self.assertEqual(list_resp.status_code, 200)
+                list_results = list_resp.json()["results"]
+                bench_records = [
+                    item
+                    for item in list_results
+                    if item.get("session_id") == "bench_conv_01"
+                ]
+                self.assertGreaterEqual(len(bench_records), 2)
+                self.assertIn([0, 1], [item.get("msg_range") for item in bench_records])
+
+                prepare_resp = await client.post(
+                    "/api/v1/context",
+                    json={
+                        "session_id": "bench_query_01",
+                        "turn_id": "turn_01",
+                        "phase": "prepare",
+                        "messages": [{"role": "user", "content": "Hangzhou"}],
+                    },
+                )
+                self.assertEqual(prepare_resp.status_code, 200)
+                parsed = ContextPrepareResponse.model_validate(prepare_resp.json())
+                self.assertTrue(
+                    any(
+                        item.session_id == "bench_conv_01"
+                        and item.source_uri == ingest_data["source_uri"]
+                        and item.msg_range in ([0, 1], [2, 2])
+                        for item in parsed.memory
+                    )
+                )
+
+        self._run(check())
+
+    def test_04e_benchmark_conversation_ingest_direct_evidence_shape(self):
+        """POST `/api/v1/admin/benchmark/conversation_ingest` can store direct evidence."""
+
+        async def check():
+            from opencortex.http.request_context import (
+                reset_request_role,
+                set_request_role,
+            )
+
+            async with _test_app_context() as client:
+                role_token = set_request_role("admin")
+                try:
+                    ingest_resp = await client.post(
+                        "/api/v1/admin/benchmark/conversation_ingest",
+                        json={
+                            "session_id": "bench_lme_01",
+                            "ingest_shape": "direct_evidence",
+                            "include_session_summary": False,
+                            "segments": [
+                                {
+                                    "messages": [
+                                        {
+                                            "role": "user",
+                                            "content": "I moved to Hangzhou.",
+                                            "meta": {
+                                                "event_date": "2023-05-01",
+                                                "time_refs": ["2023-05-01"],
+                                                "lme_session_id": "s1",
+                                                "lme_segment_kind": "pair",
+                                            },
+                                        },
+                                        {
+                                            "role": "assistant",
+                                            "content": "Noted.",
+                                            "meta": {
+                                                "event_date": "2023-05-01",
+                                                "time_refs": ["2023-05-01"],
+                                                "lme_session_id": "s1",
+                                                "lme_segment_kind": "pair",
+                                            },
+                                        },
+                                    ]
+                                }
+                            ],
+                        },
+                    )
+                finally:
+                    reset_request_role(role_token)
+                self.assertEqual(ingest_resp.status_code, 200)
+                ingest_data = ingest_resp.json()
+                self.assertEqual(ingest_data["status"], "ok")
+                self.assertEqual(ingest_data["ingest_shape"], "direct_evidence")
+                self.assertIsNone(ingest_data["summary_uri"])
+                self.assertEqual(len(ingest_data["records"]), 1)
+                record = ingest_data["records"][0]
+                self.assertEqual(record["session_id"], "bench_lme_01")
+                self.assertEqual(record["msg_range"], [0, 1])
+                self.assertEqual(
+                    record["recomposition_stage"], "benchmark_direct_evidence"
+                )
+                self.assertEqual(record["meta"]["lme_session_id"], "s1")
+                self.assertNotIn("layer_counts", ingest_data)
+                # U10 also covers the direct_evidence path: content must
+                # not be empty just because Context.to_dict drops it.
+                self.assertNotEqual(record["content"], "")
+
+                search_resp = await client.post(
+                    "/api/v1/memory/search",
+                    json={
+                        "query": "Hangzhou",
+                        "limit": 5,
+                        "context_type": "memory",
+                        "metadata_filter": {
+                            "op": "must",
+                            "field": "session_id",
+                            "conds": ["bench_lme_01"],
+                        },
+                    },
+                )
+                self.assertEqual(search_resp.status_code, 200)
+
+                list_resp = await client.get(
+                    "/api/v1/memory/list",
+                    params={
+                        "context_type": "memory",
+                        "category": "events",
+                        "include_payload": True,
+                        "limit": 20,
+                    },
+                )
+                self.assertEqual(list_resp.status_code, 200)
+                self.assertTrue(
+                    any(
+                        item.get("session_id") == "bench_lme_01"
+                        and item.get("recomposition_stage")
+                        == "benchmark_direct_evidence"
+                        for item in list_resp.json().get("results", [])
+                    )
+                )
+
+        self._run(check())
+
+    def test_04f_benchmark_ingest_requires_admin(self):
+        """Non-admin token receives 403 from benchmark ingest endpoint."""
+
+        async def check():
+            async with _test_app_context() as client:
+                # No admin role set; default role is 'user'.
+                resp = await client.post(
+                    "/api/v1/admin/benchmark/conversation_ingest",
+                    json={
+                        "session_id": "bench_unauth_01",
+                        "segments": [
+                            {
+                                "messages": [
+                                    {"role": "user", "content": "hello"},
+                                ],
+                            },
+                        ],
+                    },
+                )
+                self.assertEqual(resp.status_code, 403)
+                self.assertEqual(
+                    resp.json().get("detail"), "Admin access required"
+                )
+
+        self._run(check())
+
+    def test_04g_benchmark_ingest_payload_bounds(self):
+        """Pydantic caps reject oversized benchmark payloads with 422."""
+
+        async def check():
+            from opencortex.http.request_context import (
+                reset_request_role,
+                set_request_role,
+            )
+
+            async with _test_app_context() as client:
+                role_token = set_request_role("admin")
+                try:
+                    # 201 segments — exceeds _BENCHMARK_MAX_SEGMENTS (200).
+                    too_many_segments = {
+                        "session_id": "bench_bounds_segs",
+                        "segments": [
+                            {"messages": [{"role": "user", "content": "x"}]}
+                            for _ in range(201)
+                        ],
+                    }
+                    resp = await client.post(
+                        "/api/v1/admin/benchmark/conversation_ingest",
+                        json=too_many_segments,
+                    )
+                    self.assertEqual(resp.status_code, 422)
+
+                    # content > 64 KB — exceeds per-message cap.
+                    too_long_content = {
+                        "session_id": "bench_bounds_content",
+                        "segments": [
+                            {
+                                "messages": [
+                                    {
+                                        "role": "user",
+                                        "content": "a" * 65_000,
+                                    }
+                                ]
+                            }
+                        ],
+                    }
+                    resp = await client.post(
+                        "/api/v1/admin/benchmark/conversation_ingest",
+                        json=too_long_content,
+                    )
+                    self.assertEqual(resp.status_code, 422)
+
+                    # meta dict > 16 KB serialized — exceeds meta budget.
+                    huge_meta_value = "v" * 17_000
+                    too_big_meta = {
+                        "session_id": "bench_bounds_meta",
+                        "segments": [
+                            {
+                                "messages": [
+                                    {
+                                        "role": "user",
+                                        "content": "ok",
+                                        "meta": {"k": huge_meta_value},
+                                    }
+                                ]
+                            }
+                        ],
+                    }
+                    resp = await client.post(
+                        "/api/v1/admin/benchmark/conversation_ingest",
+                        json=too_big_meta,
+                    )
+                    self.assertEqual(resp.status_code, 422)
+                finally:
+                    reset_request_role(role_token)
+
+        self._run(check())
+
     # -----------------------------------------------------------------
     # 5. Stats
     # -----------------------------------------------------------------
 
     def test_05_stats(self):
         """GET /api/v1/memory/stats returns statistics."""
+
         async def check():
             async with _test_app_context() as client:
                 resp = await client.get("/api/v1/memory/stats")
@@ -718,17 +1148,24 @@ class TestHTTPServer(unittest.TestCase):
 
     def test_06_decay(self):
         """POST /api/v1/memory/decay triggers time-decay."""
+
         async def check():
             async with _test_app_context() as client:
                 # Store + feedback to create RL profile
-                store_resp = await client.post("/api/v1/memory/store", json={
-                    "abstract": "Decaying memory",
-                })
+                store_resp = await client.post(
+                    "/api/v1/memory/store",
+                    json={
+                        "abstract": "Decaying memory",
+                    },
+                )
                 uri = store_resp.json()["uri"]
-                await client.post("/api/v1/memory/feedback", json={
-                    "uri": uri,
-                    "reward": 5.0,
-                })
+                await client.post(
+                    "/api/v1/memory/feedback",
+                    json={
+                        "uri": uri,
+                        "reward": 5.0,
+                    },
+                )
 
                 resp = await client.post("/api/v1/memory/decay")
                 self.assertEqual(resp.status_code, 200)
@@ -743,6 +1180,7 @@ class TestHTTPServer(unittest.TestCase):
 
     def test_07_full_pipeline(self):
         """Complete pipeline: store -> search -> feedback -> decay via HTTP."""
+
         async def check():
             async with _test_app_context() as client:
                 # 1. Store memories
@@ -752,9 +1190,13 @@ class TestHTTPServer(unittest.TestCase):
                     "Team uses PostgreSQL for production",
                     "Deploy via GitHub Actions CI/CD",
                 ]:
-                    r = await client.post("/api/v1/memory/store", json={
-                        "abstract": text, "category": "general",
-                    })
+                    r = await client.post(
+                        "/api/v1/memory/store",
+                        json={
+                            "abstract": text,
+                            "category": "general",
+                        },
+                    )
                     self.assertEqual(r.status_code, 200)
                     uris.append(r.json()["uri"])
 
@@ -763,15 +1205,27 @@ class TestHTTPServer(unittest.TestCase):
                 self.assertGreaterEqual(stats["storage"]["total_records"], 3)
 
                 # 3. Search
-                search = (await client.post("/api/v1/memory/search", json={
-                    "query": "database", "limit": 3,
-                })).json()
+                search = (
+                    await client.post(
+                        "/api/v1/memory/search",
+                        json={
+                            "query": "database",
+                            "limit": 3,
+                        },
+                    )
+                ).json()
                 self.assertGreater(search["total"], 0)
 
                 # 4. Feedback
-                fb = (await client.post("/api/v1/memory/feedback", json={
-                    "uri": uris[0], "reward": 1.0,
-                })).json()
+                fb = (
+                    await client.post(
+                        "/api/v1/memory/feedback",
+                        json={
+                            "uri": uris[0],
+                            "reward": 1.0,
+                        },
+                    )
+                ).json()
                 self.assertEqual(fb["status"], "ok")
 
                 # 5. Decay
@@ -790,6 +1244,7 @@ class TestHTTPServer(unittest.TestCase):
 
     def test_08_system_status_doctor(self):
         """GET /api/v1/system/status returns doctor report by default."""
+
         async def check():
             async with _test_app_context() as client:
                 resp = await client.get("/api/v1/system/status")
@@ -802,6 +1257,7 @@ class TestHTTPServer(unittest.TestCase):
 
     def test_09_system_status_health(self):
         """GET /api/v1/system/status?type=health returns health check."""
+
         async def check():
             async with _test_app_context() as client:
                 resp = await client.get("/api/v1/system/status?type=health")
@@ -814,6 +1270,7 @@ class TestHTTPServer(unittest.TestCase):
 
     def test_10_system_status_stats(self):
         """GET /api/v1/system/status?type=stats returns statistics."""
+
         async def check():
             async with _test_app_context() as client:
                 resp = await client.get("/api/v1/system/status?type=stats")

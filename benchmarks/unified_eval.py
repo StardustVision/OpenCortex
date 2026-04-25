@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-OpenCortex Unified Evaluation Framework.
+"""OpenCortex Unified Evaluation Framework.
 
 Covers all three ingestion modes (memory, conversation, document) with
 four result dimensions: retrieval quality, QA accuracy, token reduction,
@@ -33,15 +32,12 @@ import random
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple
 from uuid import uuid4
 
 _project_root = str(Path(__file__).resolve().parent.parent)
 sys.path.insert(0, _project_root)
 sys.path.insert(0, str(Path(_project_root) / "src"))
-
-from opencortex.auth.token import ensure_secret, generate_token
-from opencortex.parse.base import estimate_tokens
 
 from benchmarks.llm_client import LLMClient
 from benchmarks.metrics import (
@@ -59,13 +55,13 @@ from benchmarks.report import build_report, print_report, save_report
 from benchmarks.scoring import (
     bleu1_score,
     exact_match,
-    f1_score,
     jscore_judge,
     llm_judge_score,
     score_qa,
     supporting_fact_f1,
 )
-
+from opencortex.auth.token import ensure_secret, generate_token
+from opencortex.parse.base import estimate_tokens
 
 # ---------------------------------------------------------------------------
 # Dataset-adaptive answer prompt templates
@@ -145,21 +141,25 @@ def _get_adapter(mode: str, dataset: str = ""):
         from benchmarks.adapters.conversation import LongMemEvalBench
 
         return LongMemEvalBench()
+    if dataset == "beam":
+        from benchmarks.adapters.beam import BeamBench
+
+        return BeamBench()
 
     # Default mode-based routing
     if mode == "memory":
         from benchmarks.adapters.memory import MemoryAdapter
 
         return MemoryAdapter()
-    elif mode == "conversation":
+    if mode == "conversation":
         from benchmarks.adapters.locomo import LoCoMoBench
 
         return LoCoMoBench()
-    elif mode == "document":
+    if mode == "document":
         from benchmarks.adapters.document import DocumentAdapter
 
         return DocumentAdapter()
-    elif mode == "knowledge":
+    if mode == "knowledge":
         from benchmarks.adapters.knowledge import KnowledgeAdapter
 
         return KnowledgeAdapter()
@@ -182,6 +182,129 @@ def _build_prompt(
     return f"Relevant context:\n{context}\n\n{tpl.format(question=question)}"
 
 
+def _parse_retrieval_cutoffs(raw_value: str) -> List[int]:
+    """Parse comma-delimited retrieval cutoffs."""
+    cutoffs: List[int] = []
+    for token in str(raw_value or "").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        value = int(token)
+        if value <= 0:
+            raise ValueError("retrieval cutoffs must be positive integers")
+        if value not in cutoffs:
+            cutoffs.append(value)
+    return cutoffs
+
+
+class BenchmarkRunOptions(NamedTuple):
+    """Effective benchmark flavor and runner options."""
+
+    benchmark_layer: str
+    benchmark_flavor: str
+    ingest_method: str
+    retrieve_method: str
+    ingest_shape: str
+    retrieval_cutoffs: List[int]
+    retrieval_metric_top_k: int
+    effective_top_k: int
+
+
+def _normalize_dataset_name(args) -> str:
+    """Return normalized dataset name from runner args."""
+    return str(getattr(args, "dataset", "") or "").lower()
+
+
+def _benchmark_flavor(args) -> str:
+    """Resolve auto benchmark flavor."""
+    flavor = str(getattr(args, "benchmark_flavor", "auto") or "auto").lower()
+    if flavor == "mainstream":
+        return "mainstream-search"
+    if flavor != "auto":
+        return flavor
+    if _normalize_dataset_name(args) == "beam":
+        return "pressure"
+    if _normalize_dataset_name(args) in {"longmemeval", "locomo"}:
+        return "mainstream-search"
+    return "internal"
+
+
+def _benchmark_layer(flavor: str) -> str:
+    """Return benchmark layer for a normalized flavor."""
+    if flavor == "mainstream-search":
+        return "public_comparison"
+    if flavor == "recall-eval":
+        return "production_recall"
+    if flavor == "pressure":
+        return "pressure"
+    return "internal"
+
+
+def _is_user_set(args, attr_name: str) -> bool:
+    """Return whether an optional arg was explicitly marked by tests/wrappers."""
+    value = getattr(args, f"{attr_name}_set", None)
+    if value is not None:
+        return bool(value)
+    value = getattr(args, f"_user_set_{attr_name}", None)
+    if value is not None:
+        return bool(value)
+    return False
+
+
+def _resolve_benchmark_options(args) -> BenchmarkRunOptions:
+    """Resolve flavor, retrieval, ingest, and top-k options for a run."""
+    flavor = _benchmark_flavor(args)
+    dataset = _normalize_dataset_name(args)
+    ingest_method = str(getattr(args, "ingest_method", "store") or "store")
+    retrieve_method = str(getattr(args, "retrieve_method", "search") or "search")
+
+    evidence_datasets = {"longmemeval", "locomo"}
+    if flavor in {"mainstream-search", "recall-eval"} and dataset in evidence_datasets:
+        if dataset == "longmemeval" and ingest_method == "store":
+            ingest_method = "longmemeval-mainstream"
+
+    if flavor == "mainstream-search":
+        retrieve_method = "search"
+    elif flavor == "recall-eval":
+        retrieve_method = "recall"
+    elif flavor == "pressure" and not _is_user_set(args, "retrieve_method"):
+        retrieve_method = "recall"
+
+    retrieval_cutoffs = _retrieval_cutoffs(args, flavor)
+    retrieval_metric_top_k = max(retrieval_cutoffs)
+    effective_top_k = max(int(getattr(args, "top_k", 10)), retrieval_metric_top_k)
+
+    ingest_shape = ingest_method
+    if ingest_method in {"longmemeval-mainstream", "mainstream", "pairs"}:
+        ingest_shape = "direct_evidence"
+    if flavor == "pressure" and dataset == "beam":
+        ingest_shape = "direct_evidence"
+
+    return BenchmarkRunOptions(
+        benchmark_layer=_benchmark_layer(flavor),
+        benchmark_flavor=flavor,
+        ingest_method=ingest_method,
+        retrieve_method=retrieve_method,
+        ingest_shape=ingest_shape,
+        retrieval_cutoffs=retrieval_cutoffs,
+        retrieval_metric_top_k=retrieval_metric_top_k,
+        effective_top_k=effective_top_k,
+    )
+
+
+def _retrieval_cutoffs(args, flavor: str) -> List[int]:
+    """Return configured retrieval cutoffs for this run."""
+    raw_cutoffs = str(getattr(args, "retrieval_cutoffs", "") or "").strip()
+    if raw_cutoffs:
+        return _parse_retrieval_cutoffs(raw_cutoffs)
+    if _normalize_dataset_name(args) in {"longmemeval", "locomo"} and flavor in {
+        "mainstream-search",
+        "recall-eval",
+    }:
+        return [10, 20, 50, 200]
+    return [1, 3, 5]
+
+
 async def _run_knowledge_mode(
     adapter, oc: OCClient, llm: LLMClient, args, run_id: str, log
 ) -> Dict[str, Any]:
@@ -195,7 +318,8 @@ async def _run_knowledge_mode(
 
     # Phase 1: Ingest (no-op for direct mode)
     ingest_result = await adapter.ingest(
-        oc, max_qa=args.max_qa,
+        oc,
+        max_qa=args.max_qa,
         eval_method=getattr(args, "eval_method", "direct"),
     )
     log(f"  Ingested {ingest_result.ingested_items}/{ingest_result.total_items}")
@@ -244,29 +368,40 @@ async def _run_knowledge_mode(
     for i, r in enumerate(all_records):
         if isinstance(r, Exception):
             log(f"  Cluster {i} failed: {r}")
-            records.append({
-                "cluster_id": qa_items[i].meta.get("cluster_id", f"cluster_{i}"),
-                "error": str(r),
-            })
+            records.append(
+                {
+                    "cluster_id": qa_items[i].meta.get("cluster_id", f"cluster_{i}"),
+                    "error": str(r),
+                }
+            )
         else:
             records.append(r)
 
     # Phase 4: Aggregate metrics
     recalls = [r["knowledge_recall"] for r in records if "knowledge_recall" in r]
-    precisions = [r["knowledge_precision"] for r in records if "knowledge_precision" in r]
+    precisions = [
+        r["knowledge_precision"] for r in records if "knowledge_precision" in r
+    ]
     type_accs = [r["type_accuracy"] for r in records if "type_accuracy" in r]
     hallucs = [r["hallucination_rate"] for r in records if "hallucination_rate" in r]
 
     accuracy: Dict[str, Any] = {}
     if recalls:
         accuracy["knowledge_recall"] = round(sum(recalls) / len(recalls), 4)
-        accuracy["knowledge_precision"] = round(sum(precisions) / len(precisions), 4) if precisions else 0.0
-        accuracy["type_accuracy"] = round(sum(type_accs) / len(type_accs), 4) if type_accs else 0.0
-        accuracy["hallucination_rate"] = round(sum(hallucs) / len(hallucs), 4) if hallucs else 0.0
+        accuracy["knowledge_precision"] = (
+            round(sum(precisions) / len(precisions), 4) if precisions else 0.0
+        )
+        accuracy["type_accuracy"] = (
+            round(sum(type_accs) / len(type_accs), 4) if type_accs else 0.0
+        )
+        accuracy["hallucination_rate"] = (
+            round(sum(hallucs) / len(hallucs), 4) if hallucs else 0.0
+        )
 
         # Bootstrap CI for recall
         if len(recalls) >= 5:
             from benchmarks.metrics import bootstrap_ci
+
             ci_lo, ci_hi = bootstrap_ci(recalls)
             accuracy["recall_ci"] = {"lower": ci_lo, "upper": ci_hi}
 
@@ -358,11 +493,15 @@ async def run_mode(
             )
         adapter.load_dataset(dataset_path)
 
+        run_options = _resolve_benchmark_options(args)
+
         # Set retrieve method on adapter
         if hasattr(adapter, "_retrieve_method"):
-            adapter._retrieve_method = args.retrieve_method
+            adapter._retrieve_method = run_options.retrieve_method
         if hasattr(adapter, "_ingest_method"):
-            adapter._ingest_method = args.ingest_method
+            adapter._ingest_method = run_options.ingest_method
+        if hasattr(adapter, "_ingest_concurrency"):
+            adapter._ingest_concurrency = int(getattr(args, "ingest_concurrency", 4))
 
         # Knowledge mode has its own evaluation flow
         if mode == "knowledge":
@@ -372,8 +511,13 @@ async def run_mode(
         if not args.skip_ingest:
             log("Ingesting dataset...")
             ingest_result = await adapter.ingest(
-                oc, max_conv=args.max_conv, max_qa=args.max_qa,
-                ingest_method=args.ingest_method,
+                oc,
+                max_conv=args.max_conv,
+                max_qa=args.max_qa,
+                per_type=args.per_type,
+                beam_tier=getattr(args, "beam_tier", ""),
+                ingest_method=run_options.ingest_method,
+                ingest_concurrency=int(getattr(args, "ingest_concurrency", 4)),
             )
             log(
                 f"  Ingested {ingest_result.ingested_items}/{ingest_result.total_items}"
@@ -388,8 +532,13 @@ async def run_mode(
             log("  Deferred derives complete.")
 
         # Phase 2: Build QA items (max_conv limits QA to ingested conversations only)
-        qa_items = adapter.build_qa_items(max_qa=args.max_qa, max_conv=args.max_conv)
-        log(f"Evaluating {len(qa_items)} QA items (top_k={args.top_k})...")
+        qa_items = adapter.build_qa_items(
+            max_qa=args.max_qa,
+            max_conv=args.max_conv,
+            per_type=args.per_type,
+            beam_tier=getattr(args, "beam_tier", ""),
+        )
+        log(f"Evaluating {len(qa_items)} QA items (top_k={run_options.effective_top_k})...")
 
         # Phase 3: Evaluate
         rng = random.Random(args.seed)
@@ -415,7 +564,7 @@ async def run_mode(
                 if not args.baseline_only:
                     try:
                         results, latency_ms = await adapter.retrieve(
-                            oc, qa_item, args.top_k
+                            oc, qa_item, run_options.effective_top_k
                         )
                     except Exception as e:
                         log(f"  Retrieve error: {e}")
@@ -452,12 +601,19 @@ async def run_mode(
                 # OC path: LLM answer
                 oc_prediction = ""
                 oc_prompt = ""
-                if not args.retrieval_only and not args.baseline_only and oc_context and llm:
+                if (
+                    not args.retrieval_only
+                    and not args.baseline_only
+                    and oc_context
+                    and llm
+                ):
                     oc_prompt = _build_prompt(
                         oc_context, qa_item.question, qa_item.category, args.dataset
                     )
                     try:
-                        oc_prediction = await llm.complete(oc_prompt, max_tokens=args.llm_max_tokens)
+                        oc_prediction = await llm.complete(
+                            oc_prompt, max_tokens=args.llm_max_tokens
+                        )
                     except Exception as e:
                         log(f"  LLM error (OC): {e}")
                     record["oc_prediction"] = oc_prediction
@@ -478,7 +634,9 @@ async def run_mode(
                         args.dataset,
                     )
                     try:
-                        bl_prediction = await llm.complete(bl_prompt, max_tokens=args.llm_max_tokens)
+                        bl_prediction = await llm.complete(
+                            bl_prompt, max_tokens=args.llm_max_tokens
+                        )
                     except Exception as e:
                         log(f"  LLM error (BL): {e}")
                     record["bl_prediction"] = bl_prediction
@@ -583,27 +741,35 @@ async def run_mode(
         # Retrieval
         retrieval_metrics = compute_retrieval_metrics(
             [r for r in records if r.get("retrieved_uris") is not None],
-            ks=[1, 3, 5],
+            ks=run_options.retrieval_cutoffs,
         )
 
         # NDCG@k retrieval quality
         ndcg_records = [
-            r for r in records
+            r
+            for r in records
             if r.get("retrieved_uris") is not None and r.get("expected_uris")
         ]
         if ndcg_records:
-            retrieval_metrics["ndcg"] = compute_ndcg(ndcg_records, k=5)
+            retrieval_metrics["ndcg"] = {
+                f"ndcg@{cutoff}": compute_ndcg(ndcg_records, k=cutoff)
+                for cutoff in run_options.retrieval_cutoffs
+            }
 
         # Bootstrap CI for retrieval metrics (if enough records)
         if len(ndcg_records) >= 10:
-            retrieval_ci = compute_retrieval_metrics_with_ci(ndcg_records, ks=[1, 3, 5])
+            retrieval_ci = compute_retrieval_metrics_with_ci(
+                ndcg_records, ks=run_options.retrieval_cutoffs
+            )
             retrieval_metrics["confidence_intervals"] = retrieval_ci.get(
                 "confidence_intervals", {}
             )
 
         # Content-level recall (evidence-based, like OpenViking)
         content_recall_records = [
-            r for r in records if r.get("retrieved_content") and r.get("meta", {}).get("evidence_texts")
+            r
+            for r in records
+            if r.get("retrieved_content") and r.get("meta", {}).get("evidence_texts")
         ]
         if content_recall_records:
             retrieval_metrics["content_recall"] = compute_content_recall(
@@ -685,7 +851,9 @@ async def run_mode(
         if bl_bleu1s:
             accuracy["baseline_bleu1"] = round(sum(bl_bleu1s) / len(bl_bleu1s), 4)
         if oc_bleu1s and bl_bleu1s:
-            accuracy["delta_bleu1"] = f"{sum(oc_bleu1s)/len(oc_bleu1s) - sum(bl_bleu1s)/len(bl_bleu1s):+.4f}"
+            accuracy["delta_bleu1"] = (
+                f"{sum(oc_bleu1s) / len(oc_bleu1s) - sum(bl_bleu1s) / len(bl_bleu1s):+.4f}"
+            )
 
         # F1 bootstrap confidence interval (95%)
         if len(oc_f1s) >= 10:
@@ -769,12 +937,20 @@ async def run_mode(
             "llm_model": args.llm_model,
             "server": args.server,
             "dataset_path": dataset_path,
-            "top_k": args.top_k,
+            "top_k": run_options.effective_top_k,
+            "requested_top_k": args.top_k,
+            "effective_top_k": run_options.effective_top_k,
+            "retrieval_cutoffs": run_options.retrieval_cutoffs,
+            "retrieval_metric_top_k": run_options.retrieval_metric_top_k,
             "max_context_tokens": args.max_context_tokens,
             "concurrency": args.concurrency,
             "total_qa": len(qa_items),
-            "retrieve_method": args.retrieve_method,
-            "ingest_method": args.ingest_method,
+            "retrieve_method": run_options.retrieve_method,
+            "ingest_method": run_options.ingest_method,
+            "ingest_shape": run_options.ingest_shape,
+            "benchmark_layer": run_options.benchmark_layer,
+            "benchmark_flavor": run_options.benchmark_flavor,
+            "per_type": args.per_type,
             "enable_llm_judge": args.enable_llm_judge,
             "jscore_enabled": not args.disable_jscore,
             "seed": args.seed,
@@ -817,10 +993,13 @@ async def run(args):
         for mode, (dataset, data_path) in _DEFAULT_DATASETS.items():
             run_specs.append((mode, dataset, data_path))
         # Add LongMemEval as a second conversation-mode run
-        run_specs.append((
-            "conversation", "longmemeval",
-            "benchmarks/datasets/longmemeval/longmemeval_s_cleaned.json",
-        ))
+        run_specs.append(
+            (
+                "conversation",
+                "longmemeval",
+                "benchmarks/datasets/longmemeval/longmemeval_s_cleaned.json",
+            )
+        )
     else:
         run_specs = [(args.mode, args.dataset, args.data)]
 
@@ -867,14 +1046,21 @@ def main():
 
     # Mode + dataset
     p.add_argument(
-        "--mode", required=True, choices=["memory", "conversation", "document", "knowledge", "all"]
+        "--mode",
+        required=True,
+        choices=["memory", "conversation", "document", "knowledge", "all"],
     )
     p.add_argument(
         "--dataset",
         default="",
-        help="Dataset name (personamem, locomo, longmemeval, qasper, longbench, cmrc, hotpotqa)",
+        help="Dataset name (personamem, locomo, longmemeval, beam, qasper, longbench, cmrc, hotpotqa)",
     )
     p.add_argument("--data", default="", help="Dataset file path")
+    p.add_argument(
+        "--beam-tier",
+        default="",
+        help="BEAM pressure bucket/tier filter, e.g. 100k, 500k, 1m, or 10m",
+    )
 
     # Server
     p.add_argument(
@@ -888,9 +1074,19 @@ def main():
     )
 
     # LLM
-    p.add_argument("--llm-base", required="--retrieval-only" not in sys.argv, help="LLM API base URL")
-    p.add_argument("--llm-key", required="--retrieval-only" not in sys.argv, help="LLM API key")
-    p.add_argument("--llm-model", required="--retrieval-only" not in sys.argv, help="LLM model name")
+    p.add_argument(
+        "--llm-base",
+        required="--retrieval-only" not in sys.argv,
+        help="LLM API base URL",
+    )
+    p.add_argument(
+        "--llm-key", required="--retrieval-only" not in sys.argv, help="LLM API key"
+    )
+    p.add_argument(
+        "--llm-model",
+        required="--retrieval-only" not in sys.argv,
+        help="LLM model name",
+    )
     p.add_argument(
         "--llm-api-style", default="auto", choices=["auto", "openai", "anthropic"]
     )
@@ -898,17 +1094,58 @@ def main():
         "--no-thinking", action="store_true", help="Disable LLM reasoning/thinking"
     )
     p.add_argument(
-        "--llm-max-tokens", type=int, default=4096,
-        help="Max tokens for LLM completion (raise for reasoning models like Kimi K2.5)"
+        "--llm-max-tokens",
+        type=int,
+        default=4096,
+        help="Max tokens for LLM completion (raise for reasoning models like Kimi K2.5)",
     )
 
     # Eval params
     p.add_argument("--top-k", type=int, default=10, help="Retrieval limit")
     p.add_argument(
+        "--retrieval-cutoffs",
+        default="",
+        help=(
+            "Comma-delimited retrieval metric cutoffs. Defaults to 10,20,50,200 "
+            "for LongMemEval mainstream and 1,3,5 otherwise."
+        ),
+    )
+    p.add_argument(
+        "--benchmark-flavor",
+        default="auto",
+        choices=[
+            "auto",
+            "mainstream-search",
+            "mainstream",
+            "recall-eval",
+            "pressure",
+            "internal",
+        ],
+        help=(
+            "Benchmark flavor. mainstream is an alias for mainstream-search; "
+            "LongMemEval/LoCoMo auto selects mainstream-search."
+        ),
+    )
+    p.add_argument(
         "--ingest-method",
         default="store",
-        choices=["store", "mcp"],
-        help="Ingest method for conversation mode: store (observations) or mcp (prepare/commit/end lifecycle)",
+        choices=["store", "mcp", "longmemeval-mainstream", "mainstream", "pairs"],
+        help=(
+            "Ingest method for conversation mode: store "
+            "(benchmark-only offline ingest) or mcp "
+            "(prepare/commit/end lifecycle)"
+        ),
+    )
+    p.add_argument(
+        "--ingest-concurrency",
+        type=int,
+        default=4,
+        help=(
+            "Number of conversations to ingest concurrently when "
+            "ingest-method is store / mainstream / longmemeval-mainstream / "
+            "pairs. mcp stays serial. Raise on faster machines once the "
+            "embedded Qdrant + local embedder show headroom."
+        ),
     )
     p.add_argument(
         "--retrieve-method",
@@ -941,17 +1178,30 @@ def main():
     )
     p.add_argument("--oc-only", action="store_true", help="Skip baseline evaluation")
     p.add_argument("--baseline-only", action="store_true", help="Skip OC evaluation")
-    p.add_argument("--retrieval-only", action="store_true", help="Only measure retrieval metrics, skip LLM generation")
+    p.add_argument(
+        "--retrieval-only",
+        action="store_true",
+        help="Only measure retrieval metrics, skip LLM generation",
+    )
     p.add_argument("--max-qa", type=int, default=0, help="Limit QA count (0=all)")
     p.add_argument(
         "--max-conv", type=int, default=0, help="Limit conversation count (0=all)"
     )
+    p.add_argument(
+        "--per-type",
+        type=int,
+        default=0,
+        help="LongMemEval sample size per question type (0=disabled)",
+    )
     p.add_argument("--output", default="", help="Report output directory")
     p.add_argument("--run-id", default="", help="Reuse tenant from previous run")
-    p.add_argument("--collection", default="", help="Reuse existing collection (skips create)")
+    p.add_argument(
+        "--collection", default="", help="Reuse existing collection (skips create)"
+    )
     p.add_argument("--seed", type=int, default=42, help="Random seed")
 
     args = p.parse_args()
+    args.retrieve_method_set = "--retrieve-method" in sys.argv
     asyncio.run(run(args))
 
 

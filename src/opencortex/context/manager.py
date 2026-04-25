@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""
-ContextManager — three-phase lifecycle for the Memory Context Protocol.
+"""ContextManager — three-phase lifecycle for the Memory Context Protocol.
 
 Manages prepare/commit/end phases for platform-agnostic memory recall and
 session recording.  Replaces Claude Code hooks with a single MCP tool.
@@ -10,20 +9,20 @@ Design doc: docs/memory-context-protocol.md v1.2
 
 import asyncio
 import contextlib
-from copy import deepcopy
 import hashlib
-import re
 import logging
-import orjson as json
+import re
 import time
+from copy import deepcopy
+from dataclasses import dataclass
+from dataclasses import field as dc_field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from dataclasses import dataclass, field as dc_field
+import orjson as json
 
 from opencortex.http.request_context import (
     get_collection_name,
-    get_effective_identity,
     get_effective_project_id,
     reset_collection_name,
     reset_request_identity,
@@ -35,11 +34,11 @@ from opencortex.http.request_context import (
 from opencortex.intent import RetrievalPlan, SearchResult
 from opencortex.intent.retrieval_support import build_probe_scope_input
 from opencortex.intent.timing import StageTimingCollector, measure_async, measure_sync
-from opencortex.utils.text import smart_truncate
 from opencortex.retrieve.types import (
     ContextType,
     DetailLevel,
 )
+from opencortex.utils.text import smart_truncate
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +47,21 @@ _SEGMENT_MAX_TOKENS = 1200
 _SEGMENT_MIN_MESSAGES = 2
 _RECOMPOSE_TAIL_MAX_MERGED_LEAVES = 6
 _RECOMPOSE_TAIL_MAX_MESSAGES = 24
-_RECOMPOSE_CLUSTER_MAX_TOKENS = 1_000_000
-_RECOMPOSE_CLUSTER_MAX_MESSAGES = 1_000_000
+# Anchor-clustered recomposition caps. Previous values (1_000_000) were
+# effectively no limit, so anchorless or low-jaccard inputs could grow a
+# single cluster until ``_derive_parent_summary`` blew the LLM context
+# window. Targets here match production conversation-mode budget headroom
+# for the typical ``children_abstracts`` prompt.
+_RECOMPOSE_CLUSTER_MAX_TOKENS = 6_000
+_RECOMPOSE_CLUSTER_MAX_MESSAGES = 60
+
+# Bounded concurrency for ``_derive_parent_summary`` calls inside
+# ``_run_full_session_recomposition``. Production conversation lifecycle
+# also benefits — the loop used to be serial (R3-P-02), so an 8-directory
+# session paid 8 × ~4s LLM latency. Three concurrent derives cuts this
+# to roughly ``ceil(N/3) × derive_latency`` without saturating downstream
+# LLM rate limits at the typical benchmark fan-out.
+_DIRECTORY_DERIVE_CONCURRENCY = 3
 _RECOMPOSE_CLUSTER_JACCARD_THRESHOLD = 0.15
 _COARSE_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _COARSE_HUMAN_DATE_RE = re.compile(r"^\d{1,2}\s+[A-Za-z]+,\s+\d{4}$")
@@ -59,13 +71,96 @@ _COARSE_WEEKDAY_RE = re.compile(
 )
 
 # Type aliases — all internal state keyed by these to prevent cross-collection collision
-SessionKey = Tuple[str, str, str, str]         # (collection, tenant_id, user_id, session_id)
-CacheKey = Tuple[str, str, str, str, str]      # (collection, tenant_id, user_id, session_id, turn_id)
+SessionKey = Tuple[str, str, str, str]  # (collection, tenant_id, user_id, session_id)
+CacheKey = Tuple[
+    str, str, str, str, str
+]  # (collection, tenant_id, user_id, session_id, turn_id)
+
+
+class SourceConflictError(Exception):
+    """Same session_id ingested twice with a different transcript.
+
+    Surfaced by ``_persist_rendered_conversation_source`` (and only on
+    the benchmark path) so the HTTP layer can translate it into a 409
+    Conflict that includes both the existing and supplied transcript
+    hashes. Letting the second transcript silently overwrite the first
+    would mix two unrelated benchmark runs into the same source URI
+    while the merged-leaf URIs (deterministic on msg_range) only happen
+    to coincide on prefix — recall results would be undefined.
+    """
+
+    def __init__(self, *, existing_hash: str, supplied_hash: str) -> None:
+        super().__init__(
+            "Conversation transcript conflict for benchmark session: "
+            f"existing_hash={existing_hash} supplied_hash={supplied_hash}"
+        )
+        self.existing_hash = existing_hash
+        self.supplied_hash = supplied_hash
+
+
+@dataclass
+class _BenchmarkRunCleanup:
+    """Tracks URIs created during one benchmark ingest run for compensation.
+
+    Each successful side effect (source persist, merged-leaf write,
+    directory write, summary write) registers its URI here so a single
+    failure or ``CancelledError`` can roll back every prior write —
+    including the directory records the recomposition step creates,
+    which the previous benchmark cleanup path was never told about
+    (REVIEW Finding #6 / R2-09).
+
+    ``compensate`` iterates URIs in reverse-creation order with per-item
+    failure isolation: one bad ``remove`` does not abort the rest of
+    the cleanup, and each failure is logged with the URI for
+    post-mortem.
+    """
+
+    source_uri: Optional[str] = None
+    merged_uris: List[str] = dc_field(default_factory=list)
+    directory_uris: List[str] = dc_field(default_factory=list)
+    summary_uri: Optional[str] = None
+
+    async def compensate(self, manager: "ContextManager") -> None:
+        """Best-effort rollback of every registered URI.
+
+        Order: summary -> directories -> merged -> source. This mirrors
+        the dependency graph: summary points at directories, directories
+        at merged leaves, all of them at the source. Cleaning up in
+        reverse keeps any in-flight reader from briefly seeing a
+        partially-deleted graph.
+        """
+        for uri in [self.summary_uri] if self.summary_uri else []:
+            await self._safe_remove(manager, uri)
+        for uri in reversed(self.directory_uris):
+            await self._safe_remove(manager, uri)
+        for uri in reversed(self.merged_uris):
+            await self._safe_remove(manager, uri)
+        # source_uri is intentionally NOT removed by default. The
+        # source is keyed deterministically on (tenant, user, session)
+        # — leaving it lets a follow-up ingest with the same transcript
+        # be idempotent (U5). On a failed run the next request either
+        # carries the same hash and short-circuits, or carries a
+        # different hash and gets 409.
+
+    @staticmethod
+    async def _safe_remove(manager: "ContextManager", uri: Optional[str]) -> None:
+        if not uri:
+            return
+        try:
+            await manager._orchestrator.remove(uri)
+        except Exception as exc:  # pragma: no cover - defensive log path
+            logger.warning(
+                "benchmark_ingest cleanup failed for %s: %s",
+                uri,
+                exc,
+                exc_info=True,
+            )
 
 
 @dataclass
 class ConversationBuffer:
     """Per-session buffer for conversation mode incremental chunking."""
+
     messages: list = dc_field(default_factory=list)
     token_count: int = 0
     start_msg_index: int = 0
@@ -124,7 +219,7 @@ class ContextManager:
     def __init__(
         self,
         orchestrator,  # MemoryOrchestrator (avoid circular import)
-        observer,      # Observer
+        observer,  # Observer
         *,
         prepare_cache_ttl: float = 300.0,
         session_idle_ttl: float = 1800.0,
@@ -151,7 +246,9 @@ class ContextManager:
         self._session_merge_task_failures: Dict[SessionKey, List[BaseException]] = {}
         # Deferred follow-up tasks spawned by session merge workers.
         self._session_merge_followup_tasks: Dict[SessionKey, Set[asyncio.Task]] = {}
-        self._session_merge_followup_failures: Dict[SessionKey, List[BaseException]] = {}
+        self._session_merge_followup_failures: Dict[
+            SessionKey, List[BaseException]
+        ] = {}
         # At most one background full-session recomposition worker per session.
         self._session_full_recompose_tasks: Dict[SessionKey, asyncio.Task] = {}
         # Session project id snapshot for explicit/idle/background end flows.
@@ -166,6 +263,15 @@ class ContextManager:
         self._conversation_buffers: Dict[SessionKey, ConversationBuffer] = {}
         # Semaphore limiting concurrent fire-and-forget deferred derives
         self._derive_semaphore = asyncio.Semaphore(3)
+        # Hoisted from per-call construction in
+        # ``_run_full_session_recomposition`` (REVIEW PERF-001 / KP-09):
+        # a per-call semaphore meant U13's cross-conversation concurrency
+        # multiplied the in-flight directory-derive count
+        # (concurrency × 3). Instance-scoped enforces the same global cap
+        # regardless of how many sessions are recomposing in parallel.
+        self._directory_derive_semaphore = asyncio.Semaphore(
+            _DIRECTORY_DERIVE_CONCURRENCY
+        )
         # Skill selection tracking: (session_key, turn_id) -> set of skill URIs
         # Turn-scoped to prevent stale selections leaking across turns
         self._selected_skill_uris: Dict[tuple, Set[str]] = {}
@@ -222,24 +328,33 @@ class ContextManager:
             if not messages or not any(m.get("role") == "user" for m in messages):
                 raise ValueError("prepare requires at least one user message")
             return await self._prepare(
-                session_id, turn_id, messages, tenant_id, user_id, config,
+                session_id,
+                turn_id,
+                messages,
+                tenant_id,
+                user_id,
+                config,
             )
 
-        elif phase == "commit":
+        if phase == "commit":
             if not turn_id:
                 raise ValueError("turn_id is required for commit")
             if not messages or len(messages) < 2:
                 raise ValueError("commit requires at least user + assistant messages")
             return await self._commit(
-                session_id, turn_id, messages, tenant_id, user_id, cited_uris,
+                session_id,
+                turn_id,
+                messages,
+                tenant_id,
+                user_id,
+                cited_uris,
                 tool_calls,
             )
 
-        elif phase == "end":
+        if phase == "end":
             return await self._end(session_id, tenant_id, user_id, config)
 
-        else:
-            raise ValueError(f"Unknown phase: {phase}")
+        raise ValueError(f"Unknown phase: {phase}")
 
     # =========================================================================
     # Phase: prepare
@@ -392,9 +507,7 @@ class ContextManager:
                         query,
                         context_type=options.context_type,
                         session_context=options.session_context,
-                        metadata_filter=self._prepare_category_filter(
-                            options.category
-                        ),
+                        metadata_filter=self._prepare_category_filter(options.category),
                     ),
                     timeout=10.0,
                 )
@@ -447,9 +560,7 @@ class ContextManager:
                 )
         intent_timings = stage_timings.snapshot()
         intent_ms = (
-            intent_timings["probe"]
-            + intent_timings["plan"]
-            + intent_timings["bind"]
+            intent_timings["probe"] + intent_timings["plan"] + intent_timings["bind"]
         )
         return PreparePlanningState(
             query=query,
@@ -757,7 +868,10 @@ class ContextManager:
                 runtime_trace["stage_timing_ms"] = cache_stage_timings.snapshot()
             logger.debug(
                 "[ContextManager] prepare CACHE_HIT sid=%s turn=%s tenant=%s user=%s",
-                session_id, turn_id, tenant_id, user_id,
+                session_id,
+                turn_id,
+                tenant_id,
+                user_id,
             )
             return cached_result
 
@@ -808,9 +922,9 @@ class ContextManager:
         total_ms = int((time.monotonic() - prepare_started) * 1000)
         stage_timings.record_elapsed("aggregate", aggregate_started)
         stage_timings.record_ms("total", total_ms)
-        result["intent"]["memory_pipeline"]["runtime"]["trace"][
-            "stage_timing_ms"
-        ] = stage_timings.snapshot()
+        result["intent"]["memory_pipeline"]["runtime"]["trace"]["stage_timing_ms"] = (
+            stage_timings.snapshot()
+        )
         logger.info(
             "[ContextManager] prepare sid=%s turn=%s tenant=%s user=%s "
             "probe_candidates=%d recall=%s memory=%d knowledge=%d "
@@ -998,14 +1112,93 @@ class ContextManager:
         if not transcript:
             return None
 
+        return await self._persist_rendered_conversation_source(
+            session_id=session_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            transcript=transcript,
+        )
+
+    @staticmethod
+    def _hash_transcript(transcript: List[Dict[str, Any]]) -> str:
+        """SHA-256 over the canonical normalized transcript shape."""
+        normalized = [
+            {
+                "role": str(message.get("role", "") or ""),
+                "content": str(message.get("content", "") or ""),
+                "meta": message.get("meta") or {},
+            }
+            for message in transcript
+        ]
+        digest = hashlib.sha256()
+        digest.update(json.dumps(normalized, option=json.OPT_SORT_KEYS))
+        return digest.hexdigest()
+
+    async def _persist_rendered_conversation_source(
+        self,
+        *,
+        session_id: str,
+        tenant_id: str,
+        user_id: str,
+        transcript: List[Dict[str, Any]],
+        enforce_transcript_hash: bool = False,
+    ) -> Optional[str]:
+        """Persist one transcript payload as the stable conversation source.
+
+        ``enforce_transcript_hash`` is the benchmark-only knob (U5). When
+        True the helper:
+
+        - Attaches ``transcript_hash`` to the source meta on first write.
+        - On re-ingest with the same hash, returns the existing URI
+          (idempotent hit, no rewrite).
+        - On re-ingest with a different hash, raises
+          ``SourceConflictError`` so the caller can map it to HTTP 409.
+
+        Production callers leave ``enforce_transcript_hash=False`` so
+        existing context_end / context_commit lifecycle behavior is
+        preserved unchanged.
+        """
+        if not transcript:
+            return None
+
         source_uri = self._conversation_source_uri(tenant_id, user_id, session_id)
         existing = await self._orchestrator._get_record_by_uri(source_uri)
-        if existing:
+        if existing and not enforce_transcript_hash:
+            return source_uri
+
+        supplied_hash = (
+            self._hash_transcript(transcript) if enforce_transcript_hash else ""
+        )
+
+        if existing and enforce_transcript_hash:
+            existing_meta = dict(existing.get("meta") or {})
+            existing_hash = str(existing_meta.get("transcript_hash") or "").strip()
+            if existing_hash and existing_hash == supplied_hash:
+                # Same transcript replayed: short-circuit. The caller
+                # treats this as an idempotent hit and skips leaf/recompose
+                # rewrite — pre-existing merged records still resolve.
+                return source_uri
+            if existing_hash and existing_hash != supplied_hash:
+                raise SourceConflictError(
+                    existing_hash=existing_hash,
+                    supplied_hash=supplied_hash,
+                )
+            # Existing source has no hash recorded (legacy / production
+            # write). Treat as idempotent — refusing here would block
+            # benchmark replays of pre-versioning sessions.
             return source_uri
 
         content = self._render_conversation_source(transcript)
         if not content:
             return None
+
+        meta: Dict[str, Any] = {
+            "layer": "conversation_source",
+            "session_id": session_id,
+            "message_count": len(transcript),
+        }
+        if supplied_hash:
+            meta["transcript_hash"] = supplied_hash
 
         await self._orchestrator.add(
             uri=source_uri,
@@ -1015,11 +1208,7 @@ class ContextManager:
             context_type="resource",
             is_leaf=False,
             session_id=session_id,
-            meta={
-                "layer": "conversation_source",
-                "session_id": session_id,
-                "message_count": len(transcript),
-            },
+            meta=meta,
         )
         if getattr(self._orchestrator, "_fs", None) is not None:
             await self._orchestrator._fs.write_context(
@@ -1030,6 +1219,623 @@ class ContextManager:
                 is_leaf=False,
             )
         return source_uri
+
+    @classmethod
+    def _benchmark_segment_meta(
+        cls,
+        messages: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Aggregate segment-level anchors for offline benchmark leaves."""
+        entities: List[str] = []
+        topics: List[str] = []
+        time_refs: List[str] = []
+        event_date = ""
+        tool_calls: List[Dict[str, Any]] = []
+        benchmark_meta: Dict[str, Any] = {}
+
+        for message in messages:
+            meta = dict(message.get("meta") or {})
+            for key, value in meta.items():
+                if key.startswith("lme_") and value not in (None, ""):
+                    if key not in benchmark_meta:
+                        benchmark_meta[key] = value
+                    elif benchmark_meta[key] != value:
+                        benchmark_meta[key] = cls._merge_unique_strings(
+                            benchmark_meta[key],
+                            value,
+                        )
+            entities = cls._merge_unique_strings(
+                entities,
+                meta.get("entities"),
+            )
+            topics = cls._merge_unique_strings(
+                topics,
+                meta.get("topics"),
+            )
+            time_refs = cls._merge_unique_strings(
+                time_refs,
+                meta.get("time_refs"),
+                meta.get("event_date"),
+            )
+            if not event_date:
+                event_date = str(meta.get("event_date") or "").strip()
+            for call in meta.get("tool_calls", []) or []:
+                if isinstance(call, dict):
+                    tool_calls.append(call)
+
+        aggregated: Dict[str, Any] = {}
+        if entities:
+            aggregated["entities"] = entities
+        if topics:
+            aggregated["topics"] = topics
+        if time_refs:
+            aggregated["time_refs"] = time_refs
+        if event_date:
+            aggregated["event_date"] = event_date
+        if tool_calls:
+            aggregated["tool_calls"] = tool_calls
+        aggregated.update(benchmark_meta)
+        return aggregated
+
+    @staticmethod
+    def _export_memory_record(
+        record: Dict[str, Any],
+        *,
+        hydrated_content: str = "",
+    ) -> Dict[str, Any]:
+        """Return one adapter-friendly memory payload from a stored record.
+
+        ``Context.to_dict`` does not include the L2 content (it lives in
+        CortexFS, not on the Qdrant payload). Callers that need raw
+        content for benchmark scoring or recall fallback must pre-hydrate
+        it from the filesystem and pass ``hydrated_content``; otherwise
+        the field falls back to whatever the stored record carries (or
+        empty string).
+        """
+        meta = dict(record.get("meta") or {})
+        content = hydrated_content or str(record.get("content", "") or "")
+        return {
+            "uri": str(record.get("uri", "") or ""),
+            "abstract": str(record.get("abstract", "") or ""),
+            "overview": str(record.get("overview", "") or ""),
+            "content": content,
+            "meta": meta,
+            "abstract_json": record.get("abstract_json", {}),
+            "session_id": str(record.get("session_id", "") or ""),
+            "speaker": str(record.get("speaker", "") or ""),
+            "event_date": record.get("event_date", ""),
+            "msg_range": meta.get("msg_range"),
+            "recomposition_stage": meta.get("recomposition_stage"),
+            "source_uri": meta.get("source_uri"),
+        }
+
+    async def _hydrate_record_contents(
+        self,
+        records: List[Dict[str, Any]],
+    ) -> Dict[str, str]:
+        """Batch-read L2 content for a record set; missing files map to ''.
+
+        Used by the benchmark response builder so adapters can fall back
+        on raw conversation text when L0/L1 are short. Sequential or
+        gather-based read is fine here: per-conversation set is dozens of
+        records, not thousands. Failures are logged once per URI and the
+        record falls back to an empty string rather than failing the
+        whole ingest.
+        """
+        fs = getattr(self._orchestrator, "_fs", None)
+        if fs is None:
+            return {}
+        uris = [
+            str(record.get("uri", "") or "").strip()
+            for record in records
+            if record.get("uri")
+        ]
+        if not uris:
+            return {}
+
+        async def _read_one(uri: str) -> tuple[str, str]:
+            try:
+                return uri, await fs.read_file(f"{uri}/content.md")
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "benchmark_ingest content hydration failed for %s: %s",
+                    uri,
+                    exc,
+                )
+                return uri, ""
+
+        results = await asyncio.gather(*[_read_one(u) for u in uris])
+        return dict(results)
+
+    def _benchmark_recomposition_entries(
+        self,
+        normalized_segments: List[List[Dict[str, Any]]],
+    ) -> List[Dict[str, Any]]:
+        """Build message-level entries for benchmark offline chunking."""
+        entries: List[Dict[str, Any]] = []
+        msg_index = 0
+        for segment in normalized_segments:
+            segment_meta = self._benchmark_segment_meta(segment)
+            for message in segment:
+                # Segment-level aggregation (entities/topics/time_refs/
+                # event_date/tool_calls/lme_*) MUST win over per-message
+                # meta — the aggregation is the canonical anchor source
+                # for the merged leaf. Inverted from the original order
+                # to fix R2-03: the prior {**segment_meta, **message_meta}
+                # silently let one message's narrow meta overwrite the
+                # whole segment's anchors, leaving _benchmark_segment_meta
+                # as dead code on the hot path.
+                meta = {
+                    **dict(message.get("meta") or {}),
+                    **segment_meta,
+                }
+                rendered = self._decorate_message_text(
+                    str(message.get("content", "") or ""),
+                    meta,
+                )
+                if not rendered:
+                    continue
+                record = {
+                    "uri": "",
+                    "abstract": rendered,
+                    "content": rendered,
+                    "overview": "",
+                    "meta": {
+                        **meta,
+                        "msg_range": [msg_index, msg_index],
+                    },
+                    "keywords": ", ".join(
+                        str(topic)
+                        for topic in self._merge_unique_strings(meta.get("topics"))
+                    ),
+                    "entities": self._merge_unique_strings(meta.get("entities")),
+                }
+                entries.append(
+                    {
+                        "text": rendered,
+                        "uri": "",
+                        "msg_start": msg_index,
+                        "msg_end": msg_index,
+                        "token_count": max(self._estimate_tokens(rendered), 1),
+                        "anchor_terms": self._segment_anchor_terms(record),
+                        "time_refs": self._segment_time_refs(record),
+                        "source_record": record,
+                        "immediate_uris": [],
+                        "superseded_merged_uris": [],
+                    }
+                )
+                msg_index += 1
+        return entries
+
+    async def benchmark_ingest_conversation(
+        self,
+        *,
+        session_id: str,
+        tenant_id: str,
+        user_id: str,
+        segments: List[List[Dict[str, Any]]],
+        include_session_summary: bool = True,
+        ingest_shape: str = "merged_recompose",
+    ) -> Dict[str, Any]:
+        """Benchmark-only offline conversation ingest."""
+        shape = str(ingest_shape or "merged_recompose").strip().lower()
+        if shape not in {"merged_recompose", "direct_evidence"}:
+            raise ValueError(f"unsupported benchmark ingest_shape: {ingest_shape}")
+
+        sk = self._make_session_key(tenant_id, user_id, session_id)
+        self._touch_session(sk)
+        self._remember_session_project(sk)
+        lock = self._session_locks.setdefault(sk, asyncio.Lock())
+
+        async with lock:
+            normalized_segments: List[List[Dict[str, Any]]] = []
+            transcript: List[Dict[str, Any]] = []
+
+            for segment in segments:
+                normalized_messages: List[Dict[str, Any]] = []
+                for message in segment:
+                    role = str(message.get("role", "") or "").strip()
+                    content = str(message.get("content", "") or "").strip()
+                    if not role or not content:
+                        continue
+                    normalized = {
+                        "role": role,
+                        "content": content,
+                        "meta": dict(message.get("meta") or {}),
+                    }
+                    normalized_messages.append(normalized)
+                    transcript.append(normalized)
+                if normalized_messages:
+                    normalized_segments.append(normalized_messages)
+
+            if not normalized_segments:
+                logger.info(
+                    "benchmark_ingest_conversation: no normalized segments "
+                    "for session %s — returning empty record set",
+                    session_id,
+                )
+                return {
+                    "status": "ok",
+                    "session_id": session_id,
+                    "source_uri": None,
+                    "summary_uri": None,
+                    "records": [],
+                }
+
+            # ``SourceConflictError`` propagates out of the lock — the HTTP
+            # layer maps it to a 409 Conflict. We deliberately raise BEFORE
+            # entering the cleanup-tracker scope: there is nothing to
+            # roll back, the existing source belongs to a prior run.
+            source_uri = await self._persist_rendered_conversation_source(
+                session_id=session_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                transcript=transcript,
+                enforce_transcript_hash=True,
+            )
+
+            if shape == "direct_evidence":
+                return await self._benchmark_ingest_direct_evidence(
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    source_uri=source_uri,
+                    normalized_segments=normalized_segments,
+                )
+
+            # Idempotent re-ingest detection: if the source already exists
+            # AND we have merged leaves under it, return them without
+            # rewriting. Avoids creating duplicate leaves with identical
+            # msg_range URIs and avoids paying recompose / summary costs
+            # again for an already-ingested transcript.
+            existing_records = await self._load_session_merged_records(
+                session_id=session_id,
+                source_uri=source_uri,
+            )
+            if existing_records:
+                logger.info(
+                    "benchmark_ingest_conversation: idempotent hit "
+                    "sid=%s source_uri=%s records=%d",
+                    session_id,
+                    source_uri,
+                    len(existing_records),
+                )
+                hydrated = await self._hydrate_record_contents(existing_records)
+                return {
+                    "status": "ok",
+                    "session_id": session_id,
+                    "source_uri": source_uri,
+                    "summary_uri": None,
+                    "records": [
+                        self._export_memory_record(
+                            record,
+                            hydrated_content=hydrated.get(
+                                str(record.get("uri", "") or ""),
+                                "",
+                            ),
+                        )
+                        for record in existing_records
+                    ],
+                }
+
+            cleanup = _BenchmarkRunCleanup(source_uri=source_uri)
+            # In-memory map URI -> raw conversation text for U10 content
+            # hydration. Captured as we write each merged leaf so the
+            # response can return raw text without racing the fire-and-
+            # forget CortexFS write that ``_orchestrator.add`` schedules.
+            merged_content_by_uri: Dict[str, str] = {}
+            # Deferred-derive completion tasks scheduled per leaf (U8).
+            # Awaited as a batch BEFORE returning so the response carries
+            # post-derive L0 / L1 / anchors — matching production
+            # conversation-mode parity. This is what closes the LoCoMo
+            # F1 0.49 -> 0.33 regression: previously the leaves stayed
+            # frozen on smart_truncate placeholders forever (R2-01 /
+            # R3-P-12).
+            derive_tasks: List[Tuple[str, asyncio.Task]] = []
+
+            async def _bounded_complete(
+                sem: asyncio.Semaphore,
+                **dkw: Any,
+            ) -> None:
+                async with sem:
+                    await self._orchestrator._complete_deferred_derive(**dkw)
+
+            try:
+                entries = self._benchmark_recomposition_entries(normalized_segments)
+                offline_segments = self._build_recomposition_segments(entries)
+
+                for segment in offline_segments:
+                    segment_texts = [str(text) for text in segment.get("messages", [])]
+                    if not segment_texts:
+                        continue
+
+                    msg_range = list(segment["msg_range"])
+                    source_records = segment.get("source_records", [])
+                    merged_meta = await self._aggregate_records_metadata(source_records)
+                    all_tool_calls: List[Dict[str, Any]] = []
+                    for record in source_records:
+                        meta = dict(record.get("meta") or {})
+                        for call in meta.get("tool_calls", []) or []:
+                            if isinstance(call, dict):
+                                all_tool_calls.append(call)
+
+                    combined = "\n\n".join(segment_texts)
+                    leaf_meta = {
+                        **merged_meta,
+                        "layer": "merged",
+                        "ingest_mode": "memory",
+                        "msg_range": list(msg_range),
+                        "source_uri": source_uri or "",
+                        "session_id": session_id,
+                        "recomposition_stage": "benchmark_offline",
+                        "tool_calls": all_tool_calls if all_tool_calls else [],
+                    }
+                    merged_context = await self._orchestrator.add(
+                        uri=self._merged_leaf_uri(
+                            tenant_id,
+                            user_id,
+                            session_id,
+                            msg_range,
+                        ),
+                        abstract="",
+                        content=combined,
+                        category="events",
+                        context_type="memory",
+                        meta=leaf_meta,
+                        session_id=session_id,
+                        dedup=False,
+                        defer_derive=True,
+                    )
+                    cleanup.merged_uris.append(merged_context.uri)
+                    merged_content_by_uri[merged_context.uri] = combined
+
+                    # Schedule the LLM derive on the same semaphore the
+                    # production lifecycle uses so we never exceed the
+                    # global concurrency budget for merged-leaf derives.
+                    task = asyncio.create_task(
+                        _bounded_complete(
+                            self._derive_semaphore,
+                            uri=merged_context.uri,
+                            content=combined,
+                            abstract="",
+                            overview="",
+                            session_id=session_id,
+                            meta=dict(leaf_meta),
+                            raise_on_error=True,
+                        )
+                    )
+                    derive_tasks.append((merged_context.uri, task))
+
+                if derive_tasks:
+                    # Wait for every scheduled derive so the response
+                    # represents the post-derive Qdrant + CortexFS state.
+                    #
+                    # Plain ``asyncio.gather`` propagates the first exception
+                    # but does not cancel siblings — the surviving tasks
+                    # then call ``_complete_deferred_derive`` against URIs
+                    # that the cleanup tracker has already removed,
+                    # leaving orphan CortexFS subtrees (REVIEW F1 / REL-01
+                    # / ADV-001). Cancel the siblings explicitly and wait
+                    # for them to unwind before re-raising.
+                    pending = [task for _, task in derive_tasks]
+                    try:
+                        await asyncio.gather(*pending)
+                    except BaseException:
+                        for task in pending:
+                            if not task.done():
+                                task.cancel()
+                        await asyncio.gather(*pending, return_exceptions=True)
+                        raise
+
+                if cleanup.merged_uris:
+                    directory_uris = await self._run_full_session_recomposition(
+                        session_id=session_id,
+                        tenant_id=tenant_id,
+                        user_id=user_id,
+                        source_uri=source_uri,
+                        raise_on_error=True,
+                        return_created_uris=True,
+                    )
+                    if directory_uris:
+                        cleanup.directory_uris.extend(directory_uris)
+                    if include_session_summary:
+                        cleanup.summary_uri = await self._generate_session_summary(
+                            session_id=session_id,
+                            tenant_id=tenant_id,
+                            user_id=user_id,
+                            source_uri=source_uri,
+                        )
+
+                merged_records = await self._load_session_merged_records(
+                    session_id=session_id,
+                    source_uri=source_uri,
+                )
+                # `layer_counts` was previously returned to the client but
+                # the helper that produced it (_session_layer_counts) is
+                # session-id-only — not tenant/user/source scoped. Returning
+                # it allowed any admin caller to enumerate other tenants'
+                # records by guessing session_ids (R2-04). Adapter doesn't
+                # consume it; dropping is cheaper than scoping correctly.
+                #
+                # ``_orchestrator.add`` writes content via fire-and-forget
+                # to CortexFS, so a FS-only readback here would race; we
+                # use the in-memory map captured during the write loop.
+                # FS read is the fallback for records that came back from
+                # ``_load_session_merged_records`` outside our write set
+                # (e.g. directory records added during recomposition).
+                fallback_targets = [
+                    record
+                    for record in merged_records
+                    if str(record.get("uri", "") or "")
+                    not in merged_content_by_uri
+                ]
+                fallback_hydrated = (
+                    await self._hydrate_record_contents(fallback_targets)
+                    if fallback_targets
+                    else {}
+                )
+                return {
+                    "status": "ok",
+                    "session_id": session_id,
+                    "source_uri": source_uri,
+                    "summary_uri": cleanup.summary_uri,
+                    "records": [
+                        self._export_memory_record(
+                            record,
+                            hydrated_content=merged_content_by_uri.get(
+                                str(record.get("uri", "") or ""),
+                                fallback_hydrated.get(
+                                    str(record.get("uri", "") or ""),
+                                    "",
+                                ),
+                            ),
+                        )
+                        for record in merged_records
+                    ],
+                }
+            except asyncio.CancelledError:
+                # CancelledError descends from BaseException, not Exception,
+                # so the prior `except Exception` let cancellation
+                # (FastAPI request cancel, server timeout, client disconnect)
+                # bypass cleanup entirely — leaving orphan merged leaves,
+                # directory records, and possibly a summary record. Compensate
+                # explicitly, then re-raise so cancellation semantics flow
+                # through unchanged.
+                logger.warning(
+                    "benchmark_ingest_conversation cancelled mid-flight "
+                    "sid=%s — running compensation",
+                    session_id,
+                )
+                await cleanup.compensate(self)
+                raise
+            except Exception:
+                logger.warning(
+                    "benchmark_ingest_conversation failed sid=%s — "
+                    "running compensation",
+                    session_id,
+                    exc_info=True,
+                )
+                await cleanup.compensate(self)
+                raise
+
+    @staticmethod
+    def _benchmark_evidence_uri(
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+        segment_index: int,
+        msg_range: List[int],
+    ) -> str:
+        """Return a stable benchmark evidence URI for one direct segment."""
+        tenant = tenant_id or "public"
+        user = user_id or "default"
+        return (
+            f"opencortex://{tenant}/{user}/memory/events/{session_id}/"
+            f"benchmark_evidence_{segment_index}_{msg_range[0]}_{msg_range[1]}"
+        )
+
+    async def _benchmark_ingest_direct_evidence(
+        self,
+        *,
+        session_id: str,
+        tenant_id: str,
+        user_id: str,
+        source_uri: Optional[str],
+        normalized_segments: List[List[Dict[str, Any]]],
+    ) -> Dict[str, Any]:
+        """Store benchmark segments directly as searchable evidence records."""
+        created_uris: List[str] = []
+        records: List[Dict[str, Any]] = []
+        # See merged-recompose path: capture combined text per URI so the
+        # benchmark response can hydrate ``content`` without racing the
+        # fire-and-forget CortexFS write.
+        evidence_content_by_uri: Dict[str, str] = {}
+        next_msg_index = 0
+
+        try:
+            for segment_index, segment in enumerate(normalized_segments):
+                segment_texts: List[str] = []
+                segment_start = next_msg_index
+                for message in segment:
+                    meta = dict(message.get("meta") or {})
+                    role = str(message.get("role", "") or "").strip()
+                    content = str(message.get("content", "") or "").strip()
+                    if not content:
+                        continue
+                    rendered = f"{role}: {content}" if role else content
+                    segment_texts.append(self._decorate_message_text(rendered, meta))
+                    next_msg_index += 1
+
+                if not segment_texts:
+                    continue
+
+                msg_range = [segment_start, next_msg_index - 1]
+                segment_meta = self._benchmark_segment_meta(segment)
+                meta = {
+                    **segment_meta,
+                    "layer": "benchmark_evidence",
+                    "ingest_mode": "memory",
+                    "msg_range": list(msg_range),
+                    "source_uri": source_uri or "",
+                    "session_id": session_id,
+                    "recomposition_stage": "benchmark_direct_evidence",
+                }
+                evidence_uri = self._benchmark_evidence_uri(
+                    tenant_id,
+                    user_id,
+                    session_id,
+                    segment_index,
+                    msg_range,
+                )
+                combined = "\n".join(segment_texts)
+                stored = await self._orchestrator.add(
+                    uri=evidence_uri,
+                    abstract="",
+                    content=combined,
+                    category="events",
+                    context_type="memory",
+                    meta=meta,
+                    session_id=session_id,
+                    dedup=False,
+                    defer_derive=True,
+                )
+                created_uris.append(stored.uri)
+                evidence_content_by_uri[stored.uri] = combined
+                record = await self._orchestrator._get_record_by_uri(stored.uri)
+                if record:
+                    records.append(record)
+
+            return {
+                "status": "ok",
+                "session_id": session_id,
+                "source_uri": source_uri,
+                "summary_uri": None,
+                "ingest_shape": "direct_evidence",
+                "records": [
+                    self._export_memory_record(
+                        record,
+                        hydrated_content=evidence_content_by_uri.get(
+                            str(record.get("uri", "") or ""),
+                            "",
+                        ),
+                    )
+                    for record in records
+                ],
+            }
+        except asyncio.CancelledError:
+            # Symmetric with the merged_recompose path: CancelledError
+            # descends from BaseException, so the prior `except Exception`
+            # let cancellation bypass cleanup. Run compensation then
+            # re-raise so cancellation semantics propagate unchanged.
+            if created_uris:
+                with contextlib.suppress(Exception):
+                    await self._delete_immediate_families(created_uris)
+            raise
+        except Exception:
+            if created_uris:
+                with contextlib.suppress(Exception):
+                    await self._delete_immediate_families(created_uris)
+            raise
 
     async def _load_immediate_records(
         self,
@@ -1202,9 +2008,7 @@ class ContextManager:
         meta = dict(record.get("meta") or {})
         abstract_json = record.get("abstract_json")
         slots = (
-            abstract_json.get("slots", {})
-            if isinstance(abstract_json, dict)
-            else {}
+            abstract_json.get("slots", {}) if isinstance(abstract_json, dict) else {}
         )
         return set(
             cls._merge_unique_strings(
@@ -1223,9 +2027,7 @@ class ContextManager:
         meta = dict(record.get("meta") or {})
         abstract_json = record.get("abstract_json")
         slots = (
-            abstract_json.get("slots", {})
-            if isinstance(abstract_json, dict)
-            else {}
+            abstract_json.get("slots", {}) if isinstance(abstract_json, dict) else {}
         )
         return set(
             cls._merge_unique_strings(
@@ -1256,7 +2058,9 @@ class ContextManager:
             return False
 
         left_specific = {value for value in left if not cls._is_coarse_time_ref(value)}
-        right_specific = {value for value in right if not cls._is_coarse_time_ref(value)}
+        right_specific = {
+            value for value in right if not cls._is_coarse_time_ref(value)
+        }
         if not left_specific or not right_specific:
             return True
 
@@ -1333,9 +2137,7 @@ class ContextManager:
 
         fs = getattr(self._orchestrator, "_fs", None)
         tail_uris = [
-            str(r.get("uri", "") or "").strip()
-            for r in tail_records
-            if r.get("uri")
+            str(r.get("uri", "") or "").strip() for r in tail_records if r.get("uri")
         ]
 
         async def _read_l2(uri: str) -> str:
@@ -1443,17 +2245,17 @@ class ContextManager:
                 current_time_refs: Set[str] = set()
                 for item in current:
                     current_time_refs.update(item["time_refs"])
-                if current_messages >= _SEGMENT_MAX_MESSAGES:
-                    should_split = True
-                elif current_tokens + int(entry["token_count"]) > _SEGMENT_MAX_TOKENS:
-                    should_split = True
-                elif (
-                    current_messages >= _SEGMENT_MIN_MESSAGES
-                    and current_time_refs
-                    and entry["time_refs"]
-                    and not self._time_refs_overlap(
-                        current_time_refs,
-                        entry["time_refs"],
+                if (
+                    current_messages >= _SEGMENT_MAX_MESSAGES
+                    or current_tokens + int(entry["token_count"]) > _SEGMENT_MAX_TOKENS
+                    or (
+                        current_messages >= _SEGMENT_MIN_MESSAGES
+                        and current_time_refs
+                        and entry["time_refs"]
+                        and not self._time_refs_overlap(
+                            current_time_refs,
+                            entry["time_refs"],
+                        )
                     )
                 ):
                     should_split = True
@@ -1482,37 +2284,81 @@ class ContextManager:
             return []
 
         segments: List[Dict[str, Any]] = []
-        current: List[Dict[str, Any]] = [entries[0]]
-        current_anchors: Set[str] = (
-            entries[0]["anchor_terms"] | entries[0]["time_refs"]
-        )
-        current_tokens = int(entries[0]["token_count"])
-        current_messages = (
-            int(entries[0]["msg_end"]) - int(entries[0]["msg_start"]) + 1
-        )
+        # Treat the seed entry the same way the cap check treats any
+        # subsequent append (REVIEW ADV-002): the prior implementation
+        # initialized ``current`` from ``entries[0]`` unconditionally, so
+        # a single oversized leaf — possible under U2's 64 KB content
+        # cap — could seed a cluster already larger than
+        # ``_RECOMPOSE_CLUSTER_MAX_TOKENS``. The cap then only stopped
+        # APPEND, never SPLIT. Now an oversized seed flushes immediately
+        # as its own single-entry segment and the next entry becomes the
+        # new seed.
+        current: List[Dict[str, Any]] = []
+        current_anchors: Set[str] = set()
+        current_tokens = 0
+        current_messages = 0
 
-        for entry in entries[1:]:
+        def _within_caps_with(entry_tokens: int, entry_messages: int) -> bool:
+            return (
+                current_tokens + entry_tokens <= _RECOMPOSE_CLUSTER_MAX_TOKENS
+                and current_messages + max(entry_messages, 1)
+                <= _RECOMPOSE_CLUSTER_MAX_MESSAGES
+            )
+
+        def _seed_with(entry: Dict[str, Any]) -> None:
+            nonlocal current, current_anchors, current_tokens, current_messages
+            entry_msgs = int(entry["msg_end"]) - int(entry["msg_start"]) + 1
+            current = [entry]
+            current_anchors = set(entry["anchor_terms"] | entry["time_refs"])
+            current_tokens = int(entry["token_count"])
+            current_messages = max(entry_msgs, 1)
+
+        for entry in entries:
             entry_anchors: Set[str] = entry["anchor_terms"] | entry["time_refs"]
             entry_messages = int(entry["msg_end"]) - int(entry["msg_start"]) + 1
             entry_tokens = int(entry["token_count"])
 
+            if not current:
+                _seed_with(entry)
+                # An oversized seed is its own single-entry cluster:
+                # downstream ``_run_full_session_recomposition`` skips
+                # clusters with ``len(source_records) < 2``, so emitting
+                # it alone keeps every multi-entry cluster within caps.
+                if (
+                    current_tokens > _RECOMPOSE_CLUSTER_MAX_TOKENS
+                    or current_messages > _RECOMPOSE_CLUSTER_MAX_MESSAGES
+                ):
+                    segments.append(self._finalize_recomposition_segment(current))
+                    current = []
+                    current_anchors = set()
+                    current_tokens = 0
+                    current_messages = 0
+                continue
+
+            within_caps = _within_caps_with(entry_tokens, entry_messages)
+
             if not entry_anchors:
-                current.append(entry)
-                current_tokens += entry_tokens
-                current_messages += max(entry_messages, 1)
+                # Anchorless entries used to bypass the caps unconditionally
+                # (R2-13). For inputs without entities/topics — e.g. some
+                # LongMemEval samples — that grew a single cluster until
+                # ``_derive_parent_summary`` blew its context window. Now
+                # anchorless entries still cluster greedily but respect the
+                # same token / message caps as anchored entries.
+                if within_caps:
+                    current.append(entry)
+                    current_tokens += entry_tokens
+                    current_messages += max(entry_messages, 1)
+                else:
+                    segments.append(self._finalize_recomposition_segment(current))
+                    current = [entry]
+                    current_anchors = set()
+                    current_tokens = entry_tokens
+                    current_messages = max(entry_messages, 1)
                 continue
 
             union = current_anchors | entry_anchors
             jaccard = (
-                len(current_anchors & entry_anchors) / len(union)
-                if union
-                else 0.0
-            )
-
-            within_caps = (
-                current_tokens + entry_tokens <= _RECOMPOSE_CLUSTER_MAX_TOKENS
-                and current_messages + max(entry_messages, 1)
-                <= _RECOMPOSE_CLUSTER_MAX_MESSAGES
+                len(current_anchors & entry_anchors) / len(union) if union else 0.0
             )
 
             if jaccard >= _RECOMPOSE_CLUSTER_JACCARD_THRESHOLD and within_caps:
@@ -1550,7 +2396,9 @@ class ContextManager:
                 source_uris.add(uri)
             source_records.append(record)
         return {
-            "messages": [str(entry["text"]) for entry in entries if str(entry["text"]).strip()],
+            "messages": [
+                str(entry["text"]) for entry in entries if str(entry["text"]).strip()
+            ],
             "immediate_uris": self._merge_unique_strings(
                 *[entry.get("immediate_uris", []) for entry in entries]
             ),
@@ -1580,7 +2428,10 @@ class ContextManager:
             if turn_id in self._committed_turns.get(sk, set()):
                 logger.debug(
                     "[ContextManager] commit DUPLICATE sid=%s turn=%s tenant=%s user=%s",
-                    session_id, turn_id, tenant_id, user_id,
+                    session_id,
+                    turn_id,
+                    tenant_id,
+                    user_id,
                 )
                 return {
                     "accepted": True,
@@ -1758,6 +2609,7 @@ class ContextManager:
     def _estimate_tokens(text: str) -> int:
         """Estimate token count for merge threshold."""
         from opencortex.parse.base import estimate_tokens
+
         return estimate_tokens(text)
 
     def _spawn_merge_task(
@@ -1844,12 +2696,20 @@ class ContextManager:
         source_uri: Optional[str],
         collection_name: Optional[str] = None,
         raise_on_error: bool = False,
-    ) -> None:
+        return_created_uris: bool = False,
+    ) -> Optional[List[str]]:
         """Create directory parent records for semantically related leaf clusters.
 
         Preserves original merged leaf records. For each cluster of >=2 leaves,
         generates a directory summary from children abstracts and writes a
         directory record (layer="directory", is_leaf=False).
+
+        When ``return_created_uris`` is True returns the list of created
+        directory URIs so callers (e.g. the benchmark ingest cleanup
+        tracker) can register them for rollback. Defaults to False so all
+        existing call sites — including the production conversation
+        lifecycle in ``context_end`` — preserve their previous return
+        contract (None) and behavior.
         """
         tokens_for_identity = set_request_identity(tenant_id, user_id)
         coll_token = set_collection_name(collection_name) if collection_name else None
@@ -1869,7 +2729,7 @@ class ContextManager:
                 len(merged_records),
             )
             if len(merged_records) <= 1:
-                return
+                return [] if return_created_uris else None
 
             entries: List[Dict[str, Any]] = []
             for record in merged_records:
@@ -1904,13 +2764,67 @@ class ContextManager:
                 [segment.get("msg_range") for segment in segments[:8]],
             )
             if not segments:
-                return
+                return [] if return_created_uris else None
 
-            directory_index = 0
+            # Pre-compute eligible segments and their stable directory_index
+            # so the bounded-concurrency derive loop below has deterministic
+            # URIs regardless of which derive future resolves first.
+            eligible: List[Tuple[int, Dict[str, Any], List[str]]] = []
             for segment in segments:
                 source_records = segment.get("source_records", [])
                 if len(source_records) < 2:
                     continue
+                children_abstracts = [
+                    str(rec.get("abstract") or "").strip()
+                    for rec in source_records
+                    if str(rec.get("abstract") or "").strip()
+                ]
+                if not children_abstracts:
+                    continue
+                eligible.append(
+                    (len(eligible), segment, children_abstracts)
+                )
+
+            if not eligible:
+                logger.info(
+                    "[ContextManager] Full recompose: no eligible directories sid=%s",
+                    session_id,
+                )
+                return [] if return_created_uris else None
+
+            # Use the instance-scoped semaphore so cross-conversation
+            # concurrency (U13) does not multiply in-flight LLM derives:
+            # one global cap of _DIRECTORY_DERIVE_CONCURRENCY across all
+            # sessions, not concurrency × 3.
+            derive_semaphore = self._directory_derive_semaphore
+
+            async def _derive_one(
+                directory_index: int,
+                children_abstracts: List[str],
+            ) -> Tuple[int, Optional[Dict[str, Any]]]:
+                cluster_title = f"Directory-{directory_index:03d}"
+                async with derive_semaphore:
+                    return directory_index, await (
+                        self._orchestrator._derive_parent_summary(
+                            doc_title=cluster_title,
+                            children_abstracts=children_abstracts,
+                        )
+                    )
+
+            derive_results = await asyncio.gather(
+                *[
+                    _derive_one(idx, kids)
+                    for idx, _, kids in eligible
+                ]
+            )
+            derived_by_index: Dict[int, Optional[Dict[str, Any]]] = dict(derive_results)
+
+            # Sequential write phase preserves storage-order invariants the
+            # production lifecycle relied on (URIs are written in
+            # directory_index order; keywords-patch and FS writes happen
+            # right after each Qdrant upsert).
+            for directory_index, segment, children_abstracts in eligible:
+                source_records = segment.get("source_records", [])
                 logger.info(
                     "[ContextManager] Full recompose segment sid=%s dir_index=%d msg_range=%s children=%d",
                     session_id,
@@ -1919,29 +2833,24 @@ class ContextManager:
                     len(source_records),
                 )
 
-                children_abstracts: List[str] = []
-                for rec in source_records:
-                    abstract = str(rec.get("abstract") or "").strip()
-                    if abstract:
-                        children_abstracts.append(abstract)
-                if not children_abstracts:
-                    continue
-
-                cluster_title = f"Directory-{directory_index:03d}"
-                derived = await self._orchestrator._derive_parent_summary(
-                    doc_title=cluster_title,
-                    children_abstracts=children_abstracts,
-                )
+                derived = derived_by_index.get(directory_index)
                 if not derived:
                     continue
 
                 llm_abstract = derived.get("abstract", "")
                 llm_overview = derived.get("overview", "")
                 keywords_list = derived.get("keywords", [])
-                keywords_str = ", ".join(str(k) for k in keywords_list if k) if isinstance(keywords_list, list) else ""
+                keywords_str = (
+                    ", ".join(str(k) for k in keywords_list if k)
+                    if isinstance(keywords_list, list)
+                    else ""
+                )
 
                 dir_uri = self._directory_uri(
-                    tenant_id, user_id, session_id, directory_index,
+                    tenant_id,
+                    user_id,
+                    session_id,
+                    directory_index,
                 )
 
                 aggregated_meta = await self._aggregate_records_metadata(source_records)
@@ -1977,7 +2886,6 @@ class ContextManager:
                 )
 
                 created_directory_uris.append(dir_uri)
-                directory_index += 1
 
                 if keywords_str:
                     try:
@@ -1993,7 +2901,9 @@ class ContextManager:
                                 {"keywords": keywords_str},
                             )
                     except Exception:
-                        logger.warning("[ContextManager] Failed to patch keywords for %s", dir_uri)
+                        logger.warning(
+                            "[ContextManager] Failed to patch keywords for %s", dir_uri
+                        )
 
                 fs = getattr(self._orchestrator, "_fs", None)
                 if fs is not None:
@@ -2015,6 +2925,9 @@ class ContextManager:
                 len(created_directory_uris),
                 len(merged_records),
             )
+            if return_created_uris:
+                return list(created_directory_uris)
+            return None
         except Exception as exc:
             logger.warning(
                 "[ContextManager] Full-session recomposition failed sid=%s tenant=%s user=%s collection=%s source_uri=%s created_dirs=%d: %s",
@@ -2032,6 +2945,13 @@ class ContextManager:
                     await self._delete_immediate_families(created_directory_uris)
             if raise_on_error:
                 raise
+            if return_created_uris:
+                # Failure path with reporting requested: hand back what
+                # we created before the failure so the caller's tracker
+                # can still record/compensate. ``raise_on_error=False``
+                # callers swallow the exception, so they need this hook.
+                return list(created_directory_uris)
+            return None
         finally:
             reset_request_identity(tokens_for_identity)
             if coll_token is not None:
@@ -2103,7 +3023,11 @@ class ContextManager:
         llm_abstract = derived.get("abstract", "")
         llm_overview = derived.get("overview", "")
         keywords_list = derived.get("keywords", [])
-        keywords_str = ", ".join(str(k) for k in keywords_list if k) if isinstance(keywords_list, list) else ""
+        keywords_str = (
+            ", ".join(str(k) for k in keywords_list if k)
+            if isinstance(keywords_list, list)
+            else ""
+        )
 
         content = "\n\n".join(abstracts)
 
@@ -2140,7 +3064,9 @@ class ContextManager:
                         {"keywords": keywords_str},
                     )
             except Exception:
-                logger.warning("[ContextManager] Failed to patch keywords for %s", summary_uri)
+                logger.warning(
+                    "[ContextManager] Failed to patch keywords for %s", summary_uri
+                )
 
         fs = getattr(self._orchestrator, "_fs", None)
         if fs is not None:
@@ -2218,7 +3144,9 @@ class ContextManager:
 
         task.add_done_callback(_cleanup)
 
-    async def _wait_for_merge_followup_tasks(self, sk: SessionKey) -> List[BaseException]:
+    async def _wait_for_merge_followup_tasks(
+        self, sk: SessionKey
+    ) -> List[BaseException]:
         """Wait until deferred follow-up tasks for the session merge finish."""
         failures: List[BaseException] = list(
             self._session_merge_followup_failures.pop(sk, []),
@@ -2330,7 +3258,8 @@ class ContextManager:
             for record in records
             if (
                 str(record.get("uri", "")).strip()
-                and str((record.get("meta") or {}).get("layer", "") or "") == "immediate"
+                and str((record.get("meta") or {}).get("layer", "") or "")
+                == "immediate"
             )
         ]
 
@@ -2456,17 +3385,22 @@ class ContextManager:
                     )
                     self._track_session_merge_followup_task(sk, _defer_task)
                     _defer_task.add_done_callback(
-                        lambda t: None if t.cancelled() else (
-                            logger.warning("[ContextManager] deferred derive failed: %s", t.exception())
-                            if t.exception() else None
+                        lambda t: (
+                            None
+                            if t.cancelled()
+                            else (
+                                logger.warning(
+                                    "[ContextManager] deferred derive failed: %s",
+                                    t.exception(),
+                                )
+                                if t.exception()
+                                else None
+                            )
                         )
                     )
 
                 superseded_merged_uris = self._merge_unique_strings(
-                    *[
-                        segment.get("superseded_merged_uris", [])
-                        for segment in segments
-                    ]
+                    *[segment.get("superseded_merged_uris", []) for segment in segments]
                 )
                 superseded_merged_uris = [
                     uri
@@ -2499,11 +3433,19 @@ class ContextManager:
                 self._orchestrator._get_collection(),
                 flush_all,
                 locals().get("source_uri"),
-                len(snapshot.messages) if "snapshot" in locals() and snapshot is not None else None,
+                len(snapshot.messages)
+                if "snapshot" in locals() and snapshot is not None
+                else None,
                 len(records) if "records" in locals() and records is not None else None,
-                len(tail_records) if "tail_records" in locals() and tail_records is not None else None,
-                len(segments) if "segments" in locals() and segments is not None else None,
-                len(created_merged_uris) if "created_merged_uris" in locals() and created_merged_uris is not None else None,
+                len(tail_records)
+                if "tail_records" in locals() and tail_records is not None
+                else None,
+                len(segments)
+                if "segments" in locals() and segments is not None
+                else None,
+                len(created_merged_uris)
+                if "created_merged_uris" in locals() and created_merged_uris is not None
+                else None,
                 exc,
                 exc_info=True,
             )
@@ -2519,6 +3461,7 @@ class ContextManager:
                 reset_request_identity(tokens_for_identity)
             if coll_token is not None:
                 reset_collection_name(coll_token)
+
     # =========================================================================
 
     async def _end(
@@ -2530,7 +3473,9 @@ class ContextManager:
     ) -> Dict[str, Any]:
         sk = self._make_session_key(tenant_id, user_id, session_id)
         total_turns = len(self._committed_turns.get(sk, set()))
-        session_project_id = self._session_project_ids.get(sk) or get_effective_project_id()
+        session_project_id = (
+            self._session_project_ids.get(sk) or get_effective_project_id()
+        )
         project_token = set_request_project_id(session_project_id)
         lock = self._session_locks.setdefault(sk, asyncio.Lock())
 
@@ -2628,7 +3573,8 @@ class ContextManager:
 
                     if (
                         session_owner_ids
-                        and getattr(self._orchestrator, "_autophagy_kernel", None) is not None
+                        and getattr(self._orchestrator, "_autophagy_kernel", None)
+                        is not None
                     ):
                         task = asyncio.create_task(
                             self._run_autophagy_metabolism(
@@ -2796,7 +3742,8 @@ class ContextManager:
         # LRU eviction: over 1000 entries → evict oldest
         if len(self._prepare_cache) >= 1000:
             oldest_key = min(
-                self._prepare_cache, key=lambda k: self._prepare_cache[k][1],
+                self._prepare_cache,
+                key=lambda k: self._prepare_cache[k][1],
             )
             self._prepare_cache.pop(oldest_key)
             for keys in self._session_cache_keys.values():
@@ -2825,7 +3772,10 @@ class ContextManager:
         return self._orchestrator._get_collection()
 
     def _make_session_key(
-        self, tenant_id: str, user_id: str, session_id: str,
+        self,
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
     ) -> SessionKey:
         return (
             self._current_collection_name(),
@@ -2923,14 +3873,18 @@ class ContextManager:
             await asyncio.sleep(self._idle_check_interval)
             now = time.time()
             expired = [
-                sk for sk, ts in self._session_activity.items()
+                sk
+                for sk, ts in self._session_activity.items()
                 if now - ts > self._session_idle_ttl
             ]
             for sk in expired:
                 collection, tid, uid, sid = sk
                 logger.info(
                     "[ContextManager] idle-close sid=%s (collection=%s tenant=%s, user=%s)",
-                    sid, collection, tid, uid,
+                    sid,
+                    collection,
+                    tid,
+                    uid,
                 )
                 try:
                     # Set contextvars for orchestrator.session_end()
@@ -2941,7 +3895,9 @@ class ContextManager:
                         reset_request_identity(tokens)
                 except Exception as exc:
                     logger.warning(
-                        "[ContextManager] Auto-close failed for %s: %s", sid, exc,
+                        "[ContextManager] Auto-close failed for %s: %s",
+                        sid,
+                        exc,
                     )
 
     # =========================================================================
@@ -2972,7 +3928,8 @@ class ContextManager:
         }
 
     async def _expand_directory_hits(
-        self, find_result,
+        self,
+        find_result,
     ) -> list:
         """Replace directory records with their children leaf records.
 
@@ -2980,6 +3937,7 @@ class ContextManager:
         When hit, we expand to the actual leaf records for content delivery.
         """
         from opencortex.retrieve.types import DetailLevel
+
         expanded = []
         seen_uris: set = set()
 
@@ -3011,10 +3969,13 @@ class ContextManager:
             try:
                 children = await self._orchestrator._storage.filter(
                     self._orchestrator._get_collection(),
-                    {"op": "or", "conds": [
-                        {"op": "must", "field": "uri", "conds": [uri]}
-                        for uri in child_uris
-                    ]},
+                    {
+                        "op": "or",
+                        "conds": [
+                            {"op": "must", "field": "uri", "conds": [uri]}
+                            for uri in child_uris
+                        ],
+                    },
                     limit=len(child_uris),
                 )
             except Exception:
@@ -3043,7 +4004,9 @@ class ContextManager:
         return expanded
 
     def _format_memories(
-        self, find_result, detail_level: str,
+        self,
+        find_result,
+        detail_level: str,
     ) -> List[Dict[str, Any]]:
         """Format FindResult into response items."""
         items = []
@@ -3076,17 +4039,20 @@ class ContextManager:
         return items
 
     def _format_knowledge(
-        self, results: List[Dict[str, Any]],
+        self,
+        results: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
         """Format knowledge search results."""
         items = []
         for r in results:
-            items.append({
-                "knowledge_id": r.get("knowledge_id", r.get("id", "")),
-                "type": r.get("knowledge_type", ""),
-                "abstract": r.get("abstract", ""),
-                "confidence": r.get("confidence", 0.0),
-            })
+            items.append(
+                {
+                    "knowledge_id": r.get("knowledge_id", r.get("id", "")),
+                    "type": r.get("knowledge_type", ""),
+                    "abstract": r.get("abstract", ""),
+                    "confidence": r.get("confidence", 0.0),
+                }
+            )
         return items
 
     def _clamp(self, text: str) -> str:
@@ -3109,8 +4075,8 @@ class ContextManager:
         if total_items == 0:
             return self._empty_instructions()
 
-        avg_score = (
-            sum(m.get("score", 0) for m in memory_items) / max(len(memory_items), 1)
+        avg_score = sum(m.get("score", 0) for m in memory_items) / max(
+            len(memory_items), 1
         )
         max_confidence = max(
             [k.get("confidence", 0) for k in knowledge_items],
@@ -3150,25 +4116,37 @@ class ContextManager:
     # =========================================================================
 
     async def _append_skill_event(
-        self, session_id: str, turn_id: str, skill_uri: str,
-        tenant_id: str, user_id: str, event_type: str,
+        self,
+        session_id: str,
+        turn_id: str,
+        skill_uri: str,
+        tenant_id: str,
+        user_id: str,
+        event_type: str,
     ) -> None:
         """Append a single skill event to the event store (fire-and-forget safe)."""
         try:
-            from opencortex.skill_engine.types import SkillEvent, extract_skill_id_from_uri
-            from uuid import uuid4
             from datetime import datetime, timezone
-            await self._orchestrator._skill_event_store.append(SkillEvent(
-                event_id=uuid4().hex,
-                session_id=session_id,
-                turn_id=turn_id,
-                skill_id=extract_skill_id_from_uri(skill_uri),
-                skill_uri=skill_uri,
-                tenant_id=tenant_id,
-                user_id=user_id,
-                event_type=event_type,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-            ))
+            from uuid import uuid4
+
+            from opencortex.skill_engine.types import (
+                SkillEvent,
+                extract_skill_id_from_uri,
+            )
+
+            await self._orchestrator._skill_event_store.append(
+                SkillEvent(
+                    event_id=uuid4().hex,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    skill_id=extract_skill_id_from_uri(skill_uri),
+                    skill_uri=skill_uri,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    event_type=event_type,
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                )
+            )
         except Exception:
             pass
 
@@ -3200,7 +4178,8 @@ class ContextManager:
                 f.write(json.dumps(entry) + b"\n")
         except Exception as exc:
             logger.error(
-                "[ContextManager] Failed to write fallback log: %s", exc,
+                "[ContextManager] Failed to write fallback log: %s",
+                exc,
             )
 
     # =========================================================================
@@ -3214,5 +4193,7 @@ class ContextManager:
                 await self._orchestrator.feedback(uri=uri, reward=0.1)
             except Exception as exc:
                 logger.debug(
-                    "[ContextManager] Reward feedback failed for %s: %s", uri, exc,
+                    "[ContextManager] Reward feedback failed for %s: %s",
+                    uri,
+                    exc,
                 )

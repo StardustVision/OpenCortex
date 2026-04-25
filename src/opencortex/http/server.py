@@ -389,6 +389,12 @@ def _register_routes(app: FastAPI) -> None:
                 "field": "category",
                 "conds": [req.category],
             }
+        if req.metadata_filter:
+            metadata_filter = (
+                {"op": "and", "conds": [metadata_filter, req.metadata_filter]}
+                if metadata_filter
+                else req.metadata_filter
+            )
 
         result = await _orchestrator.search(
             query=req.query,
