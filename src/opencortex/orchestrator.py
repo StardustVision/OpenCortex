@@ -2482,6 +2482,19 @@ class MemoryOrchestrator:
 
         all_new_records = anchor_records + fp_records
 
+        # REVIEW closure tracker R3-P-06 — short-circuit when the new
+        # projection is empty AND there's no abstract_json input.
+        # The defer_derive initial leaf write hits this path with both
+        # inputs empty and would otherwise pay 2 stale-filter scans
+        # over Qdrant prefixes that are guaranteed to be empty (the
+        # leaf is brand new). The ``not abstract_json`` guard keeps
+        # the cleanup path on legitimate update flows where
+        # abstract_json is present but happens to contribute no
+        # anchors or fact_points — those updates DO need stale
+        # cleanup.
+        if not all_new_records and not abstract_json:
+            return
+
         # Embed all texts in a single batch call
         if all_new_records and self._embedder:
             texts = [r["overview"] for r in all_new_records]

@@ -46,11 +46,21 @@ class InsightsCollector:
         Returns:
             List of Trace objects
         """
+        # Filter DSL fix: the canonical shape for storage.filter is
+        # ``{"op": "and", "conds": [...]}`` at the outer level and
+        # ``{"op": "must", "field": "X", "conds": [val]}`` at the leaf
+        # level (see ``SessionRecordsRepository._build_session_filter``
+        # for the reference pattern). The previous shape used
+        # ``conditions`` instead of ``conds`` and ``op="="`` instead of
+        # ``op="must"`` — the storage adapter's filter translator
+        # silently treated the whole expression as no-op, returning
+        # all traces in the collection regardless of tenant/user
+        # scope. Cross-tenant insights leaked.
         filter_expr = {
             "op": "and",
-            "conditions": [
-                {"field": "tenant_id", "op": "=", "value": tenant_id},
-                {"field": "user_id", "op": "=", "value": user_id},
+            "conds": [
+                {"op": "must", "field": "tenant_id", "conds": [tenant_id]},
+                {"op": "must", "field": "user_id", "conds": [user_id]},
             ],
         }
         all_records = await self._trace_store._storage.filter(
