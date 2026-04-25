@@ -492,5 +492,94 @@ class TestSiblingCancelOnFirstDeriveFailure(unittest.TestCase):
         self._run(check())
 
 
+class TestDirectEvidenceNoExtraFetch(unittest.TestCase):
+    """REVIEW closure tracker PERF-03 — _ingest_direct_evidence used to
+    do one ``orchestrator._get_record_by_uri`` per segment after each
+    ``add()``, paying N extra sequential point lookups on the critical
+    path. The fix builds the record dict from the local meta + content
+    instead. This test pins both invariants: (a) the per-segment
+    re-fetch never fires, and (b) the assembled record dict carries
+    the fields adapters consume."""
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def test_direct_evidence_does_not_call_get_record_by_uri(self):
+        async def check():
+            manager = _FakeManager()
+            repo = _FakeRepo()
+            # Spy: count get_record_by_uri calls.
+            original_get = manager._orchestrator._get_record_by_uri
+            calls: List[str] = []
+
+            async def _spy(uri: str):
+                calls.append(uri)
+                return await original_get(uri)
+
+            manager._orchestrator._get_record_by_uri = _spy
+
+            service = BenchmarkConversationIngestService(
+                manager=manager, repo=repo
+            )
+            response = await service.ingest(
+                session_id="bench_de",
+                tenant_id="t",
+                user_id="u",
+                segments=[
+                    [{"role": "user", "content": "first"}],
+                    [{"role": "user", "content": "second"}],
+                    [{"role": "user", "content": "third"}],
+                ],
+                ingest_shape="direct_evidence",
+            )
+            self.assertEqual(response["ingest_shape"], "direct_evidence")
+            self.assertEqual(len(response["records"]), 3)
+            # Per-segment re-fetch must NOT fire under the PERF-03 fix.
+            self.assertEqual(calls, [])
+
+        self._run(check())
+
+    def test_direct_evidence_record_carries_required_export_fields(self):
+        """The record dict assembled locally must round-trip through
+        ``_export_memory_record`` with every field downstream HTTP
+        tests assert (uri, session_id, msg_range, recomposition_stage,
+        meta with benchmark anchors, content non-empty)."""
+
+        async def check():
+            manager = _FakeManager()
+            repo = _FakeRepo()
+            service = BenchmarkConversationIngestService(
+                manager=manager, repo=repo
+            )
+            response = await service.ingest(
+                session_id="bench_de",
+                tenant_id="t",
+                user_id="u",
+                segments=[
+                    [{"role": "user", "content": "I moved to Hangzhou."}],
+                ],
+                ingest_shape="direct_evidence",
+            )
+            record = response["records"][0]
+            # _FakeManager._export_memory_record forwards (uri, content,
+            # meta) only; the real export_memory_record adds session_id /
+            # speaker / event_date as top-level fields too. The fields
+            # we care about for direct_evidence (msg_range,
+            # recomposition_stage, session_id, source_uri) all live in
+            # meta on the assembled record dict — that's what the real
+            # _export_memory_record reads from. Assert via meta.
+            self.assertEqual(record["meta"]["session_id"], "bench_de")
+            self.assertEqual(record["meta"]["msg_range"], [0, 0])
+            self.assertEqual(
+                record["meta"]["recomposition_stage"],
+                "benchmark_direct_evidence",
+            )
+            # Content was hydrated from the in-memory map.
+            self.assertNotEqual(record["content"], "")
+            self.assertIn("Hangzhou", record["content"])
+
+        self._run(check())
+
+
 if __name__ == "__main__":
     unittest.main()
