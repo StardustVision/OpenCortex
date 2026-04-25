@@ -140,6 +140,93 @@ class TestBenchmarkIngestLifecycle(unittest.TestCase):
 
         self._run(check())
 
+    def test_torn_prior_run_is_not_treated_as_idempotent(self):
+        """Hash-match without run_complete marker triggers purge + re-ingest.
+
+        Simulates a torn prior run by writing the source first (so the
+        hash matches on replay) but stripping the ``run_complete`` meta
+        marker. The next ingest with the same payload must NOT take the
+        idempotent short-circuit; it must purge stale records and run
+        a fresh ingest.
+        """
+
+        async def check():
+            import opencortex.http.server as http_server
+
+            async with _test_app_context() as client:
+                role_token = set_request_role("admin")
+                try:
+                    # Successful first ingest writes records and marks
+                    # the source as run_complete.
+                    payload = _payload("bench_torn_01")
+                    r1 = await client.post(_ADMIN_INGEST_URL, json=payload)
+                    self.assertEqual(r1.status_code, 200)
+                    first = r1.json()
+
+                    # Strip the run_complete marker to simulate a torn
+                    # prior run (compensate failed midway).
+                    orch = http_server._orchestrator
+                    storage = orch._storage
+                    coll = orch._get_collection()
+                    src_records = await storage.filter(
+                        coll,
+                        {
+                            "op": "must",
+                            "field": "uri",
+                            "conds": [first["source_uri"]],
+                        },
+                        limit=1,
+                    )
+                    self.assertTrue(src_records)
+                    src = src_records[0]
+                    src_meta = dict(src.get("meta") or {})
+                    src_meta.pop("run_complete", None)
+                    await storage.update(
+                        coll, str(src["id"]), {"meta": src_meta}
+                    )
+
+                    # Replay with the same payload — should NOT short-circuit.
+                    # Track _purge_torn_benchmark_run to confirm it ran.
+                    cm = orch._context_manager
+                    purges: list = []
+                    original_purge = cm._purge_torn_benchmark_run
+
+                    async def _track_purge(**kwargs):
+                        purges.append(kwargs.get("source_uri"))
+                        await original_purge(**kwargs)
+
+                    cm._purge_torn_benchmark_run = _track_purge
+                    try:
+                        r2 = await client.post(_ADMIN_INGEST_URL, json=payload)
+                    finally:
+                        cm._purge_torn_benchmark_run = original_purge
+
+                    self.assertEqual(r2.status_code, 200)
+                    self.assertEqual(
+                        purges,
+                        [first["source_uri"]],
+                        "torn-replay must trigger _purge_torn_benchmark_run",
+                    )
+                    # Re-ingest should produce a fresh record set with
+                    # the marker re-applied.
+                    src_records2 = await storage.filter(
+                        coll,
+                        {
+                            "op": "must",
+                            "field": "uri",
+                            "conds": [first["source_uri"]],
+                        },
+                        limit=1,
+                    )
+                    self.assertTrue(
+                        src_records2[0].get("meta", {}).get("run_complete"),
+                        "run_complete must be re-set after successful re-ingest",
+                    )
+                finally:
+                    reset_request_role(role_token)
+
+        self._run(check())
+
     # -----------------------------------------------------------------
     # AR4 — Cleanup tracker for failure / cancellation paths
     # -----------------------------------------------------------------

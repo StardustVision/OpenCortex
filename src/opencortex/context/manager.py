@@ -77,6 +77,33 @@ CacheKey = Tuple[
 ]  # (collection, tenant_id, user_id, session_id, turn_id)
 
 
+class RecompositionError(Exception):
+    """Raised by ``_run_full_session_recomposition`` with raise_on_error=True
+    when work fails partway through.
+
+    Carries the directory URIs that were already created before the
+    failure so the caller can register them with its run-scoped cleanup
+    tracker (REVIEW REL-02). Without this, raise_on_error=True callers
+    saw the inner ``contextlib.suppress`` best-effort cleanup as a
+    silent black box: any URI that failed to delete inside the
+    suppressed block became an orphan with no signal to the outer
+    layer.
+
+    Callers should drain ``created_uris`` into their tracker, then
+    ``raise exc.original from exc`` (or just ``raise``) so the outer
+    handler still sees the underlying failure.
+    """
+
+    def __init__(
+        self,
+        original: BaseException,
+        created_uris: List[str],
+    ) -> None:
+        super().__init__(str(original))
+        self.original = original
+        self.created_uris = list(created_uris)
+
+
 class SourceConflictError(Exception):
     """Same session_id ingested twice with a different transcript.
 
@@ -1220,6 +1247,103 @@ class ContextManager:
             )
         return source_uri
 
+    async def _mark_source_run_complete(self, source_uri: str) -> None:
+        """Set ``meta.run_complete=True`` on a benchmark source record.
+
+        REVIEW F5 / ADV-007: written only after a benchmark ingest run
+        finishes successfully. The idempotent-hit path treats a
+        hash-match WITHOUT this marker as a torn prior run (compensate
+        partially failed, leaving stale leaves) and re-ingests after
+        purging, instead of silently returning the partial set. The
+        marker write goes through the lower-level storage update so we
+        avoid the heavy ``MemoryOrchestrator.update`` re-derive path —
+        this is meta-only.
+        """
+        if not source_uri:
+            return
+        try:
+            records = await self._orchestrator._storage.filter(
+                self._orchestrator._get_collection(),
+                {"op": "must", "field": "uri", "conds": [source_uri]},
+                limit=1,
+            )
+            if not records:
+                return
+            record = records[0]
+            record_id = str(record.get("id", "") or "")
+            if not record_id:
+                return
+            existing_meta = dict(record.get("meta") or {})
+            existing_meta["run_complete"] = True
+            await self._orchestrator._storage.update(
+                self._orchestrator._get_collection(),
+                record_id,
+                {"meta": existing_meta},
+            )
+        except Exception as exc:  # pragma: no cover - defensive log path
+            logger.warning(
+                "benchmark_ingest: failed to mark source %s run_complete: %s",
+                source_uri,
+                exc,
+                exc_info=True,
+            )
+
+    async def _purge_torn_benchmark_run(
+        self,
+        *,
+        session_id: str,
+        tenant_id: str,
+        user_id: str,
+        source_uri: str,
+        merged_records: List[Dict[str, Any]],
+    ) -> None:
+        """Drop stale records left by a prior failed benchmark ingest run.
+
+        Used when the idempotent-hit path detects a hash-match without
+        the ``run_complete`` marker (REVIEW F5). Removes:
+
+        - merged leaves under the source (the records we already loaded)
+        - directory records under the source (re-loaded here)
+        - the deterministic session_summary record if one exists
+
+        The source record itself stays — it is keyed deterministically
+        on (tenant, user, session_id) and the next ingest will rewrite
+        the transcript_hash and ``run_complete`` marker fresh.
+        """
+        merged_uris = [
+            str(rec.get("uri", "") or "").strip()
+            for rec in merged_records
+            if rec.get("uri")
+        ]
+        try:
+            directory_records = await self._load_session_directory_records(
+                session_id=session_id,
+                source_uri=source_uri,
+            )
+        except Exception:  # pragma: no cover - defensive
+            directory_records = []
+        directory_uris = [
+            str(rec.get("uri", "") or "").strip()
+            for rec in directory_records
+            if rec.get("uri")
+        ]
+        summary_uri = self._session_summary_uri(tenant_id, user_id, session_id)
+
+        all_uris = [u for u in (merged_uris + directory_uris + [summary_uri]) if u]
+        if not all_uris:
+            return
+        logger.info(
+            "benchmark_ingest: purging torn prior run sid=%s source=%s "
+            "merged=%d directories=%d summary=%s",
+            session_id,
+            source_uri,
+            len(merged_uris),
+            len(directory_uris),
+            "present" if summary_uri else "absent",
+        )
+        with contextlib.suppress(Exception):
+            await self._delete_immediate_families(all_uris)
+
     @classmethod
     def _benchmark_segment_meta(
         cls,
@@ -1493,30 +1617,84 @@ class ContextManager:
                 source_uri=source_uri,
             )
             if existing_records:
-                logger.info(
-                    "benchmark_ingest_conversation: idempotent hit "
-                    "sid=%s source_uri=%s records=%d",
-                    session_id,
-                    source_uri,
-                    len(existing_records),
+                # Verify the prior run actually completed (REVIEW F5 /
+                # ADV-007). The transcript hash matches but if the
+                # ``run_complete`` marker is absent, the prior ingest
+                # crashed before it could mark itself done — the
+                # records on disk are a partial / torn set, not a
+                # genuine idempotent hit. Treat as cold ingest after
+                # purging the stale records.
+                source_record = await self._orchestrator._get_record_by_uri(
+                    source_uri
                 )
-                hydrated = await self._hydrate_record_contents(existing_records)
-                return {
-                    "status": "ok",
-                    "session_id": session_id,
-                    "source_uri": source_uri,
-                    "summary_uri": None,
-                    "records": [
-                        self._export_memory_record(
-                            record,
-                            hydrated_content=hydrated.get(
-                                str(record.get("uri", "") or ""),
-                                "",
-                            ),
+                source_meta = (
+                    dict(source_record.get("meta") or {}) if source_record else {}
+                )
+                run_complete = bool(source_meta.get("run_complete"))
+
+                if not run_complete:
+                    logger.warning(
+                        "benchmark_ingest_conversation: torn prior run "
+                        "detected sid=%s source=%s — purging stale "
+                        "records and re-ingesting",
+                        session_id,
+                        source_uri,
+                    )
+                    await self._purge_torn_benchmark_run(
+                        session_id=session_id,
+                        tenant_id=tenant_id,
+                        user_id=user_id,
+                        source_uri=source_uri,
+                        merged_records=existing_records,
+                    )
+                    # fall through to the cold ingest path below
+                else:
+                    # Look up the prior run's session_summary if one
+                    # exists under the deterministic URI (REVIEW F4 /
+                    # api-contract-005). Previously the idempotent path
+                    # always returned summary_uri=None even when the
+                    # first run had persisted a summary, leaving an
+                    # asymmetric contract that could surprise downstream
+                    # consumers.
+                    existing_summary_uri = self._session_summary_uri(
+                        tenant_id, user_id, session_id
+                    )
+                    existing_summary = await (
+                        self._orchestrator._get_record_by_uri(
+                            existing_summary_uri
                         )
-                        for record in existing_records
-                    ],
-                }
+                    )
+                    summary_uri_for_response = (
+                        existing_summary_uri if existing_summary else None
+                    )
+
+                    logger.info(
+                        "benchmark_ingest_conversation: idempotent hit "
+                        "sid=%s source_uri=%s records=%d summary=%s",
+                        session_id,
+                        source_uri,
+                        len(existing_records),
+                        "present" if existing_summary else "absent",
+                    )
+                    hydrated = await self._hydrate_record_contents(
+                        existing_records
+                    )
+                    return {
+                        "status": "ok",
+                        "session_id": session_id,
+                        "source_uri": source_uri,
+                        "summary_uri": summary_uri_for_response,
+                        "records": [
+                            self._export_memory_record(
+                                record,
+                                hydrated_content=hydrated.get(
+                                    str(record.get("uri", "") or ""),
+                                    "",
+                                ),
+                            )
+                            for record in existing_records
+                        ],
+                    }
 
             cleanup = _BenchmarkRunCleanup(source_uri=source_uri)
             # In-memory map URI -> raw conversation text for U10 content
@@ -1628,14 +1806,27 @@ class ContextManager:
                         raise
 
                 if cleanup.merged_uris:
-                    directory_uris = await self._run_full_session_recomposition(
-                        session_id=session_id,
-                        tenant_id=tenant_id,
-                        user_id=user_id,
-                        source_uri=source_uri,
-                        raise_on_error=True,
-                        return_created_uris=True,
-                    )
+                    try:
+                        directory_uris = (
+                            await self._run_full_session_recomposition(
+                                session_id=session_id,
+                                tenant_id=tenant_id,
+                                user_id=user_id,
+                                source_uri=source_uri,
+                                raise_on_error=True,
+                                return_created_uris=True,
+                            )
+                        )
+                    except RecompositionError as exc:
+                        # Drain partial URIs into the tracker so the
+                        # outer except handler's compensate() removes
+                        # them via the same code path that handles
+                        # successful directory writes (REVIEW REL-02).
+                        # Re-raise the original exception so the outer
+                        # handler still sees the underlying failure
+                        # type (CancelledError, RuntimeError, ...).
+                        cleanup.directory_uris.extend(exc.created_uris)
+                        raise exc.original from exc
                     if directory_uris:
                         cleanup.directory_uris.extend(directory_uris)
                     if include_session_summary:
@@ -1674,6 +1865,13 @@ class ContextManager:
                     if fallback_targets
                     else {}
                 )
+                # Mark the source as run_complete BEFORE returning so an
+                # immediate retry sees the marker and short-circuits via
+                # the idempotent path (REVIEW F5 / ADV-007). Failure to
+                # mark is logged but does not fail the response — the
+                # next replay would just trigger a redundant purge +
+                # re-ingest, which is correct, just slower.
+                await self._mark_source_run_complete(source_uri)
                 return {
                     "status": "ok",
                     "session_id": session_id,
@@ -1805,6 +2003,10 @@ class ContextManager:
                 if record:
                     records.append(record)
 
+            # Mark source as run_complete so the next replay short-circuits
+            # via the idempotent path (REVIEW F5 / ADV-007). Symmetric with
+            # the merged_recompose return path above.
+            await self._mark_source_run_complete(source_uri or "")
             return {
                 "status": "ok",
                 "session_id": session_id,
@@ -2940,11 +3142,21 @@ class ContextManager:
                 exc,
                 exc_info=True,
             )
+            if raise_on_error:
+                # Hand back the partial URIs to the caller via
+                # RecompositionError so its run-scoped cleanup tracker
+                # can drive compensation (REVIEW REL-02). The previous
+                # inline ``contextlib.suppress`` cleanup was a silent
+                # black box on the raise_on_error=True path: any URI
+                # that failed to delete inside the suppressed block
+                # became an orphan with no signal upstream.
+                raise RecompositionError(exc, created_directory_uris) from exc
+            # raise_on_error=False (production lifecycle) keeps the
+            # legacy best-effort inline cleanup. Production callers do
+            # not maintain a tracker and rely on this fallback.
             if created_directory_uris:
                 with contextlib.suppress(Exception):
                     await self._delete_immediate_families(created_directory_uris)
-            if raise_on_error:
-                raise
             if return_created_uris:
                 # Failure path with reporting requested: hand back what
                 # we created before the failure so the caller's tracker

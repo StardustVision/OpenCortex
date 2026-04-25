@@ -463,14 +463,27 @@ class LongMemEvalBench(EvalAdapter):
                             self._lme_session_to_uri[session_id] = uris[0]
 
                     return (True, None)
+                except asyncio.CancelledError:
+                    # Per-item cancellation must not cascade to siblings
+                    # (REVIEW REL-04). Surface as a structured error.
+                    return (False, f"item={item_index}: cancelled")
                 except Exception as exc:
                     return (False, f"item={item_index}: {exc}")
 
+        # ``return_exceptions=True`` keeps a single bad item from
+        # aborting the rest of the benchmark run — the inner try/except
+        # turns recoverable failures into structured tuples, and any
+        # BaseException that does escape appears as an exception object
+        # we surface alongside the structured results.
         results = await asyncio.gather(
             *[_process_one(idx) for idx in selected_indices],
-            return_exceptions=False,
+            return_exceptions=True,
         )
-        for ok, err in results:
+        for result in results:
+            if isinstance(result, BaseException):
+                errors.append(f"item=?: {result!r}")
+                continue
+            ok, err = result
             if ok:
                 ingested += 1
             elif err:

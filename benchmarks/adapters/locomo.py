@@ -576,14 +576,29 @@ class LoCoMoBench(EvalAdapter):
                             if uri in new_records
                         ]
                     return (True, None)
+                except asyncio.CancelledError:
+                    # Per-conversation cancellation must not cascade to
+                    # siblings (REVIEW REL-04). Surface as an error so
+                    # the gather summary reports it, but do not propagate.
+                    return (False, f"conv={conv_id}: cancelled")
                 except Exception as exc:
                     return (False, f"conv={conv_id}: {exc}")
 
+        # ``return_exceptions=True`` ensures one cancelled or crashed
+        # conversation does not abort sibling work — the error string
+        # is captured per-conversation by the inner try/except, and
+        # any exception that escapes (typically only BaseException
+        # subclasses we cannot swallow) appears in ``results`` as an
+        # exception object that we surface alongside the others.
         results = await asyncio.gather(
             *[_process_one(conv) for conv in conversations],
-            return_exceptions=False,
+            return_exceptions=True,
         )
-        for ok, err in results:
+        for result in results:
+            if isinstance(result, BaseException):
+                errors.append(f"conv=?: {result!r}")
+                continue
+            ok, err = result
             if ok:
                 ingested += 1
             elif err:
