@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from opencortex.auth.token import (
     generate_token, load_token_records, revoke_token, save_token_record,
 )
+from opencortex.context.manager import SourceConflictError
 from opencortex.http.models import (
     BenchmarkConversationIngestRequest, CreateTokenRequest,
     MemorySearchRequest, RevokeTokenRequest,
@@ -267,6 +268,19 @@ async def admin_benchmark_conversation_ingest(
                 f"({_BENCHMARK_INGEST_TIMEOUT_SECONDS:.0f}s); "
                 "in-process cleanup ran"
             ),
+        )
+    except SourceConflictError as exc:
+        # Same session_id, different transcript. Caller must rotate
+        # session_id intentionally rather than silently overwrite a prior
+        # run's source — see U5 in REVIEW Section 26.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": "transcript_hash_mismatch",
+                "session_id": req.session_id,
+                "existing_hash": exc.existing_hash,
+                "supplied_hash": exc.supplied_hash,
+            },
         )
 
 

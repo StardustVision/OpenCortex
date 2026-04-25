@@ -77,6 +77,27 @@ CacheKey = Tuple[
 ]  # (collection, tenant_id, user_id, session_id, turn_id)
 
 
+class SourceConflictError(Exception):
+    """Same session_id ingested twice with a different transcript.
+
+    Surfaced by ``_persist_rendered_conversation_source`` (and only on
+    the benchmark path) so the HTTP layer can translate it into a 409
+    Conflict that includes both the existing and supplied transcript
+    hashes. Letting the second transcript silently overwrite the first
+    would mix two unrelated benchmark runs into the same source URI
+    while the merged-leaf URIs (deterministic on msg_range) only happen
+    to coincide on prefix — recall results would be undefined.
+    """
+
+    def __init__(self, *, existing_hash: str, supplied_hash: str) -> None:
+        super().__init__(
+            "Conversation transcript conflict for benchmark session: "
+            f"existing_hash={existing_hash} supplied_hash={supplied_hash}"
+        )
+        self.existing_hash = existing_hash
+        self.supplied_hash = supplied_hash
+
+
 @dataclass
 class _BenchmarkRunCleanup:
     """Tracks URIs created during one benchmark ingest run for compensation.
@@ -1089,6 +1110,21 @@ class ContextManager:
             transcript=transcript,
         )
 
+    @staticmethod
+    def _hash_transcript(transcript: List[Dict[str, Any]]) -> str:
+        """SHA-256 over the canonical normalized transcript shape."""
+        normalized = [
+            {
+                "role": str(message.get("role", "") or ""),
+                "content": str(message.get("content", "") or ""),
+                "meta": message.get("meta") or {},
+            }
+            for message in transcript
+        ]
+        digest = hashlib.sha256()
+        digest.update(json.dumps(normalized, option=json.OPT_SORT_KEYS))
+        return digest.hexdigest()
+
     async def _persist_rendered_conversation_source(
         self,
         *,
@@ -1096,19 +1132,64 @@ class ContextManager:
         tenant_id: str,
         user_id: str,
         transcript: List[Dict[str, Any]],
+        enforce_transcript_hash: bool = False,
     ) -> Optional[str]:
-        """Persist one transcript payload as the stable conversation source."""
+        """Persist one transcript payload as the stable conversation source.
+
+        ``enforce_transcript_hash`` is the benchmark-only knob (U5). When
+        True the helper:
+
+        - Attaches ``transcript_hash`` to the source meta on first write.
+        - On re-ingest with the same hash, returns the existing URI
+          (idempotent hit, no rewrite).
+        - On re-ingest with a different hash, raises
+          ``SourceConflictError`` so the caller can map it to HTTP 409.
+
+        Production callers leave ``enforce_transcript_hash=False`` so
+        existing context_end / context_commit lifecycle behavior is
+        preserved unchanged.
+        """
         if not transcript:
             return None
 
         source_uri = self._conversation_source_uri(tenant_id, user_id, session_id)
         existing = await self._orchestrator._get_record_by_uri(source_uri)
-        if existing:
+        if existing and not enforce_transcript_hash:
+            return source_uri
+
+        supplied_hash = (
+            self._hash_transcript(transcript) if enforce_transcript_hash else ""
+        )
+
+        if existing and enforce_transcript_hash:
+            existing_meta = dict(existing.get("meta") or {})
+            existing_hash = str(existing_meta.get("transcript_hash") or "").strip()
+            if existing_hash and existing_hash == supplied_hash:
+                # Same transcript replayed: short-circuit. The caller
+                # treats this as an idempotent hit and skips leaf/recompose
+                # rewrite — pre-existing merged records still resolve.
+                return source_uri
+            if existing_hash and existing_hash != supplied_hash:
+                raise SourceConflictError(
+                    existing_hash=existing_hash,
+                    supplied_hash=supplied_hash,
+                )
+            # Existing source has no hash recorded (legacy / production
+            # write). Treat as idempotent — refusing here would block
+            # benchmark replays of pre-versioning sessions.
             return source_uri
 
         content = self._render_conversation_source(transcript)
         if not content:
             return None
+
+        meta: Dict[str, Any] = {
+            "layer": "conversation_source",
+            "session_id": session_id,
+            "message_count": len(transcript),
+        }
+        if supplied_hash:
+            meta["transcript_hash"] = supplied_hash
 
         await self._orchestrator.add(
             uri=source_uri,
@@ -1118,11 +1199,7 @@ class ContextManager:
             context_type="resource",
             is_leaf=False,
             session_id=session_id,
-            meta={
-                "layer": "conversation_source",
-                "session_id": session_id,
-                "message_count": len(transcript),
-            },
+            meta=meta,
         )
         if getattr(self._orchestrator, "_fs", None) is not None:
             await self._orchestrator._fs.write_context(
@@ -1376,11 +1453,16 @@ class ContextManager:
                     "records": [],
                 }
 
+            # ``SourceConflictError`` propagates out of the lock — the HTTP
+            # layer maps it to a 409 Conflict. We deliberately raise BEFORE
+            # entering the cleanup-tracker scope: there is nothing to
+            # roll back, the existing source belongs to a prior run.
             source_uri = await self._persist_rendered_conversation_source(
                 session_id=session_id,
                 tenant_id=tenant_id,
                 user_id=user_id,
                 transcript=transcript,
+                enforce_transcript_hash=True,
             )
 
             if shape == "direct_evidence":
@@ -1391,6 +1473,41 @@ class ContextManager:
                     source_uri=source_uri,
                     normalized_segments=normalized_segments,
                 )
+
+            # Idempotent re-ingest detection: if the source already exists
+            # AND we have merged leaves under it, return them without
+            # rewriting. Avoids creating duplicate leaves with identical
+            # msg_range URIs and avoids paying recompose / summary costs
+            # again for an already-ingested transcript.
+            existing_records = await self._load_session_merged_records(
+                session_id=session_id,
+                source_uri=source_uri,
+            )
+            if existing_records:
+                logger.info(
+                    "benchmark_ingest_conversation: idempotent hit "
+                    "sid=%s source_uri=%s records=%d",
+                    session_id,
+                    source_uri,
+                    len(existing_records),
+                )
+                hydrated = await self._hydrate_record_contents(existing_records)
+                return {
+                    "status": "ok",
+                    "session_id": session_id,
+                    "source_uri": source_uri,
+                    "summary_uri": None,
+                    "records": [
+                        self._export_memory_record(
+                            record,
+                            hydrated_content=hydrated.get(
+                                str(record.get("uri", "") or ""),
+                                "",
+                            ),
+                        )
+                        for record in existing_records
+                    ],
+                }
 
             cleanup = _BenchmarkRunCleanup(source_uri=source_uri)
             # In-memory map URI -> raw conversation text for U10 content
