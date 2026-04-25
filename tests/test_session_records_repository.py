@@ -402,5 +402,214 @@ class TestSessionRecordsRepositoryScopeAndOverflow(unittest.TestCase):
         self._run(check())
 
 
+class TestSessionRecordsRepositorySourceUriPushdown(unittest.TestCase):
+    """PERF-02: source_uri pushed into Qdrant filter via meta.source_uri.
+
+    These tests lock the contract that the repository TRUSTS the
+    server-side filter (no in-memory post-filter exists). If a future
+    change re-adds the in-memory pass, the trust-the-server tests
+    catch it because they seed a CapturingStorage that returns
+    records with mismatched source_uri values — under the post-fix
+    contract those records flow through unchanged.
+    """
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def test_load_merged_pushes_source_uri_into_filter(self):
+        """load_merged(source_uri=...) appends meta.source_uri must-cond."""
+
+        async def check():
+            captured: List[Dict[str, Any]] = []
+
+            class _CapturingStorage:
+                async def filter(self, _coll, where, limit=10000):
+                    captured.append(where)
+                    return []
+
+            repo = SessionRecordsRepository(
+                storage=_CapturingStorage(), collection_resolver=lambda: "context"
+            )
+            await repo.load_merged(session_id="s1", source_uri="opencortex://t/u/src")
+            self.assertEqual(len(captured), 1)
+            conds = captured[0]["conds"]
+            source_conds = [c for c in conds if c.get("field") == "meta.source_uri"]
+            self.assertEqual(len(source_conds), 1)
+            self.assertEqual(source_conds[0]["op"], "must")
+            self.assertEqual(source_conds[0]["conds"], ["opencortex://t/u/src"])
+
+        self._run(check())
+
+    def test_load_merged_omits_source_uri_when_not_provided(self):
+        """source_uri=None / '' produces no meta.source_uri cond."""
+
+        async def check():
+            captured: List[Dict[str, Any]] = []
+
+            class _CapturingStorage:
+                async def filter(self, _coll, where, limit=10000):
+                    captured.append(where)
+                    return []
+
+            repo = SessionRecordsRepository(
+                storage=_CapturingStorage(), collection_resolver=lambda: "context"
+            )
+            # None
+            await repo.load_merged(session_id="s1")
+            # Empty string (legacy fallback — falsy, no filter added)
+            await repo.load_merged(session_id="s2", source_uri="")
+
+            self.assertEqual(len(captured), 2)
+            for where in captured:
+                fields = {c["field"] for c in where["conds"]}
+                self.assertNotIn(
+                    "meta.source_uri",
+                    fields,
+                    "meta.source_uri cond must be omitted when "
+                    "source_uri is None or empty string",
+                )
+
+        self._run(check())
+
+    def test_load_merged_trusts_server_filter(self):
+        """Repository must NOT re-filter source_uri in Python.
+
+        Regression lock: if someone re-adds the in-memory post-filter,
+        the mismatched record would be dropped and this assertion fails.
+        """
+
+        async def check():
+            class _ServerLyingStorage:
+                """Pretends Qdrant returned records that don't actually match
+                the source_uri filter — exercises whether the repository
+                trusts the server result."""
+
+                async def filter(self, _coll, _where, limit=10000):
+                    return [
+                        {
+                            "uri": "u1",
+                            "session_id": "s1",
+                            "meta": {
+                                "layer": "merged",
+                                "session_id": "s1",
+                                "source_uri": "opencortex://wrong/source",
+                                "msg_range": [0, 0],
+                            },
+                        }
+                    ]
+
+            repo = SessionRecordsRepository(
+                storage=_ServerLyingStorage(), collection_resolver=lambda: "context"
+            )
+            out = await repo.load_merged(
+                session_id="s1", source_uri="opencortex://requested/src"
+            )
+            self.assertEqual(
+                [r["uri"] for r in out],
+                ["u1"],
+                "repository must trust the server-side filter and return "
+                "the record unchanged; if this fails, an in-memory "
+                "post-filter has been re-introduced (REVIEW PERF-02 "
+                "regression).",
+            )
+
+        self._run(check())
+
+    def test_load_directories_pushes_source_uri_into_filter(self):
+        """load_directories shares the push-down with load_merged."""
+
+        async def check():
+            captured: List[Dict[str, Any]] = []
+
+            class _CapturingStorage:
+                async def filter(self, _coll, where, limit=10000):
+                    captured.append(where)
+                    return []
+
+            repo = SessionRecordsRepository(
+                storage=_CapturingStorage(), collection_resolver=lambda: "context"
+            )
+            await repo.load_directories(session_id="s1", source_uri="src")
+            fields = {c["field"] for c in captured[0]["conds"]}
+            self.assertIn("meta.source_uri", fields)
+
+        self._run(check())
+
+    def test_load_layers_pushes_source_uri_into_filter(self):
+        """load_layers shares the push-down with load_merged/load_directories."""
+
+        async def check():
+            captured: List[Dict[str, Any]] = []
+
+            class _CapturingStorage:
+                async def filter(self, _coll, where, limit=10000):
+                    captured.append(where)
+                    return []
+
+            repo = SessionRecordsRepository(
+                storage=_CapturingStorage(), collection_resolver=lambda: "context"
+            )
+            await repo.load_layers(
+                layers=["merged", "directory"],
+                session_id="s1",
+                source_uri="src",
+            )
+            fields = {c["field"] for c in captured[0]["conds"]}
+            self.assertIn("meta.source_uri", fields)
+
+        self._run(check())
+
+
+class TestEnsureScalarIndexes(unittest.TestCase):
+    """U1 verification: payload index ensure runs idempotently on every
+    create_collection call (including for already-existing collections).
+
+    This test exercises the QdrantStorageAdapter directly by mocking
+    its client. We don't need a live Qdrant — just need to assert
+    that create_payload_index is called for every ScalarIndex field
+    on both the new-collection path and the existing-collection path.
+    """
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def test_existing_collection_still_runs_index_ensure(self):
+        """create_collection(name) on an existing collection still
+        invokes _ensure_scalar_indexes — proves the migration path
+        for newly-declared indexes (e.g. meta.source_uri) does not
+        require recreating the collection."""
+
+        async def check():
+            from unittest.mock import AsyncMock, MagicMock, patch
+
+            from opencortex.storage.qdrant.adapter import QdrantStorageAdapter
+
+            adapter = QdrantStorageAdapter(path="/tmp/_pinst", embedding_dim=4)
+            # Bypass real client init.
+            mock_client = MagicMock()
+            mock_client.collection_exists = AsyncMock(return_value=True)
+            mock_client.create_payload_index = AsyncMock()
+            mock_client.create_collection = AsyncMock()
+            with patch.object(
+                adapter, "_ensure_client", AsyncMock(return_value=mock_client)
+            ):
+                schema = {
+                    "Fields": [{"FieldName": "uri", "FieldType": "string"}],
+                    "ScalarIndex": ["uri", "meta.source_uri"],
+                }
+                result = await adapter.create_collection("ctx", schema)
+                self.assertFalse(
+                    result, "existing collection should return False"
+                )
+                # Both index fields ensured even though collection wasn't new.
+                indexed_fields = {
+                    call.kwargs.get("field_name")
+                    for call in mock_client.create_payload_index.call_args_list
+                }
+                self.assertEqual(indexed_fields, {"uri", "meta.source_uri"})
+
+        self._run(check())
+
+
 if __name__ == "__main__":
     unittest.main()
