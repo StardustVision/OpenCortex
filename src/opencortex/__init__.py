@@ -5,7 +5,7 @@ OpenCortex: Memory and context management for AI agents.
 Tenant-based multi-user memory and context management system.
 """
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 from opencortex.config import CortexConfig, get_config, init_config
 
