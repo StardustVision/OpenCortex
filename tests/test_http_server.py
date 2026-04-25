@@ -882,6 +882,19 @@ class TestHTTPServer(unittest.TestCase):
                         "",
                         f"benchmark record {record['uri']} returned empty content",
                     )
+                # REVIEW closure tracker R3-RC-08: lock recomposition_stage on
+                # benchmark merged leaves. A future change that filters by
+                # ``recomposition_stage in {online_tail, final_full}`` would
+                # silently drop benchmark records without this assertion. The
+                # per-record assertEqual (vs an assertSetEqual) makes the
+                # failure point at the specific drifted record.
+                for record in ingest_data["records"]:
+                    self.assertEqual(
+                        record["recomposition_stage"],
+                        "benchmark_offline",
+                        f"benchmark record {record['uri']} carries unexpected "
+                        f"recomposition_stage={record['recomposition_stage']!r}",
+                    )
 
                 list_resp = await client.get(
                     "/api/v1/memory/list",

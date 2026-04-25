@@ -3,10 +3,12 @@
 import asyncio
 import httpx
 import os
+import re
 import shutil
 import sys
 import tempfile
 import unittest
+from typing import Any, Dict, List
 from unittest.mock import AsyncMock, Mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -923,6 +925,154 @@ class TestContextManager(unittest.TestCase):
         merged_uris = [record.get("uri") for record in merged_records]
         self.assertIn(first_uri, merged_uris, "First leaf URI must be preserved")
         self.assertIn(second_uri, merged_uris, "Second leaf URI must be preserved")
+
+        self._run(orch.close())
+
+    def test_benchmark_splitter_does_not_cross_input_segment_boundary(self):
+        """REVIEW closure tracker R3-RC-02 / R2-14 regression.
+
+        ``_benchmark_recomposition_entries`` builds entries off a single
+        ``msg_index`` stream across all input segments, and
+        ``_build_recomposition_segments`` re-splits those entries by
+        token / time_refs / message-count caps. If two adjacent input
+        segments share an ``event_date`` and their combined size stays
+        under the caps, the splitter silently merges them into one
+        segment whose ``msg_range`` crosses the input-segment boundary.
+        Downstream the LoCoMo adapter ties on the wide leaf and
+        LongMemEval's ``cm.map_session_uris(return_all=False)`` drops
+        one session's mapping entirely.
+
+        This test asserts the invariant: every output segment's
+        ``msg_range`` is a subset of exactly one input segment's range.
+
+        The test MUST fail on master (no boundary check exists) and
+        will pass once U2 + U3 land — adds ``source_segment_index`` to
+        ``RecompositionEntry`` and a hard split when adjacent entries
+        cross segments.
+        """
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        cm = orch._context_manager
+
+        # Two adjacent input segments, both dated 2026-04-25, sized to
+        # stay under _SEGMENT_MAX_MESSAGES=16 and _SEGMENT_MAX_TOKENS=1200
+        # so the existing split conditions never fire.
+        def _seg(message_count: int, label: str) -> List[Dict[str, Any]]:
+            return [
+                {
+                    "role": "user" if i % 2 == 0 else "assistant",
+                    "content": f"{label} message {i} short body",
+                    "meta": {
+                        "event_date": "2026-04-25",
+                        "time_refs": ["2026-04-25"],
+                    },
+                }
+                for i in range(message_count)
+            ]
+
+        normalized_segments = [_seg(6, "session-A"), _seg(4, "session-B")]
+
+        entries = cm._benchmark_recomposition_entries(normalized_segments)
+        # Sanity-check construction: 10 entries, msg_index 0..9 contiguous.
+        self.assertEqual(len(entries), 10)
+        self.assertEqual(
+            [(e["msg_start"], e["msg_end"]) for e in entries],
+            [(i, i) for i in range(10)],
+        )
+
+        offline_segments = cm._build_recomposition_segments(entries)
+        # The fixture stays under every soft cap (10 messages < 16,
+        # ~120 tokens < 1200, time_refs overlap), so post-fix the ONLY
+        # split that fires is the input-segment boundary at msg_index=6.
+        # Asserting exactly 2 segments (vs ``> 0``) catches both the
+        # pre-fix bug (1 cross-boundary segment) AND a future regression
+        # that over-splits (e.g. 10 single-message segments would also
+        # satisfy the boundary invariant). REVIEW closure-tracker T-01.
+        self.assertEqual(
+            len(offline_segments),
+            2,
+            f"expected exactly 2 segments (one per input segment); got "
+            f"{len(offline_segments)} — soft caps shouldn't fire on this "
+            f"fixture and over-split would silently pass the per-segment "
+            f"boundary check below",
+        )
+
+        # Input segment ranges: A covers msg_range [0, 5]; B covers [6, 9].
+        # Every output segment must be a subset of exactly one of these.
+        for seg in offline_segments:
+            msg_range = seg["msg_range"]
+            start, end = int(msg_range[0]), int(msg_range[1])
+            in_a = start >= 0 and end <= 5
+            in_b = start >= 6 and end <= 9
+            self.assertTrue(
+                in_a or in_b,
+                f"Output segment msg_range={msg_range} crosses the input "
+                f"boundary at msg_index=6 — same-date adjacent input "
+                f"sessions silently merged into one leaf. R3-RC-02.",
+            )
+
+        self._run(orch.close())
+
+    def test_merged_leaf_uri_locks_zero_padded_format(self):
+        """REVIEW closure tracker R3-RC-09 — lock the
+        ``f'conversation-{hash}-{start:06d}-{end:06d}'`` URI format.
+
+        The LoCoMo adapter's ``sorted(new_records)`` relies on the
+        zero-padded msg-range fields making lex sort = numeric sort.
+        Removing the padding (e.g. ``f'-{start}-{end}'``) silently
+        breaks URI ordering for any session with ≥10 merged leaves —
+        ``leaf-10-11`` would lex-sort BEFORE ``leaf-2-3`` and
+        downstream session→URI mapping would shuffle. This test makes
+        any such format change explicit by failing loudly.
+        """
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        cm = orch._context_manager
+
+        # Shape: 12-hex-char session hash, two 6-digit zero-padded ranges.
+        uri = cm._merged_leaf_uri("testteam", "alice", "sess_R3_RC_09", [0, 1])
+        self.assertRegex(
+            uri,
+            r"/conversation-[0-9a-f]{12}-\d{6}-\d{6}$",
+            "merged leaf URI must end with the zero-padded "
+            "conversation-{hash}-{start:06d}-{end:06d} suffix",
+        )
+
+        # Numeric-by-lex invariant: sorting URIs lexicographically MUST
+        # match sorting by (msg_range[0], msg_range[1]). The 6-digit
+        # padding is what guarantees this; removing it would cause
+        # [10,11] to lex-sort before [2,9].
+        ranges = [(0, 1), (2, 9), (10, 11), (100, 101), (1000, 1001)]
+        uris = [
+            cm._merged_leaf_uri("testteam", "alice", "sess_R3_RC_09", list(r))
+            for r in ranges
+        ]
+        self.assertEqual(
+            sorted(uris),
+            uris,
+            "URIs built from increasing msg_range must already be "
+            "lex-sorted — this is what LoCoMo's "
+            "sorted(new_records) relies on. If this fails, the "
+            "zero-padding has likely been dropped or the digit count "
+            "has changed.",
+        )
+
+        # Edge case: zero-width range serializes as ...-000000-000000.
+        zero_uri = cm._merged_leaf_uri("testteam", "alice", "sess_R3_RC_09", [0, 0])
+        self.assertTrue(
+            zero_uri.endswith("-000000-000000"),
+            f"zero-width range must serialize as ...-000000-000000, "
+            f"got: {zero_uri}",
+        )
+
+        # Edge case: 6-digit indices fit cleanly in the field.
+        big_uri = cm._merged_leaf_uri(
+            "testteam", "alice", "sess_R3_RC_09", [123456, 123457]
+        )
+        self.assertTrue(
+            big_uri.endswith("-123456-123457"),
+            f"6-digit indices must fit the field width, got: {big_uri}",
+        )
 
         self._run(orch.close())
 
