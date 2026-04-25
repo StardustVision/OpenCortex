@@ -78,6 +78,65 @@ CacheKey = Tuple[
 
 
 @dataclass
+class _BenchmarkRunCleanup:
+    """Tracks URIs created during one benchmark ingest run for compensation.
+
+    Each successful side effect (source persist, merged-leaf write,
+    directory write, summary write) registers its URI here so a single
+    failure or ``CancelledError`` can roll back every prior write —
+    including the directory records the recomposition step creates,
+    which the previous benchmark cleanup path was never told about
+    (REVIEW Finding #6 / R2-09).
+
+    ``compensate`` iterates URIs in reverse-creation order with per-item
+    failure isolation: one bad ``remove`` does not abort the rest of
+    the cleanup, and each failure is logged with the URI for
+    post-mortem.
+    """
+
+    source_uri: Optional[str] = None
+    merged_uris: List[str] = dc_field(default_factory=list)
+    directory_uris: List[str] = dc_field(default_factory=list)
+    summary_uri: Optional[str] = None
+
+    async def compensate(self, manager: "ContextManager") -> None:
+        """Best-effort rollback of every registered URI.
+
+        Order: summary -> directories -> merged -> source. This mirrors
+        the dependency graph: summary points at directories, directories
+        at merged leaves, all of them at the source. Cleaning up in
+        reverse keeps any in-flight reader from briefly seeing a
+        partially-deleted graph.
+        """
+        for uri in [self.summary_uri] if self.summary_uri else []:
+            await self._safe_remove(manager, uri)
+        for uri in reversed(self.directory_uris):
+            await self._safe_remove(manager, uri)
+        for uri in reversed(self.merged_uris):
+            await self._safe_remove(manager, uri)
+        # source_uri is intentionally NOT removed by default. The
+        # source is keyed deterministically on (tenant, user, session)
+        # — leaving it lets a follow-up ingest with the same transcript
+        # be idempotent (U5). On a failed run the next request either
+        # carries the same hash and short-circuits, or carries a
+        # different hash and gets 409.
+
+    @staticmethod
+    async def _safe_remove(manager: "ContextManager", uri: Optional[str]) -> None:
+        if not uri:
+            return
+        try:
+            await manager._orchestrator.remove(uri)
+        except Exception as exc:  # pragma: no cover - defensive log path
+            logger.warning(
+                "benchmark_ingest cleanup failed for %s: %s",
+                uri,
+                exc,
+                exc_info=True,
+            )
+
+
+@dataclass
 class ConversationBuffer:
     """Per-session buffer for conversation mode incremental chunking."""
 
@@ -1333,13 +1392,12 @@ class ContextManager:
                     normalized_segments=normalized_segments,
                 )
 
-            created_merged_uris: List[str] = []
+            cleanup = _BenchmarkRunCleanup(source_uri=source_uri)
             # In-memory map URI -> raw conversation text for U10 content
             # hydration. Captured as we write each merged leaf so the
             # response can return raw text without racing the fire-and-
             # forget CortexFS write that ``_orchestrator.add`` schedules.
             merged_content_by_uri: Dict[str, str] = {}
-            summary_uri: Optional[str] = None
 
             try:
                 entries = self._benchmark_recomposition_entries(normalized_segments)
@@ -1386,19 +1444,22 @@ class ContextManager:
                         dedup=False,
                         defer_derive=True,
                     )
-                    created_merged_uris.append(merged_context.uri)
+                    cleanup.merged_uris.append(merged_context.uri)
                     merged_content_by_uri[merged_context.uri] = combined
 
-                if created_merged_uris:
-                    await self._run_full_session_recomposition(
+                if cleanup.merged_uris:
+                    directory_uris = await self._run_full_session_recomposition(
                         session_id=session_id,
                         tenant_id=tenant_id,
                         user_id=user_id,
                         source_uri=source_uri,
                         raise_on_error=True,
+                        return_created_uris=True,
                     )
+                    if directory_uris:
+                        cleanup.directory_uris.extend(directory_uris)
                     if include_session_summary:
-                        summary_uri = await self._generate_session_summary(
+                        cleanup.summary_uri = await self._generate_session_summary(
                             session_id=session_id,
                             tenant_id=tenant_id,
                             user_id=user_id,
@@ -1437,7 +1498,7 @@ class ContextManager:
                     "status": "ok",
                     "session_id": session_id,
                     "source_uri": source_uri,
-                    "summary_uri": summary_uri,
+                    "summary_uri": cleanup.summary_uri,
                     "records": [
                         self._export_memory_record(
                             record,
@@ -1452,13 +1513,29 @@ class ContextManager:
                         for record in merged_records
                     ],
                 }
+            except asyncio.CancelledError:
+                # CancelledError descends from BaseException, not Exception,
+                # so the prior `except Exception` let cancellation
+                # (FastAPI request cancel, server timeout, client disconnect)
+                # bypass cleanup entirely — leaving orphan merged leaves,
+                # directory records, and possibly a summary record. Compensate
+                # explicitly, then re-raise so cancellation semantics flow
+                # through unchanged.
+                logger.warning(
+                    "benchmark_ingest_conversation cancelled mid-flight "
+                    "sid=%s — running compensation",
+                    session_id,
+                )
+                await cleanup.compensate(self)
+                raise
             except Exception:
-                if summary_uri:
-                    with contextlib.suppress(Exception):
-                        await self._orchestrator.remove(summary_uri)
-                if created_merged_uris:
-                    with contextlib.suppress(Exception):
-                        await self._delete_immediate_families(created_merged_uris)
+                logger.warning(
+                    "benchmark_ingest_conversation failed sid=%s — "
+                    "running compensation",
+                    session_id,
+                    exc_info=True,
+                )
+                await cleanup.compensate(self)
                 raise
 
     @staticmethod
@@ -2393,12 +2470,20 @@ class ContextManager:
         source_uri: Optional[str],
         collection_name: Optional[str] = None,
         raise_on_error: bool = False,
-    ) -> None:
+        return_created_uris: bool = False,
+    ) -> Optional[List[str]]:
         """Create directory parent records for semantically related leaf clusters.
 
         Preserves original merged leaf records. For each cluster of >=2 leaves,
         generates a directory summary from children abstracts and writes a
         directory record (layer="directory", is_leaf=False).
+
+        When ``return_created_uris`` is True returns the list of created
+        directory URIs so callers (e.g. the benchmark ingest cleanup
+        tracker) can register them for rollback. Defaults to False so all
+        existing call sites — including the production conversation
+        lifecycle in ``context_end`` — preserve their previous return
+        contract (None) and behavior.
         """
         tokens_for_identity = set_request_identity(tenant_id, user_id)
         coll_token = set_collection_name(collection_name) if collection_name else None
@@ -2610,6 +2695,9 @@ class ContextManager:
                 len(created_directory_uris),
                 len(merged_records),
             )
+            if return_created_uris:
+                return list(created_directory_uris)
+            return None
         except Exception as exc:
             logger.warning(
                 "[ContextManager] Full-session recomposition failed sid=%s tenant=%s user=%s collection=%s source_uri=%s created_dirs=%d: %s",
@@ -2627,6 +2715,13 @@ class ContextManager:
                     await self._delete_immediate_families(created_directory_uris)
             if raise_on_error:
                 raise
+            if return_created_uris:
+                # Failure path with reporting requested: hand back what
+                # we created before the failure so the caller's tracker
+                # can still record/compensate. ``raise_on_error=False``
+                # callers swallow the exception, so they need this hook.
+                return list(created_directory_uris)
+            return None
         finally:
             reset_request_identity(tokens_for_identity)
             if coll_token is not None:
