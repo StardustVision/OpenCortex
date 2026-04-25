@@ -229,9 +229,21 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 "cortex_alpha config"
             )
 
+        # REVIEW closure tracker RELY-01 (plan 009 review): the
+        # InsightsAgent needs an LLMCompletion wrapper and previously
+        # built a SECOND one here that was never closed — partially
+        # regressing the very TCP CLOSE_WAIT leak this PR ships to
+        # fix. We now hold the second wrapper on the orchestrator so
+        # ``MemoryOrchestrator.close()`` releases it on shutdown.
+        # Pre-existing concern (RELY-02): ``LLMWrapper.generate``
+        # spawns a fresh event loop per call, which prevents httpx
+        # connection-pool reuse across calls. That's out of scope for
+        # this leak fix — InsightsAgent's sync→async bridge needs a
+        # separate refactor. Logged as residual.
         llm_callable = create_llm_completion(_orchestrator._config)
         if not llm_callable:
             raise Exception("LLM not configured; insights requires LLM API key")
+        _orchestrator._insights_llm_completion = llm_callable
 
         class LLMWrapper:
             def __init__(self, callable_: Any) -> None:

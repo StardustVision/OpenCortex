@@ -220,6 +220,12 @@ class MemoryOrchestrator:
         # admin call. Lifted here so ``MemoryOrchestrator.close()`` can
         # call ``aclose()`` exactly once on shutdown.
         self._rerank_client: Optional["RerankClient"] = None
+        # Plan 009 / RELY-01 — InsightsAgent (when enabled in
+        # ``server.py`` lifespan) holds a second LLMCompletion wrapper
+        # whose pool would otherwise leak on shutdown. The lifespan
+        # writes it here; close() awaits ``aclose()`` on it next to
+        # the primary ``_llm_completion``.
+        self._insights_llm_completion: Optional[Any] = None
         # Plan 009 / R5 — connection sweeper bookkeeping. Set None at
         # construction; ``_start_connection_sweeper()`` populates them.
         # Read by /admin/health/connections so the endpoint can show
@@ -558,11 +564,6 @@ class MemoryOrchestrator:
     # Connection sweeper (plan 009 / R5)
     # =========================================================================
 
-    # Threshold above which a single pool's open count triggers a
-    # WARNING log. Mirrors the /admin/health/connections "degraded"
-    # threshold so operator alerts stay consistent.
-    _CONNECTION_POOL_WARN_RATIO = 0.8
-
     def _start_connection_sweeper(self) -> None:
         """Start the periodic httpx-pool inspector in background.
 
@@ -592,7 +593,21 @@ class MemoryOrchestrator:
         )
 
     async def _run_connection_sweep_once(self) -> None:
-        """Inspect every pooled client; log WARN when pool nears cap."""
+        """Inspect every pooled client; log WARN when pool nears cap.
+
+        REVIEW closure tracker (plan 009 review):
+        - adv-004 / RELY-03: persistent failure of the sweep itself
+          must NOT leave ``_last_connection_sweep_status="ok"``. The
+          loop's outer try/except routes "sweep raised" through this
+          method, so we update the status field BEFORE returning,
+          including on the failure path. The loop wrapper sets the
+          status to ``"error"`` when this method raises.
+        - adv-006: when ``stats_source`` is ``"unavailable"`` for any
+          client, treat that as a warn condition (status="warn"). A
+          silent "ok" while the pool inspector is broken would re-
+          create the very invisible-leak failure mode this PR exists
+          to fix.
+        """
         # Be resilient to unit tests that bypass __init__ via __new__.
         if (
             not hasattr(self, "_connection_sweep_guard")
@@ -600,21 +615,20 @@ class MemoryOrchestrator:
         ):
             self._connection_sweep_guard = asyncio.Lock()
 
-        # Lazy import — admin_routes already owns the helper, no need
-        # to duplicate. Importing inside the function keeps orchestrator
-        # init fast and avoids a circular-import risk if admin_routes
-        # ever imports orchestrator-level types.
-        from opencortex.http.admin_routes import _extract_pool_stats
+        from opencortex.observability.pool_stats import extract_pool_stats
 
         async with self._connection_sweep_guard:
             from datetime import datetime, timezone
             warn_count = 0
+            unavailable_count = 0
 
             llm_completion = getattr(self, "_llm_completion", None)
             llm_client = getattr(llm_completion, "client", None) if llm_completion else None
             if llm_client is not None:
-                stats = _extract_pool_stats(llm_client)
+                stats = extract_pool_stats(llm_client)
                 warn_count += self._maybe_warn_pool("llm_completion", stats)
+                if stats.get("stats_source") != "transport_pool":
+                    unavailable_count += 1
 
             rerank_singleton = getattr(self, "_rerank_client", None)
             rerank_inner = (
@@ -623,14 +637,32 @@ class MemoryOrchestrator:
                 else None
             )
             if rerank_inner is not None:
-                stats = _extract_pool_stats(rerank_inner)
+                stats = extract_pool_stats(rerank_inner)
                 warn_count += self._maybe_warn_pool("rerank", stats)
+                if stats.get("stats_source") != "transport_pool":
+                    unavailable_count += 1
 
             self._last_connection_sweep_at = datetime.now(timezone.utc)
-            self._last_connection_sweep_status = "warn" if warn_count else "ok"
+            if warn_count:
+                self._last_connection_sweep_status = "warn"
+            elif unavailable_count:
+                # adv-006: stat extraction failed on some client. Don't
+                # silently report "ok" — operators need visibility that
+                # the inspector itself has degraded.
+                self._last_connection_sweep_status = "warn"
+                logger.warning(
+                    "[ConnectionSweeper] %d client(s) returned "
+                    "stats_source=unavailable — pool inspector "
+                    "degraded. Check for httpx version drift.",
+                    unavailable_count,
+                )
+            else:
+                self._last_connection_sweep_status = "ok"
 
     def _maybe_warn_pool(self, label: str, stats: Dict[str, Any]) -> int:
         """Emit a WARNING when the pool exceeds the warn ratio. Returns 0/1."""
+        from opencortex.observability.pool_stats import POOL_DEGRADED_THRESHOLD
+
         if stats.get("stats_source") != "transport_pool":
             return 0
         open_count = stats.get("open_connections")
@@ -638,7 +670,7 @@ class MemoryOrchestrator:
         max_conn = limits.get("max_connections")
         if not isinstance(open_count, int) or not isinstance(max_conn, int) or max_conn <= 0:
             return 0
-        if open_count > self._CONNECTION_POOL_WARN_RATIO * max_conn:
+        if open_count > POOL_DEGRADED_THRESHOLD * max_conn:
             logger.warning(
                 "[ConnectionSweeper] %s pool nearing cap: open=%d, "
                 "limit=%d, keepalive=%s. If this rises further the "
@@ -665,10 +697,15 @@ class MemoryOrchestrator:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    # A failure inside the inspector must not kill the
-                    # sweep loop — log and try again next tick.
+                    # adv-004 / RELY-03: a failure inside the inspector
+                    # must not kill the sweep loop — log AND update the
+                    # status field so /admin/health/connections shows
+                    # the degraded state instead of a stale "ok".
+                    self._last_connection_sweep_status = "error"
                     logger.warning(
-                        "[ConnectionSweeper] sweep tick failed: %s", exc,
+                        "[ConnectionSweeper] sweep tick failed: %s "
+                        "(status flipped to 'error' for visibility; "
+                        "next tick will retry)", exc,
                     )
         except asyncio.CancelledError:
             raise
@@ -5962,26 +5999,35 @@ class MemoryOrchestrator:
             await context_manager.close()
 
         # Plan 009 / R3 — release pooled httpx clients before storage
-        # close. Order: llm_completion -> rerank_client -> embedder ->
-        # storage. Each guarded with try/except so one failed close
-        # cannot abort the rest of teardown (matches the existing
-        # pattern above for autophagy/recall task cancellation).
-        llm_completion = getattr(self, "_llm_completion", None)
-        llm_aclose = getattr(llm_completion, "aclose", None) if llm_completion else None
-        if llm_aclose is not None:
+        # close. Order: llm_completion -> insights_llm_completion ->
+        # rerank_client -> embedder -> storage. Each guarded with
+        # try/except so one failed close cannot abort the rest of
+        # teardown (matches the existing pattern above for
+        # autophagy/recall task cancellation).
+        for label, attr in (
+            ("llm_completion", "_llm_completion"),
+            ("insights_llm_completion", "_insights_llm_completion"),
+        ):
+            wrapper = getattr(self, attr, None)
+            wrapper_aclose = (
+                getattr(wrapper, "aclose", None) if wrapper else None
+            )
+            if wrapper_aclose is None:
+                continue
             try:
-                await llm_aclose()
+                await wrapper_aclose()
             except Exception as exc:
-                logger.info(
-                    "[MemoryOrchestrator] llm_completion aclose failed: %s "
-                    "(continuing teardown)", exc,
+                logger.warning(
+                    "[MemoryOrchestrator] %s aclose failed: %s "
+                    "(continuing teardown — pool socket may linger "
+                    "until kernel reclaims)", label, exc,
                 )
         rerank_client = getattr(self, "_rerank_client", None)
         if rerank_client is not None:
             try:
                 await rerank_client.aclose()
             except Exception as exc:
-                logger.info(
+                logger.warning(
                     "[MemoryOrchestrator] rerank_client aclose failed: %s "
                     "(continuing teardown)", exc,
                 )

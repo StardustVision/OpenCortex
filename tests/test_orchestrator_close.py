@@ -128,6 +128,60 @@ class TestOrchestratorCloseOrdering(unittest.TestCase):
 
         _run(check())
 
+    def test_close_awaits_insights_llm_completion_when_set(self):
+        """REVIEW closure tracker RELY-01: orchestrator.close() must
+        also release the InsightsAgent's LLMCompletion wrapper.
+
+        Pre-fix, ``server.py:_lifespan`` constructed a second
+        LLMCompletion for InsightsAgent and never closed it — partial
+        regression of the very TCP CLOSE_WAIT leak this PR fixes.
+        Lift moved the wrapper onto the orchestrator
+        (``_insights_llm_completion``); close() now awaits it.
+        """
+
+        async def check():
+            order = []
+
+            llm = AsyncMock()
+            llm.aclose = AsyncMock(side_effect=lambda: order.append("llm"))
+
+            insights_llm = AsyncMock()
+            insights_llm.aclose = AsyncMock(
+                side_effect=lambda: order.append("insights"),
+            )
+
+            rerank = AsyncMock()
+            rerank.aclose = AsyncMock(side_effect=lambda: order.append("rerank"))
+
+            orch = _make_bare_orchestrator()
+            orch._llm_completion = llm
+            orch._insights_llm_completion = insights_llm
+            orch._rerank_client = rerank
+            orch._initialized = True
+            await orch.close()
+
+            # Order: llm -> insights -> rerank.
+            self.assertEqual(order, ["llm", "insights", "rerank"])
+            insights_llm.aclose.assert_awaited_once()
+
+        _run(check())
+
+    def test_close_skips_insights_when_unset(self):
+        """When InsightsAgent is disabled, _insights_llm_completion is
+        None — close() must skip it without crashing."""
+
+        async def check():
+            llm = AsyncMock()
+            llm.aclose = AsyncMock()
+            orch = _make_bare_orchestrator()
+            orch._llm_completion = llm
+            orch._insights_llm_completion = None
+            orch._initialized = True
+            await orch.close()
+            llm.aclose.assert_awaited_once()
+
+        _run(check())
+
     def test_close_is_idempotent(self):
         """``close()`` called twice doesn't crash (nor double-close)."""
 

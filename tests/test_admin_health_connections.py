@@ -20,10 +20,10 @@ import unittest
 from typing import Any, Dict
 from unittest.mock import MagicMock, patch
 
-from opencortex.http.admin_routes import (
-    _classify_pool_status,
-    _extract_pool_stats,
-    admin_health_connections,
+from opencortex.http.admin_routes import admin_health_connections
+from opencortex.observability.pool_stats import (
+    classify_pool_status,
+    extract_pool_stats,
 )
 
 
@@ -60,7 +60,7 @@ class TestExtractPoolStats(unittest.TestCase):
     """Unit tests for the helper. Cheap and isolated."""
 
     def test_handles_none_client(self):
-        out = _extract_pool_stats(None)
+        out = extract_pool_stats(None)
         self.assertEqual(out["stats_source"], "unavailable")
         self.assertIn("reason", out)
         self.assertIsNone(out["open_connections"])
@@ -69,7 +69,7 @@ class TestExtractPoolStats(unittest.TestCase):
         client = _FakeClient(
             max_connections=20, max_keepalive=5, open_count=3, idle_count=2,
         )
-        out = _extract_pool_stats(client)
+        out = extract_pool_stats(client)
         self.assertEqual(out["stats_source"], "transport_pool")
         self.assertEqual(out["open_connections"], 3)
         self.assertEqual(out["keepalive_connections"], 2)
@@ -79,7 +79,7 @@ class TestExtractPoolStats(unittest.TestCase):
     def test_handles_missing_transport(self):
         """A client without _transport returns unavailable, not crash."""
         client = MagicMock(spec=[])  # no attributes
-        out = _extract_pool_stats(client)
+        out = extract_pool_stats(client)
         self.assertEqual(out["stats_source"], "unavailable")
 
     def test_handles_pool_walk_failure(self):
@@ -89,7 +89,7 @@ class TestExtractPoolStats(unittest.TestCase):
         type(client)._transport = property(
             lambda self: (_ for _ in ()).throw(RuntimeError("boom"))
         )
-        out = _extract_pool_stats(client)
+        out = extract_pool_stats(client)
         self.assertEqual(out["stats_source"], "unavailable")
         self.assertIn("reason", out)
 
@@ -103,7 +103,7 @@ class TestClassifyPoolStatus(unittest.TestCase):
             "open_connections": 10,
             "limits": {"max_connections": 20},
         }
-        self.assertEqual(_classify_pool_status(stats), "healthy")
+        self.assertEqual(classify_pool_status(stats), "healthy")
 
     def test_at_eighty_percent_is_healthy(self):
         """80% exactly is still healthy — only ABOVE 80% degrades."""
@@ -112,7 +112,7 @@ class TestClassifyPoolStatus(unittest.TestCase):
             "open_connections": 16,  # 16/20 = 80% exactly
             "limits": {"max_connections": 20},
         }
-        self.assertEqual(_classify_pool_status(stats), "healthy")
+        self.assertEqual(classify_pool_status(stats), "healthy")
 
     def test_above_threshold_is_degraded(self):
         stats = {
@@ -120,11 +120,11 @@ class TestClassifyPoolStatus(unittest.TestCase):
             "open_connections": 17,  # 17/20 = 85% > 80%
             "limits": {"max_connections": 20},
         }
-        self.assertEqual(_classify_pool_status(stats), "degraded")
+        self.assertEqual(classify_pool_status(stats), "degraded")
 
     def test_unavailable_when_no_stats(self):
         stats = {"stats_source": "unavailable"}
-        self.assertEqual(_classify_pool_status(stats), "unavailable")
+        self.assertEqual(classify_pool_status(stats), "unavailable")
 
 
 class TestAdminHealthConnectionsEndpoint(unittest.TestCase):
@@ -208,7 +208,7 @@ class TestAdminHealthConnectionsEndpoint(unittest.TestCase):
         body = self._call_endpoint(orch)
         self.assertEqual(body["status"], "degraded")
         self.assertEqual(
-            _classify_pool_status(body["clients"]["llm_completion"]),
+            classify_pool_status(body["clients"]["llm_completion"]),
             "degraded",
         )
 

@@ -92,6 +92,39 @@ class TestRerankClientAclose(unittest.TestCase):
 
         _run(check())
 
+    def test_aclose_failure_leaves_client_retry_safe(self):
+        """REVIEW closure tracker kieran-py-003: a failed aclose must
+        NOT null ``_http_client``.
+
+        Pre-fix, ``_http_client`` was nulled BEFORE the await, so any
+        transient failure left the wrapper thinking it had closed
+        cleanly when in reality the inner client was still open. A
+        retry would see ``_http_client is None`` and short-circuit,
+        permanently leaking the underlying socket. New contract:
+        on failure the attribute is retained so a retry can re-attempt.
+        """
+
+        async def check():
+            client = RerankClient(RerankConfig())
+            inner = AsyncMock()
+            inner.aclose = AsyncMock(
+                side_effect=[RuntimeError("transient"), None],
+            )
+            client._http_client = inner
+            # First aclose: failure, swallowed, attribute retained.
+            await client.aclose()
+            self.assertIs(
+                client._http_client, inner,
+                "first aclose() failed; _http_client must remain "
+                "populated so a retry can re-attempt",
+            )
+            # Second aclose: re-attempts and succeeds, then nulls.
+            await client.aclose()
+            self.assertIsNone(client._http_client)
+            self.assertEqual(inner.aclose.await_count, 2)
+
+        _run(check())
+
 
 class TestRerankClientLimits(unittest.TestCase):
     """_get_http_client applies the project-standard pool caps."""

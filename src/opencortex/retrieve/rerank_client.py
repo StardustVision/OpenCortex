@@ -15,6 +15,10 @@ import logging
 import re
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
+from opencortex.observability.pool_stats import (
+    HTTPX_MAX_CONNECTIONS,
+    HTTPX_MAX_KEEPALIVE_CONNECTIONS,
+)
 from opencortex.prompts import build_rerank_prompt
 from opencortex.retrieve.rerank_config import RerankConfig
 from opencortex.utils.cache import AsyncTTLCache
@@ -200,24 +204,20 @@ class RerankClient:
                 return await self._rerank_via_llm(query, documents)
             return [0.0] * len(documents)
 
-    # REVIEW closure tracker connection-pool-leak / R2 (plan 009): bound
-    # the per-process socket footprint for the rerank API client. The
-    # caps mirror the LLM completion client (see ``llm_factory.py``) —
-    # high enough that normal rerank fan-out does not block, low enough
-    # that a future leak triggers backpressure before exhausting the
-    # kernel's ephemeral port pool.
-    _MAX_CONNECTIONS = 20
-    _MAX_KEEPALIVE_CONNECTIONS = 5
-
     def _get_http_client(self):
-        """Return a reusable httpx.AsyncClient (lazy-created)."""
+        """Return a reusable httpx.AsyncClient (lazy-created).
+
+        Pool caps come from ``observability.pool_stats`` — single
+        source of truth shared with the LLM completion client. See
+        plan 009 / R2 for the rationale.
+        """
         if self._http_client is None:
             import httpx
             self._http_client = httpx.AsyncClient(
                 timeout=30.0,
                 limits=httpx.Limits(
-                    max_connections=self._MAX_CONNECTIONS,
-                    max_keepalive_connections=self._MAX_KEEPALIVE_CONNECTIONS,
+                    max_connections=HTTPX_MAX_CONNECTIONS,
+                    max_keepalive_connections=HTTPX_MAX_KEEPALIVE_CONNECTIONS,
                 ),
             )
         return self._http_client
@@ -230,23 +230,31 @@ class RerankClient:
         graceful shutdown. Pre-fix this client had no cleanup path and
         every per-request instantiation in the admin route leaked one
         socket into CLOSE_WAIT.
+
+        REVIEW closure tracker kieran-py-003 (plan 009 review):
+        ``self._http_client`` is nulled ONLY AFTER the inner
+        ``aclose()`` completes successfully, so a concurrent caller
+        seeing ``self._http_client is None`` can trust that the close
+        actually finished — and a transient failure leaves the
+        attribute populated so a retry can re-attempt.
         """
-        if self._http_client is None:
-            return
         client = self._http_client
-        # Null the attribute first so a late retry sees "already closed"
-        # and does not race with another aclose() in flight.
-        self._http_client = None
+        if client is None:
+            return
         try:
             await client.aclose()
         except Exception as exc:
             # Match the orchestrator close-path tolerance — log but
             # don't propagate so the rest of teardown completes.
-            logger.info(
+            # Crucially, do NOT null ``_http_client`` here: a retry
+            # must be allowed to actually close the underlying client.
+            logger.warning(
                 "[RerankClient] aclose failed: %s (degraded shutdown — "
-                "process may still hold a socket until the kernel "
-                "reclaims it)", exc,
+                "retry-safe; _http_client retained so a subsequent "
+                "aclose can re-attempt)", exc,
             )
+            return
+        self._http_client = None
 
     async def _rerank_via_api(self, query: str, documents: List[str]) -> List[float]:
         """Call Rerank API (Jina/Cohere compatible).

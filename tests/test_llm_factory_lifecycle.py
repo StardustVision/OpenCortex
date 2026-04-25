@@ -156,6 +156,44 @@ class TestLLMCompletionWrapper(unittest.TestCase):
 
         _run(check())
 
+    def test_aclose_failure_leaves_wrapper_retry_safe(self):
+        """REVIEW closure tracker adv-002: a failed aclose must NOT
+        permanently mark the wrapper closed.
+
+        Pre-fix, ``_closed`` was set BEFORE the await, so any
+        transient failure (event loop closing, in-flight request,
+        transport gone) burned the wrapper — a retry would silently
+        return without actually closing the underlying client. This
+        test locks the new contract: failure leaves ``_closed=False``
+        so a subsequent aclose can re-attempt.
+        """
+
+        async def check():
+            client = AsyncMock()
+            # First call fails, second call succeeds.
+            client.aclose = AsyncMock(
+                side_effect=[RuntimeError("transient"), None],
+            )
+            wrapper = LLMCompletion(
+                AsyncMock(return_value=""),
+                client,
+                backend="openai",
+                model="m",
+                base_url="b",
+            )
+            # First aclose: failure, swallowed, _closed stays False.
+            await wrapper.aclose()
+            self.assertFalse(
+                wrapper._closed,
+                "first aclose() failed; wrapper must remain retry-safe",
+            )
+            # Second aclose: should re-attempt and succeed.
+            await wrapper.aclose()
+            self.assertTrue(wrapper._closed)
+            self.assertEqual(client.aclose.await_count, 2)
+
+        _run(check())
+
     def test_call_forwards_extra_kwargs(self):
         """``wrapper(prompt, max_tokens=N)`` passes kwargs to the inner callable.
 

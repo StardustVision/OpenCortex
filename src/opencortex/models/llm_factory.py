@@ -25,21 +25,20 @@ optional dependency installed.
 
 import logging
 import os
-from typing import Any, Awaitable, Callable, Optional
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
+
+from opencortex.observability.pool_stats import (
+    HTTPX_MAX_CONNECTIONS,
+    HTTPX_MAX_KEEPALIVE_CONNECTIONS,
+)
+
+if TYPE_CHECKING:
+    import httpx
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 _DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
-
-# REVIEW closure tracker connection-pool-leak / R2: bound the per-process
-# socket footprint for every LLM completion client. Conservative caps
-# picked from the project memory diagnosis — high enough that normal
-# concurrency (intent + rerank fan-out) does not block, low enough that
-# a future pool-leak regression triggers backpressure before it can
-# exhaust the kernel's ephemeral port pool.
-_LLM_MAX_CONNECTIONS = 20
-_LLM_MAX_KEEPALIVE_CONNECTIONS = 5
 
 
 class LLMCompletion:
@@ -54,7 +53,7 @@ class LLMCompletion:
     def __init__(
         self,
         callable_: Callable[..., Awaitable[str]],
-        client: Any,
+        client: "httpx.AsyncClient",
         *,
         backend: str,
         model: str,
@@ -77,26 +76,37 @@ class LLMCompletion:
         return await self._callable(*args, **kwargs)
 
     async def aclose(self) -> None:
-        """Release the underlying httpx connection pool. Idempotent."""
+        """Release the underlying httpx connection pool. Idempotent.
+
+        REVIEW closure tracker adv-002 (plan 009 review): ``_closed``
+        is set ONLY AFTER a successful ``aclose()`` so a transient
+        failure (event loop closing, in-flight request, transport
+        gone) doesn't permanently mark the wrapper "closed" and
+        silently leak the pool when retried.
+        """
         if self._closed:
             return
-        self._closed = True
         try:
             await self._client.aclose()
         except Exception as exc:
             # Non-fatal — orchestrator close path tolerates per-client
             # failure (matches existing close pattern in
             # ``orchestrator.close()``). Log so an operator can still
-            # see degraded shutdown.
-            logger.info(
+            # see degraded shutdown. Crucially, do NOT set
+            # ``_closed=True`` here: a retry must be allowed to
+            # actually close the underlying client.
+            logger.warning(
                 "[llm_factory] LLMCompletion.aclose for backend=%s "
-                "failed: %s (degraded shutdown — process may still hold "
-                "a connection until the kernel reclaims it)",
+                "failed: %s (degraded shutdown — retry-safe; the "
+                "wrapper is NOT marked closed so a subsequent aclose "
+                "can re-attempt)",
                 self._backend, exc,
             )
+            return
+        self._closed = True
 
     @property
-    def client(self) -> Any:
+    def client(self) -> "httpx.AsyncClient":
         """Underlying httpx.AsyncClient for read-only stat extraction."""
         return self._client
 
@@ -172,8 +182,8 @@ def _build_httpx_client(timeout: float) -> Any:
     return httpx.AsyncClient(
         timeout=timeout,
         limits=httpx.Limits(
-            max_connections=_LLM_MAX_CONNECTIONS,
-            max_keepalive_connections=_LLM_MAX_KEEPALIVE_CONNECTIONS,
+            max_connections=HTTPX_MAX_CONNECTIONS,
+            max_keepalive_connections=HTTPX_MAX_KEEPALIVE_CONNECTIONS,
         ),
     )
 

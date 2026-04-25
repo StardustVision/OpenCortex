@@ -345,98 +345,16 @@ async def migration_overview_first(
 # Health (admin only) — connection pool visibility
 # =========================================================================
 
-# Threshold (open/max ratio) above which a single client's pool is
-# considered "approaching the cap" and the top-level status drops to
-# "degraded". 0.8 = WARN at 80% utilization. Tunable, but matches the
-# sweeper's WARNING threshold (U5) so operator alerts stay consistent.
-_POOL_DEGRADED_THRESHOLD = 0.8
-
-
-def _extract_pool_stats(client: Any) -> Dict[str, Any]:
-    """Best-effort read of httpx pool internals.
-
-    httpx exposes pool counts via ``client._transport._pool``, which is
-    a private API. Wrap in try/except so a future httpx version bump
-    does not crash the health endpoint — operators still see "this
-    client exists with these limits" even when live counts are
-    unavailable.
-
-    Returns a dict shaped like::
-
-        {
-            "stats_source": "transport_pool" | "unavailable",
-            "open_connections": int | None,
-            "keepalive_connections": int | None,
-            "limits": {"max_connections": int, "max_keepalive_connections": int} | None,
-            "reason": str  # only when stats_source == "unavailable"
-        }
-    """
-    out: Dict[str, Any] = {
-        "stats_source": "unavailable",
-        "open_connections": None,
-        "keepalive_connections": None,
-        "limits": None,
-    }
-    if client is None:
-        out["reason"] = "client is None"
-        return out
-    # Limits are a public-ish init kwarg held internally as ``_limits``
-    # — not strictly public but stable across httpx 0.27.x. Read first
-    # because it's cheaper than the pool walk.
-    try:
-        limits = getattr(client, "_limits", None)
-        if limits is not None:
-            out["limits"] = {
-                "max_connections": getattr(limits, "max_connections", None),
-                "max_keepalive_connections": getattr(
-                    limits, "max_keepalive_connections", None,
-                ),
-            }
-    except Exception:
-        pass
-    try:
-        transport = getattr(client, "_transport", None)
-        pool = getattr(transport, "_pool", None) if transport is not None else None
-        if pool is None:
-            out["reason"] = "transport pool not exposed"
-            return out
-        # httpx 0.27+ ``ConnectionPool`` exposes ``connections`` (a list
-        # of HTTPConnection-like objects, each with ``is_idle()`` /
-        # ``is_available()``). Earlier shapes vary — this is the
-        # private boundary the docstring warns about.
-        connections = list(getattr(pool, "connections", []) or [])
-        out["open_connections"] = len(connections)
-        # Best-effort keepalive count: connections that report idle.
-        keepalive = 0
-        for conn in connections:
-            try:
-                if hasattr(conn, "is_idle") and conn.is_idle():
-                    keepalive += 1
-            except Exception:
-                pass
-        out["keepalive_connections"] = keepalive
-        out["stats_source"] = "transport_pool"
-    except Exception as exc:
-        out["reason"] = f"pool read failed: {exc}"
-    return out
-
-
-def _classify_pool_status(stats: Dict[str, Any]) -> str:
-    """Return one of ``"healthy"`` / ``"degraded"`` / ``"unavailable"``.
-
-    Single-client classification — the top-level endpoint folds the
-    per-client values into the worst case across all clients.
-    """
-    if stats.get("stats_source") != "transport_pool":
-        return "unavailable"
-    open_count = stats.get("open_connections")
-    limits = stats.get("limits") or {}
-    max_conn = limits.get("max_connections")
-    if not isinstance(open_count, int) or not isinstance(max_conn, int) or max_conn <= 0:
-        return "unavailable"
-    if open_count > _POOL_DEGRADED_THRESHOLD * max_conn:
-        return "degraded"
-    return "healthy"
+# Pool stat helpers and the status threshold live in
+# ``opencortex.observability.pool_stats`` — same module the
+# orchestrator's connection sweeper uses. REVIEW closure tracker
+# MAINT-001 / kieran-py-001: previously the helpers were
+# underscore-private here and the orchestrator imported them via a
+# layering inversion; now both consumers depend on the neutral module.
+from opencortex.observability.pool_stats import (
+    classify_pool_status,
+    extract_pool_stats,
+)
 
 
 @router.get("/api/v1/admin/health/connections")
@@ -471,7 +389,7 @@ async def admin_health_connections() -> Dict[str, Any]:
             "reason": "no LLM completion wrapper held by orchestrator",
         }
     else:
-        clients_report["llm_completion"] = _extract_pool_stats(llm_client)
+        clients_report["llm_completion"] = extract_pool_stats(llm_client)
         clients_report["llm_completion"]["backend"] = getattr(
             llm_completion, "backend", "unknown",
         )
@@ -493,11 +411,11 @@ async def admin_health_connections() -> Dict[str, Any]:
                 "lazy http client yet",
             }
         else:
-            clients_report["rerank"] = _extract_pool_stats(rerank_inner)
+            clients_report["rerank"] = extract_pool_stats(rerank_inner)
 
     # Top-level status: worst case across clients. "uninitialized" does
     # not lower the status (no pool to leak) — only "degraded" matters.
-    statuses = {_classify_pool_status(s) for s in clients_report.values()}
+    statuses = {classify_pool_status(s) for s in clients_report.values()}
     if "degraded" in statuses:
         top_status = "degraded"
     elif "healthy" in statuses:
