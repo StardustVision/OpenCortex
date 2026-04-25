@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import unittest
 from typing import Any, Dict, List
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from opencortex.context.session_records import (
     SessionRecordOverflowError,
@@ -21,6 +22,7 @@ from opencortex.context.session_records import (
     record_msg_range,
     record_text,
 )
+from opencortex.storage.qdrant.adapter import QdrantStorageAdapter
 
 
 class _FakeStorage:
@@ -66,8 +68,16 @@ class _FakeStorage:
         if op == "must":
             val = self._resolve_field(record, filt.get("field", ""))
             return val in (filt.get("conds") or [])
-        # Unknown ops pass through (test fixtures don't use them today).
-        return True
+        # Unknown ops are a test-fixture bug, not a silent match — if a
+        # production caller starts passing ``or``/``range``/``contains``
+        # through SessionRecordsRepository, the fixture must be taught
+        # the new op explicitly rather than letting every record slip
+        # through (REVIEW MAINT-02 — latent correctness trap).
+        raise NotImplementedError(
+            f"_FakeStorage._eval does not support op={op!r}; "
+            "extend the fixture if SessionRecordsRepository started "
+            "pushing this op into the storage filter."
+        )
 
     async def filter(self, _collection, where, limit=10000):
         if not isinstance(where, dict):
@@ -474,17 +484,26 @@ class TestSessionRecordsRepositorySourceUriPushdown(unittest.TestCase):
     def test_load_merged_trusts_server_filter(self):
         """Repository must NOT re-filter source_uri in Python.
 
-        Regression lock: if someone re-adds the in-memory post-filter,
-        the mismatched record would be dropped and this assertion fails.
+        Two-part regression lock:
+        1. The mismatched record flows through unchanged — proves no
+           in-memory post-filter exists.
+        2. The captured ``where`` actually contains the meta.source_uri
+           cond with the requested value — proves the push-down ran
+           (otherwise part 1 would pass for the wrong reason: a missing
+           filter still returns the record but without any server-side
+           scoping).
         """
 
         async def check():
+            captured: List[Dict[str, Any]] = []
+
             class _ServerLyingStorage:
                 """Pretends Qdrant returned records that don't actually match
                 the source_uri filter — exercises whether the repository
                 trusts the server result."""
 
-                async def filter(self, _coll, _where, limit=10000):
+                async def filter(self, _coll, where, limit=10000):
+                    captured.append(where)
                     return [
                         {
                             "uri": "u1",
@@ -512,11 +531,29 @@ class TestSessionRecordsRepositorySourceUriPushdown(unittest.TestCase):
                 "post-filter has been re-introduced (REVIEW PERF-02 "
                 "regression).",
             )
+            # Push-down actually happened — protects against a degenerate
+            # pass where the in-memory filter is removed without the
+            # server-side cond being added (REVIEW TG-02).
+            self.assertEqual(len(captured), 1)
+            source_conds = [
+                c for c in captured[0]["conds"]
+                if c.get("field") == "meta.source_uri"
+            ]
+            self.assertEqual(len(source_conds), 1)
+            self.assertEqual(source_conds[0]["op"], "must")
+            self.assertEqual(
+                source_conds[0]["conds"], ["opencortex://requested/src"]
+            )
 
         self._run(check())
 
     def test_load_directories_pushes_source_uri_into_filter(self):
-        """load_directories shares the push-down with load_merged."""
+        """load_directories shares the push-down with load_merged.
+
+        Asserts both that the meta.source_uri field is present AND that
+        the cond value matches the requested source_uri — a missing
+        value would still satisfy the looser `field in fields` check
+        but would not actually scope the query (REVIEW TG-03)."""
 
         async def check():
             captured: List[Dict[str, Any]] = []
@@ -529,14 +566,26 @@ class TestSessionRecordsRepositorySourceUriPushdown(unittest.TestCase):
             repo = SessionRecordsRepository(
                 storage=_CapturingStorage(), collection_resolver=lambda: "context"
             )
-            await repo.load_directories(session_id="s1", source_uri="src")
-            fields = {c["field"] for c in captured[0]["conds"]}
-            self.assertIn("meta.source_uri", fields)
+            await repo.load_directories(
+                session_id="s1", source_uri="opencortex://t/u/src"
+            )
+            source_conds = [
+                c for c in captured[0]["conds"]
+                if c.get("field") == "meta.source_uri"
+            ]
+            self.assertEqual(len(source_conds), 1)
+            self.assertEqual(source_conds[0]["op"], "must")
+            self.assertEqual(
+                source_conds[0]["conds"], ["opencortex://t/u/src"]
+            )
 
         self._run(check())
 
     def test_load_layers_pushes_source_uri_into_filter(self):
-        """load_layers shares the push-down with load_merged/load_directories."""
+        """load_layers shares the push-down with load_merged/load_directories.
+
+        Same value-level assertion as load_directories — locks parity
+        across all three repository entry points (REVIEW TG-03)."""
 
         async def check():
             captured: List[Dict[str, Any]] = []
@@ -552,26 +601,42 @@ class TestSessionRecordsRepositorySourceUriPushdown(unittest.TestCase):
             await repo.load_layers(
                 layers=["merged", "directory"],
                 session_id="s1",
-                source_uri="src",
+                source_uri="opencortex://t/u/src",
             )
-            fields = {c["field"] for c in captured[0]["conds"]}
-            self.assertIn("meta.source_uri", fields)
+            source_conds = [
+                c for c in captured[0]["conds"]
+                if c.get("field") == "meta.source_uri"
+            ]
+            self.assertEqual(len(source_conds), 1)
+            self.assertEqual(source_conds[0]["op"], "must")
+            self.assertEqual(
+                source_conds[0]["conds"], ["opencortex://t/u/src"]
+            )
 
         self._run(check())
 
 
 class TestEnsureScalarIndexes(unittest.TestCase):
     """U1 verification: payload index ensure runs idempotently on every
-    create_collection call (including for already-existing collections).
+    create_collection call — both the new-collection path and the
+    existing-collection path.
 
     This test exercises the QdrantStorageAdapter directly by mocking
     its client. We don't need a live Qdrant — just need to assert
     that create_payload_index is called for every ScalarIndex field
-    on both the new-collection path and the existing-collection path.
+    on both branches.
     """
 
     def _run(self, coro):
         return asyncio.run(coro)
+
+    def _build_adapter_with_mock_client(self, *, exists: bool):
+        adapter = QdrantStorageAdapter(path="/tmp/_pinst", embedding_dim=4)
+        mock_client = MagicMock()
+        mock_client.collection_exists = AsyncMock(return_value=exists)
+        mock_client.create_payload_index = AsyncMock()
+        mock_client.create_collection = AsyncMock()
+        return adapter, mock_client
 
     def test_existing_collection_still_runs_index_ensure(self):
         """create_collection(name) on an existing collection still
@@ -580,16 +645,7 @@ class TestEnsureScalarIndexes(unittest.TestCase):
         require recreating the collection."""
 
         async def check():
-            from unittest.mock import AsyncMock, MagicMock, patch
-
-            from opencortex.storage.qdrant.adapter import QdrantStorageAdapter
-
-            adapter = QdrantStorageAdapter(path="/tmp/_pinst", embedding_dim=4)
-            # Bypass real client init.
-            mock_client = MagicMock()
-            mock_client.collection_exists = AsyncMock(return_value=True)
-            mock_client.create_payload_index = AsyncMock()
-            mock_client.create_collection = AsyncMock()
+            adapter, mock_client = self._build_adapter_with_mock_client(exists=True)
             with patch.object(
                 adapter, "_ensure_client", AsyncMock(return_value=mock_client)
             ):
@@ -601,7 +657,41 @@ class TestEnsureScalarIndexes(unittest.TestCase):
                 self.assertFalse(
                     result, "existing collection should return False"
                 )
+                # No collection recreated on the exists=True branch.
+                mock_client.create_collection.assert_not_called()
                 # Both index fields ensured even though collection wasn't new.
+                indexed_fields = {
+                    call.kwargs.get("field_name")
+                    for call in mock_client.create_payload_index.call_args_list
+                }
+                self.assertEqual(indexed_fields, {"uri", "meta.source_uri"})
+
+        self._run(check())
+
+    def test_new_collection_runs_index_ensure(self):
+        """create_collection(name) on a new collection creates the
+        collection AND invokes _ensure_scalar_indexes for every
+        ScalarIndex field — locks parity between the new-collection
+        path and the migration path so a fresh deploy and a long-lived
+        deploy end up with the same index set (REVIEW TG-01)."""
+
+        async def check():
+            adapter, mock_client = self._build_adapter_with_mock_client(exists=False)
+            with patch.object(
+                adapter, "_ensure_client", AsyncMock(return_value=mock_client)
+            ):
+                schema = {
+                    "Fields": [{"FieldName": "uri", "FieldType": "string"}],
+                    "ScalarIndex": ["uri", "meta.source_uri"],
+                }
+                result = await adapter.create_collection("ctx", schema)
+                self.assertTrue(
+                    result, "new collection should return True"
+                )
+                # Collection actually created on the exists=False branch.
+                mock_client.create_collection.assert_called_once()
+                # Same index fields as the migration path — fresh and
+                # long-lived deploys end up identical.
                 indexed_fields = {
                     call.kwargs.get("field_name")
                     for call in mock_client.create_payload_index.call_args_list

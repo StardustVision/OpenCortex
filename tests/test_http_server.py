@@ -324,13 +324,13 @@ class InMemoryStorage(StorageInterface):
         return dot / (na * nb)
 
     @staticmethod
-    def _resolve_field(record, field_name: str):
+    def _resolve_field(record: Dict[str, Any], field_name: str) -> Any:
         # PERF-02: dot-path support for nested field filter
         # (e.g. ``meta.source_uri``). Mirrors test_e2e_phase1's
         # InMemoryStorage._resolve_field.
         if "." not in field_name:
             return record.get(field_name)
-        cursor = record
+        cursor: Any = record
         for part in field_name.split("."):
             if isinstance(cursor, dict):
                 cursor = cursor.get(part)
