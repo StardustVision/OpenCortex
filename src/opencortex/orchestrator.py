@@ -231,6 +231,7 @@ class MemoryOrchestrator:
         self._knowledge_service_instance: Optional[Any] = None
         self._system_status_service_instance: Optional[Any] = None
         self._background_task_manager_instance: Optional[Any] = None
+        self._bootstrapper_instance: Optional[Any] = None
         # Plan 009 / RELY-01 — InsightsAgent (when enabled in
         # ``server.py`` lifespan) holds a second LLMCompletion wrapper
         # whose pool would otherwise leak on shutdown. The lifespan
@@ -2148,6 +2149,22 @@ class MemoryOrchestrator:
         if cached is None:
             cached = BackgroundTaskManager(self)
             self._background_task_manager_instance = cached
+        return cached
+
+    @property
+    def _bootstrapper(self) -> "SubsystemBootstrapper":
+        """Lazy-built SubsystemBootstrapper for subsystem creation and wiring.
+
+        Phase 5 of plan 015 mirrors the ``_background_task_manager``
+        lazy-property pattern. Uses ``getattr`` with default so
+        ``__new__`` bypass tests don't crash on missing attribute.
+        """
+        from opencortex.lifecycle.bootstrapper import SubsystemBootstrapper
+
+        cached = getattr(self, "_bootstrapper_instance", None)
+        if cached is None:
+            cached = SubsystemBootstrapper(self)
+            self._bootstrapper_instance = cached
         return cached
 
     # =========================================================================
