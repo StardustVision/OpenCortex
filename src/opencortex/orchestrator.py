@@ -230,6 +230,7 @@ class MemoryOrchestrator:
         self._memory_service_instance: Optional[Any] = None
         self._knowledge_service_instance: Optional[Any] = None
         self._system_status_service_instance: Optional[Any] = None
+        self._background_task_manager_instance: Optional[Any] = None
         # Plan 009 / RELY-01 — InsightsAgent (when enabled in
         # ``server.py`` lifespan) holds a second LLMCompletion wrapper
         # whose pool would otherwise leak on shutdown. The lifespan
@@ -484,241 +485,6 @@ class MemoryOrchestrator:
             candidate_store=self._candidate_store,
             metabolism_controller=self._cognitive_metabolism_controller,
         )
-
-    def _start_autophagy_sweeper(self) -> None:
-        """Start autophagy metabolism sweeps (startup + periodic) in background."""
-        kernel = getattr(self, "_autophagy_kernel", None)
-        if kernel is None:
-            return
-
-        # Be resilient to unit tests that bypass __init__ via __new__.
-        if not hasattr(self, "_autophagy_sweep_cursor"):
-            self._autophagy_sweep_cursor = None
-        if not hasattr(self, "_autophagy_sweep_task"):
-            self._autophagy_sweep_task = None
-        if not hasattr(self, "_autophagy_startup_sweep_task"):
-            self._autophagy_startup_sweep_task = None
-        if not hasattr(self, "_autophagy_sweep_cursors"):
-            self._autophagy_sweep_cursors = {
-                OwnerType.MEMORY: None,
-                OwnerType.TRACE: None,
-            }
-        if not hasattr(self, "_autophagy_sweep_guard"):
-            self._autophagy_sweep_guard = asyncio.Lock()
-
-        if self._autophagy_sweep_task is not None and not self._autophagy_sweep_task.done():
-            return
-
-        # Startup: one immediate batch (fire-and-forget) for crash recovery / backlog drain.
-        self._autophagy_startup_sweep_task = asyncio.create_task(
-            self._run_autophagy_sweep_once(),
-            name="opencortex.autophagy.startup_sweep",
-        )
-
-        # Periodic: one bounded page per interval, cursor carried across ticks.
-        self._autophagy_sweep_task = asyncio.create_task(
-            self._autophagy_sweep_loop(),
-            name="opencortex.autophagy.periodic_sweep",
-        )
-
-    async def _run_autophagy_sweep_once(self) -> None:
-        kernel = getattr(self, "_autophagy_kernel", None)
-        if kernel is None:
-            return
-
-        # Be resilient to unit tests that bypass __init__ via __new__.
-        if not hasattr(self, "_autophagy_sweep_guard") or self._autophagy_sweep_guard is None:
-            self._autophagy_sweep_guard = asyncio.Lock()
-        if not hasattr(self, "_autophagy_sweep_cursors") or self._autophagy_sweep_cursors is None:
-            self._autophagy_sweep_cursors = {
-                OwnerType.MEMORY: None,
-                OwnerType.TRACE: None,
-            }
-
-        async with self._autophagy_sweep_guard:
-            limit = int(getattr(self._config, "autophagy_sweep_batch_size", 200))
-            for owner_type in (OwnerType.MEMORY, OwnerType.TRACE):
-                try:
-                    cursor = self._autophagy_sweep_cursors.get(owner_type)
-                    result = await kernel.sweep_metabolism(
-                        owner_type=owner_type,
-                        limit=limit,
-                        cursor=cursor,
-                    )
-                    # Reset to None when exhausted, so subsequent sweeps restart cleanly.
-                    self._autophagy_sweep_cursors[owner_type] = getattr(
-                        result, "next_cursor", None
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    logger.warning(
-                        "[Orchestrator] Autophagy metabolism sweep failed (owner_type=%s): %s",
-                        owner_type.value,
-                        exc,
-                    )
-                    continue
-
-    async def _autophagy_sweep_loop(self) -> None:
-        interval = float(getattr(self._config, "autophagy_sweep_interval_seconds", 900))
-        if interval <= 0:
-            interval = 0.01  # allow fast unit tests; never busy-loop.
-        try:
-            while True:
-                await asyncio.sleep(interval)
-                await self._run_autophagy_sweep_once()
-        except asyncio.CancelledError:
-            raise
-
-    # =========================================================================
-    # Connection sweeper (plan 009 / R5)
-    # =========================================================================
-
-    def _start_connection_sweeper(self) -> None:
-        """Start the periodic httpx-pool inspector in background.
-
-        Mirrors ``_start_autophagy_sweeper`` exactly — same naming
-        convention, same re-entrancy lock, same defensive ``getattr``
-        for orchestrators built via ``__new__`` bypass.
-        """
-        # Be resilient to unit tests that bypass __init__ via __new__.
-        if not hasattr(self, "_connection_sweep_task"):
-            self._connection_sweep_task = None
-        if not hasattr(self, "_connection_sweep_guard"):
-            self._connection_sweep_guard = asyncio.Lock()
-        if not hasattr(self, "_last_connection_sweep_at"):
-            self._last_connection_sweep_at = None
-        if not hasattr(self, "_last_connection_sweep_status"):
-            self._last_connection_sweep_status = "not_started"
-
-        if (
-            self._connection_sweep_task is not None
-            and not self._connection_sweep_task.done()
-        ):
-            return
-
-        self._connection_sweep_task = asyncio.create_task(
-            self._connection_sweep_loop(),
-            name="opencortex.connections.periodic_sweep",
-        )
-
-    async def _run_connection_sweep_once(self) -> None:
-        """Inspect every pooled client; log WARN when pool nears cap.
-
-        REVIEW closure tracker (plan 009 review):
-        - adv-004 / RELY-03: persistent failure of the sweep itself
-          must NOT leave ``_last_connection_sweep_status="ok"``. The
-          loop's outer try/except routes "sweep raised" through this
-          method, so we update the status field BEFORE returning,
-          including on the failure path. The loop wrapper sets the
-          status to ``"error"`` when this method raises.
-        - adv-006: when ``stats_source`` is ``"unavailable"`` for any
-          client, treat that as a warn condition (status="warn"). A
-          silent "ok" while the pool inspector is broken would re-
-          create the very invisible-leak failure mode this PR exists
-          to fix.
-        """
-        # Be resilient to unit tests that bypass __init__ via __new__.
-        if (
-            not hasattr(self, "_connection_sweep_guard")
-            or self._connection_sweep_guard is None
-        ):
-            self._connection_sweep_guard = asyncio.Lock()
-
-        from opencortex.observability.pool_stats import extract_pool_stats
-
-        async with self._connection_sweep_guard:
-            from datetime import datetime, timezone
-            warn_count = 0
-            unavailable_count = 0
-
-            llm_completion = getattr(self, "_llm_completion", None)
-            llm_client = getattr(llm_completion, "client", None) if llm_completion else None
-            if llm_client is not None:
-                stats = extract_pool_stats(llm_client)
-                warn_count += self._maybe_warn_pool("llm_completion", stats)
-                if stats.get("stats_source") != "transport_pool":
-                    unavailable_count += 1
-
-            rerank_singleton = getattr(self, "_rerank_client", None)
-            rerank_inner = (
-                getattr(rerank_singleton, "_http_client", None)
-                if rerank_singleton is not None
-                else None
-            )
-            if rerank_inner is not None:
-                stats = extract_pool_stats(rerank_inner)
-                warn_count += self._maybe_warn_pool("rerank", stats)
-                if stats.get("stats_source") != "transport_pool":
-                    unavailable_count += 1
-
-            self._last_connection_sweep_at = datetime.now(timezone.utc)
-            if warn_count:
-                self._last_connection_sweep_status = "warn"
-            elif unavailable_count:
-                # adv-006: stat extraction failed on some client. Don't
-                # silently report "ok" — operators need visibility that
-                # the inspector itself has degraded.
-                self._last_connection_sweep_status = "warn"
-                logger.warning(
-                    "[ConnectionSweeper] %d client(s) returned "
-                    "stats_source=unavailable — pool inspector "
-                    "degraded. Check for httpx version drift.",
-                    unavailable_count,
-                )
-            else:
-                self._last_connection_sweep_status = "ok"
-
-    def _maybe_warn_pool(self, label: str, stats: Dict[str, Any]) -> int:
-        """Emit a WARNING when the pool exceeds the warn ratio. Returns 0/1."""
-        from opencortex.observability.pool_stats import POOL_DEGRADED_THRESHOLD
-
-        if stats.get("stats_source") != "transport_pool":
-            return 0
-        open_count = stats.get("open_connections")
-        limits = stats.get("limits") or {}
-        max_conn = limits.get("max_connections")
-        if not isinstance(open_count, int) or not isinstance(max_conn, int) or max_conn <= 0:
-            return 0
-        if open_count > POOL_DEGRADED_THRESHOLD * max_conn:
-            logger.warning(
-                "[ConnectionSweeper] %s pool nearing cap: open=%d, "
-                "limit=%d, keepalive=%s. If this rises further the "
-                "process will start refusing connections — investigate "
-                "for a missing aclose() on a request path.",
-                label, open_count, max_conn,
-                stats.get("keepalive_connections"),
-            )
-            return 1
-        return 0
-
-    async def _connection_sweep_loop(self) -> None:
-        """Sleep-then-inspect loop. Mirrors ``_autophagy_sweep_loop``."""
-        interval = float(
-            getattr(self._config, "connection_sweep_interval_seconds", 600)
-        )
-        if interval <= 0:
-            interval = 0.01  # allow fast unit tests; never busy-loop.
-        try:
-            while True:
-                await asyncio.sleep(interval)
-                try:
-                    await self._run_connection_sweep_once()
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    # adv-004 / RELY-03: a failure inside the inspector
-                    # must not kill the sweep loop — log AND update the
-                    # status field so /admin/health/connections shows
-                    # the degraded state instead of a stale "ok".
-                    self._last_connection_sweep_status = "error"
-                    logger.warning(
-                        "[ConnectionSweeper] sweep tick failed: %s "
-                        "(status flipped to 'error' for visibility; "
-                        "next tick will retry)", exc,
-                    )
-        except asyncio.CancelledError:
-            raise
 
     async def _init_alpha(self) -> None:
         """Initialize Cortex Alpha components if enabled."""
@@ -1202,289 +968,36 @@ class MemoryOrchestrator:
         await self._recover_pending_derives()
 
     # =========================================================================
-    # Document Derive Worker
+    # Background task lifecycle — delegates (bodies live in BackgroundTaskManager)
     # =========================================================================
 
     def _start_derive_worker(self) -> None:
-        """Launch the background derive worker coroutine."""
-        if self._derive_worker_task is None or self._derive_worker_task.done():
-            self._derive_worker_task = asyncio.create_task(self._derive_worker())
+        """Delegate to BackgroundTaskManager._start_derive_worker."""
+        self._background_task_manager._start_derive_worker()
 
-    async def _derive_worker(self) -> None:
-        """Consume _DeriveTask items from the queue. Stops on None sentinel."""
-        while True:
-            task = await self._derive_queue.get()
-            if task is None:
-                self._derive_queue.task_done()
-                break
-            try:
-                await self._process_derive_task(task)
-            except Exception as exc:
-                logger.error(
-                    "[DeriveWorker] Failed to process %s: %s",
-                    task.parent_uri,
-                    exc,
-                )
-            finally:
-                self._derive_queue.task_done()
+    def _start_autophagy_sweeper(self) -> None:
+        """Delegate to BackgroundTaskManager._start_autophagy_sweeper."""
+        self._background_task_manager._start_autophagy_sweeper()
 
-    async def _process_derive_task(self, task: _DeriveTask) -> None:
-        """Process a single document derive task (Phase B).
+    async def _run_autophagy_sweep_once(self) -> None:
+        """Delegate to BackgroundTaskManager._run_autophagy_sweep_once."""
+        await self._background_task_manager._run_autophagy_sweep_once()
 
-        Creates parent record, derives chunks level-by-level, runs bottom-up
-        summarization, then deletes the .derive_pending marker.
-        """
-        from opencortex.http.request_context import (
-            set_request_identity,
-            reset_request_identity,
-        )
+    def _start_connection_sweeper(self) -> None:
+        """Delegate to BackgroundTaskManager._start_connection_sweeper."""
+        self._background_task_manager._start_connection_sweeper()
 
-        tokens = set_request_identity(task.tenant_id, task.user_id)
-        try:
-            # 1. Create parent record in Qdrant (is_leaf=False, skips _derive_layers)
-            parent_ctx = await self.add(
-                abstract=task.abstract,
-                content=task.content,
-                category=task.category,
-                uri=task.parent_uri,
-                is_leaf=False,
-                context_type=task.context_type,
-                meta={
-                    **task.meta,
-                    "ingest_mode": "memory",
-                    "source_doc_id": task.source_doc_id,
-                    "source_doc_title": task.source_doc_title,
-                    "source_section_path": "",
-                    "chunk_role": "document",
-                },
-                session_id=task.session_id,
-            )
-            doc_parent_uri = parent_ctx.uri
-
-            chunks = task.chunks
-            # 2. Precompute topology
-            is_dir_chunk = [
-                any(c.parent_index == idx for c in chunks[idx + 1:])
-                for idx in range(len(chunks))
-            ]
-            levels: Dict[int, List[int]] = {}
-            for idx, chunk in enumerate(chunks):
-                if chunk.parent_index < 0:
-                    level = 0
-                else:
-                    parent_level = next(
-                        (lv for lv, idxs in levels.items() if chunk.parent_index in idxs),
-                        0,
-                    )
-                    level = parent_level + 1
-                levels.setdefault(level, []).append(idx)
-
-            chunk_results: List[Optional[Any]] = [None] * len(chunks)
-            sem = asyncio.Semaphore(self._config.document_derive_concurrency)
-
-            async def _process_chunk(idx: int) -> None:
-                chunk = chunks[idx]
-                chunk_parent = doc_parent_uri
-                if chunk.parent_index >= 0:
-                    parent_result = chunk_results[chunk.parent_index]
-                    if parent_result is not None and not parent_result.is_leaf:
-                        chunk_parent = parent_result.uri
-
-                chunk_role = "section" if is_dir_chunk[idx] else "leaf"
-                sp = chunk.meta.get("source_section_path", "") or chunk.meta.get(
-                    "section_path", ""
-                )
-                if is_dir_chunk[idx]:
-                    heading = sp.split(" > ")[-1].strip() if sp else chunk.content[:80].strip()
-                    chunk_abstract = heading
-                else:
-                    chunk_abstract = ""
-
-                embed_text = ""
-                if self._config.context_flattening_enabled:
-                    parts = []
-                    if task.source_doc_title:
-                        parts.append(f"[{task.source_doc_title}]")
-                    if sp:
-                        parts.append(f"[{sp}]")
-                    if chunk_abstract:
-                        parts.append(chunk_abstract)
-                    embed_text = " ".join(parts)
-
-                async with sem:
-                    try:
-                        ctx = await self.add(
-                            abstract=chunk_abstract,
-                            content=chunk.content,
-                            category=task.category,
-                            parent_uri=chunk_parent,
-                            is_leaf=not is_dir_chunk[idx],
-                            context_type=task.context_type,
-                            meta={
-                                **task.meta,
-                                "ingest_mode": "memory",
-                                "chunk_index": idx,
-                                "source_doc_id": task.source_doc_id,
-                                "source_doc_title": task.source_doc_title,
-                                "source_section_path": sp,
-                                "chunk_role": chunk_role,
-                            },
-                            session_id=task.session_id,
-                            embed_text=embed_text,
-                        )
-                        chunk_results[idx] = ctx
-                    except Exception as exc:
-                        logger.warning(
-                            "[DeriveWorker] chunk %d/%d failed: %s",
-                            idx + 1, len(chunks), exc,
-                        )
-
-            # 3. Level-by-level concurrent derive
-            for level in sorted(levels.keys()):
-                level_tasks = [_process_chunk(idx) for idx in levels[level]]
-                await asyncio.gather(*level_tasks)
-
-            # 4. Bottom-up summarization
-            for level in sorted(levels.keys(), reverse=True):
-                for si in [i for i in levels[level] if is_dir_chunk[i]]:
-                    if chunk_results[si] is None:
-                        continue
-                    child_indices = [
-                        j for j in range(len(chunks)) if chunks[j].parent_index == si
-                    ]
-                    available = [
-                        chunk_results[j].abstract
-                        for j in child_indices
-                        if chunk_results[j] is not None
-                    ]
-                    if not available:
-                        continue
-                    if len(available) < len(child_indices) / 2:
-                        logger.warning(
-                            "[DeriveWorker] section %d: >50%% children failed, skipping bottom-up",
-                            si,
-                        )
-                        continue
-                    summary = await self._derive_parent_summary(task.abstract, available)
-                    if summary.get("abstract"):
-                        try:
-                            await self.update(
-                                chunk_results[si].uri,
-                                abstract=summary["abstract"],
-                                overview=summary["overview"],
-                                meta={"topics": summary.get("keywords", [])},
-                            )
-                            chunk_results[si].abstract = summary["abstract"]
-                            chunk_results[si].overview = summary["overview"]
-                        except Exception as exc:
-                            logger.warning(
-                                "[DeriveWorker] section %d bottom-up failed: %s", si, exc,
-                            )
-
-            # 5. Parent summary from top-level children
-            top_children = [
-                chunk_results[i].abstract
-                for i in range(len(chunks))
-                if chunks[i].parent_index < 0 and chunk_results[i] is not None
-            ]
-            if top_children:
-                summary = await self._derive_parent_summary(task.abstract, top_children)
-                if summary.get("abstract"):
-                    try:
-                        await self.update(
-                            doc_parent_uri,
-                            abstract=summary["abstract"],
-                            overview=summary["overview"],
-                            meta={"topics": summary.get("keywords", [])},
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "[DeriveWorker] parent bottom-up failed: %s", exc,
-                        )
-
-            # 6. Delete .derive_pending marker on success
-            try:
-                fs_path = self._fs._uri_to_path(task.parent_uri)
-                self._fs.agfs.rm(f"{fs_path}/.derive_pending")
-            except Exception:
-                pass
-
-            logger.info(
-                "[DeriveWorker] Completed %s (%d chunks)",
-                task.parent_uri, len(chunks),
-            )
-        finally:
-            self._inflight_derive_uris.discard(task.parent_uri)
-            reset_request_identity(tokens)
+    async def _run_connection_sweep_once(self) -> None:
+        """Delegate to BackgroundTaskManager._run_connection_sweep_once."""
+        await self._background_task_manager._run_connection_sweep_once()
 
     async def _recover_pending_derives(self) -> None:
-        """Scan for .derive_pending markers and re-enqueue incomplete derives."""
-        import json as _json
-        from pathlib import Path
-
-        data_root = Path(self._config.data_root).resolve()
-        markers = list(data_root.rglob(".derive_pending"))
-        if not markers:
-            return
-
-        if self._parser_registry is None:
-            from opencortex.parse.registry import ParserRegistry
-            self._parser_registry = ParserRegistry()
-
-        recovered = 0
-        for marker_path in markers:
-            try:
-                marker_data = _json.loads(marker_path.read_bytes())
-                parent_uri = marker_data["parent_uri"]
-
-                if parent_uri in self._inflight_derive_uris:
-                    continue
-
-                content_path = marker_path.parent / "content.md"
-                if not content_path.exists():
-                    logger.warning("[DeriveRecovery] Stale marker (no content.md) at %s — removing", marker_path)
-                    marker_path.unlink(missing_ok=True)
-                    continue
-
-                content = content_path.read_text(encoding="utf-8")
-                source_path = marker_data.get("source_path", "")
-                if source_path:
-                    parser = self._parser_registry.get_parser_for_file(source_path)
-                else:
-                    parser = None
-
-                if parser:
-                    chunks = await parser.parse_content(content, source_path=source_path)
-                else:
-                    chunks = await self._parser_registry.parse_content(content, source_format="markdown")
-
-                task = _DeriveTask(
-                    parent_uri=parent_uri,
-                    content=content,
-                    abstract=marker_data.get("source_doc_title", "") or (Path(source_path).stem if source_path else "Document"),
-                    chunks=chunks,
-                    category=marker_data.get("category", ""),
-                    context_type=marker_data.get("context_type", "resource"),
-                    meta=marker_data.get("meta", {}),
-                    session_id=None,
-                    source_path=source_path,
-                    source_doc_id=marker_data.get("source_doc_id", ""),
-                    source_doc_title=marker_data.get("source_doc_title", ""),
-                    tenant_id=marker_data.get("tenant_id", ""),
-                    user_id=marker_data.get("user_id", ""),
-                )
-                self._inflight_derive_uris.add(parent_uri)
-                await self._derive_queue.put(task)
-                recovered += 1
-            except Exception as exc:
-                logger.error("[DeriveRecovery] Failed to recover %s: %s", marker_path, exc)
-
-        if recovered:
-            logger.info("[DeriveRecovery] Re-enqueued %d pending derive task(s)", recovered)
+        """Delegate to BackgroundTaskManager._recover_pending_derives."""
+        await self._background_task_manager._recover_pending_derives()
 
     async def _drain_derive_queue(self) -> None:
-        """Wait for all pending derive tasks to complete. Test-only."""
-        await self._derive_queue.join()
+        """Delegate to BackgroundTaskManager._drain_derive_queue. Test-only."""
+        await self._background_task_manager._drain_derive_queue()
 
     async def derive_status(self, uri: str) -> Dict[str, Any]:
         """Check the async derive status for a document URI."""
@@ -2621,6 +2134,22 @@ class MemoryOrchestrator:
             self._system_status_service_instance = cached
         return cached
 
+    @property
+    def _background_task_manager(self) -> "BackgroundTaskManager":
+        """Lazy-built BackgroundTaskManager for delegated lifecycle methods.
+
+        Phase 3 of plan 014 mirrors the ``_system_status_service`` lazy-property
+        pattern. Uses ``getattr`` with default so ``__new__`` bypass
+        tests don't crash on missing attribute.
+        """
+        from opencortex.lifecycle.background_tasks import BackgroundTaskManager
+
+        cached = getattr(self, "_background_task_manager_instance", None)
+        if cached is None:
+            cached = BackgroundTaskManager(self)
+            self._background_task_manager_instance = cached
+        return cached
+
     # =========================================================================
     # Add / Update / Remove
     # =========================================================================
@@ -3565,56 +3094,17 @@ class MemoryOrchestrator:
         tenant_id: str,
         user_id: str,
     ) -> None:
-        """Run recall-side autophagy bookkeeping off the request hot path."""
-        if not memories or getattr(self, "_autophagy_kernel", None) is None:
-            return
-        task = asyncio.create_task(
-            self._run_recall_bookkeeping(
-                memories=memories,
-                query=query,
-                tenant_id=tenant_id,
-                user_id=user_id,
-            ),
-            name="opencortex.autophagy.recall_bookkeeping",
+        """Delegate to BackgroundTaskManager._schedule_recall_bookkeeping."""
+        self._background_task_manager._schedule_recall_bookkeeping(
+            memories=memories,
+            query=query,
+            tenant_id=tenant_id,
+            user_id=user_id,
         )
-        self._recall_bookkeeping_tasks_set().add(task)
-        task.add_done_callback(self._recall_bookkeeping_tasks_set().discard)
 
     def _recall_bookkeeping_tasks_set(self) -> set[asyncio.Task[Any]]:
-        """Return the tracked background recall bookkeeping task set."""
-        if not hasattr(self, "_recall_bookkeeping_tasks"):
-            self._recall_bookkeeping_tasks = set()
-        return self._recall_bookkeeping_tasks
-
-    async def _run_recall_bookkeeping(
-        self,
-        *,
-        memories: List[Any],
-        query: str,
-        tenant_id: str,
-        user_id: str,
-    ) -> None:
-        """Apply autophagy recall bookkeeping without blocking retrieval."""
-        recalled_owner_ids: List[str] = []
-        try:
-            recalled_owner_ids = await self._resolve_memory_owner_ids(memories)
-            if not recalled_owner_ids or self._autophagy_kernel is None:
-                return
-            await self._autophagy_kernel.apply_recall_outcome(
-                owner_ids=recalled_owner_ids,
-                query=query,
-                recall_outcome={"selected_results": recalled_owner_ids},
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.warning(
-                "[search] Autophagy recall application failed tenant=%s user=%s owners=%d: %s",
-                tenant_id,
-                user_id,
-                len(recalled_owner_ids),
-                exc,
-            )
+        """Delegate to BackgroundTaskManager._recall_bookkeeping_tasks_set."""
+        return self._background_task_manager._recall_bookkeeping_tasks_set()
 
     async def _get_record_by_uri(self, uri: str) -> Optional[Dict[str, Any]]:
         if not uri or not self._storage:
@@ -4206,61 +3696,7 @@ class MemoryOrchestrator:
 
     async def close(self) -> None:
         """Close storage and release resources."""
-        # Plan 009 — cancel the connection sweeper FIRST so it doesn't
-        # try to inspect a half-closed pool while the per-client
-        # aclose() calls below are running.
-        connection_sweep_task = getattr(self, "_connection_sweep_task", None)
-        if connection_sweep_task is not None and not connection_sweep_task.done():
-            connection_sweep_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await connection_sweep_task
-        self._connection_sweep_task = None
-
-        startup_task = getattr(self, "_autophagy_startup_sweep_task", None)
-        if startup_task is not None and not startup_task.done():
-            startup_task.cancel()
-        periodic_task = getattr(self, "_autophagy_sweep_task", None)
-        if periodic_task is not None and not periodic_task.done():
-            periodic_task.cancel()
-        for task in (startup_task, periodic_task):
-            if task is None:
-                continue
-            with suppress(asyncio.CancelledError):
-                await task
-        self._autophagy_startup_sweep_task = None
-        self._autophagy_sweep_task = None
-        # The rest of teardown mirrors the defensive autophagy pattern
-        # above: every attribute is guarded with ``getattr(...)`` so
-        # ``close()`` is safe on partially-constructed orchestrators —
-        # unit tests that build instances via ``__new__`` to skip
-        # ``__init__`` (e.g. tests/test_perf_fixes.py) used to crash
-        # here on the first attribute miss.
-        recall_tasks_set = (
-            self._recall_bookkeeping_tasks_set()
-            if hasattr(self, "_recall_bookkeeping_tasks") and self._recall_bookkeeping_tasks
-            else None
-        )
-        if recall_tasks_set is not None:
-            recall_tasks = list(recall_tasks_set)
-            for task in recall_tasks:
-                if not task.done():
-                    task.cancel()
-            for task in recall_tasks:
-                with suppress(asyncio.CancelledError):
-                    await task
-            recall_tasks_set.clear()
-
-        derive_worker_task = getattr(self, "_derive_worker_task", None)
-        if derive_worker_task and not derive_worker_task.done():
-            derive_queue = getattr(self, "_derive_queue", None)
-            if derive_queue is not None:
-                await derive_queue.put(None)
-            try:
-                await asyncio.wait_for(derive_worker_task, timeout=30.0)
-            except asyncio.TimeoutError:
-                derive_worker_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await derive_worker_task
+        await self._background_task_manager.close()
 
         context_manager = getattr(self, "_context_manager", None)
         if context_manager:

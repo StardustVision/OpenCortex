@@ -198,6 +198,8 @@ class TestAutophagySweeperLifecycle(unittest.IsolatedAsyncioTestCase):
         from opencortex.orchestrator import MemoryOrchestrator
         from opencortex.config import CortexConfig
 
+        from opencortex.lifecycle.background_tasks import BackgroundTaskManager
+
         async def fake_init_cognition(self_inner):
             # Ensure _start_autophagy_sweeper() doesn't early-return.
             self_inner._autophagy_kernel = MagicMock()
@@ -209,8 +211,8 @@ class TestAutophagySweeperLifecycle(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(60)
 
         with patch.object(MemoryOrchestrator, "_init_cognition", fake_init_cognition), \
-             patch.object(MemoryOrchestrator, "_run_autophagy_sweep_once", slow_startup_sweep), \
-             patch.object(MemoryOrchestrator, "_autophagy_sweep_loop", slow_periodic_loop), \
+             patch.object(BackgroundTaskManager, "_run_autophagy_sweep_once", slow_startup_sweep), \
+             patch.object(BackgroundTaskManager, "_autophagy_sweep_loop", slow_periodic_loop), \
              patch("opencortex.orchestrator.init_context_collection", new_callable=AsyncMock), \
              patch("opencortex.orchestrator.init_cortex_fs", return_value=MagicMock()), \
              patch.object(MemoryOrchestrator, "_create_default_embedder", return_value=None), \
