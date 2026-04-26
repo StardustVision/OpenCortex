@@ -2608,7 +2608,7 @@ class MemoryOrchestrator:
         return self._user
 
     @property
-    def _memory_service(self) -> Any:
+    def _memory_service(self) -> "MemoryService":
         """Lazy-built MemoryService for delegated CRUD/query/scoring methods.
 
         Phase 1 of plan 010 introduced this back-reference pattern. Lazy
