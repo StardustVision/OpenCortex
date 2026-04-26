@@ -5,12 +5,11 @@ and provides methods for dataset loading, ingestion, QA extraction,
 baseline context, and retrieval.
 """
 
-import asyncio
 import json
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Callable, Coroutine, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 @dataclass
@@ -223,57 +222,6 @@ class EvalAdapter(ABC):
         return results
 
     # ------------------------------------------------------------------
-    # Concurrent ingest helper
-    # ------------------------------------------------------------------
-
-    async def _run_concurrent_ingest(
-        self,
-        items: List[Any],
-        process_fn: Callable[[Any], Coroutine[Any, Any, Tuple[bool, Optional[str]]]],
-        *,
-        concurrency: int = 4,
-    ) -> Tuple[int, List[str]]:
-        """Run bounded-concurrent ingestion over items.
-
-        Args:
-            items: Iterable of items to process.
-            process_fn: Async callable taking one item, returning
-                ``(success, error_message_or_None)``.
-            concurrency: Max parallel tasks.
-
-        Returns:
-            (success_count, errors) tuple.
-        """
-        semaphore = asyncio.Semaphore(max(1, concurrency))
-        errors: List[str] = []
-        success_count = 0
-
-        async def _guarded(item: Any) -> Tuple[bool, Optional[str]]:
-            async with semaphore:
-                try:
-                    return await process_fn(item)
-                except asyncio.CancelledError:
-                    return False, f"item={item}: cancelled"
-                except Exception as exc:
-                    return False, f"item={item}: {exc}"
-
-        results = await asyncio.gather(
-            *[_guarded(item) for item in items],
-            return_exceptions=True,
-        )
-        for result in results:
-            if isinstance(result, BaseException):
-                errors.append(str(result))
-                continue
-            ok, err = result
-            if ok:
-                success_count += 1
-            elif err:
-                errors.append(err)
-
-        return success_count, errors
-
-    # ------------------------------------------------------------------
     # Abstract methods
     # ------------------------------------------------------------------
 
@@ -295,6 +243,3 @@ class EvalAdapter(ABC):
         """
         ...
 
-    def __init_subclass__(cls, **kwargs: Any) -> None:
-        """Allow subclasses to override retrieve without warning."""
-        super().__init_subclass__(**kwargs)

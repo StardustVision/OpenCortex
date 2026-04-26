@@ -10,7 +10,7 @@ Retrieve: Direct oc.search() (no session context).
 """
 
 from hashlib import md5
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from benchmarks.adapters.base import EvalAdapter, IngestResult, QAItem
 
@@ -127,6 +127,11 @@ class MemoryAdapter(EvalAdapter):
 
     def _get_retrieval_session_id(self, qa_item: QAItem) -> str:
         return "ev-mem-" + md5(qa_item.question.encode()).hexdigest()[:12]
+
+    def _get_retrieval_metadata_filter(
+        self, session_id: Optional[str],
+    ) -> Optional[Dict[str, Any]]:
+        return None
 
     def _get_retrieval_detail_level(self) -> str:
         return "l0"

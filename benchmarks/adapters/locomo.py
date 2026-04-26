@@ -576,7 +576,7 @@ class LoCoMoBench(EvalAdapter):
     def _get_retrieval_context_type(self) -> str:
         return "memory"
 
-    def _get_retrieval_detail_level(self) -> str:
+    def _get_retrieval_detail_level(self) -> Optional[str]:
         return "l2" if self._retrieve_method == "search" else None
 
     def _get_retrieval_turn_id(self, qa_item: QAItem) -> str:

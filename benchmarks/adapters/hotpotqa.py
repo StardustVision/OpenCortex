@@ -16,7 +16,7 @@ import asyncio
 import json
 import logging
 from hashlib import md5
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from benchmarks.adapters.base import EvalAdapter, IngestResult, QAItem
 
@@ -64,37 +64,13 @@ class HotPotQAAdapter(EvalAdapter):
 
         self._title_to_sentences = title_to_sentences
         self._questions = raw
-        logger.info(
-            f"[HotPotQA] Loaded {len(raw)} questions, "
-            f"{len(title_to_sentences)} unique paragraphs"
-        )
-        title_to_sentences: Dict[str, List[str]] = {}
-        collision_count = 0
-
-        for i, q in enumerate(raw):
-            self._qid_to_context[i] = []
-            for title, sentences in q.get("context", []):
-                self._qid_to_context[i].append((title, sentences))
-                if title not in title_to_sentences:
-                    title_to_sentences[title] = sentences
-                elif title_to_sentences[title] != sentences:
-                    collision_count += 1
-
-        if collision_count > 0:
-            logger.warning(
-                f"[HotPotQA] {collision_count} title collisions (different content, "
-                "first-occurrence kept)"
-            )
-
-        self._title_to_sentences = title_to_sentences
-        self._questions = raw
         self._dataset = raw
         logger.info(
             f"[HotPotQA] Loaded {len(raw)} questions, "
             f"{len(title_to_sentences)} unique paragraphs"
         )
 
-    async def ingest(self, oc: Any, **kwargs) -> IngestResult:
+    async def ingest(self, oc: Any, **kwargs: Any) -> IngestResult:
         """Ingest unique paragraphs as memory-mode records (no LLM overhead).
 
         If max_qa is passed, only ingests paragraphs from the first N questions
@@ -157,7 +133,7 @@ class HotPotQAAdapter(EvalAdapter):
             errors=errors,
         )
 
-    def build_qa_items(self, **kwargs) -> List[QAItem]:
+    def build_qa_items(self, **kwargs: Any) -> List[QAItem]:
         max_qa = kwargs.get("max_qa", 0)
         items: List[QAItem] = []
 
@@ -201,6 +177,11 @@ class HotPotQAAdapter(EvalAdapter):
 
     def _get_retrieval_session_id(self, qa_item: QAItem) -> str:
         return "ev-hp-" + md5(qa_item.question.encode()).hexdigest()[:12]
+
+    def _get_retrieval_metadata_filter(
+        self, session_id: Optional[str],
+    ) -> Optional[Dict[str, Any]]:
+        return None
 
     def _get_retrieval_context_type(self) -> str:
         return "resource"

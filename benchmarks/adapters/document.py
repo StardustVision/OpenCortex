@@ -8,6 +8,7 @@ Retrieve: oc.search(context_type="resource") to filter document chunks only.
 """
 
 import json
+import time
 from typing import Any, Dict, List, Tuple
 
 from benchmarks.adapters.base import EvalAdapter, IngestResult, QAItem
@@ -286,9 +287,7 @@ class DocumentAdapter(EvalAdapter):
         context_recall's memory pipeline targets event/summary kinds
         and excludes document_chunk.
         """
-        import time as _time
-
-        started = _time.perf_counter()
+        started = time.perf_counter()
         result = await oc.search_payload(
             query=qa_item.question,
             limit=top_k,
@@ -300,5 +299,5 @@ class DocumentAdapter(EvalAdapter):
             session_scope=False,
         )
         results = result.get("results", [])
-        latency_ms = (_time.perf_counter() - started) * 1000
+        latency_ms = (time.perf_counter() - started) * 1000
         return results, latency_ms

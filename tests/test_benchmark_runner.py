@@ -435,11 +435,11 @@ class TestEvalAdapterBase(unittest.TestCase):
         """_validate_dataset is called after loading."""
         import tempfile
 
-        class _ValidatingAdapter(self._make_adapter().__class__):
-            validated = False
+        validated = [False]
 
+        class _ValidatingAdapter(self._make_adapter().__class__):
             def _validate_dataset(self, raw):
-                _ValidatingAdapter.validated = True
+                validated[0] = True
 
         adapter = _ValidatingAdapter()
         with tempfile.NamedTemporaryFile(
@@ -449,60 +449,7 @@ class TestEvalAdapterBase(unittest.TestCase):
             f.flush()
             adapter.load_dataset(f.name)
         os.unlink(f.name)
-        self.assertTrue(_ValidatingAdapter.validated)
-
-    # -- _run_concurrent_ingest --
-
-    def test_concurrent_ingest_accumulates_successes(self):
-        """_run_concurrent_ingest counts successes."""
-        adapter = self._make_adapter()
-
-        async def _process(item):
-            return True, None
-
-        count, errors = asyncio.run(
-            adapter._run_concurrent_ingest(
-                [1, 2, 3], _process, concurrency=2,
-            )
-        )
-        self.assertEqual(count, 3)
-        self.assertEqual(len(errors), 0)
-
-    def test_concurrent_ingest_accumulates_errors(self):
-        """_run_concurrent_ingest collects errors from failed items."""
-        adapter = self._make_adapter()
-
-        async def _process(item):
-            if item == 2:
-                raise ValueError("bad item")
-            return True, None
-
-        count, errors = asyncio.run(
-            adapter._run_concurrent_ingest(
-                [1, 2, 3], _process, concurrency=2,
-            )
-        )
-        self.assertEqual(count, 2)
-        self.assertEqual(len(errors), 1)
-        self.assertIn("bad item", errors[0])
-
-    def test_concurrent_ingest_handles_explicit_failure_tuple(self):
-        """_run_concurrent_ingest collects errors from (False, msg) returns."""
-        adapter = self._make_adapter()
-
-        async def _process(item):
-            if item == 2:
-                return False, "item 2 failed"
-            return True, None
-
-        count, errors = asyncio.run(
-            adapter._run_concurrent_ingest(
-                [1, 2, 3], _process, concurrency=2,
-            )
-        )
-        self.assertEqual(count, 2)
-        self.assertEqual(len(errors), 1)
-        self.assertIn("item 2 failed", errors[0])
+        self.assertTrue(validated[0])
 
 
 if __name__ == "__main__":
