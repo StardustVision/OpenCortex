@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""
-Memory Orchestrator for OpenCortex.
+"""Memory Orchestrator for OpenCortex.
 
 The orchestrator is the primary user-facing API that wires together all
 internal components:
@@ -33,28 +32,55 @@ Typical usage::
 """
 
 import asyncio
-from contextlib import suppress
-from dataclasses import dataclass, field, replace
 import hashlib
 import logging
 import math
-import os
 import re
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from opencortex.cognition import (
-    AutophagyKernel,
-    CandidateStore,
-    ConsolidationGate,
-    CognitiveMetabolismController,
-    CognitiveStateStore,
-    RecallMutationEngine,
-)
+from opencortex.cognition.state_types import OwnerType
 from opencortex.config import CortexConfig, get_config
+from opencortex.core.context import Context
+from opencortex.core.message import Message
+from opencortex.core.user_id import UserIdentifier
+from opencortex.http.request_context import (
+    get_effective_identity,
+    get_effective_project_id,
+)
+from opencortex.intent import (
+    MemoryExecutor,
+    QueryAnchorKind,
+    RecallPlanner,
+    RetrievalPlan,
+    ScopeLevel,
+    SearchResult,
+)
+from opencortex.intent.retrieval_support import (
+    anchor_rerank_bonus,
+    build_probe_scope_input,
+    build_scope_filter,
+    build_start_point_filter,
+    merge_filter_clauses,
+    record_anchor_groups,
+)
+from opencortex.intent.retrieval_support import (
+    probe_candidate_ranks as build_probe_candidate_ranks,
+)
+from opencortex.intent.retrieval_support import (
+    query_anchor_groups as build_query_anchor_groups,
+)
+from opencortex.memory import (
+    MemoryKind,
+    memory_abstract_from_record,
+    memory_anchor_hits_from_abstract,
+    memory_kind_policy,
+    memory_merge_signature_from_abstract,
+)
+from opencortex.models.embedder.base import EmbedderBase
 from opencortex.prompts import (
     build_doc_summarization_prompt,
     build_layer_abstract_prompt,
@@ -66,49 +92,6 @@ from opencortex.prompts import (
     build_layer_overview_only_prompt,
     build_parent_summarization_prompt,
 )
-from opencortex.http.request_context import (
-    get_effective_identity,
-    get_effective_project_id,
-)
-from opencortex.intent import (
-    MemoryBootstrapProbe,
-    MemoryExecutor,
-    QueryAnchorKind,
-    RecallPlanner,
-    RetrievalDepth,
-    RetrievalPlan,
-    ScopeLevel,
-    SearchResult,
-)
-from opencortex.intent.retrieval_support import (
-    anchor_rerank_bonus,
-    build_probe_scope_input,
-    build_scope_filter,
-    build_start_point_filter,
-    merge_filter_clauses,
-    probe_candidate_ranks as build_probe_candidate_ranks,
-    query_anchor_groups as build_query_anchor_groups,
-    record_anchor_groups,
-)
-from opencortex.intent.types import probe_confidence
-from opencortex.intent.timing import (
-    StageTimingCollector,
-    measure_async,
-    measure_sync,
-)
-from opencortex.memory import (
-    MemoryKind,
-    memory_abstract_from_record,
-    memory_anchor_hits_from_abstract,
-    memory_kind_policy,
-    memory_merge_signature_from_abstract,
-)
-from opencortex.utils.json_parse import parse_json_from_response
-from opencortex.utils.text import smart_truncate, chunked_llm_derive
-from opencortex.core.context import Context, ContextType as CoreContextType
-from opencortex.core.message import Message
-from opencortex.core.user_id import UserIdentifier
-from opencortex.models.embedder.base import EmbedderBase
 from opencortex.retrieve.intent_analyzer import IntentAnalyzer, LLMCompletionCallable
 from opencortex.retrieve.rerank_client import RerankClient
 from opencortex.retrieve.rerank_config import RerankConfig
@@ -125,8 +108,9 @@ from opencortex.retrieve.uri_path_scorer import compute_uri_path_scores
 from opencortex.storage.collection_schemas import init_context_collection
 from opencortex.storage.cortex_fs import CortexFS, init_cortex_fs
 from opencortex.storage.storage_interface import StorageInterface
+from opencortex.utils.json_parse import parse_json_from_response
+from opencortex.utils.text import chunked_llm_derive, smart_truncate
 from opencortex.utils.uri import CortexURI
-from opencortex.cognition.state_types import OwnerType
 
 logger = logging.getLogger(__name__)
 
@@ -184,8 +168,7 @@ class _DeriveTask:
 
 
 class MemoryOrchestrator:
-    """
-    Top-level orchestrator for OpenCortex memory operations.
+    """Top-level orchestrator for OpenCortex memory operations.
 
     Wires together storage, filesystem, retrieval, embedding, and
     reward-based feedback scoring into a single coherent API.
@@ -231,6 +214,7 @@ class MemoryOrchestrator:
         self._knowledge_service_instance: Optional[Any] = None
         self._system_status_service_instance: Optional[Any] = None
         self._background_task_manager_instance: Optional[Any] = None
+        self._bootstrapper_instance: Optional[Any] = None
         # Plan 009 / RELY-01 — InsightsAgent (when enabled in
         # ``server.py`` lifespan) holds a second LLMCompletion wrapper
         # whose pool would otherwise leak on shutdown. The lifespan
@@ -337,464 +321,46 @@ class MemoryOrchestrator:
     # =========================================================================
 
     async def init(self) -> "MemoryOrchestrator":
-        """
-        Initialize all internal components.
+        """Delegate to SubsystemBootstrapper.init().
 
-        Creates the storage backend (if not provided), initializes CortexFS,
-        sets up the context collection, and wires up the retriever.
+        Initializes all internal components via the bootstrapper.
+        See ``SubsystemBootstrapper.init`` for the full 11-step
+        boot sequence.
 
         Returns:
             self (for chaining)
         """
-        if self._initialized:
-            return self
+        return await self._bootstrapper.init()
 
-        # 1. Storage backend (auto-create QdrantStorageAdapter if not provided)
-        if self._storage is None:
-            from opencortex.storage.qdrant import QdrantStorageAdapter
-
-            db_path = str(Path(self._config.data_root) / ".qdrant")
-            qdrant_url = getattr(self._config, "qdrant_url", "") or ""
-            self._storage = QdrantStorageAdapter(
-                path=db_path,
-                embedding_dim=self._config.embedding_dimension,
-                url=qdrant_url,
-            )
-            logger.info(
-                "[MemoryOrchestrator] Auto-created QdrantStorageAdapter at %s",
-                qdrant_url or db_path,
-            )
-
-        # 1b. Embedder auto-creation
-        if self._embedder is None:
-            self._embedder = self._create_default_embedder()
-
-        # 2. User identity (default; overridden per-request via HTTP headers)
-        self._user = UserIdentifier("default", "default")
-
-        # 3. CortexFS
-        self._fs = init_cortex_fs(
-            data_root=self._config.data_root,
-            query_embedder=self._embedder,
-            rerank_config=self._rerank_config,
-            vector_store=self._storage,
-        )
-
-        # 4. Create context collection if needed
-        await init_context_collection(
-            self._storage,
-            self._get_collection(),
-            self._config.embedding_dimension,
-        )
-
-        # 5. Intent analyzer: use provided callable or auto-create from config
-        if self._llm_completion is None:
-            try:
-                from opencortex.models.llm_factory import create_llm_completion
-
-                self._llm_completion = create_llm_completion(self._config)
-            except Exception as exc:
-                logger.warning(
-                    "[MemoryOrchestrator] Could not create LLM completion from config: %s",
-                    exc,
-                )
-
-        if self._llm_completion:
-            self._analyzer = IntentAnalyzer(llm_completion=self._llm_completion)
-
-        # Plan 009 — RerankClient is created lazily by
-        # ``_get_or_create_rerank_client()`` on first use. Eager
-        # construction would trigger ``_init_local_reranker`` (fastembed
-        # model download) for every orchestrator init, including in
-        # tests that never need it. Lazy keeps the singleton invariant
-        # (one instance per process across all admin requests) without
-        # imposing the cold-start cost. ``MemoryOrchestrator.close()``
-        # checks for ``None`` before invoking ``aclose`` (U3).
-
-        # 6. Cone Retrieval: entity index + scorer (BEFORE retriever, so retriever gets live reference)
-        if self._config.cone_retrieval_enabled:
-            from opencortex.retrieve.entity_index import EntityIndex
-            from opencortex.retrieve.cone_scorer import ConeScorer
-            self._entity_index = EntityIndex()
-            self._cone_scorer = ConeScorer(self._entity_index)
-            asyncio.create_task(self._entity_index.build_for_collection(
-                self._storage, self._get_collection()
-            ))
-
-        # 7. Memory bootstrap probe
-        self._memory_probe = MemoryBootstrapProbe(
-            storage=self._storage,
-            embedder=self._embedder,
-            collection_resolver=self._get_collection,
-            filter_builder=self._build_probe_filter,
-            top_k=6,
-        )
-
-        # 8. Background maintenance: text indexes, migrations, re-embed, recovery
-        asyncio.create_task(self._startup_maintenance())
-
-        # 8b. Document derive worker
-        self._start_derive_worker()
-
-        # 9. Autophagy cognition components
-        if getattr(self._config, "cognition_enabled", True):
-            await self._init_cognition()
-            self._start_autophagy_sweeper()
-
-        # 9b. Plan 009 / R5 — periodic sweeper that watches the
-        # pooled httpx clients (LLM + rerank) for the leak shape that
-        # caused the original CLOSE_WAIT incident. Defense-in-depth:
-        # even if a future code path forgets to ``aclose()`` a client,
-        # the sweeper logs WARNING when any pool exceeds 80% of its
-        # max_connections cap so operators see the rise before it
-        # blocks the event loop.
-        self._start_connection_sweeper()
-
-        # 10. Cortex Alpha components
-        await self._init_alpha()
-
-        # 11. Skill Engine
-        await self._init_skill_engine()
-
-        self._initialized = True
-        logger.info(
-            "[MemoryOrchestrator] Initialized (data_root=%s)", self._config.data_root
-        )
-        return self
+    # Delegates to SubsystemBootstrapper (bodies live in bootstrapper.py)
 
     async def _init_cognition(self) -> None:
-        """Initialize cognition-layer stores/controllers/kernel."""
-        if not self._storage:
-            return
-
-        self._cognitive_state_store = CognitiveStateStore(self._storage)
-        await self._cognitive_state_store.init()
-
-        self._candidate_store = CandidateStore(self._storage)
-        await self._candidate_store.init()
-
-        self._recall_mutation_engine = RecallMutationEngine()
-        self._consolidation_gate = ConsolidationGate(
-            candidate_store=self._candidate_store,
-        )
-        self._cognitive_metabolism_controller = CognitiveMetabolismController()
-        self._autophagy_kernel = AutophagyKernel(
-            state_store=self._cognitive_state_store,
-            mutation_engine=self._recall_mutation_engine,
-            consolidation_gate=self._consolidation_gate,
-            candidate_store=self._candidate_store,
-            metabolism_controller=self._cognitive_metabolism_controller,
-        )
+        """Delegate to SubsystemBootstrapper._init_cognition."""
+        await self._bootstrapper._init_cognition()
 
     async def _init_alpha(self) -> None:
-        """Initialize Cortex Alpha components if enabled."""
-        alpha_cfg = self._config.cortex_alpha
-
-        # Observer — always initialized (lightweight in-memory)
-        from opencortex.alpha.observer import Observer
-
-        self._observer = Observer()
-
-        if self._storage and self._embedder and alpha_cfg.trace_splitter_enabled:
-            # TraceStore
-            from opencortex.alpha.trace_store import TraceStore
-
-            self._trace_store = TraceStore(
-                storage=self._storage,
-                embedder=self._embedder,
-                cortex_fs=self._fs,
-                collection_name=alpha_cfg.trace_collection_name,
-                embedding_dim=self._config.embedding_dimension,
-                on_trace_saved=self._on_trace_saved if self._autophagy_kernel else None,
-            )
-            await self._trace_store.init()
-
-        if self._storage and self._embedder and alpha_cfg.archivist_enabled:
-            # KnowledgeStore
-            from opencortex.alpha.knowledge_store import KnowledgeStore
-
-            self._knowledge_store = KnowledgeStore(
-                storage=self._storage,
-                embedder=self._embedder,
-                cortex_fs=self._fs,
-                collection_name=alpha_cfg.knowledge_collection_name,
-                embedding_dim=self._config.embedding_dimension,
-            )
-            await self._knowledge_store.init()
-
-        # TraceSplitter (needs LLM)
-        if self._llm_completion and alpha_cfg.trace_splitter_enabled:
-            from opencortex.alpha.trace_splitter import TraceSplitter
-
-            self._trace_splitter = TraceSplitter(
-                llm_fn=self._llm_completion,
-                max_context_tokens=alpha_cfg.trace_splitter_max_context_tokens,
-            )
-
-        # Archivist (needs LLM)
-        if self._llm_completion and alpha_cfg.archivist_enabled:
-            from opencortex.alpha.archivist import Archivist
-
-            self._archivist = Archivist(
-                llm_fn=self._llm_completion,
-                embedder=self._embedder,
-                trigger_threshold=alpha_cfg.archivist_trigger_threshold,
-                trigger_mode=alpha_cfg.archivist_trigger_mode,
-            )
-
-        # ContextManager — three-phase lifecycle for memory_context protocol
-        from opencortex.context import ContextManager
-
-        self._context_manager = ContextManager(
-            orchestrator=self,
-            observer=self._observer,
-        )
-        await self._context_manager.start()
-
-        logger.info("[MemoryOrchestrator] Cortex Alpha initialized")
+        """Delegate to SubsystemBootstrapper._init_alpha."""
+        await self._bootstrapper._init_alpha()
 
     async def _init_skill_engine(self) -> None:
-        """Initialize Skill Engine if storage and embedder are available."""
-        if not self._storage or not self._embedder:
-            return
-        try:
-            from opencortex.skill_engine.adapters.storage_adapter import SkillStorageAdapter
-            from opencortex.skill_engine.adapters.llm_adapter import LLMCompletionAdapter
-            from opencortex.skill_engine.store import SkillStore
-            from opencortex.skill_engine.skill_manager import SkillManager
-            from opencortex.skill_engine.http_routes import set_skill_manager
-
-            storage_adapter = SkillStorageAdapter(
-                storage=self._storage,
-                embedder=self._embedder,
-                embedding_dim=self._config.embedding_dimension,
-            )
-            await storage_adapter.initialize()
-            store = SkillStore(storage_adapter)
-
-            analyzer = None
-            evolver = None
-            llm_adapter = None
-
-            if self._llm_completion:
-                llm_adapter = LLMCompletionAdapter(self._llm_completion)
-
-                from opencortex.skill_engine.evolver import SkillEvolver
-                evolver = SkillEvolver(llm=llm_adapter, store=store)
-
-                # SourceAdapter + Analyzer (for extraction pipeline)
-                from opencortex.skill_engine.adapters.source_adapter import QdrantSourceAdapter
-                from opencortex.skill_engine.analyzer import SkillAnalyzer
-                source_adapter = QdrantSourceAdapter(
-                    storage=self._storage, embedder=self._embedder,
-                )
-                analyzer = SkillAnalyzer(
-                    source=source_adapter, llm=llm_adapter, store=store,
-                )
-
-            # Quality Gate (Phase A)
-            quality_gate = None
-            if llm_adapter:
-                from opencortex.skill_engine.quality_gate import QualityGate
-                quality_gate = QualityGate(llm=llm_adapter)
-
-            # Sandbox TDD (Phase B — default OFF)
-            sandbox_tdd = None
-            if self._config.cortex_alpha.sandbox_tdd_enabled and llm_adapter:
-                from opencortex.skill_engine.sandbox_tdd import SandboxTDD
-                sandbox_tdd = SandboxTDD(
-                    llm=llm_adapter,
-                    max_llm_calls=self._config.cortex_alpha.sandbox_tdd_max_llm_calls,
-                )
-
-            self._skill_manager = SkillManager(
-                store=store, analyzer=analyzer, evolver=evolver,
-                quality_gate=quality_gate, sandbox_tdd=sandbox_tdd,
-            )
-            set_skill_manager(self._skill_manager)
-
-            # SkillEventStore + Evaluator (Phase C)
-            from opencortex.skill_engine.event_store import SkillEventStore
-            from opencortex.skill_engine.evaluator import SkillEvaluator
-
-            self._skill_event_store = SkillEventStore(storage=self._storage)
-            await self._skill_event_store.init()
-
-            self._skill_evaluator = SkillEvaluator(
-                event_store=self._skill_event_store,
-                skill_store=store,
-                trace_store=self._trace_store,
-                skill_storage=storage_adapter,
-                llm=llm_adapter,
-            )
-
-            # Startup sweeper for crash recovery (fire-and-forget, all tenants)
-            if self._skill_evaluator:
-                asyncio.create_task(self._skill_evaluator.sweep_unevaluated())
-
-            logger.info("[MemoryOrchestrator] Skill Engine initialized")
-        except Exception as exc:
-            logger.info("[MemoryOrchestrator] Skill Engine not available: %s", exc)
+        """Delegate to SubsystemBootstrapper._init_skill_engine."""
+        await self._bootstrapper._init_skill_engine()
 
     def _create_default_embedder(self) -> Optional[EmbedderBase]:
-        """
-        Auto-create an embedder based on CortexConfig.
-
-        Resolution order:
-        1. If ``embedding_provider == "local"``, create a
-           :class:`LocalEmbedder` using FastEmbed ONNX inference.
-        2. If ``embedding_provider == "openai"``, create an
-           :class:`OpenAIDenseEmbedder` (works with any OpenAI-compatible API).
-        3. If nothing works, log a warning and return ``None``.
-
-        All embedders are wrapped with BM25 sparse (hybrid search) then LRU cache.
-
-        Returns:
-            An :class:`EmbedderBase` instance, or ``None`` if creation fails.
-        """
-        import os
-
-        provider = (self._config.embedding_provider or "").strip().lower()
-
-        # Explicitly disabled — no embedding, degraded to filter/scroll search
-        if provider in ("none", "disabled", "off"):
-            logger.info(
-                "[MemoryOrchestrator] embedding_provider='%s' — "
-                "running without embedder (filter/scroll search only).",
-                provider,
-            )
-            return None
-
-        if provider == "local":
-            return self._create_local_embedder()
-
-        if provider == "volcengine":
-            logger.warning(
-                "[MemoryOrchestrator] embedding_provider='volcengine' is deprecated. "
-                "Use 'openai' with the same API key/base URL."
-            )
-            return None
-
-        if provider == "openai":
-            try:
-                from opencortex.models.embedder.openai_embedder import (
-                    OpenAIDenseEmbedder,
-                )
-
-                api_key = self._config.embedding_api_key or os.environ.get(
-                    "OPENCORTEX_EMBEDDING_API_KEY", ""
-                )
-                if not api_key:
-                    logger.warning(
-                        "[MemoryOrchestrator] embedding_provider='openai' but no "
-                        "api_key found in config or OPENCORTEX_EMBEDDING_API_KEY env var. "
-                        "Skipping auto-embedder creation."
-                    )
-                    return None
-
-                model_name = self._config.embedding_model
-                if not model_name:
-                    logger.warning(
-                        "[MemoryOrchestrator] embedding_provider='openai' but "
-                        "embedding_model is not set. Skipping auto-embedder creation."
-                    )
-                    return None
-
-                embedder = OpenAIDenseEmbedder(
-                    model_name=model_name,
-                    api_key=api_key,
-                    api_base=self._config.embedding_api_base
-                    or "https://api.openai.com/v1",
-                    dimension=self._config.embedding_dimension or None,
-                )
-                logger.info(
-                    "[MemoryOrchestrator] Auto-created OpenAIDenseEmbedder (model=%s)",
-                    model_name,
-                )
-                return self._wrap_with_cache(self._wrap_with_hybrid(embedder))
-            except ImportError as exc:
-                logger.warning(
-                    "[MemoryOrchestrator] Cannot create OpenAI embedder — "
-                    "httpx not installed: %s",
-                    exc,
-                )
-                return None
-            except Exception as exc:
-                logger.warning(
-                    "[MemoryOrchestrator] Failed to create OpenAI embedder: %s",
-                    exc,
-                )
-                return None
-
-        # No provider configured — run without embedder (filter/scroll only)
-        if not provider:
-            logger.info(
-                "[MemoryOrchestrator] No embedding_provider configured. "
-                "Running without embedder (filter/scroll search only)."
-            )
-            return None
-
-        # Unknown / unsupported provider
-        logger.warning(
-            "[MemoryOrchestrator] Unknown embedding_provider='%s'. "
-            "No embedder will be auto-created.",
-            provider,
-        )
-        return None
+        """Delegate to SubsystemBootstrapper._create_default_embedder."""
+        return self._bootstrapper._create_default_embedder()
 
     def _create_local_embedder(self) -> Optional[EmbedderBase]:
-        """Create a local FastEmbed embedder with BM25 sparse + LRU cache."""
-        try:
-            from opencortex.models.embedder.local_embedder import (
-                DEFAULT_LOCAL_EMBEDDING_MODEL,
-                LocalEmbedder,
-            )
+        """Delegate to SubsystemBootstrapper._create_local_embedder."""
+        return self._bootstrapper._create_local_embedder()
 
-            model_name = (
-                self._config.embedding_model or DEFAULT_LOCAL_EMBEDDING_MODEL
-            )
-            local_config = {"onnx_intra_op_threads": self._config.onnx_intra_op_threads}
-            embedder = LocalEmbedder(model_name=model_name, config=local_config)
-            if not embedder.is_available:
-                logger.warning(
-                    "[MemoryOrchestrator] LocalEmbedder failed to load '%s'. "
-                    "Install with: uv add fastembed",
-                    model_name,
-                )
-                return None
+    async def _startup_maintenance(self) -> None:
+        """Delegate to SubsystemBootstrapper._startup_maintenance."""
+        await self._bootstrapper._startup_maintenance()
 
-            # Update dimension from detected model
-            detected_dim = embedder.get_dimension()
-            if detected_dim and detected_dim != self._config.embedding_dimension:
-                logger.info(
-                    "[MemoryOrchestrator] Updating embedding_dimension %d → %d "
-                    "from local model",
-                    self._config.embedding_dimension,
-                    detected_dim,
-                )
-                self._config.embedding_dimension = detected_dim
-
-            logger.info(
-                "[MemoryOrchestrator] Auto-created LocalEmbedder (model=%s, dim=%d)",
-                model_name,
-                detected_dim,
-            )
-
-            return self._wrap_with_cache(self._wrap_with_hybrid(embedder))
-
-        except ImportError as exc:
-            logger.warning(
-                "[MemoryOrchestrator] Cannot create local embedder — "
-                "fastembed not installed: %s",
-                exc,
-            )
-            return None
-        except Exception as exc:
-            logger.warning(
-                "[MemoryOrchestrator] Failed to create local embedder: %s",
-                exc,
-            )
-            return None
+    async def _check_and_reembed(self) -> None:
+        """Delegate to SubsystemBootstrapper._check_and_reembed."""
+        await self._bootstrapper._check_and_reembed()
 
     def _is_retryable_immediate_embed_exception(self, exc: Exception) -> bool:
         """Return True when immediate remote embedding should fall back locally."""
@@ -870,8 +436,8 @@ class MemoryOrchestrator:
 
         if isinstance(embedder, HybridEmbedderBase):
             return embedder
-        from opencortex.models.embedder.sparse import BM25SparseEmbedder
         from opencortex.models.embedder.base import CompositeHybridEmbedder
+        from opencortex.models.embedder.sparse import BM25SparseEmbedder
 
         return CompositeHybridEmbedder(embedder, BM25SparseEmbedder())
 
@@ -888,84 +454,6 @@ class MemoryOrchestrator:
         except Exception as exc:
             logger.warning("[MemoryOrchestrator] Failed to wrap with cache: %s", exc)
             return embedder
-
-    async def _check_and_reembed(self) -> None:
-        """Auto re-embed if the embedding model has changed since last run."""
-        current_model = getattr(self._embedder, "model_name", "")
-        if not current_model or not self._embedder:
-            return
-
-        marker = Path(self._config.data_root) / ".embedding_model"
-        previous_model = marker.read_text().strip() if marker.exists() else ""
-
-        if previous_model == current_model:
-            return
-
-        # Only re-embed if there are existing records
-        try:
-            count = await self._storage.count(self._get_collection())
-        except Exception:
-            count = 0
-
-        if count == 0:
-            # No data yet — just write the marker
-            marker.write_text(current_model)
-            return
-
-        logger.info(
-            "[Orchestrator] Embedding model changed: %s → %s. "
-            "Re-embedding %d records ...",
-            previous_model or "(none)",
-            current_model,
-            count,
-        )
-        from opencortex.migration.v040_reembed import reembed_all as _reembed_all
-
-        updated = await _reembed_all(
-            self._storage,
-            self._get_collection(),
-            self._embedder,
-        )
-        logger.info(
-            "[Orchestrator] Re-embedded %d records (model: %s → %s)",
-            updated,
-            previous_model or "(none)",
-            current_model,
-        )
-        marker.write_text(current_model)
-
-    async def _startup_maintenance(self) -> None:
-        """Background: text indexes, migrations, re-embed. Runs after init() returns."""
-        if hasattr(self._storage, "ensure_text_indexes"):
-            try:
-                await self._storage.ensure_text_indexes()
-            except Exception as exc:
-                logger.warning("[Orchestrator] Text index setup failed: %s", exc)
-
-        try:
-            from opencortex.migration.v030_path_redesign import (
-                backfill_new_fields,
-                cleanup_root_junk,
-            )
-
-            await cleanup_root_junk(self._storage, self._fs, self._get_collection())
-            await backfill_new_fields(self._storage, self._get_collection())
-        except Exception as exc:
-            logger.warning("[Orchestrator] Migration v0.3 skipped: %s", exc)
-
-        try:
-            from opencortex.migration.v040_project_backfill import backfill_project_id
-
-            await backfill_project_id(self._storage, self._get_collection())
-        except Exception as exc:
-            logger.warning("[Orchestrator] Migration v0.4 skipped: %s", exc)
-
-        try:
-            await self._check_and_reembed()
-        except Exception as exc:
-            logger.warning("[Orchestrator] Auto re-embed skipped: %s", exc)
-
-        await self._recover_pending_derives()
 
     # =========================================================================
     # Background task lifecycle — delegates (bodies live in BackgroundTaskManager)
@@ -1055,12 +543,13 @@ class MemoryOrchestrator:
         meta: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Write a single message for immediate searchability using the shared contract."""
+        from uuid import uuid4
+
         from opencortex.http.request_context import (
             get_effective_identity,
             get_effective_project_id,
         )
         from opencortex.utils.uri import CortexURI
-        from uuid import uuid4
 
         tid, uid = get_effective_identity()
         nid = uuid4().hex
@@ -1489,7 +978,6 @@ class MemoryOrchestrator:
             keywords_list = _split_keyword_string(keywords)
             keywords_str = ", ".join(keywords_list)
 
-            from opencortex.core.context import Vectorize, Context
 
             vectorize_text = f"{new_abstract} {keywords_str}".strip() if keywords_str else new_abstract
 
@@ -2148,6 +1636,22 @@ class MemoryOrchestrator:
         if cached is None:
             cached = BackgroundTaskManager(self)
             self._background_task_manager_instance = cached
+        return cached
+
+    @property
+    def _bootstrapper(self) -> "SubsystemBootstrapper":
+        """Lazy-built SubsystemBootstrapper for subsystem creation and wiring.
+
+        Phase 5 of plan 015 mirrors the ``_background_task_manager``
+        lazy-property pattern. Uses ``getattr`` with default so
+        ``__new__`` bypass tests don't crash on missing attribute.
+        """
+        from opencortex.lifecycle.bootstrapper import SubsystemBootstrapper
+
+        cached = getattr(self, "_bootstrapper_instance", None)
+        if cached is None:
+            cached = SubsystemBootstrapper(self)
+            self._bootstrapper_instance = cached
         return cached
 
     # =========================================================================
@@ -2892,9 +2396,13 @@ class MemoryOrchestrator:
 
         # Determine path_source per leaf (for trace)
         from opencortex.retrieve.uri_path_scorer import (
-            URI_HOP_COST as _URI_HOP_COST,
-            HIGH_CONFIDENCE_THRESHOLD as _HIGH_CONF_THRESHOLD,
             HIGH_CONFIDENCE_DISCOUNT as _HIGH_CONF_DISCOUNT,
+        )
+        from opencortex.retrieve.uri_path_scorer import (
+            HIGH_CONFIDENCE_THRESHOLD as _HIGH_CONF_THRESHOLD,
+        )
+        from opencortex.retrieve.uri_path_scorer import (
+            URI_HOP_COST as _URI_HOP_COST,
         )
 
         def _determine_path_source(leaf_uri: str) -> tuple[str, Optional[float]]:
@@ -3207,8 +2715,7 @@ class MemoryOrchestrator:
         metadata_filter: Optional[Dict[str, Any]] = None,
         llm_completion: Optional[LLMCompletionCallable] = None,
     ) -> FindResult:
-        """
-        Session-aware search using IntentAnalyzer for query planning.
+        """Session-aware search using IntentAnalyzer for query planning.
 
         Uses conversation history to generate multiple targeted queries,
         then executes them concurrently via hierarchical retrieval.
@@ -3828,13 +3335,13 @@ class MemoryOrchestrator:
             cat = category if category in self._USER_MEMORY_CATEGORIES else "events"
             return CortexURI.build_private(tid, uid, "memories", cat, node_name)
 
-        elif context_type == "case":
+        if context_type == "case":
             return CortexURI.build_shared(tid, "shared", "cases", node_name)
 
-        elif context_type == "pattern":
+        if context_type == "pattern":
             return CortexURI.build_shared(tid, "shared", "patterns", node_name)
 
-        elif context_type == "resource":
+        if context_type == "resource":
             project = get_effective_project_id()  # e.g. "OpenCortex" or "public"
             if category:
                 return CortexURI.build_shared(
@@ -3842,7 +3349,7 @@ class MemoryOrchestrator:
                 )
             return CortexURI.build_shared(tid, "resources", project, node_name)
 
-        elif context_type == "staging":
+        if context_type == "staging":
             return CortexURI.build_private(tid, uid, "staging", node_name)
 
         # Fallback: treat as user memory event
@@ -3999,8 +3506,7 @@ class MemoryOrchestrator:
         tenant_id: str,
         user_id: str,
     ) -> Dict[str, Any]:
-        """
-        Get memory statistics for a user (admin/insights use).
+        """Get memory statistics for a user (admin/insights use).
 
         Returns:
             Dict with keys:
