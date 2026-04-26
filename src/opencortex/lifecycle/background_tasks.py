@@ -93,8 +93,6 @@ class BackgroundTaskManager:
             return
 
         # Be resilient to unit tests that bypass __init__ via __new__.
-        if not hasattr(orch, "_autophagy_sweep_cursor"):
-            orch._autophagy_sweep_cursor = None
         if not hasattr(orch, "_autophagy_sweep_task"):
             orch._autophagy_sweep_task = None
         if not hasattr(orch, "_autophagy_startup_sweep_task"):
@@ -707,8 +705,9 @@ class BackgroundTaskManager:
             ),
             name="opencortex.autophagy.recall_bookkeeping",
         )
-        self._recall_bookkeeping_tasks_set().add(task)
-        task.add_done_callback(self._recall_bookkeeping_tasks_set().discard)
+        tasks = self._recall_bookkeeping_tasks_set()
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
 
     def _recall_bookkeeping_tasks_set(self) -> Set[asyncio.Task]:
         """Return the tracked background recall bookkeeping task set.
@@ -835,3 +834,4 @@ class BackgroundTaskManager:
                 derive_worker_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await derive_worker_task
+        orch._derive_worker_task = None

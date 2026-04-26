@@ -3102,7 +3102,7 @@ class MemoryOrchestrator:
             user_id=user_id,
         )
 
-    def _recall_bookkeeping_tasks_set(self) -> set:
+    def _recall_bookkeeping_tasks_set(self) -> set[asyncio.Task[Any]]:
         """Delegate to BackgroundTaskManager._recall_bookkeeping_tasks_set."""
         return self._background_task_manager._recall_bookkeeping_tasks_set()
 
