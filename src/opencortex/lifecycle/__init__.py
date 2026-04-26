@@ -8,7 +8,7 @@ and manages a focused lifecycle concern.
 
 This is part of the multi-PR decomposition documented in
 ``docs/plans/2026-04-25-010-refactor-orchestrator-memory-service-plan.md``.
-Phase 3 added ``BackgroundTaskManager``; Phase 5 will add
+Phase 3 added ``BackgroundTaskManager``; Phase 5 added
 ``SubsystemBootstrapper``.
 
 No re-exports — import directly from the submodule, e.g.
