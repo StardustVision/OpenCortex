@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Memory record CRUD + scoring service extracted from MemoryOrchestrator.
 
-This module is Phase 1 of the
-``docs/plans/2026-04-25-010-refactor-orchestrator-memory-service-plan.md``
-decomposition. It hosts the methods that read and write individual
-memory records and adjust their reward / decay / protection state.
+All 14 public methods have been extracted from ``MemoryOrchestrator``
+as part of plans 010/011. This module owns memory record lifecycle:
+creation, retrieval, update, removal, and reward-based scoring.
 
 Boundary
 --------
@@ -51,9 +50,9 @@ import hashlib
 import json
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from opencortex.core.context import Context, Vectorize
@@ -99,9 +98,10 @@ _BATCH_ADD_CONCURRENCY = 8
 class MemoryService:
     """Memory record CRUD + scoring surface.
 
-    Methods are added in subsequent units of plan 010 (U2 CRUD, U3
-    queries, U4 scoring). U1 lands the scaffolding only so the move
-    operations stay reviewable as one-method-per-commit diffs.
+    All public methods (14 total) have been extracted from
+    ``MemoryOrchestrator`` across plans 010/011. The service is
+    constructed eagerly by the orchestrator and delegates to
+    orchestrator-owned subsystems via ``self._orch``.
     """
 
     def __init__(self, orchestrator: "MemoryOrchestrator") -> None:
@@ -402,9 +402,32 @@ class MemoryService:
         embed_text: str = "",
         defer_derive: bool = False,
     ) -> Context:
-        """Add a new context (memory, resource, or skill).
+        """Add a new context and persist it to vector DB + filesystem.
 
-        Moved from ``MemoryOrchestrator.add`` (plan 011, U1).
+        Args:
+            abstract: Short summary used as L0 and for embedding.
+            content: Full text stored as L2. When present and
+                ``is_leaf`` is True, LLM-derives overview/keywords.
+            overview: Optional L1 overview override.
+            category: Dot-separated category path (e.g. ``"documents"``).
+            parent_uri: URI of the parent directory node.
+            uri: Explicit URI; auto-generated when omitted.
+            context_type: One of ``memory``, ``resource``, ``skill``,
+                ``staging``.
+            is_leaf: False for directory nodes.
+            meta: Arbitrary metadata dict merged into the record.
+            related_uri: URIs of related contexts.
+            session_id: Session this record belongs to.
+            dedup: Enable semantic dedup check before write.
+            dedup_threshold: Cosine similarity threshold for dedup.
+            embed_text: Override text used for embedding (takes
+                priority over abstract + keywords).
+            defer_derive: Skip LLM derivation; use truncation as
+                placeholder.
+
+        Returns:
+            The created ``Context`` with ``meta["dedup_action"]`` set
+            to ``"created"`` or ``"merged"``.
         """
         from opencortex.orchestrator import (
             _merge_unique_strings,
@@ -611,7 +634,7 @@ class MemoryService:
                     project_id=persisted_project_id,
                 )
                 logger.info(
-                    "[MemoryOrchestrator] add tenant=%s user=%s uri=%s "
+                    "[MemoryService] add tenant=%s user=%s uri=%s "
                     "dedup_action=merged dedup_target=%s score=%.3f "
                     "timing_ms(total=%d derive_layers=%d embed=%d dedup=%d upsert=%d fs_write=%d)",
                     tid,
@@ -707,7 +730,7 @@ class MemoryService:
             exc = t.exception()
             if exc:
                 logger.warning(
-                    "[Orchestrator] CortexFS write failed for %s: %s", uri, exc
+                    "[MemoryService] CortexFS write failed for %s: %s", uri, exc
                 )
 
         _fs_task = asyncio.create_task(
@@ -726,7 +749,7 @@ class MemoryService:
         ctx.meta["dedup_action"] = "created"
         total_ms = int((asyncio.get_running_loop().time() - add_started) * 1000)
         logger.info(
-            "[MemoryOrchestrator] add tenant=%s user=%s uri=%s dedup_action=created "
+            "[MemoryService] add tenant=%s user=%s uri=%s dedup_action=created "
             "timing_ms(total=%d derive_layers=%d embed=%d dedup=%d upsert=%d fs_write=%d)",
             tid,
             uid,
@@ -746,17 +769,14 @@ class MemoryService:
 
     async def _check_duplicate(
         self,
-        vector: list,
+        vector: List[float],
         memory_kind: str,
         merge_signature: str,
         threshold: float,
         tid: str,
         uid: str,
-    ) -> Optional[tuple]:
-        """Return ``(existing_uri, score)`` if a duplicate is found, else None.
-
-        Moved from ``MemoryOrchestrator._check_duplicate`` (plan 011, U1).
-        """
+    ) -> Optional[Tuple[str, float]]:
+        """Return ``(existing_uri, score)`` if a semantically similar record exists, else ``None``."""
         orch = self._orch
         try:
             # Build scope-aware filter: same tenant, same category, leaf only
@@ -817,16 +837,13 @@ class MemoryService:
                 if score >= threshold:
                     return (results[0]["uri"], score)
         except Exception as exc:
-            logger.debug("[MemoryOrchestrator] Dedup check failed: %s", exc)
+            logger.debug("[MemoryService] Dedup check failed: %s", exc)
         return None
 
     async def _merge_into(
         self, existing_uri: str, new_abstract: str, new_content: str
     ) -> None:
-        """Merge new content into an existing record and reinforce it.
-
-        Moved from ``MemoryOrchestrator._merge_into`` (plan 011, U1).
-        """
+        """Merge new content into an existing record and apply positive reinforcement."""
         orch = self._orch
         records = await orch._storage.filter(
             orch._get_collection(),
@@ -852,10 +869,7 @@ class MemoryService:
         await self.feedback(existing_uri, 0.5)
 
     async def _ensure_parent_records(self, parent_uri: str) -> None:
-        """Ensure all ancestor directory records exist in the vector store.
-
-        Moved from ``MemoryOrchestrator._ensure_parent_records`` (plan 011, U1).
-        """
+        """Ensure all ancestor directory records exist in the vector store."""
         orch = self._orch
         uri = parent_uri
         to_create = []
@@ -922,24 +936,21 @@ class MemoryService:
             record["session_id"] = ""
             record["ttl_expires_at"] = ""
             await orch._storage.upsert(orch._get_collection(), record)
-            logger.debug("[MemoryOrchestrator] Created directory record: %s", dir_uri)
+            logger.debug("[MemoryService] Created directory record: %s", dir_uri)
 
     async def _add_document(
         self,
-        content,
-        abstract,
-        overview,
-        category,
-        parent_uri,
-        context_type,
-        meta,
-        session_id,
-        source_path,
+        content: str,
+        abstract: str,
+        overview: str,
+        category: str,
+        parent_uri: Optional[str],
+        context_type: str,
+        meta: Optional[Dict[str, Any]],
+        session_id: Optional[str],
+        source_path: str,
     ) -> Context:
-        """Document mode: parse content into chunks, write each to CortexFS + Qdrant.
-
-        Moved from ``MemoryOrchestrator._add_document`` (plan 011, U1).
-        """
+        """Parse content into chunks via ParserRegistry and write each to CortexFS + Qdrant."""
         orch = self._orch
         if orch._parser_registry is None:
             from opencortex.parse.registry import ParserRegistry
@@ -1074,7 +1085,7 @@ class MemoryService:
         await orch._derive_queue.put(task)
 
         logger.info(
-            "[MemoryOrchestrator] Document enqueued for async derive: %s (%d chunks)",
+            "[MemoryService] Document enqueued for async derive: %s (%d chunks)",
             parent_uri_candidate,
             len(chunks),
         )
@@ -1099,24 +1110,26 @@ class MemoryService:
         source_path: str = "",
         scan_meta: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Batch add documents. LLM generates abstract + overview per item.
+        """Batch-add documents with LLM-generated abstracts and overviews.
 
-        When scan_meta is present, builds directory hierarchy from
-        meta.file_path values.
+        When ``scan_meta`` is present, builds a directory hierarchy from
+        ``meta.file_path`` values before writing leaf records.
 
         Args:
-            items: List of item dicts with content, meta, category etc.
+            items: List of dicts with ``content``, ``meta``,
+                ``category``, etc.
             source_path: Source path hint for the batch.
             scan_meta: Scan metadata for directory tree building.
 
         Returns:
-            Dict with status, total, imported, errors, uris.
+            Dict with keys ``status``, ``total``, ``imported``,
+            ``errors``, ``uris``, ``has_git_project``, ``project_id``.
         """
         orch = self._orch
         orch._ensure_init()
 
         imported = 0
-        errors: List[Any] = []
+        errors: List[Dict[str, Any]] = []
         uris: List[str] = []
 
         # Hierarchical tree building when scan_meta present
@@ -1231,12 +1244,11 @@ class MemoryService:
     # =========================================================================
 
     async def feedback(self, uri: str, reward: float) -> None:
-        """
-        Submit a reward signal for a context.
+        """Submit a reward signal for a context.
 
-        Positive rewards reinforce retrieval; negative rewards penalize it.
-        The reinforced score formula:
-            reinforced_score = similarity * (1 + alpha * reward_factor) * decay_factor
+        Positive rewards reinforce retrieval; negative rewards penalize
+        it. The reinforced score formula:
+        ``reinforced_score = similarity * (1 + alpha * reward_factor) * decay_factor``
 
         Args:
             uri: URI of the context.
@@ -1252,7 +1264,7 @@ class MemoryService:
             limit=1,
         )
         if not records:
-            logger.warning("[MemoryOrchestrator] feedback: URI not found: %s", uri)
+            logger.warning("[MemoryService] feedback: URI not found: %s", uri)
             return
 
         record_id = records[0].get("id", "")
@@ -1263,13 +1275,13 @@ class MemoryService:
         if hasattr(orch._storage, "update_reward"):
             await orch._storage.update_reward(orch._get_collection(), record_id, reward)
             logger.info(
-                "[MemoryOrchestrator] Feedback sent: uri=%s, reward=%s",
+                "[MemoryService] Feedback sent: uri=%s, reward=%s",
                 uri,
                 reward,
             )
         else:
             logger.debug(
-                "[MemoryOrchestrator] Storage backend does not support rewards"
+                "[MemoryService] Storage backend does not support rewards"
             )
 
         # Also update activity count
@@ -1282,11 +1294,10 @@ class MemoryService:
         )
 
     async def feedback_batch(self, rewards: List[Dict[str, Any]]) -> None:
-        """
-        Submit batch reward signals.
+        """Submit batch reward signals.
 
         Args:
-            rewards: List of {"uri": str, "reward": float} dicts.
+            rewards: List of ``{"uri": str, "reward": float}`` dicts.
         """
         orch = self._orch
         orch._ensure_init()
@@ -1295,21 +1306,23 @@ class MemoryService:
             await self.feedback(item["uri"], item["reward"])
 
     async def decay(self) -> Optional[Dict[str, Any]]:
-        """
-        Trigger time-decay across all records.
+        """Trigger time-decay across all records.
 
-        Normal nodes decay at rate=0.95, protected nodes at rate=0.99.
+        Normal nodes decay at rate 0.95, protected nodes at rate 0.99.
         Records below threshold (0.01) may be archived.
 
         Returns:
-            Decay summary dict, or None if backend doesn't support decay.
+            Decay summary dict with keys ``records_processed``,
+            ``records_decayed``, ``records_below_threshold``,
+            ``records_archived``, and optionally ``staging_cleaned``.
+            ``None`` if the storage backend does not support decay.
         """
         orch = self._orch
         orch._ensure_init()
 
         if hasattr(orch._storage, "apply_decay"):
             result = await orch._storage.apply_decay()
-            logger.info("[MemoryOrchestrator] Decay applied: %s", result)
+            logger.info("[MemoryService] Decay applied: %s", result)
             decay_result = {
                 "records_processed": result.records_processed,
                 "records_decayed": result.records_decayed,
@@ -1323,14 +1336,21 @@ class MemoryService:
                 if cleaned:
                     decay_result["staging_cleaned"] = cleaned
             except Exception as exc:
-                logger.warning("[Orchestrator] Staging cleanup failed: %s", exc)
+                logger.warning("[MemoryService] Staging cleanup failed: %s", exc)
 
             return decay_result
-        logger.debug("[MemoryOrchestrator] Storage backend does not support decay")
+        logger.debug("[MemoryService] Storage backend does not support decay")
         return None
 
     async def cleanup_expired_staging(self) -> int:
-        """Delete records past their TTL (staging + immediate + any with TTL)."""
+        """Delete records whose TTL has expired.
+
+        Covers staging records, immediate-layer conversation records,
+        and any other record with a non-empty ``ttl_expires_at`` field.
+
+        Returns:
+            Number of records deleted.
+        """
         orch = self._orch
         orch._ensure_init()
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1359,19 +1379,18 @@ class MemoryService:
         if to_delete:
             await orch._storage.delete(orch._get_collection(), to_delete)
         if cleaned:
-            logger.info("[Orchestrator] Cleaned %d expired records", cleaned)
+            logger.info("[MemoryService] Cleaned %d expired records", cleaned)
         return cleaned
 
     async def protect(self, uri: str, protected: bool = True) -> None:
-        """
-        Mark a context as protected (slower decay).
+        """Mark a context as protected to slow its decay rate.
 
-        Protected memories decay at rate=0.99 instead of 0.95, preserving
-        important knowledge for longer.
+        Protected memories decay at rate 0.99 instead of 0.95,
+        preserving important knowledge for longer.
 
         Args:
             uri: URI of the context.
-            protected: True to protect, False to unprotect.
+            protected: ``True`` to protect, ``False`` to unprotect.
         """
         orch = self._orch
         orch._ensure_init()
@@ -1382,7 +1401,7 @@ class MemoryService:
             limit=1,
         )
         if not records:
-            logger.warning("[MemoryOrchestrator] protect: URI not found: %s", uri)
+            logger.warning("[MemoryService] protect: URI not found: %s", uri)
             return
 
         record_id = records[0].get("id", "")
@@ -1390,15 +1409,19 @@ class MemoryService:
             await orch._storage.set_protected(
                 orch._get_collection(), record_id, protected
             )
-            logger.info("[MemoryOrchestrator] Set protected=%s for: %s", protected, uri)
+            logger.info("[MemoryService] Set protected=%s for: %s", protected, uri)
 
     async def get_profile(self, uri: str) -> Optional[Dict[str, Any]]:
-        """
-        Get the feedback scoring profile for a context.
+        """Get the feedback scoring profile for a context.
+
+        Args:
+            uri: URI of the context.
 
         Returns:
-            Profile dict with reward_score, retrieval_count, feedback counts,
-            effective_score, is_protected. None if not found.
+            Profile dict with keys ``reward_score``, ``retrieval_count``,
+            ``positive_feedback_count``, ``negative_feedback_count``,
+            ``effective_score``, ``is_protected``. ``None`` if the URI
+            is not found or the backend does not support profiles.
         """
         orch = self._orch
         orch._ensure_init()
@@ -1444,24 +1467,28 @@ class MemoryService:
         meta: Optional[Dict[str, Any]] = None,
         session_context: Optional[Dict[str, Any]] = None,
     ) -> FindResult:
-        """
-        Search for relevant contexts.
-
-        Uses probe -> planner -> runtime to determine retrieval posture.
+        """Search for relevant contexts using probe-planner-runtime pipeline.
 
         Args:
-            query: Natural language query.
-            context_type: Restrict to a specific type (memory/resource/skill).
+            query: Natural language query string.
+            context_type: Restrict to a specific type
+                (memory/resource/skill).
             target_uri: Restrict search to a directory subtree.
             limit: Maximum results per type.
             score_threshold: Minimum relevance score.
             metadata_filter: Additional filter conditions.
-            detail_level: Fallback detail level if planner does not override.
-            meta: Optional metadata dict.
+            detail_level: Fallback detail level if planner does not
+                override (``"l0"``, ``"l1"``, ``"l2"``).
+            probe_result: Pre-computed probe result; computed when
+                ``None``.
+            retrieve_plan: Pre-computed retrieval plan; computed when
+                ``None``.
+            meta: Optional metadata dict (supports ``target_doc_id``).
             session_context: Optional session context for runtime scope.
 
         Returns:
-            FindResult with memories, resources, and skills.
+            ``FindResult`` with ``memories``, ``resources``, and
+            ``skills`` lists.
         """
         orch = self._orch
         orch._ensure_init()
@@ -1708,7 +1735,7 @@ class MemoryService:
         retrieve_plan: RetrievalPlan,
         runtime_bound_plan: Dict[str, Any],
     ) -> List[TypedQuery]:
-        """Project planner posture into concrete retrieval queries."""
+        """Project planner posture into concrete ``TypedQuery`` list for retrieval."""
         if context_type:
             types_to_search = [context_type]
         elif target_uri:
@@ -1791,9 +1818,22 @@ class MemoryService:
         offset: int = 0,
         include_payload: bool = False,
     ) -> List[Dict[str, Any]]:
-        """List user's accessible memories with readable content.
+        """List user-accessible memories ordered by ``updated_at`` desc.
 
-        Returns private (own) + shared memories, ordered by updated_at desc.
+        Returns private (own) and shared memories, excluding staging
+        records. Results are tenant-scoped and project-isolated.
+
+        Args:
+            category: Filter by category.
+            context_type: Filter by context type.
+            limit: Maximum records to return.
+            offset: Pagination offset.
+            include_payload: Include ``meta``, ``abstract_json``,
+                ``overview``, and other enrichment fields.
+
+        Returns:
+            List of dicts with ``uri``, ``abstract``, ``category``,
+            ``context_type``, ``scope``, ``project_id``, and timestamps.
         """
         orch = self._orch
         orch._ensure_init()
@@ -1893,7 +1933,20 @@ class MemoryService:
         context_type: Optional[str] = None,
         limit: int = 200,
     ) -> Dict[str, Any]:
-        """Return a lightweight index of all memories, grouped by context_type."""
+        """Return a lightweight index of all memories grouped by context type.
+
+        Only leaf records with non-empty abstracts are included.
+
+        Args:
+            context_type: Comma-separated list of context types to
+                include. All types when ``None``.
+            limit: Maximum records to scan.
+
+        Returns:
+            Dict with ``"index"`` mapping context type to a list of
+            ``{uri, abstract, context_type, category, created_at}`` and
+            ``"total"`` count.
+        """
         orch = self._orch
         orch._ensure_init()
         tid, uid = get_effective_identity()
@@ -1980,7 +2033,21 @@ class MemoryService:
         limit: int = 50,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        """List memories across all users (admin only). No scope isolation."""
+        """List memories across all users (admin-only, no scope isolation).
+
+        Args:
+            tenant_id: Filter by tenant.
+            user_id: Filter by user.
+            category: Filter by category.
+            context_type: Filter by context type.
+            limit: Maximum records to return.
+            offset: Pagination offset.
+
+        Returns:
+            List of dicts with ``uri``, ``abstract``, ``category``,
+            ``context_type``, ``scope``, ``project_id``, identity
+            fields, and timestamps.
+        """
         orch = self._orch
         orch._ensure_init()
 
