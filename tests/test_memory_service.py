@@ -53,5 +53,39 @@ class TestMemoryServiceConstruction(unittest.TestCase):
         self.assertIsNone(service._orch)
 
 
+class TestOrchestratorMemoryServiceProperty(unittest.TestCase):
+    """Lock the lazy-property contract introduced after the plan-010 review.
+
+    ADV-PHASE2-BYPASS-LANDMINE: tests that build orchestrators via
+    ``MemoryOrchestrator.__new__`` skip ``__init__`` entirely, then call
+    delegated methods (``oc.update``, ``oc.remove``, and once Phase 2/3
+    lands, ``oc.search`` etc.). The lazy-property pattern means the
+    ``_memory_service`` attribute resolves on first access without the
+    instance ever having been initialized — the bypass tests don't
+    crash with ``AttributeError``.
+    """
+
+    def test_lazy_property_works_on_new_bypassed_orchestrator(self) -> None:
+        """``__new__`` bypass + first ``_memory_service`` access succeeds."""
+        from opencortex.orchestrator import MemoryOrchestrator
+
+        # Bypass __init__ entirely — same shape as test_perf_fixes.py:13
+        orch = MemoryOrchestrator.__new__(MemoryOrchestrator)
+        # First access: property creates the service, no AttributeError.
+        service = orch._memory_service
+        self.assertIsNotNone(service)
+        # Same instance on subsequent access (cached).
+        self.assertIs(orch._memory_service, service)
+
+    def test_lazy_property_caches_service_instance(self) -> None:
+        """Two reads return the same service instance (cached, not rebuilt)."""
+        from opencortex.orchestrator import MemoryOrchestrator
+
+        orch = MemoryOrchestrator.__new__(MemoryOrchestrator)
+        a = orch._memory_service
+        b = orch._memory_service
+        self.assertIs(a, b)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -310,7 +310,7 @@ class MemoryService:
         orch._ensure_init()
 
         # Pre-delete: get affected record IDs for entity index sync
-        affected_ids_for_entity: list[str] = []
+        affected_ids_for_entity: List[str] = []
         if getattr(orch, "_entity_index", None):
             try:
                 collection = orch._get_collection()

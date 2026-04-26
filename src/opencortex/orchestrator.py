@@ -221,12 +221,15 @@ class MemoryOrchestrator:
         # call ``aclose()`` exactly once on shutdown.
         self._rerank_client: Optional["RerankClient"] = None
         # Plan 010 / Phase 1 — MemoryService extracted from God-Object
-        # orchestrator. Holds the memory CRUD + scoring surface;
-        # constructor is sync + cheap (no I/O), so eager-init is safe
-        # and lets every delegate method on this orchestrator skip the
-        # ``if None`` guard.
-        from opencortex.services.memory_service import MemoryService
-        self._memory_service: MemoryService = MemoryService(self)
+        # orchestrator. Lazy-built via ``_memory_service`` property
+        # below so existing tests that bypass ``__init__`` via
+        # ``MemoryOrchestrator.__new__(MemoryOrchestrator)`` and then
+        # call delegated methods (e.g. ``oc.search`` once U3 lands)
+        # don't crash on a missing attribute. Construction is sync and
+        # cheap, so the property's first-access cost is negligible.
+        # ADV-PHASE2-BYPASS-LANDMINE in plan 010 review identified this
+        # — defused proactively before it bites Phase 2/3.
+        self._memory_service_instance: Optional[Any] = None
         # Plan 009 / RELY-01 — InsightsAgent (when enabled in
         # ``server.py`` lifespan) holds a second LLMCompletion wrapper
         # whose pool would otherwise leak on shutdown. The lifespan
@@ -2766,6 +2769,28 @@ class MemoryOrchestrator:
     def user(self) -> UserIdentifier:
         self._ensure_init()
         return self._user
+
+    @property
+    def _memory_service(self) -> Any:
+        """Lazy-built MemoryService for delegated CRUD/query/scoring methods.
+
+        Phase 1 of plan 010 introduced this back-reference pattern. Lazy
+        construction (instead of eager-init in ``__init__``) means tests
+        that bypass ``__init__`` via ``MemoryOrchestrator.__new__`` and
+        then call a delegated method (the typical perf-test fixture
+        pattern in ``tests/test_perf_fixes.py``) get a working service
+        instance instead of an ``AttributeError``. Construction is sync
+        and cheap (back-reference store only); first-access cost is
+        negligible. Uses ``getattr`` with default so the attribute is
+        not required to exist on the instance — defends against the
+        ``__new__`` bypass which skips ``__init__`` entirely.
+        """
+        cached = getattr(self, "_memory_service_instance", None)
+        if cached is None:
+            from opencortex.services.memory_service import MemoryService
+            cached = MemoryService(self)
+            self._memory_service_instance = cached
+        return cached
 
     # =========================================================================
     # Add / Update / Remove
