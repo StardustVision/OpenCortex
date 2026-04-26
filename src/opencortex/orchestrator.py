@@ -229,6 +229,7 @@ class MemoryOrchestrator:
         # — defused proactively before it bites Phase 2/3.
         self._memory_service_instance: Optional[Any] = None
         self._knowledge_service_instance: Optional[Any] = None
+        self._system_status_service_instance: Optional[Any] = None
         # Plan 009 / RELY-01 — InsightsAgent (when enabled in
         # ``server.py`` lifespan) holds a second LLMCompletion wrapper
         # whose pool would otherwise leak on shutdown. The lifespan
@@ -1486,49 +1487,12 @@ class MemoryOrchestrator:
         await self._derive_queue.join()
 
     async def derive_status(self, uri: str) -> Dict[str, Any]:
-        """Check the async derive status for a document URI.
-
-        Returns dict with 'status' key: 'pending', 'completed', or 'not_found'.
-        """
-        if uri in self._inflight_derive_uris:
-            return {"uri": uri, "status": "pending"}
-
-        fs_path = self._fs._uri_to_path(uri)
-        try:
-            self._fs.agfs.read(f"{fs_path}/.derive_pending")
-            return {"uri": uri, "status": "pending"}
-        except (FileNotFoundError, Exception):
-            pass
-
-        records = await self._storage.filter(
-            self._get_collection(),
-            {"conds": [{"field": "uri", "op": "must", "value": uri}]},
-            limit=1,
-        )
-        if records:
-            return {"uri": uri, "status": "completed"}
-
-        return {"uri": uri, "status": "not_found"}
+        """Check the async derive status for a document URI."""
+        return await self._system_status_service.derive_status(uri)
 
     async def reembed_all(self) -> int:
-        """Re-embed all records with the current embedder.
-
-        Can be called manually or via the admin HTTP endpoint.
-
-        Returns:
-            Number of records updated.
-        """
-        from opencortex.migration.v040_reembed import reembed_all as _reembed_all
-
-        count = await _reembed_all(
-            self._storage,
-            self._get_collection(),
-            self._embedder,
-        )
-        # Update model marker
-        marker = Path(self._config.data_root) / ".embedding_model"
-        marker.write_text(getattr(self._embedder, "model_name", ""))
-        return count
+        """Re-embed all records with the current embedder."""
+        return await self._system_status_service.reembed_all()
 
     def _get_or_create_rerank_client(self) -> RerankClient:
         """Return the process-lifetime RerankClient singleton (lazy).
@@ -2096,12 +2060,7 @@ class MemoryOrchestrator:
 
     async def wait_deferred_derives(self, poll_interval: float = 1.0) -> None:
         """Wait until all in-flight deferred derives complete."""
-        while self._deferred_derive_count > 0:
-            logger.info(
-                "[Orchestrator] waiting for %d deferred derives...",
-                self._deferred_derive_count,
-            )
-            await asyncio.sleep(poll_interval)
+        return await self._system_status_service.wait_deferred_derives(poll_interval)
 
     @staticmethod
     def _fallback_overview_from_content(
@@ -2644,6 +2603,22 @@ class MemoryOrchestrator:
         if cached is None:
             cached = KnowledgeService(self)
             self._knowledge_service_instance = cached
+        return cached
+
+    @property
+    def _system_status_service(self) -> "SystemStatusService":
+        """Lazy-built SystemStatusService for delegated status methods.
+
+        Phase 4 of plan 013 mirrors the ``_knowledge_service`` lazy-property
+        pattern. Uses ``getattr`` with default so ``__new__`` bypass
+        tests don't crash on missing attribute.
+        """
+        from opencortex.services.system_status_service import SystemStatusService
+
+        cached = getattr(self, "_system_status_service_instance", None)
+        if cached is None:
+            cached = SystemStatusService(self)
+            self._system_status_service_instance = cached
         return cached
 
     # =========================================================================
@@ -3903,28 +3878,8 @@ class MemoryOrchestrator:
     # =========================================================================
 
     async def system_status(self, status_type: str = "doctor") -> Dict[str, Any]:
-        """Unified system status endpoint.
-
-        Args:
-            status_type: "health" | "stats" | "doctor"
-        """
-        if status_type == "health":
-            return await self.health_check()
-        elif status_type == "stats":
-            return await self.stats()
-        else:  # doctor
-            health = await self.health_check()
-            st = await self.stats()
-            issues = []
-            if not health.get("storage"):
-                issues.append("Storage unavailable")
-            if not health.get("embedder"):
-                issues.append("Embedder unavailable")
-            if not health.get("llm"):
-                issues.append(
-                    "No LLM configured — intent analysis and session extraction disabled"
-                )
-            return {**health, **st, "issues": issues}
+        """Unified system status endpoint."""
+        return await self._system_status_service.system_status(status_type)
 
     # =========================================================================
     # Session Management (Observer + Trace Pipeline)
@@ -4359,55 +4314,12 @@ class MemoryOrchestrator:
         logger.info("[MemoryOrchestrator] Closed")
 
     async def health_check(self) -> Dict[str, Any]:
-        """
-        Check health of all components.
-
-        Returns:
-            Dict with component health status.
-        """
-        result = {
-            "initialized": self._initialized,
-            "storage": False,
-            "embedder": self._embedder is not None,
-            "llm": self._llm_completion is not None,
-        }
-        if self._initialized and self._storage:
-            result["storage"] = await self._storage.health_check()
-        return result
+        """Check health of all components."""
+        return await self._system_status_service.health_check()
 
     async def stats(self) -> Dict[str, Any]:
-        """
-        Get orchestrator statistics.
-
-        Returns:
-            Dict with storage stats, config info, and component status.
-        """
-        self._ensure_init()
-
-        storage_stats = await self._storage.get_stats()
-        rerank_info = {
-            "enabled": False,
-            "mode": "disabled",
-            "model": None,
-            "fusion_beta": 0.0,
-        }
-        rerank_cfg = self._build_rerank_config()
-        if rerank_cfg.is_available():
-            rerank_info = {
-                "enabled": True,
-                "mode": rerank_cfg.provider,
-                "model": self._config.rerank_model or None,
-                "fusion_beta": rerank_cfg.fusion_beta,
-            }
-        tid, uid = get_effective_identity()
-        return {
-            "tenant_id": tid,
-            "user_id": uid,
-            "storage": storage_stats,
-            "embedder": self._embedder.model_name if self._embedder else None,
-            "has_llm": self._llm_completion is not None,
-            "rerank": rerank_info,
-        }
+        """Get orchestrator statistics."""
+        return await self._system_status_service.stats()
 
     # =========================================================================
     # Internal helpers

@@ -6,11 +6,11 @@ previously methods on the God-Object orchestrator. Each service takes
 a back-reference to the orchestrator at construction (sync, no I/O)
 and exposes a focused method surface.
 
-This is Phase 1-2 of the multi-PR decomposition documented in
+This is Phase 1-4 of the multi-PR decomposition documented in
 ``docs/plans/2026-04-25-010-refactor-orchestrator-memory-service-plan.md``.
-Phase 1 added ``MemoryService``; Phase 2 added ``KnowledgeService``.
-Future phases will add ``SystemStatusService`` and a
-lifecycle-coordination layer here.
+Phase 1 added ``MemoryService``; Phase 2 added ``KnowledgeService``;
+Phase 4 added ``SystemStatusService``.
+Future phases will add a lifecycle-coordination layer here.
 
 No re-exports — import directly from the submodule, e.g.
 ``from opencortex.services.memory_service import MemoryService``.
