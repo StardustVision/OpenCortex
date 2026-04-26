@@ -299,7 +299,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="OpenCortex HTTP Server",
         description="Memory and context management system for AI Agents",
-        version="0.7.0",
+        version="0.8.0",
         lifespan=_lifespan,
     )
     app.add_middleware(RequestContextMiddleware)
