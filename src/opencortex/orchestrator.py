@@ -4357,198 +4357,32 @@ class MemoryOrchestrator:
         ]
 
     # =========================================================================
-    # Reward-based Feedback Scoring
+    # Reward-based Feedback Scoring (delegates to MemoryService, plan 011)
     # =========================================================================
 
     async def feedback(self, uri: str, reward: float) -> None:
-        """
-        Submit a reward signal for a context.
-
-        Positive rewards reinforce retrieval; negative rewards penalize it.
-        The reinforced score formula:
-            reinforced_score = similarity * (1 + alpha * reward_factor) * decay_factor
-
-        Args:
-            uri: URI of the context.
-            reward: Scalar reward value (positive = good, negative = bad).
-        """
-        self._ensure_init()
-
-        # Find the record ID for this URI in context collection
-        records = await self._storage.filter(
-            self._get_collection(),
-            {"op": "must", "field": "uri", "conds": [uri]},
-            limit=1,
-        )
-        if not records:
-            logger.warning("[MemoryOrchestrator] feedback: URI not found: %s", uri)
-            return
-
-        record_id = records[0].get("id", "")
-        if not record_id:
-            return
-
-        # Send reward via storage adapter
-        if hasattr(self._storage, "update_reward"):
-            await self._storage.update_reward(self._get_collection(), record_id, reward)
-            logger.info(
-                "[MemoryOrchestrator] Feedback sent: uri=%s, reward=%s",
-                uri,
-                reward,
-            )
-        else:
-            logger.debug(
-                "[MemoryOrchestrator] Storage backend does not support rewards"
-            )
-
-        # Also update activity count
-        ctx_data = records[0]
-        active_count = ctx_data.get("active_count", 0)
-        await self._storage.update(
-            self._get_collection(),
-            record_id,
-            {"active_count": active_count + 1},
-        )
+        """Delegate to ``MemoryService.feedback`` (plan 011)."""
+        return await self._memory_service.feedback(uri, reward)
 
     async def feedback_batch(self, rewards: List[Dict[str, Any]]) -> None:
-        """
-        Submit batch reward signals.
-
-        Args:
-            rewards: List of {"uri": str, "reward": float} dicts.
-        """
-        self._ensure_init()
-
-        for item in rewards:
-            await self.feedback(item["uri"], item["reward"])
+        """Delegate to ``MemoryService.feedback_batch`` (plan 011)."""
+        return await self._memory_service.feedback_batch(rewards)
 
     async def decay(self) -> Optional[Dict[str, Any]]:
-        """
-        Trigger time-decay across all records.
-
-        Normal nodes decay at rate=0.95, protected nodes at rate=0.99.
-        Records below threshold (0.01) may be archived.
-
-        Returns:
-            Decay summary dict, or None if backend doesn't support decay.
-        """
-        self._ensure_init()
-
-        if hasattr(self._storage, "apply_decay"):
-            result = await self._storage.apply_decay()
-            logger.info("[MemoryOrchestrator] Decay applied: %s", result)
-            decay_result = {
-                "records_processed": result.records_processed,
-                "records_decayed": result.records_decayed,
-                "records_below_threshold": result.records_below_threshold,
-                "records_archived": result.records_archived,
-            }
-
-            # Piggyback staging cleanup on decay
-            try:
-                cleaned = await self.cleanup_expired_staging()
-                if cleaned:
-                    decay_result["staging_cleaned"] = cleaned
-            except Exception as exc:
-                logger.warning("[Orchestrator] Staging cleanup failed: %s", exc)
-
-            return decay_result
-        logger.debug("[MemoryOrchestrator] Storage backend does not support decay")
-        return None
+        """Delegate to ``MemoryService.decay`` (plan 011)."""
+        return await self._memory_service.decay()
 
     async def cleanup_expired_staging(self) -> int:
-        """Delete records past their TTL (staging + immediate + any with TTL)."""
-        self._ensure_init()
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-        # Scan all records with non-empty ttl_expires_at
-        expired = await self._storage.filter(
-            self._get_collection(),
-            {"op": "must_not", "field": "ttl_expires_at", "conds": [""]},
-            limit=1000,
-        )
-        cleaned = 0
-        to_delete = []
-        for record in expired:
-            ttl = record.get("ttl_expires_at", "")
-            if ttl and ttl < now:
-                rid = record.get("id", "")
-                if rid:
-                    to_delete.append(rid)
-                uri = record.get("uri", "")
-                if uri:
-                    try:
-                        await self._fs.delete_temp(uri)
-                    except Exception:
-                        pass
-                cleaned += 1
-        if to_delete:
-            await self._storage.delete(self._get_collection(), to_delete)
-        if cleaned:
-            logger.info("[Orchestrator] Cleaned %d expired records", cleaned)
-        return cleaned
+        """Delegate to ``MemoryService.cleanup_expired_staging`` (plan 011)."""
+        return await self._memory_service.cleanup_expired_staging()
 
     async def protect(self, uri: str, protected: bool = True) -> None:
-        """
-        Mark a context as protected (slower decay).
-
-        Protected memories decay at rate=0.99 instead of 0.95, preserving
-        important knowledge for longer.
-
-        Args:
-            uri: URI of the context.
-            protected: True to protect, False to unprotect.
-        """
-        self._ensure_init()
-
-        records = await self._storage.filter(
-            self._get_collection(),
-            {"op": "must", "field": "uri", "conds": [uri]},
-            limit=1,
-        )
-        if not records:
-            logger.warning("[MemoryOrchestrator] protect: URI not found: %s", uri)
-            return
-
-        record_id = records[0].get("id", "")
-        if hasattr(self._storage, "set_protected"):
-            await self._storage.set_protected(
-                self._get_collection(), record_id, protected
-            )
-            logger.info("[MemoryOrchestrator] Set protected=%s for: %s", protected, uri)
+        """Delegate to ``MemoryService.protect`` (plan 011)."""
+        return await self._memory_service.protect(uri, protected)
 
     async def get_profile(self, uri: str) -> Optional[Dict[str, Any]]:
-        """
-        Get the feedback scoring profile for a context.
-
-        Returns:
-            Profile dict with reward_score, retrieval_count, feedback counts,
-            effective_score, is_protected. None if not found.
-        """
-        self._ensure_init()
-
-        records = await self._storage.filter(
-            self._get_collection(),
-            {"op": "must", "field": "uri", "conds": [uri]},
-            limit=1,
-        )
-        if not records:
-            return None
-
-        record_id = records[0].get("id", "")
-        if hasattr(self._storage, "get_profile"):
-            profile = await self._storage.get_profile(self._get_collection(), record_id)
-            if profile:
-                return {
-                    "id": profile.id,
-                    "reward_score": profile.reward_score,
-                    "retrieval_count": profile.retrieval_count,
-                    "positive_feedback_count": profile.positive_feedback_count,
-                    "negative_feedback_count": profile.negative_feedback_count,
-                    "effective_score": profile.effective_score,
-                    "is_protected": profile.is_protected,
-                }
-        return None
+        """Delegate to ``MemoryService.get_profile`` (plan 011)."""
+        return await self._memory_service.get_profile(uri)
 
     # =========================================================================
     # System Status

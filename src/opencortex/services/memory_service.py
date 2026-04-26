@@ -828,7 +828,7 @@ class MemoryService:
         )
         await self.update(existing_uri, abstract=new_abstract, content=merged_content)
         # Positive reinforcement for the merged record
-        await orch.feedback(existing_uri, 0.5)
+        await self.feedback(existing_uri, 0.5)
 
     async def _ensure_parent_records(self, parent_uri: str) -> None:
         """Ensure all ancestor directory records exist in the vector store.
@@ -1204,3 +1204,203 @@ class MemoryService:
             "project_id": project_id,
             "uris": uris,
         }
+
+    # =========================================================================
+    # Scoring + lifecycle (U4 of plan 011)
+    # =========================================================================
+
+    async def feedback(self, uri: str, reward: float) -> None:
+        """
+        Submit a reward signal for a context.
+
+        Positive rewards reinforce retrieval; negative rewards penalize it.
+        The reinforced score formula:
+            reinforced_score = similarity * (1 + alpha * reward_factor) * decay_factor
+
+        Args:
+            uri: URI of the context.
+            reward: Scalar reward value (positive = good, negative = bad).
+        """
+        orch = self._orch
+        orch._ensure_init()
+
+        # Find the record ID for this URI in context collection
+        records = await orch._storage.filter(
+            orch._get_collection(),
+            {"op": "must", "field": "uri", "conds": [uri]},
+            limit=1,
+        )
+        if not records:
+            logger.warning("[MemoryOrchestrator] feedback: URI not found: %s", uri)
+            return
+
+        record_id = records[0].get("id", "")
+        if not record_id:
+            return
+
+        # Send reward via storage adapter
+        if hasattr(orch._storage, "update_reward"):
+            await orch._storage.update_reward(orch._get_collection(), record_id, reward)
+            logger.info(
+                "[MemoryOrchestrator] Feedback sent: uri=%s, reward=%s",
+                uri,
+                reward,
+            )
+        else:
+            logger.debug(
+                "[MemoryOrchestrator] Storage backend does not support rewards"
+            )
+
+        # Also update activity count
+        ctx_data = records[0]
+        active_count = ctx_data.get("active_count", 0)
+        await orch._storage.update(
+            orch._get_collection(),
+            record_id,
+            {"active_count": active_count + 1},
+        )
+
+    async def feedback_batch(self, rewards: List[Dict[str, Any]]) -> None:
+        """
+        Submit batch reward signals.
+
+        Args:
+            rewards: List of {"uri": str, "reward": float} dicts.
+        """
+        orch = self._orch
+        orch._ensure_init()
+
+        for item in rewards:
+            await self.feedback(item["uri"], item["reward"])
+
+    async def decay(self) -> Optional[Dict[str, Any]]:
+        """
+        Trigger time-decay across all records.
+
+        Normal nodes decay at rate=0.95, protected nodes at rate=0.99.
+        Records below threshold (0.01) may be archived.
+
+        Returns:
+            Decay summary dict, or None if backend doesn't support decay.
+        """
+        orch = self._orch
+        orch._ensure_init()
+
+        if hasattr(orch._storage, "apply_decay"):
+            result = await orch._storage.apply_decay()
+            logger.info("[MemoryOrchestrator] Decay applied: %s", result)
+            decay_result = {
+                "records_processed": result.records_processed,
+                "records_decayed": result.records_decayed,
+                "records_below_threshold": result.records_below_threshold,
+                "records_archived": result.records_archived,
+            }
+
+            # Piggyback staging cleanup on decay
+            try:
+                cleaned = await self.cleanup_expired_staging()
+                if cleaned:
+                    decay_result["staging_cleaned"] = cleaned
+            except Exception as exc:
+                logger.warning("[Orchestrator] Staging cleanup failed: %s", exc)
+
+            return decay_result
+        logger.debug("[MemoryOrchestrator] Storage backend does not support decay")
+        return None
+
+    async def cleanup_expired_staging(self) -> int:
+        """Delete records past their TTL (staging + immediate + any with TTL)."""
+        orch = self._orch
+        orch._ensure_init()
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        # Scan all records with non-empty ttl_expires_at
+        expired = await orch._storage.filter(
+            orch._get_collection(),
+            {"op": "must_not", "field": "ttl_expires_at", "conds": [""]},
+            limit=1000,
+        )
+        cleaned = 0
+        to_delete = []
+        for record in expired:
+            ttl = record.get("ttl_expires_at", "")
+            if ttl and ttl < now:
+                rid = record.get("id", "")
+                if rid:
+                    to_delete.append(rid)
+                uri = record.get("uri", "")
+                if uri:
+                    try:
+                        await orch._fs.delete_temp(uri)
+                    except Exception:
+                        pass
+                cleaned += 1
+        if to_delete:
+            await orch._storage.delete(orch._get_collection(), to_delete)
+        if cleaned:
+            logger.info("[Orchestrator] Cleaned %d expired records", cleaned)
+        return cleaned
+
+    async def protect(self, uri: str, protected: bool = True) -> None:
+        """
+        Mark a context as protected (slower decay).
+
+        Protected memories decay at rate=0.99 instead of 0.95, preserving
+        important knowledge for longer.
+
+        Args:
+            uri: URI of the context.
+            protected: True to protect, False to unprotect.
+        """
+        orch = self._orch
+        orch._ensure_init()
+
+        records = await orch._storage.filter(
+            orch._get_collection(),
+            {"op": "must", "field": "uri", "conds": [uri]},
+            limit=1,
+        )
+        if not records:
+            logger.warning("[MemoryOrchestrator] protect: URI not found: %s", uri)
+            return
+
+        record_id = records[0].get("id", "")
+        if hasattr(orch._storage, "set_protected"):
+            await orch._storage.set_protected(
+                orch._get_collection(), record_id, protected
+            )
+            logger.info("[MemoryOrchestrator] Set protected=%s for: %s", protected, uri)
+
+    async def get_profile(self, uri: str) -> Optional[Dict[str, Any]]:
+        """
+        Get the feedback scoring profile for a context.
+
+        Returns:
+            Profile dict with reward_score, retrieval_count, feedback counts,
+            effective_score, is_protected. None if not found.
+        """
+        orch = self._orch
+        orch._ensure_init()
+
+        records = await orch._storage.filter(
+            orch._get_collection(),
+            {"op": "must", "field": "uri", "conds": [uri]},
+            limit=1,
+        )
+        if not records:
+            return None
+
+        record_id = records[0].get("id", "")
+        if hasattr(orch._storage, "get_profile"):
+            profile = await orch._storage.get_profile(orch._get_collection(), record_id)
+            if profile:
+                return {
+                    "id": profile.id,
+                    "reward_score": profile.reward_score,
+                    "retrieval_count": profile.retrieval_count,
+                    "positive_feedback_count": profile.positive_feedback_count,
+                    "negative_feedback_count": profile.negative_feedback_count,
+                    "effective_score": profile.effective_score,
+                    "is_protected": profile.is_protected,
+                }
+        return None
