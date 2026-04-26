@@ -6,6 +6,7 @@ category-level aggregation from memory_eval.py.
 """
 
 import asyncio
+import json
 import os
 import sys
 import unittest
@@ -220,6 +221,288 @@ class TestBenchmarkMetrics(unittest.TestCase):
                 "session_scope": False,
             },
         )
+
+
+class TestEvalAdapterBase(unittest.TestCase):
+    """Tests for the shared EvalAdapter base class methods."""
+
+    def _make_adapter(self, **overrides):
+        """Create a minimal concrete adapter with optional attribute overrides."""
+        from benchmarks.adapters.base import EvalAdapter, QAItem
+
+        class _Stub(EvalAdapter):
+            async def ingest(self, oc, **kwargs):
+                raise NotImplementedError
+
+            def build_qa_items(self, **kwargs):
+                raise NotImplementedError
+
+            def get_baseline_context(self, qa_item):
+                raise NotImplementedError
+
+        adapter = _Stub()
+        for k, v in overrides.items():
+            setattr(adapter, k, v)
+        return adapter
+
+    def test_default_retrieve_method_is_search(self):
+        adapter = self._make_adapter()
+        self.assertEqual(adapter._retrieve_method, "search")
+
+    def test_default_ingest_method_is_empty(self):
+        adapter = self._make_adapter()
+        self.assertEqual(adapter._ingest_method, "")
+
+    # -- retrieve() dispatch --
+
+    def test_retrieve_dispatches_search_by_default(self):
+        """Default _retrieve_method='search' calls search_payload."""
+        from benchmarks.adapters.base import QAItem
+
+        adapter = self._make_adapter()
+
+        class _OC:
+            def __init__(self):
+                self.search_called = False
+
+            async def search_payload(self, **kwargs):
+                self.search_called = True
+                return {"results": [{"uri": "u1"}]}
+
+            async def context_recall(self, **kwargs):
+                raise AssertionError("should not be called")
+
+        oc = _OC()
+        qa = QAItem(question="test", answer="a")
+        results, latency = asyncio.run(adapter.retrieve(oc, qa, top_k=5))
+        self.assertTrue(oc.search_called)
+        self.assertEqual(len(results), 1)
+        self.assertGreater(latency, 0)
+
+    def test_retrieve_dispatches_recall_when_configured(self):
+        """_retrieve_method='recall' calls context_recall."""
+        from benchmarks.adapters.base import QAItem
+
+        class _ScopedAdapter(self._make_adapter().__class__):
+            def _get_retrieval_session_id(self, qa_item):
+                return "test-session"
+
+            def _get_retrieval_session_scope(self):
+                return True
+
+        adapter = _ScopedAdapter()
+        adapter._retrieve_method = "recall"
+
+        class _OC:
+            async def search_payload(self, **kwargs):
+                raise AssertionError("should not be called")
+
+            async def context_recall(self, **kwargs):
+                assert kwargs["session_id"] == "test-session"
+                assert kwargs["session_scope"] is True
+                return {"memory": [{"uri": "u1"}]}
+
+        oc = _OC()
+        qa = QAItem(question="test", answer="a")
+        results, _ = asyncio.run(adapter.retrieve(oc, qa, top_k=5))
+        self.assertEqual(len(results), 1)
+
+    def test_retrieve_metadata_filter_from_session_id_hook(self):
+        """Session-scoped adapters get metadata_filter with session_id."""
+        from benchmarks.adapters.base import QAItem
+
+        class _ScopedAdapter(self._make_adapter().__class__):
+            def _get_retrieval_session_id(self, qa_item):
+                return "sess-123"
+
+        adapter = _ScopedAdapter()
+
+        class _OC:
+            def __init__(self):
+                self.kwargs = {}
+
+            async def search_payload(self, **kwargs):
+                self.kwargs = kwargs
+                return {"results": []}
+
+            async def context_recall(self, **kwargs):
+                raise AssertionError("should not be called")
+
+        oc = _OC()
+        qa = QAItem(question="test", answer="a")
+        asyncio.run(adapter.retrieve(oc, qa, top_k=5))
+        self.assertEqual(
+            oc.kwargs["metadata_filter"],
+            {"op": "must", "field": "session_id", "conds": ["sess-123"]},
+        )
+
+    def test_retrieve_context_type_from_hook(self):
+        """_get_retrieval_context_type hook passes context_type to search."""
+        from benchmarks.adapters.base import QAItem
+
+        class _ResourceAdapter(self._make_adapter().__class__):
+            def _get_retrieval_context_type(self):
+                return "resource"
+
+        adapter = _ResourceAdapter()
+
+        class _OC:
+            def __init__(self):
+                self.kwargs = {}
+
+            async def search_payload(self, **kwargs):
+                self.kwargs = kwargs
+                return {"results": []}
+
+            async def context_recall(self, **kwargs):
+                raise AssertionError("should not be called")
+
+        oc = _OC()
+        qa = QAItem(question="test", answer="a")
+        asyncio.run(adapter.retrieve(oc, qa, top_k=5))
+        self.assertEqual(oc.kwargs["context_type"], "resource")
+
+    def test_retrieve_post_process_hook(self):
+        """_post_process_retrieval hook can filter/dedup results."""
+        from benchmarks.adapters.base import QAItem
+
+        class _DedupAdapter(self._make_adapter().__class__):
+            def _post_process_retrieval(self, results):
+                seen = set()
+                deduped = []
+                for r in results:
+                    uri = r.get("uri", "")
+                    if uri not in seen:
+                        seen.add(uri)
+                        deduped.append(r)
+                return deduped
+
+        adapter = _DedupAdapter()
+
+        class _OC:
+            async def search_payload(self, **kwargs):
+                return {
+                    "results": [
+                        {"uri": "u1"}, {"uri": "u1"}, {"uri": "u2"},
+                    ]
+                }
+
+            async def context_recall(self, **kwargs):
+                raise AssertionError("should not be called")
+
+        oc = _OC()
+        qa = QAItem(question="test", answer="a")
+        results, _ = asyncio.run(adapter.retrieve(oc, qa, top_k=5))
+        self.assertEqual(len(results), 2)
+
+    def test_retrieve_sets_retrieval_meta(self):
+        """retrieve() populates _last_retrieval_meta with contract."""
+        from benchmarks.adapters.base import QAItem
+
+        adapter = self._make_adapter()
+
+        class _OC:
+            async def search_payload(self, **kwargs):
+                return {"results": []}
+
+            async def context_recall(self, **kwargs):
+                return {"memory": []}
+
+        oc = _OC()
+        qa = QAItem(question="test", answer="a")
+        asyncio.run(adapter.retrieve(oc, qa, top_k=5))
+        meta = adapter.pop_last_retrieval_meta()
+        self.assertEqual(meta["retrieval_contract"]["endpoint"], "memory_search")
+        self.assertFalse(meta["retrieval_contract"]["session_scope"])
+
+    # -- load_dataset --
+
+    def test_load_dataset_reads_json(self):
+        """Base load_dataset reads JSON and stores in _dataset."""
+        import tempfile
+
+        adapter = self._make_adapter()
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False,
+        ) as f:
+            json.dump({"items": [1, 2, 3]}, f)
+            f.flush()
+            adapter.load_dataset(f.name)
+        os.unlink(f.name)
+        self.assertEqual(adapter._dataset, {"items": [1, 2, 3]})
+
+    def test_load_dataset_calls_validate_hook(self):
+        """_validate_dataset is called after loading."""
+        import tempfile
+
+        class _ValidatingAdapter(self._make_adapter().__class__):
+            validated = False
+
+            def _validate_dataset(self, raw):
+                _ValidatingAdapter.validated = True
+
+        adapter = _ValidatingAdapter()
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False,
+        ) as f:
+            json.dump([1, 2], f)
+            f.flush()
+            adapter.load_dataset(f.name)
+        os.unlink(f.name)
+        self.assertTrue(_ValidatingAdapter.validated)
+
+    # -- _run_concurrent_ingest --
+
+    def test_concurrent_ingest_accumulates_successes(self):
+        """_run_concurrent_ingest counts successes."""
+        adapter = self._make_adapter()
+
+        async def _process(item):
+            return True, None
+
+        count, errors = asyncio.run(
+            adapter._run_concurrent_ingest(
+                [1, 2, 3], _process, concurrency=2,
+            )
+        )
+        self.assertEqual(count, 3)
+        self.assertEqual(len(errors), 0)
+
+    def test_concurrent_ingest_accumulates_errors(self):
+        """_run_concurrent_ingest collects errors from failed items."""
+        adapter = self._make_adapter()
+
+        async def _process(item):
+            if item == 2:
+                raise ValueError("bad item")
+            return True, None
+
+        count, errors = asyncio.run(
+            adapter._run_concurrent_ingest(
+                [1, 2, 3], _process, concurrency=2,
+            )
+        )
+        self.assertEqual(count, 2)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("bad item", errors[0])
+
+    def test_concurrent_ingest_handles_explicit_failure_tuple(self):
+        """_run_concurrent_ingest collects errors from (False, msg) returns."""
+        adapter = self._make_adapter()
+
+        async def _process(item):
+            if item == 2:
+                return False, "item 2 failed"
+            return True, None
+
+        count, errors = asyncio.run(
+            adapter._run_concurrent_ingest(
+                [1, 2, 3], _process, concurrency=2,
+            )
+        )
+        self.assertEqual(count, 2)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("item 2 failed", errors[0])
 
 
 if __name__ == "__main__":

@@ -9,10 +9,8 @@ Baseline: All persona attributes concatenated as a fact list.
 Retrieve: Direct oc.search() (no session context).
 """
 
-import json
-import time
-from typing import Any, Dict, List, Tuple
 from hashlib import md5
+from typing import Any, Dict, List
 
 from benchmarks.adapters.base import EvalAdapter, IngestResult, QAItem
 
@@ -20,16 +18,8 @@ from benchmarks.adapters.base import EvalAdapter, IngestResult, QAItem
 class MemoryAdapter(EvalAdapter):
     """PersonaMem v2 evaluation adapter."""
 
-    def __init__(self):
-        super().__init__()
-        self._retrieve_method: str = "search"
-
-    def load_dataset(self, dataset_path: str, **kwargs) -> None:
-        with open(dataset_path, encoding="utf-8") as f:
-            self._dataset = json.load(f)
-
-        # Validate required fields
-        if not self._dataset.get("persona_attributes"):
+    def _validate_dataset(self, raw: Any) -> None:
+        if not raw.get("persona_attributes"):
             raise ValueError(
                 "PersonaMem v2 dataset must contain non-empty 'persona_attributes'. "
                 "The memory adapter requires pre-extracted structured attributes — "
@@ -49,7 +39,6 @@ class MemoryAdapter(EvalAdapter):
         attributes = self._dataset["persona_attributes"]
 
         if max_qa > 0:
-            # Only ingest attributes needed by first max_qa questions
             questions = self._dataset.get("questions", [])[:max_qa]
             needed_ids = set()
             for q in questions:
@@ -73,16 +62,13 @@ class MemoryAdapter(EvalAdapter):
                 uri = result.get("uri", "")
                 if uri:
                     id_to_uri[attr_id] = uri
-                    # Forget: store then delete to simulate user asking to forget
                     if category == "ask_to_forget":
                         await oc.forget(uri=uri)
                         forgotten_count += 1
             except Exception as e:
                 errors.append(f"attribute {attr_id}: {e}")
 
-        # Store id→uri mapping for QA item URI resolution
         self._id_to_uri = id_to_uri
-        # Track which IDs were forgotten so build_qa_items can clear expected_uris
         self._forgotten_ids = {
             aid for aid, _ in id_to_uri.items()
             if any(
@@ -117,7 +103,6 @@ class MemoryAdapter(EvalAdapter):
             expected_ids = q.get("expected_ids", [])
             category = q.get("category", "")
 
-            # Forgotten memories were deleted — don't expect them in retrieval
             if category == "ask_to_forget":
                 expected_uris = []
             else:
@@ -140,32 +125,8 @@ class MemoryAdapter(EvalAdapter):
         lines = [f"- {attr['attribute']}" for attr in attributes if attr.get("attribute")]
         return "Known facts about the user:\n" + "\n".join(lines)
 
-    async def retrieve(self, oc: Any, qa_item: QAItem, top_k: int) -> Tuple[List[Dict], float]:
-        """Memory retrieval via search (default) or context_recall (production path)."""
-        t0 = time.perf_counter()
+    def _get_retrieval_session_id(self, qa_item: QAItem) -> str:
+        return "ev-mem-" + md5(qa_item.question.encode()).hexdigest()[:12]
 
-        if self._retrieve_method == "recall":
-            sid = "ev-mem-" + md5(qa_item.question.encode()).hexdigest()[:12]
-            result = await oc.context_recall(
-                session_id=sid,
-                query=qa_item.question,
-                limit=top_k,
-                detail_level="l0",
-            )
-            self._set_last_retrieval_meta(
-                result,
-                endpoint="context_recall",
-                session_scope=False,
-            )
-            results = result.get("memory", [])
-        else:
-            result = await oc.search_payload(query=qa_item.question, limit=top_k)
-            self._set_last_retrieval_meta(
-                result,
-                endpoint="memory_search",
-                session_scope=False,
-            )
-            results = result.get("results", [])
-
-        latency_ms = (time.perf_counter() - t0) * 1000
-        return results, latency_ms
+    def _get_retrieval_detail_level(self) -> str:
+        return "l0"

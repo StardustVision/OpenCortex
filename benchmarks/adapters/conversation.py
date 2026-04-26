@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from benchmarks.adapters import conversation_mapping as cm
@@ -37,12 +36,10 @@ class LongMemEvalBench(EvalAdapter):
         self._lme_session_to_uri: Dict[str, str] = {}
         self._selected_indices: List[int] = []
 
-    def load_dataset(self, dataset_path: str, **kwargs: Any) -> None:
-        """Load LongMemEval JSON dataset."""
-        with open(dataset_path, encoding="utf-8") as file_obj:
-            raw = json.load(file_obj)
+    def _validate_dataset(self, raw: Any) -> None:
         if isinstance(raw, dict):
             raw = [raw]
+            self._dataset = raw
         if not isinstance(raw, list) or not raw:
             raise ValueError("LongMemEval dataset must be a non-empty JSON array")
         first = raw[0]
@@ -50,7 +47,6 @@ class LongMemEvalBench(EvalAdapter):
             raise ValueError(
                 "LongMemEval dataset must include 'haystack_sessions' or 'sessions'"
             )
-        self._dataset = raw
 
     @staticmethod
     def _select_dataset_indices(
@@ -466,51 +462,14 @@ class LongMemEvalBench(EvalAdapter):
             parts.append("\n".join(lines))
         return "\n\n---\n\n".join(part for part in parts if part.strip())
 
-    async def retrieve(
-        self,
-        oc: Any,
-        qa_item: QAItem,
-        top_k: int,
-    ) -> Tuple[List[Dict[str, Any]], float]:
-        """Retrieve LongMemEval sessions."""
-        started = time.perf_counter()
-        if self._retrieve_method == "recall":
-            item_index = int(qa_item.meta.get("item_index", 0))
-            session_id = f"lme-item-{item_index}"
-            result = await oc.context_recall(
-                session_id=session_id,
-                query=qa_item.question,
-                limit=top_k,
-                detail_level="l0",
-                session_scope=True,
-            )
-            self._set_last_retrieval_meta(
-                result,
-                endpoint="context_recall",
-                session_scope=True,
-            )
-            results = result.get("memory", [])
-        else:
-            item_index = int(qa_item.meta.get("item_index", 0))
-            session_id = f"lme-item-{item_index}"
-            metadata_filter = {
-                "op": "must",
-                "field": "session_id",
-                "conds": [session_id],
-            }
-            result = await oc.search_payload(
-                query=qa_item.question,
-                limit=top_k,
-                context_type="memory",
-                detail_level="l2",
-                metadata_filter=metadata_filter,
-            )
-            self._set_last_retrieval_meta(
-                result,
-                endpoint="memory_search",
-                session_scope=True,
-            )
-            results = result.get("results", [])
+    def _get_retrieval_session_id(self, qa_item: QAItem) -> str:
+        return f"lme-item-{int(qa_item.meta.get('item_index', 0))}"
 
-        latency_ms = (time.perf_counter() - started) * 1000
-        return results, latency_ms
+    def _get_retrieval_session_scope(self) -> bool:
+        return True
+
+    def _get_retrieval_context_type(self) -> str:
+        return "memory"
+
+    def _get_retrieval_detail_level(self) -> str:
+        return "l2" if self._retrieve_method == "search" else "l0"

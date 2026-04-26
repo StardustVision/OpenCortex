@@ -8,8 +8,6 @@ Retrieve: oc.search(context_type="resource") to filter document chunks only.
 """
 
 import json
-import time
-from hashlib import md5
 from typing import Any, Dict, List, Tuple
 
 from benchmarks.adapters.base import EvalAdapter, IngestResult, QAItem
@@ -41,7 +39,8 @@ class DocumentAdapter(EvalAdapter):
 
     def __init__(self):
         super().__init__()
-        self._retrieve_method: str = "search"
+        self._dataset_type = ""
+        self._raw = None
 
     def load_dataset(self, dataset_path: str, **kwargs) -> None:
         with open(dataset_path, encoding="utf-8") as f:
@@ -278,12 +277,18 @@ class DocumentAdapter(EvalAdapter):
                 return doc["full_text"]
         return ""
 
-    async def retrieve(self, oc: Any, qa_item: QAItem, top_k: int) -> Tuple[List[Dict], float]:
-        """Search document chunks via direct vector search (document mode)."""
-        t0 = time.perf_counter()
+    async def retrieve(
+        self, oc: Any, qa_item: QAItem, top_k: int,
+    ) -> Tuple[List[Dict], float]:
+        """Search document chunks via direct vector search (document mode).
 
-        # Document mode must use search_payload; context_recall's memory pipeline
-        # targets event/summary kinds and excludes document_chunk.
+        Always uses search_payload regardless of _retrieve_method;
+        context_recall's memory pipeline targets event/summary kinds
+        and excludes document_chunk.
+        """
+        import time as _time
+
+        started = _time.perf_counter()
         result = await oc.search_payload(
             query=qa_item.question,
             limit=top_k,
@@ -295,6 +300,5 @@ class DocumentAdapter(EvalAdapter):
             session_scope=False,
         )
         results = result.get("results", [])
-
-        latency_ms = (time.perf_counter() - t0) * 1000
+        latency_ms = (_time.perf_counter() - started) * 1000
         return results, latency_ms

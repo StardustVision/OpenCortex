@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from benchmarks.adapters.base import EvalAdapter, IngestResult, QAItem
@@ -14,7 +13,6 @@ class BeamBench(EvalAdapter):
 
     def __init__(self) -> None:
         super().__init__()
-        self._dataset: List[Dict[str, Any]] = []
         self._selected_indices: List[int] = []
         self._item_to_uris: Dict[int, List[str]] = {}
         self._beam_tier = ""
@@ -262,47 +260,14 @@ class BeamBench(EvalAdapter):
                 parts.append("\n".join(lines))
         return "\n\n---\n\n".join(parts)
 
-    async def retrieve(
-        self,
-        oc: Any,
-        qa_item: QAItem,
-        top_k: int,
-    ) -> Tuple[List[Dict[str, Any]], float]:
-        """Retrieve item-scoped BEAM memories via recall or raw search."""
-        started = time.perf_counter()
-        item_index = int(qa_item.meta.get("item_index", 0))
-        session_id = f"beam-item-{item_index}"
-        if self._retrieve_method == "search":
-            result = await oc.search_payload(
-                query=qa_item.question,
-                limit=top_k,
-                context_type="memory",
-                metadata_filter={
-                    "op": "must",
-                    "field": "session_id",
-                    "conds": [session_id],
-                },
-            )
-            self._set_last_retrieval_meta(
-                result,
-                endpoint="memory_search",
-                session_scope=True,
-            )
-            results = result.get("results", [])
-        else:
-            result = await oc.context_recall(
-                session_id=session_id,
-                query=qa_item.question,
-                limit=top_k,
-                detail_level="l0",
-                session_scope=True,
-            )
-            self._set_last_retrieval_meta(
-                result,
-                endpoint="context_recall",
-                session_scope=True,
-            )
-            results = result.get("memory", [])
+    def _get_retrieval_session_id(self, qa_item: QAItem) -> str:
+        return f"beam-item-{int(qa_item.meta.get('item_index', 0))}"
 
-        latency_ms = (time.perf_counter() - started) * 1000
-        return results, latency_ms
+    def _get_retrieval_session_scope(self) -> bool:
+        return True
+
+    def _get_retrieval_context_type(self) -> str:
+        return "memory"
+
+    def _get_retrieval_detail_level(self) -> str:
+        return "l0"

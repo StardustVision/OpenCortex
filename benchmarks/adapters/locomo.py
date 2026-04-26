@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from datetime import datetime, timezone
 from hashlib import md5
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
@@ -566,53 +565,29 @@ class LoCoMoBench(EvalAdapter):
         header = f"Conversation between {' and '.join(speakers)}\n\n"
         return header + "\n\n".join(_fmt_locomo_session(session) for session in sessions)
 
-    async def retrieve(
-        self,
-        oc: Any,
-        qa_item: QAItem,
-        top_k: int,
-    ) -> Tuple[List[Dict[str, Any]], float]:
-        """Retrieve LoCoMo sessions via search or production context recall."""
-        started = time.perf_counter()
-        conv_id = str(qa_item.meta.get("conv_id", ""))
-        session_id = self._conversation_session_id(conv_id)
+    def _get_retrieval_session_id(self, qa_item: QAItem) -> str:
+        return self._conversation_session_id(
+            str(qa_item.meta.get("conv_id", ""))
+        )
 
-        if self._retrieve_method == "search":
-            result = await oc.search_payload(
-                query=qa_item.question,
-                limit=top_k,
-                context_type="memory",
-                detail_level="l2",
-                metadata_filter={
-                    "op": "must",
-                    "field": "session_id",
-                    "conds": [session_id],
-                },
-            )
-            self._set_last_retrieval_meta(
-                result,
-                endpoint="memory_search",
-                session_scope=True,
-            )
-            raw_items = result.get("results", [])
-        else:
-            result = await oc.context_recall(
-                session_id=session_id,
-                turn_id="q-" + md5(qa_item.question.encode()).hexdigest()[:12],
-                query=qa_item.question,
-                limit=top_k,
-                session_scope=True,
-            )
-            self._set_last_retrieval_meta(
-                result,
-                endpoint="context_recall",
-                session_scope=True,
-            )
-            raw_items = result.get("memory", [])
+    def _get_retrieval_session_scope(self) -> bool:
+        return True
 
-        deduped: List[Dict[str, Any]] = []
+    def _get_retrieval_context_type(self) -> str:
+        return "memory"
+
+    def _get_retrieval_detail_level(self) -> str:
+        return "l2" if self._retrieve_method == "search" else None
+
+    def _get_retrieval_turn_id(self, qa_item: QAItem) -> str:
+        return "q-" + md5(qa_item.question.encode()).hexdigest()[:12]
+
+    def _post_process_retrieval(
+        self, results: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
         seen_uris: Set[str] = set()
-        for item in raw_items:
+        deduped: List[Dict[str, Any]] = []
+        for item in results:
             uri = str(item.get("uri", "") or "")
             if not uri or uri in seen_uris:
                 continue
@@ -620,6 +595,4 @@ class LoCoMoBench(EvalAdapter):
             normalized = dict(item)
             normalized["uri"] = uri
             deduped.append(normalized)
-
-        latency_ms = (time.perf_counter() - started) * 1000
-        return deduped, latency_ms
+        return deduped

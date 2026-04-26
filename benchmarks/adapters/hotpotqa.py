@@ -15,7 +15,6 @@ Retrieve: oc.search(context_type="resource") for document chunks.
 import asyncio
 import json
 import logging
-import time
 from hashlib import md5
 from typing import Any, Dict, List, Set, Tuple
 
@@ -37,20 +36,38 @@ class HotPotQAAdapter(EvalAdapter):
         self._title_to_sentences: Dict[str, List[str]] = {}
         self._title_to_uri: Dict[str, str] = {}
         self._questions: List[Dict] = []
-        # question_id → list of [title, sentences] for baseline context
         self._qid_to_context: Dict[int, List[Tuple[str, List[str]]]] = {}
-        self._retrieve_method: str = "search"
 
-    def load_dataset(self, dataset_path: str, **kwargs) -> None:
-        with open(dataset_path, encoding="utf-8") as f:
-            raw = json.load(f)
-
+    def _validate_dataset(self, raw: Any) -> None:
         if not isinstance(raw, list) or not raw:
             raise ValueError("HotPotQA dataset must be a non-empty JSON array")
         if "supporting_facts" not in raw[0]:
             raise ValueError("HotPotQA dataset must contain 'supporting_facts' field")
 
-        # De-duplicate paragraphs by title (first-occurrence wins)
+        title_to_sentences: Dict[str, List[str]] = {}
+        collision_count = 0
+
+        for i, q in enumerate(raw):
+            self._qid_to_context[i] = []
+            for title, sentences in q.get("context", []):
+                self._qid_to_context[i].append((title, sentences))
+                if title not in title_to_sentences:
+                    title_to_sentences[title] = sentences
+                elif title_to_sentences[title] != sentences:
+                    collision_count += 1
+
+        if collision_count > 0:
+            logger.warning(
+                f"[HotPotQA] {collision_count} title collisions (different content, "
+                "first-occurrence kept)"
+            )
+
+        self._title_to_sentences = title_to_sentences
+        self._questions = raw
+        logger.info(
+            f"[HotPotQA] Loaded {len(raw)} questions, "
+            f"{len(title_to_sentences)} unique paragraphs"
+        )
         title_to_sentences: Dict[str, List[str]] = {}
         collision_count = 0
 
@@ -182,38 +199,11 @@ class HotPotQAAdapter(EvalAdapter):
             parts.append(f"## {title}\n\n{text}")
         return "\n\n".join(parts)
 
-    async def retrieve(
-        self, oc: Any, qa_item: QAItem, top_k: int
-    ) -> Tuple[List[Dict], float]:
-        """Search document chunks via search (default) or context_recall (production path)."""
-        t0 = time.perf_counter()
+    def _get_retrieval_session_id(self, qa_item: QAItem) -> str:
+        return "ev-hp-" + md5(qa_item.question.encode()).hexdigest()[:12]
 
-        if self._retrieve_method == "recall":
-            sid = "ev-hp-" + md5(qa_item.question.encode()).hexdigest()[:12]
-            result = await oc.context_recall(
-                session_id=sid,
-                query=qa_item.question,
-                limit=top_k,
-                detail_level="l0",
-            )
-            self._set_last_retrieval_meta(
-                result,
-                endpoint="context_recall",
-                session_scope=False,
-            )
-            results = result.get("memory", [])
-        else:
-            result = await oc.search_payload(
-                query=qa_item.question,
-                limit=top_k,
-                context_type="resource",
-            )
-            self._set_last_retrieval_meta(
-                result,
-                endpoint="memory_search",
-                session_scope=False,
-            )
-            results = result.get("results", [])
+    def _get_retrieval_context_type(self) -> str:
+        return "resource"
 
-        latency_ms = (time.perf_counter() - t0) * 1000
-        return results, latency_ms
+    def _get_retrieval_detail_level(self) -> str:
+        return "l0"
