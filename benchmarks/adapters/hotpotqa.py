@@ -15,9 +15,8 @@ Retrieve: oc.search(context_type="resource") for document chunks.
 import asyncio
 import json
 import logging
-import time
 from hashlib import md5
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from benchmarks.adapters.base import EvalAdapter, IngestResult, QAItem
 
@@ -37,20 +36,14 @@ class HotPotQAAdapter(EvalAdapter):
         self._title_to_sentences: Dict[str, List[str]] = {}
         self._title_to_uri: Dict[str, str] = {}
         self._questions: List[Dict] = []
-        # question_id → list of [title, sentences] for baseline context
         self._qid_to_context: Dict[int, List[Tuple[str, List[str]]]] = {}
-        self._retrieve_method: str = "search"
 
-    def load_dataset(self, dataset_path: str, **kwargs) -> None:
-        with open(dataset_path, encoding="utf-8") as f:
-            raw = json.load(f)
-
+    def _validate_dataset(self, raw: Any) -> None:
         if not isinstance(raw, list) or not raw:
             raise ValueError("HotPotQA dataset must be a non-empty JSON array")
         if "supporting_facts" not in raw[0]:
             raise ValueError("HotPotQA dataset must contain 'supporting_facts' field")
 
-        # De-duplicate paragraphs by title (first-occurrence wins)
         title_to_sentences: Dict[str, List[str]] = {}
         collision_count = 0
 
@@ -77,7 +70,7 @@ class HotPotQAAdapter(EvalAdapter):
             f"{len(title_to_sentences)} unique paragraphs"
         )
 
-    async def ingest(self, oc: Any, **kwargs) -> IngestResult:
+    async def ingest(self, oc: Any, **kwargs: Any) -> IngestResult:
         """Ingest unique paragraphs as memory-mode records (no LLM overhead).
 
         If max_qa is passed, only ingests paragraphs from the first N questions
@@ -140,7 +133,7 @@ class HotPotQAAdapter(EvalAdapter):
             errors=errors,
         )
 
-    def build_qa_items(self, **kwargs) -> List[QAItem]:
+    def build_qa_items(self, **kwargs: Any) -> List[QAItem]:
         max_qa = kwargs.get("max_qa", 0)
         items: List[QAItem] = []
 
@@ -182,38 +175,16 @@ class HotPotQAAdapter(EvalAdapter):
             parts.append(f"## {title}\n\n{text}")
         return "\n\n".join(parts)
 
-    async def retrieve(
-        self, oc: Any, qa_item: QAItem, top_k: int
-    ) -> Tuple[List[Dict], float]:
-        """Search document chunks via search (default) or context_recall (production path)."""
-        t0 = time.perf_counter()
+    def _get_retrieval_session_id(self, qa_item: QAItem) -> str:
+        return "ev-hp-" + md5(qa_item.question.encode()).hexdigest()[:12]
 
-        if self._retrieve_method == "recall":
-            sid = "ev-hp-" + md5(qa_item.question.encode()).hexdigest()[:12]
-            result = await oc.context_recall(
-                session_id=sid,
-                query=qa_item.question,
-                limit=top_k,
-                detail_level="l0",
-            )
-            self._set_last_retrieval_meta(
-                result,
-                endpoint="context_recall",
-                session_scope=False,
-            )
-            results = result.get("memory", [])
-        else:
-            result = await oc.search_payload(
-                query=qa_item.question,
-                limit=top_k,
-                context_type="resource",
-            )
-            self._set_last_retrieval_meta(
-                result,
-                endpoint="memory_search",
-                session_scope=False,
-            )
-            results = result.get("results", [])
+    def _get_retrieval_metadata_filter(
+        self, session_id: Optional[str],
+    ) -> Optional[Dict[str, Any]]:
+        return None
 
-        latency_ms = (time.perf_counter() - t0) * 1000
-        return results, latency_ms
+    def _get_retrieval_context_type(self) -> str:
+        return "resource"
+
+    def _get_retrieval_detail_level(self) -> str:
+        return "l0"
