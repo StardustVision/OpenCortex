@@ -539,6 +539,7 @@ async def generate_parallel_insights(
     }
 
     async def _gen(name: str, template: str) -> Tuple[str, Any]:
+        """Generate one insights section from a template and return (name, data)."""
         prompt = template.format(data_context=data_context)
         try:
             response = await asyncio.to_thread(llm.generate, prompt)
@@ -655,6 +656,7 @@ class InsightsAgent:
         async def _extract_facet(
             trace: Trace, meta: SessionMeta,
         ) -> Optional[Tuple[str, SessionFacet]]:
+            """Extract a SessionFacet from a trace via LLM, caching the result."""
             nonlocal llm_calls
             async with sem:
                 transcript = await format_transcript_with_summarization(

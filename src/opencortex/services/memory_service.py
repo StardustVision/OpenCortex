@@ -725,6 +725,7 @@ class MemoryService:
 
         # CortexFS write — fire-and-forget (Qdrant upsert is the synchronous path)
         def _on_fs_done(t: asyncio.Task) -> None:
+            """Handle completion of a fire-and-forget CortexFS write task."""
             if t.cancelled():
                 return
             exc = t.exception()
@@ -1173,6 +1174,16 @@ class MemoryService:
         sem = asyncio.Semaphore(_BATCH_ADD_CONCURRENCY)
 
         async def _process_one(i: int, item: dict) -> dict:
+            """Process a single batch item: derive metadata and persist via add.
+
+            Args:
+                i: Zero-based index of the item within the batch.
+                item: Raw item dict with content, meta, category, etc.
+
+            Returns:
+                A dict with ``uri`` and ``index`` on success, or ``error`` and
+                ``index`` on failure.
+            """
             async with sem:
                 content = item.get("content", "")
                 file_path = (item.get("meta") or {}).get("file_path", f"item_{i}")
@@ -1766,6 +1777,7 @@ class MemoryService:
 
     @staticmethod
     def _context_type_from_value(raw_value: str) -> ContextType:
+        """Convert a raw string to a ContextType, defaulting to ANY on mismatch."""
         try:
             return ContextType(raw_value)
         except ValueError:
@@ -1775,6 +1787,7 @@ class MemoryService:
     def _detail_level_from_retrieval_depth(
         retrieval_depth: RetrievalDepth,
     ) -> DetailLevel:
+        """Map a RetrievalDepth enum value to its corresponding DetailLevel."""
         return DetailLevel(retrieval_depth.value)
 
     @staticmethod
