@@ -329,6 +329,8 @@ class ContextManager:
         # Skill selection tracking: (session_key, turn_id) -> set of skill URIs
         # Turn-scoped to prevent stale selections leaking across turns
         self._selected_skill_uris: Dict[tuple, Set[str]] = {}
+        # Lazy-initialized recomposition engine (survives ``__new__`` bypass).
+        self._recomposition_engine_instance: Optional[Any] = None
 
         # Config
         self._prepare_cache_ttl = prepare_cache_ttl
@@ -338,6 +340,17 @@ class ContextManager:
 
         # Background task
         self._idle_checker: Optional[asyncio.Task] = None
+
+    @property
+    def _recomposition_engine(self) -> "SessionRecompositionEngine":
+        """Lazy-initialized recomposition engine (survives ``__new__`` bypass)."""
+        inst = getattr(self, "_recomposition_engine_instance", None)
+        if inst is None:
+            from opencortex.context.recomposition_engine import SessionRecompositionEngine
+
+            inst = SessionRecompositionEngine(self)
+            self._recomposition_engine_instance = inst
+        return inst
 
     # =========================================================================
     # Lifecycle
@@ -1006,32 +1019,20 @@ class ContextManager:
     @staticmethod
     def _merge_unique_strings(*groups: Any) -> List[str]:
         """Return a stable ordered union of non-empty string values."""
-        merged: List[str] = []
-        for group in groups:
-            if not group:
-                continue
-            if isinstance(group, str):
-                values = [group]
-            else:
-                values = list(group)
-            for value in values:
-                normalized = str(value).strip()
-                if normalized and normalized not in merged:
-                    merged.append(normalized)
-        return merged
+        from opencortex.context.recomposition_engine import (
+            _merge_unique_strings as _impl,
+        )
+
+        return _impl(*groups)
 
     @staticmethod
     def _split_topic_values(raw_value: Any) -> List[str]:
         """Normalize topic-like values, splitting comma-separated strings."""
-        if not raw_value:
-            return []
-        if isinstance(raw_value, str):
-            return [
-                token.strip()
-                for token in raw_value.split(",")
-                if token and token.strip()
-            ]
-        return ContextManager._merge_unique_strings(raw_value)
+        from opencortex.context.recomposition_engine import (
+            _split_topic_values as _impl,
+        )
+
+        return _impl(raw_value)
 
     @classmethod
     def _decorate_message_text(
@@ -1096,18 +1097,10 @@ class ContextManager:
         msg_range: List[int],
     ) -> str:
         """Return one stable merged-leaf URI for a session message span."""
-        from opencortex.utils.uri import CortexURI
+        from opencortex.context.recomposition_engine import SessionRecompositionEngine
 
-        start = int(msg_range[0])
-        end = int(msg_range[1])
-        session_hash = hashlib.md5(session_id.encode("utf-8")).hexdigest()[:12]
-        node_name = f"conversation-{session_hash}-{start:06d}-{end:06d}"
-        return CortexURI.build_private(
-            tenant_id,
-            user_id,
-            "memories",
-            "events",
-            node_name,
+        return SessionRecompositionEngine._merged_leaf_uri(
+            tenant_id, user_id, session_id, msg_range,
         )
 
     @staticmethod
@@ -1118,17 +1111,24 @@ class ContextManager:
         index: int,
     ) -> str:
         """Return URI for a directory parent record."""
-        from opencortex.utils.uri import CortexURI
+        from opencortex.context.recomposition_engine import SessionRecompositionEngine
 
-        session_hash = hashlib.md5(session_id.encode("utf-8")).hexdigest()[:12]
-        node_name = f"conversation-{session_hash}/dir-{index:03d}"
-        return CortexURI.build_private(
-            tenant_id,
-            user_id,
-            "memories",
-            "events",
-            node_name,
+        return SessionRecompositionEngine._directory_uri(
+            tenant_id, user_id, session_id, index,
         )
+
+    async def _run_full_session_recomposition(self, **kwargs) -> Optional[List[str]]:
+        """Create directory parent records for semantically related leaf clusters."""
+        return await self._recomposition_engine._run_full_session_recomposition(
+            **kwargs,
+        )
+
+    def _build_recomposition_segments(
+        self,
+        entries: List[RecompositionEntry],
+    ) -> List[Dict[str, Any]]:
+        """Split ordered recomposition entries into bounded semantic segments."""
+        return self._recomposition_engine._build_recomposition_segments(entries)
 
     @classmethod
     def _render_conversation_source(
@@ -1690,497 +1690,13 @@ class ContextManager:
             f"benchmark_evidence_{segment_index}_{msg_range[0]}_{msg_range[1]}"
         )
 
-    async def _load_immediate_records(
-        self,
-        immediate_uris: List[str],
-    ) -> List[Dict[str, Any]]:
-        """Load immediate records and return them ordered by message index."""
-        if not immediate_uris:
-            return []
-        records = await self._orchestrator._storage.filter(
-            self._orchestrator._get_collection(),
-            {"op": "must", "field": "uri", "conds": immediate_uris},
-            limit=max(len(immediate_uris), 1),
-        )
-        by_uri = {
-            str(record.get("uri", "")).strip(): record
-            for record in records
-            if str(record.get("uri", "")).strip()
-        }
-        ordered: List[Dict[str, Any]] = []
-        for uri in immediate_uris:
-            record = by_uri.get(str(uri).strip())
-            if record is not None:
-                ordered.append(record)
-        return ordered
-
-    # NOTE: ``_record_msg_range`` and ``_record_text`` previously lived
-    # here as staticmethods. They moved to
-    # ``src/opencortex/context/session_records.py`` as module-level
-    # ``record_msg_range`` / ``record_text`` (REVIEW §25 Phase 5 / U1)
-    # so the new ``SessionRecordsRepository`` can reuse them without a
-    # circular import. ContextManager imports them from there.
-    #
-    # ``_load_session_merged_records``, ``_load_session_directory_records``,
-    # and ``_session_layer_counts`` similarly moved to the repository as
-    # ``load_merged`` / ``load_directories`` / ``layer_counts``. Call
-    # sites use ``self._session_records`` instead.
-
-    async def _select_tail_merged_records(
-        self,
-        *,
-        session_id: str,
-        source_uri: str,
-    ) -> List[Dict[str, Any]]:
-        """Select a bounded recent merged-tail window for online recomposition."""
-        merged_records = await self._session_records.load_merged(
-            session_id=session_id,
-            source_uri=source_uri,
-        )
-        if not merged_records:
-            return []
-
-        selected: List[Dict[str, Any]] = []
-        selected_message_count = 0
-        for record in reversed(merged_records):
-            msg_range = record_msg_range(record)
-            if msg_range is None:
-                continue
-            width = (msg_range[1] - msg_range[0]) + 1
-            if len(selected) >= _RECOMPOSE_TAIL_MAX_MERGED_LEAVES:
-                break
-            if (
-                selected
-                and (selected_message_count + width) > _RECOMPOSE_TAIL_MAX_MESSAGES
-            ):
-                break
-            selected.append(record)
-            selected_message_count += width
-        selected.reverse()
-        return selected
-
-    @classmethod
-    def _segment_anchor_terms(cls, record: Dict[str, Any]) -> Set[str]:
+    def _segment_anchor_terms(self, record: Dict[str, Any]) -> Set[str]:
         """Extract coarse anchor terms used for sequential merge boundaries."""
-        meta = dict(record.get("meta") or {})
-        abstract_json = record.get("abstract_json")
-        slots = (
-            abstract_json.get("slots", {}) if isinstance(abstract_json, dict) else {}
-        )
-        return set(
-            cls._merge_unique_strings(
-                record.get("entities"),
-                meta.get("entities"),
-                slots.get("entities"),
-                cls._split_topic_values(record.get("keywords")),
-                cls._split_topic_values(meta.get("topics")),
-                cls._split_topic_values(slots.get("topics")),
-            )
-        )
+        return self._recomposition_engine._segment_anchor_terms(record)
 
-    @classmethod
-    def _segment_time_refs(cls, record: Dict[str, Any]) -> Set[str]:
+    def _segment_time_refs(self, record: Dict[str, Any]) -> Set[str]:
         """Extract normalized time references used for sequential merge boundaries."""
-        meta = dict(record.get("meta") or {})
-        abstract_json = record.get("abstract_json")
-        slots = (
-            abstract_json.get("slots", {}) if isinstance(abstract_json, dict) else {}
-        )
-        return set(
-            cls._merge_unique_strings(
-                meta.get("time_refs"),
-                slots.get("time_refs"),
-                record.get("event_date"),
-                meta.get("event_date"),
-            )
-        )
-
-    @classmethod
-    def _is_coarse_time_ref(cls, value: str) -> bool:
-        """Return whether one time ref is too coarse to force two events together."""
-        normalized = str(value or "").strip()
-        if not normalized:
-            return False
-        return bool(
-            _COARSE_ISO_DATE_RE.fullmatch(normalized)
-            or _COARSE_HUMAN_DATE_RE.fullmatch(normalized)
-            or _COARSE_WEEKDAY_RE.fullmatch(normalized)
-        )
-
-    @classmethod
-    def _time_refs_overlap(cls, left: Set[str], right: Set[str]) -> bool:
-        """Return whether two time-ref sets meaningfully overlap for segmentation."""
-        shared = set(left).intersection(right)
-        if not shared:
-            return False
-
-        left_specific = {value for value in left if not cls._is_coarse_time_ref(value)}
-        right_specific = {
-            value for value in right if not cls._is_coarse_time_ref(value)
-        }
-        if not left_specific or not right_specific:
-            return True
-
-        return bool(left_specific.intersection(right_specific))
-
-    async def _aggregate_records_metadata(
-        self,
-        records: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        """Collect anchor metadata from already loaded immediate records."""
-        if not records:
-            return {}
-
-        entities: List[str] = []
-        time_refs: List[str] = []
-        topics: List[str] = []
-        event_date = ""
-
-        for record in records:
-            meta = dict(record.get("meta") or {})
-            abstract_json = record.get("abstract_json")
-            slots = (
-                abstract_json.get("slots", {})
-                if isinstance(abstract_json, dict)
-                else {}
-            )
-
-            entities = self._merge_unique_strings(
-                entities,
-                record.get("entities"),
-                meta.get("entities"),
-                slots.get("entities"),
-            )
-            time_refs = self._merge_unique_strings(
-                time_refs,
-                meta.get("time_refs"),
-                slots.get("time_refs"),
-                record.get("event_date"),
-                meta.get("event_date"),
-            )
-            topics = self._merge_unique_strings(
-                topics,
-                self._split_topic_values(record.get("keywords")),
-                self._split_topic_values(meta.get("keywords")),
-                self._split_topic_values(meta.get("topics")),
-                self._split_topic_values(slots.get("topics")),
-            )
-
-            if not event_date:
-                event_date = str(
-                    record.get("event_date") or meta.get("event_date") or ""
-                ).strip()
-
-        merged_meta: Dict[str, Any] = {}
-        if entities:
-            merged_meta["entities"] = entities
-        if time_refs:
-            merged_meta["time_refs"] = time_refs
-        if topics:
-            merged_meta["topics"] = topics
-        if event_date:
-            merged_meta["event_date"] = event_date
-        return merged_meta
-
-    async def _build_recomposition_entries(
-        self,
-        *,
-        snapshot: ConversationBuffer,
-        immediate_records: List[Dict[str, Any]],
-        tail_records: List[Dict[str, Any]],
-    ) -> List[RecompositionEntry]:
-        """Build ordered recomposition entries from merged-tail + immediates."""
-        entries: List[RecompositionEntry] = []
-
-        fs = getattr(self._orchestrator, "_fs", None)
-        tail_uris = [
-            str(r.get("uri", "") or "").strip() for r in tail_records if r.get("uri")
-        ]
-
-        async def _read_l2(uri: str) -> str:
-            try:
-                return await fs.read_file(f"{uri}/content.md")
-            except Exception:
-                return ""
-
-        if fs and tail_uris:
-            l2_contents = await asyncio.gather(*[_read_l2(u) for u in tail_uris])
-            l2_by_uri = dict(zip(tail_uris, l2_contents))
-        else:
-            l2_by_uri = {}
-
-        for record in tail_records:
-            msg_range = record_msg_range(record)
-            if msg_range is None:
-                continue
-            uri = str(record.get("uri", "") or "").strip()
-            text = l2_by_uri.get(uri, "") or record_text(record)
-            if not text:
-                continue
-            entries.append(
-                RecompositionEntry(
-                    text=text,
-                    uri=uri,
-                    msg_start=msg_range[0],
-                    msg_end=msg_range[1],
-                    token_count=max(self._estimate_tokens(text), 1),
-                    anchor_terms=self._segment_anchor_terms(record),
-                    time_refs=self._segment_time_refs(record),
-                    source_record=record,
-                    immediate_uris=[],
-                    superseded_merged_uris=([uri] if uri else []),
-                    source_segment_index=None,
-                )
-            )
-
-        by_uri = {
-            str(record.get("uri", "")).strip(): record
-            for record in immediate_records
-            if str(record.get("uri", "")).strip()
-        }
-        for offset, text in enumerate(snapshot.messages):
-            uri = (
-                snapshot.immediate_uris[offset]
-                if offset < len(snapshot.immediate_uris)
-                else ""
-            )
-            normalized_uri = str(uri or "").strip()
-            record = by_uri.get(normalized_uri)
-            if record is None:
-                fallback_index = snapshot.start_msg_index + offset
-                record = {
-                    "uri": normalized_uri,
-                    "abstract": text,
-                    "meta": {"msg_index": fallback_index},
-                    "keywords": "",
-                    "entities": [],
-                }
-            msg_range = record_msg_range(record)
-            if msg_range is None:
-                msg_index = snapshot.start_msg_index + offset
-                msg_range = (msg_index, msg_index)
-            entries.append(
-                RecompositionEntry(
-                    text=str(text),
-                    uri=normalized_uri,
-                    msg_start=msg_range[0],
-                    msg_end=msg_range[1],
-                    token_count=max(self._estimate_tokens(text), 1),
-                    anchor_terms=self._segment_anchor_terms(record),
-                    time_refs=self._segment_time_refs(record),
-                    source_record=record,
-                    immediate_uris=([normalized_uri] if normalized_uri else []),
-                    superseded_merged_uris=[],
-                    source_segment_index=None,
-                )
-            )
-
-        entries.sort(
-            key=lambda entry: (
-                int(entry["msg_start"]),
-                int(entry["msg_end"]),
-                str(entry["uri"]),
-            )
-        )
-        return entries
-
-    def _build_recomposition_segments(
-        self,
-        entries: List[RecompositionEntry],
-    ) -> List[Dict[str, Any]]:
-        """Split ordered recomposition entries into bounded semantic segments."""
-        if not entries:
-            return []
-
-        segments: List[Dict[str, Any]] = []
-        current: List[RecompositionEntry] = []
-        current_tokens = 0
-        current_messages = 0
-
-        for entry in entries:
-            entry_messages = (int(entry["msg_end"]) - int(entry["msg_start"])) + 1
-            should_split = False
-            if current:
-                # REVIEW closure tracker R3-RC-02 / R2-14: hard split
-                # when the new entry crosses an input-segment boundary.
-                # Benchmark entries carry source_segment_index; production
-                # / re-derived entries carry None and skip this check
-                # entirely (no behavior change for non-benchmark paths).
-                prev_segment_index = current[-1]["source_segment_index"]
-                entry_segment_index = entry["source_segment_index"]
-                if (
-                    prev_segment_index is not None
-                    and entry_segment_index is not None
-                    and prev_segment_index != entry_segment_index
-                ):
-                    should_split = True
-                else:
-                    current_time_refs: Set[str] = set()
-                    for item in current:
-                        current_time_refs.update(item["time_refs"])
-                    if (
-                        current_messages >= _SEGMENT_MAX_MESSAGES
-                        or current_tokens + int(entry["token_count"]) > _SEGMENT_MAX_TOKENS
-                        or (
-                            current_messages >= _SEGMENT_MIN_MESSAGES
-                            and current_time_refs
-                            and entry["time_refs"]
-                            and not self._time_refs_overlap(
-                                current_time_refs,
-                                entry["time_refs"],
-                            )
-                        )
-                    ):
-                        should_split = True
-
-            if should_split:
-                segments.append(self._finalize_recomposition_segment(current))
-                current = []
-                current_tokens = 0
-                current_messages = 0
-
-            current.append(entry)
-            current_tokens += int(entry["token_count"])
-            current_messages += max(entry_messages, 1)
-
-        if current:
-            segments.append(self._finalize_recomposition_segment(current))
-
-        return segments
-
-    def _build_anchor_clustered_segments(
-        self,
-        entries: List[RecompositionEntry],
-    ) -> List[Dict[str, Any]]:
-        """Cluster entries by anchor Jaccard similarity for full_recompose."""
-        if not entries:
-            return []
-
-        segments: List[Dict[str, Any]] = []
-        # Treat the seed entry the same way the cap check treats any
-        # subsequent append (REVIEW ADV-002): the prior implementation
-        # initialized ``current`` from ``entries[0]`` unconditionally, so
-        # a single oversized leaf — possible under U2's 64 KB content
-        # cap — could seed a cluster already larger than
-        # ``_RECOMPOSE_CLUSTER_MAX_TOKENS``. The cap then only stopped
-        # APPEND, never SPLIT. Now an oversized seed flushes immediately
-        # as its own single-entry segment and the next entry becomes the
-        # new seed.
-        current: List[RecompositionEntry] = []
-        current_anchors: Set[str] = set()
-        current_tokens = 0
-        current_messages = 0
-
-        def _within_caps_with(entry_tokens: int, entry_messages: int) -> bool:
-            return (
-                current_tokens + entry_tokens <= _RECOMPOSE_CLUSTER_MAX_TOKENS
-                and current_messages + max(entry_messages, 1)
-                <= _RECOMPOSE_CLUSTER_MAX_MESSAGES
-            )
-
-        def _seed_with(entry: RecompositionEntry) -> None:
-            nonlocal current, current_anchors, current_tokens, current_messages
-            entry_msgs = int(entry["msg_end"]) - int(entry["msg_start"]) + 1
-            current = [entry]
-            current_anchors = set(entry["anchor_terms"] | entry["time_refs"])
-            current_tokens = int(entry["token_count"])
-            current_messages = max(entry_msgs, 1)
-
-        for entry in entries:
-            entry_anchors: Set[str] = entry["anchor_terms"] | entry["time_refs"]
-            entry_messages = int(entry["msg_end"]) - int(entry["msg_start"]) + 1
-            entry_tokens = int(entry["token_count"])
-
-            if not current:
-                _seed_with(entry)
-                # An oversized seed is its own single-entry cluster:
-                # downstream ``_run_full_session_recomposition`` skips
-                # clusters with ``len(source_records) < 2``, so emitting
-                # it alone keeps every multi-entry cluster within caps.
-                if (
-                    current_tokens > _RECOMPOSE_CLUSTER_MAX_TOKENS
-                    or current_messages > _RECOMPOSE_CLUSTER_MAX_MESSAGES
-                ):
-                    segments.append(self._finalize_recomposition_segment(current))
-                    current = []
-                    current_anchors = set()
-                    current_tokens = 0
-                    current_messages = 0
-                continue
-
-            within_caps = _within_caps_with(entry_tokens, entry_messages)
-
-            if not entry_anchors:
-                # Anchorless entries used to bypass the caps unconditionally
-                # (R2-13). For inputs without entities/topics — e.g. some
-                # LongMemEval samples — that grew a single cluster until
-                # ``_derive_parent_summary`` blew its context window. Now
-                # anchorless entries still cluster greedily but respect the
-                # same token / message caps as anchored entries.
-                if within_caps:
-                    current.append(entry)
-                    current_tokens += entry_tokens
-                    current_messages += max(entry_messages, 1)
-                else:
-                    segments.append(self._finalize_recomposition_segment(current))
-                    current = [entry]
-                    current_anchors = set()
-                    current_tokens = entry_tokens
-                    current_messages = max(entry_messages, 1)
-                continue
-
-            union = current_anchors | entry_anchors
-            jaccard = (
-                len(current_anchors & entry_anchors) / len(union) if union else 0.0
-            )
-
-            if jaccard >= _RECOMPOSE_CLUSTER_JACCARD_THRESHOLD and within_caps:
-                current.append(entry)
-                current_anchors = current_anchors | entry_anchors
-                current_tokens += entry_tokens
-                current_messages += max(entry_messages, 1)
-            else:
-                segments.append(self._finalize_recomposition_segment(current))
-                current = [entry]
-                current_anchors = set(entry_anchors)
-                current_tokens = entry_tokens
-                current_messages = max(entry_messages, 1)
-
-        if current:
-            segments.append(self._finalize_recomposition_segment(current))
-
-        return segments
-
-    def _finalize_recomposition_segment(
-        self,
-        entries: List[RecompositionEntry],
-    ) -> Dict[str, Any]:
-        """Materialize one recomposition segment payload."""
-        msg_starts = [int(entry["msg_start"]) for entry in entries]
-        msg_ends = [int(entry["msg_end"]) for entry in entries]
-        source_records: List[Dict[str, Any]] = []
-        source_uris: Set[str] = set()
-        for entry in entries:
-            record = entry.get("source_record") or {}
-            uri = str(record.get("uri", "") or "")
-            if uri and uri in source_uris:
-                continue
-            if uri:
-                source_uris.add(uri)
-            source_records.append(record)
-        return {
-            "messages": [
-                str(entry["text"]) for entry in entries if str(entry["text"]).strip()
-            ],
-            "immediate_uris": self._merge_unique_strings(
-                *[entry.get("immediate_uris", []) for entry in entries]
-            ),
-            "superseded_merged_uris": self._merge_unique_strings(
-                *[entry.get("superseded_merged_uris", []) for entry in entries]
-            ),
-            "msg_range": [min(msg_starts), max(msg_ends)],
-            "source_records": source_records,
-        }
+        return self._recomposition_engine._segment_time_refs(record)
 
     async def _commit(
         self,
@@ -2393,36 +1909,9 @@ class ContextManager:
         user_id: str,
     ) -> None:
         """Start one background merge worker for the session if needed."""
-        existing_task = self._session_merge_tasks.get(sk)
-        if existing_task and not existing_task.done():
-            return
-
-        collection_name = get_collection_name()
-        task = asyncio.create_task(
-            self._merge_buffer(
-                sk,
-                session_id,
-                tenant_id,
-                user_id,
-                flush_all=False,
-                collection_name=collection_name,
-                raise_on_error=True,
-            )
+        return self._recomposition_engine._spawn_merge_task(
+            sk, session_id, tenant_id, user_id,
         )
-        self._session_merge_tasks[sk] = task
-        self._pending_tasks.add(task)
-
-        def _cleanup(done_task: asyncio.Task) -> None:
-            self._pending_tasks.discard(done_task)
-            with contextlib.suppress(asyncio.CancelledError):
-                exc = done_task.exception()
-                if exc is not None:
-                    failures = self._session_merge_task_failures.setdefault(sk, [])
-                    failures.append(exc)
-            if self._session_merge_tasks.get(sk) is done_task:
-                self._session_merge_tasks.pop(sk, None)
-
-        task.add_done_callback(_cleanup)
 
     def _spawn_full_recompose_task(
         self,
@@ -2435,311 +1924,14 @@ class ContextManager:
         raise_on_error: bool = False,
     ) -> None:
         """Start one async full-session recomposition worker per session."""
-        existing_task = self._session_full_recompose_tasks.get(sk)
-        if existing_task and not existing_task.done():
-            return
-
-        collection_name = get_collection_name()
-        task = asyncio.create_task(
-            self._run_full_session_recomposition(
-                session_id=session_id,
-                tenant_id=tenant_id,
-                user_id=user_id,
-                source_uri=source_uri,
-                collection_name=collection_name,
-                raise_on_error=raise_on_error,
-            )
+        return self._recomposition_engine._spawn_full_recompose_task(
+            sk,
+            session_id=session_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            source_uri=source_uri,
+            raise_on_error=raise_on_error,
         )
-        self._session_full_recompose_tasks[sk] = task
-        self._pending_tasks.add(task)
-
-        def _cleanup(done_task: asyncio.Task) -> None:
-            self._pending_tasks.discard(done_task)
-            if self._session_full_recompose_tasks.get(sk) is done_task:
-                self._session_full_recompose_tasks.pop(sk, None)
-
-        task.add_done_callback(_cleanup)
-
-    async def _run_full_session_recomposition(
-        self,
-        *,
-        session_id: str,
-        tenant_id: str,
-        user_id: str,
-        source_uri: Optional[str],
-        collection_name: Optional[str] = None,
-        raise_on_error: bool = False,
-        return_created_uris: bool = False,
-    ) -> Optional[List[str]]:
-        """Create directory parent records for semantically related leaf clusters.
-
-        Preserves original merged leaf records. For each cluster of >=2 leaves,
-        generates a directory summary from children abstracts and writes a
-        directory record (layer="directory", is_leaf=False).
-
-        When ``return_created_uris`` is True returns the list of created
-        directory URIs so callers (e.g. the benchmark ingest cleanup
-        tracker) can register them for rollback. Defaults to False so all
-        existing call sites — including the production conversation
-        lifecycle in ``context_end`` — preserve their previous return
-        contract (None) and behavior.
-        """
-        tokens_for_identity = set_request_identity(tenant_id, user_id)
-        coll_token = set_collection_name(collection_name) if collection_name else None
-        created_directory_uris: List[str] = []
-        try:
-            merged_records = await self._session_records.load_merged(
-                session_id=session_id,
-                source_uri=source_uri,
-            )
-            logger.info(
-                "[ContextManager] Full recompose start sid=%s tenant=%s user=%s collection=%s source_uri=%s merged=%d",
-                session_id,
-                tenant_id,
-                user_id,
-                self._orchestrator._get_collection(),
-                source_uri,
-                len(merged_records),
-            )
-            if len(merged_records) <= 1:
-                return [] if return_created_uris else None
-
-            entries: List[RecompositionEntry] = []
-            for record in merged_records:
-                msg_range = record_msg_range(record)
-                if msg_range is None:
-                    continue
-                uri = str(record.get("uri", "") or "").strip()
-                text = record_text(record)
-                if not text:
-                    continue
-                entries.append(
-                    RecompositionEntry(
-                        text=text,
-                        uri=uri,
-                        msg_start=msg_range[0],
-                        msg_end=msg_range[1],
-                        token_count=max(self._estimate_tokens(text), 1),
-                        anchor_terms=self._segment_anchor_terms(record),
-                        time_refs=self._segment_time_refs(record),
-                        source_record=record,
-                        immediate_uris=[],
-                        superseded_merged_uris=[],
-                        source_segment_index=None,
-                    )
-                )
-
-            segments = self._build_anchor_clustered_segments(entries)
-            logger.info(
-                "[ContextManager] Full recompose planned sid=%s entries=%d segments=%d ranges=%s",
-                session_id,
-                len(entries),
-                len(segments),
-                [segment.get("msg_range") for segment in segments[:8]],
-            )
-            if not segments:
-                return [] if return_created_uris else None
-
-            # Pre-compute eligible segments and their stable directory_index
-            # so the bounded-concurrency derive loop below has deterministic
-            # URIs regardless of which derive future resolves first.
-            eligible: List[Tuple[int, Dict[str, Any], List[str]]] = []
-            for segment in segments:
-                source_records = segment.get("source_records", [])
-                if len(source_records) < 2:
-                    continue
-                children_abstracts = [
-                    str(rec.get("abstract") or "").strip()
-                    for rec in source_records
-                    if str(rec.get("abstract") or "").strip()
-                ]
-                if not children_abstracts:
-                    continue
-                eligible.append(
-                    (len(eligible), segment, children_abstracts)
-                )
-
-            if not eligible:
-                logger.info(
-                    "[ContextManager] Full recompose: no eligible directories sid=%s",
-                    session_id,
-                )
-                return [] if return_created_uris else None
-
-            # Use the instance-scoped semaphore so cross-conversation
-            # concurrency (U13) does not multiply in-flight LLM derives:
-            # one global cap of _DIRECTORY_DERIVE_CONCURRENCY across all
-            # sessions, not concurrency × 3.
-            derive_semaphore = self._directory_derive_semaphore
-
-            async def _derive_one(
-                directory_index: int,
-                children_abstracts: List[str],
-            ) -> Tuple[int, Optional[Dict[str, Any]]]:
-                cluster_title = f"Directory-{directory_index:03d}"
-                async with derive_semaphore:
-                    return directory_index, await (
-                        self._orchestrator._derive_parent_summary(
-                            doc_title=cluster_title,
-                            children_abstracts=children_abstracts,
-                        )
-                    )
-
-            derive_results = await asyncio.gather(
-                *[
-                    _derive_one(idx, kids)
-                    for idx, _, kids in eligible
-                ]
-            )
-            derived_by_index: Dict[int, Optional[Dict[str, Any]]] = dict(derive_results)
-
-            # Sequential write phase preserves storage-order invariants the
-            # production lifecycle relied on (URIs are written in
-            # directory_index order; keywords-patch and FS writes happen
-            # right after each Qdrant upsert).
-            for directory_index, segment, children_abstracts in eligible:
-                source_records = segment.get("source_records", [])
-                logger.info(
-                    "[ContextManager] Full recompose segment sid=%s dir_index=%d msg_range=%s children=%d",
-                    session_id,
-                    directory_index,
-                    segment.get("msg_range"),
-                    len(source_records),
-                )
-
-                derived = derived_by_index.get(directory_index)
-                if not derived:
-                    continue
-
-                llm_abstract = derived.get("abstract", "")
-                llm_overview = derived.get("overview", "")
-                keywords_list = derived.get("keywords", [])
-                keywords_str = (
-                    ", ".join(str(k) for k in keywords_list if k)
-                    if isinstance(keywords_list, list)
-                    else ""
-                )
-
-                dir_uri = self._directory_uri(
-                    tenant_id,
-                    user_id,
-                    session_id,
-                    directory_index,
-                )
-
-                aggregated_meta = await self._aggregate_records_metadata(source_records)
-                all_tool_calls: List[Dict[str, Any]] = []
-                for rec in source_records:
-                    meta = dict(rec.get("meta") or {})
-                    for call in meta.get("tool_calls", []) or []:
-                        if isinstance(call, dict):
-                            all_tool_calls.append(call)
-
-                content = "\n\n".join(children_abstracts)
-
-                await self._orchestrator.add(
-                    uri=dir_uri,
-                    abstract=llm_abstract,
-                    content=content,
-                    category="events",
-                    context_type="memory",
-                    is_leaf=False,
-                    session_id=session_id,
-                    meta={
-                        **aggregated_meta,
-                        "layer": "directory",
-                        "ingest_mode": "memory",
-                        "msg_range": list(segment["msg_range"]),
-                        "source_uri": source_uri or "",
-                        "session_id": session_id,
-                        "child_count": len(source_records),
-                        "child_uris": [str(r.get("uri", "")) for r in source_records],
-                        "tool_calls": all_tool_calls if all_tool_calls else [],
-                    },
-                    overview=llm_overview,
-                )
-
-                created_directory_uris.append(dir_uri)
-
-                if keywords_str:
-                    try:
-                        records = await self._orchestrator._storage.filter(
-                            self._orchestrator._get_collection(),
-                            {"op": "must", "field": "uri", "conds": [dir_uri]},
-                            limit=1,
-                        )
-                        if records:
-                            await self._orchestrator._storage.update(
-                                self._orchestrator._get_collection(),
-                                str(records[0].get("id", "")),
-                                {"keywords": keywords_str},
-                            )
-                    except Exception:
-                        logger.warning(
-                            "[ContextManager] Failed to patch keywords for %s", dir_uri
-                        )
-
-                fs = getattr(self._orchestrator, "_fs", None)
-                if fs is not None:
-                    await fs.write_context(
-                        uri=dir_uri,
-                        content=content,
-                        abstract=llm_abstract,
-                        abstract_json={
-                            "keywords": keywords_list,
-                            "child_count": len(source_records),
-                        },
-                        overview=llm_overview,
-                        is_leaf=False,
-                    )
-
-            logger.info(
-                "[ContextManager] Full recompose completed sid=%s directories=%d leaves_preserved=%d",
-                session_id,
-                len(created_directory_uris),
-                len(merged_records),
-            )
-            if return_created_uris:
-                return list(created_directory_uris)
-            return None
-        except Exception as exc:
-            logger.warning(
-                "[ContextManager] Full-session recomposition failed sid=%s tenant=%s user=%s collection=%s source_uri=%s created_dirs=%d: %s",
-                session_id,
-                tenant_id,
-                user_id,
-                self._orchestrator._get_collection(),
-                source_uri,
-                len(created_directory_uris),
-                exc,
-                exc_info=True,
-            )
-            if raise_on_error:
-                # Hand back the partial URIs to the caller via
-                # RecompositionError so its run-scoped cleanup tracker
-                # can drive compensation (REVIEW REL-02). The previous
-                # inline ``contextlib.suppress`` cleanup was a silent
-                # black box on the raise_on_error=True path: any URI
-                # that failed to delete inside the suppressed block
-                # became an orphan with no signal upstream.
-                raise RecompositionError(exc, created_directory_uris) from exc
-            # raise_on_error=False (production lifecycle) keeps the
-            # legacy best-effort inline cleanup. Production callers do
-            # not maintain a tracker and rely on this fallback.
-            if created_directory_uris:
-                with contextlib.suppress(Exception):
-                    await self._purge_records_and_fs_subtree(created_directory_uris)
-            if return_created_uris:
-                # Failure path with reporting requested: hand back what
-                # we created before the failure so the caller's tracker
-                # can still record/compensate. ``raise_on_error=False``
-                # callers swallow the exception, so they need this hook.
-                return list(created_directory_uris)
-            return None
-        finally:
-            reset_request_identity(tokens_for_identity)
-            if coll_token is not None:
-                reset_collection_name(coll_token)
 
     async def _generate_session_summary(
         self,
@@ -2749,362 +1941,35 @@ class ContextManager:
         user_id: str,
         source_uri: Optional[str],
     ) -> Optional[str]:
-        """Generate a session-level summary from directory abstracts (or leaf abstracts as fallback).
-
-        Uses ``load_layers({"merged", "directory"})`` (REVIEW closure
-        tracker PERF-01): a single storage scroll returns both layers.
-        Previously the directory-present path called
-        ``load_directories`` and then ``load_merged``, paying two full
-        session scans for the same data.
-        """
-        layers = await self._session_records.load_layers(
-            layers=["merged", "directory"],
+        """Generate a session-level summary from directory abstracts."""
+        return await self._recomposition_engine._generate_session_summary(
             session_id=session_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
             source_uri=source_uri,
         )
-        directory_records = layers.get("directory", [])
-        merged_records = layers.get("merged", [])
-
-        abstracts: List[str] = []
-
-        if directory_records:
-            # Use directory abstracts as primary source
-            dir_child_uris: Set[str] = set()
-            for rec in directory_records:
-                meta = dict(rec.get("meta") or {})
-                for child_uri in meta.get("child_uris", []) or []:
-                    if child_uri:
-                        dir_child_uris.add(child_uri)
-                abstract = str(rec.get("abstract") or "").strip()
-                if abstract:
-                    abstracts.append(abstract)
-
-            # Include ungrouped leaf abstracts (leaves not in any directory)
-            for rec in merged_records:
-                uri = str(rec.get("uri", "") or "").strip()
-                if uri and uri not in dir_child_uris:
-                    abstract = str(rec.get("abstract") or "").strip()
-                    if abstract:
-                        abstracts.append(abstract)
-        else:
-            # Fallback: use leaf abstracts directly
-            if len(merged_records) < 2:
-                return None
-            for record in merged_records:
-                abstract = str(record.get("abstract") or "").strip()
-                if abstract:
-                    abstracts.append(abstract)
-
-        if not abstracts:
-            return None
-
-        # REVIEW closure tracker R2-21 — 1-directory short-circuit.
-        # When recomposition produced exactly one directory whose
-        # abstract is the sole contributor to ``abstracts``, the LLM
-        # call below would summarize one already-summarized abstract.
-        # Wasteful: 1 LLM call + 2 storage scans per session_end with
-        # single-cluster recomposition. Promote the directory's
-        # existing abstract / overview / topics to the session_summary
-        # verbatim instead.
-        #
-        # The guard requires THREE conditions because a less strict
-        # check would shadow ungrouped-leaf content:
-        #
-        #  1. ``len(directory_records) == 1`` — exactly one directory
-        #  2. ``only_dir_abstract`` is non-empty — otherwise the
-        #     directory loop's ``.strip()`` filter dropped it from
-        #     ``abstracts`` and the single entry came from an
-        #     ungrouped leaf (correctness bug if we promote the dir's
-        #     empty abstract over the leaf's content).
-        #  3. ``len(abstracts) == 1`` AND ``abstracts[0] ==
-        #     only_dir_abstract`` — belt+braces: the only entry IS
-        #     the directory's abstract, not a coincidentally-equal
-        #     leaf abstract.
-        only_dir_abstract = (
-            str(directory_records[0].get("abstract") or "").strip()
-            if len(directory_records) == 1
-            else ""
-        )
-        summary_uri = self._session_summary_uri(tenant_id, user_id, session_id)
-        if (
-            len(directory_records) == 1
-            and only_dir_abstract
-            and len(abstracts) == 1
-            and abstracts[0] == only_dir_abstract
-        ):
-            only_dir = directory_records[0]
-            only_dir_meta = dict(only_dir.get("meta") or {})
-            llm_abstract = only_dir_abstract
-            llm_overview = str(only_dir.get("overview") or "")
-            topics = only_dir_meta.get("topics") or []
-            keywords_list = list(topics) if isinstance(topics, list) else []
-        else:
-            derived = await self._orchestrator._derive_parent_summary(
-                doc_title=session_id,
-                children_abstracts=abstracts,
-            )
-            if not derived:
-                return None
-            llm_abstract = derived.get("abstract", "")
-            llm_overview = derived.get("overview", "")
-            keywords_list = derived.get("keywords", [])
-        keywords_str = (
-            ", ".join(str(k) for k in keywords_list if k)
-            if isinstance(keywords_list, list)
-            else ""
-        )
-
-        content = "\n\n".join(abstracts)
-
-        await self._orchestrator.add(
-            uri=summary_uri,
-            abstract=llm_abstract,
-            content=content,
-            category="events",
-            context_type="memory",
-            is_leaf=False,
-            session_id=session_id,
-            meta={
-                "layer": "session_summary",
-                "session_id": session_id,
-                "source_uri": source_uri or "",
-                "child_count": len(abstracts),
-                "topics": keywords_list,
-            },
-            overview=llm_overview,
-        )
-
-        # Patch keywords into the Qdrant record (add() fast-path skips them).
-        if keywords_str:
-            try:
-                records = await self._orchestrator._storage.filter(
-                    self._orchestrator._get_collection(),
-                    {"op": "must", "field": "uri", "conds": [summary_uri]},
-                    limit=1,
-                )
-                if records:
-                    await self._orchestrator._storage.update(
-                        self._orchestrator._get_collection(),
-                        str(records[0].get("id", "")),
-                        {"keywords": keywords_str},
-                    )
-            except Exception:
-                logger.warning(
-                    "[ContextManager] Failed to patch keywords for %s", summary_uri
-                )
-
-        fs = getattr(self._orchestrator, "_fs", None)
-        if fs is not None:
-            await fs.write_context(
-                uri=summary_uri,
-                content=content,
-                abstract=llm_abstract,
-                abstract_json={
-                    "keywords": keywords_list,
-                    "child_count": len(abstracts),
-                },
-                overview=llm_overview,
-                is_leaf=False,
-            )
-
-        logger.info(
-            "[ContextManager] Session summary generated sid=%s uri=%s children=%d",
-            session_id,
-            summary_uri,
-            len(abstracts),
-        )
-        return summary_uri
 
     def _merge_trigger_threshold(self) -> int:
-        cfg = getattr(self._orchestrator, "_config", None)
-        if cfg is None:
-            return 6144
-        return max(1, int(getattr(cfg, "conversation_merge_token_budget", 6144)))
-
-    @staticmethod
-    def _task_failures(results: List[Any]) -> List[BaseException]:
-        """Extract task failures from ``asyncio.gather(..., return_exceptions=True)``."""
-        return [result for result in results if isinstance(result, BaseException)]
+        """Return the token threshold that triggers a background merge."""
+        return self._recomposition_engine._merge_trigger_threshold()
 
     async def _wait_for_merge_task(self, sk: SessionKey) -> List[BaseException]:
         """Wait until any in-flight background merge for the session finishes."""
-        failures = list(self._session_merge_task_failures.pop(sk, []))
-        task = self._session_merge_tasks.get(sk)
-        if not task:
-            return failures
-        results = await asyncio.gather(task, return_exceptions=True)
-        failures.extend(self._task_failures(results))
-        deduped: List[BaseException] = []
-        seen_ids: Set[int] = set()
-        for failure in failures:
-            if id(failure) in seen_ids:
-                continue
-            seen_ids.add(id(failure))
-            deduped.append(failure)
-        return deduped
-
-    def _track_session_merge_followup_task(
-        self,
-        sk: SessionKey,
-        task: asyncio.Task,
-    ) -> None:
-        """Track deferred tasks spawned from a session merge worker."""
-        session_tasks = self._session_merge_followup_tasks.setdefault(sk, set())
-        session_tasks.add(task)
-        self._pending_tasks.add(task)
-
-        def _cleanup(done_task: asyncio.Task) -> None:
-            self._pending_tasks.discard(done_task)
-            with contextlib.suppress(asyncio.CancelledError):
-                exc = done_task.exception()
-                if exc is not None:
-                    failures = self._session_merge_followup_failures.setdefault(sk, [])
-                    failures.append(exc)
-            active_tasks = self._session_merge_followup_tasks.get(sk)
-            if active_tasks is None:
-                return
-            active_tasks.discard(done_task)
-            if not active_tasks:
-                self._session_merge_followup_tasks.pop(sk, None)
-
-        task.add_done_callback(_cleanup)
+        return await self._recomposition_engine._wait_for_merge_task(sk)
 
     async def _wait_for_merge_followup_tasks(
         self, sk: SessionKey
     ) -> List[BaseException]:
         """Wait until deferred follow-up tasks for the session merge finish."""
-        failures: List[BaseException] = list(
-            self._session_merge_followup_failures.pop(sk, []),
-        )
-        while True:
-            tasks = tuple(self._session_merge_followup_tasks.get(sk, set()))
-            if not tasks:
-                deduped: List[BaseException] = []
-                seen_ids: Set[int] = set()
-                for failure in failures:
-                    if id(failure) in seen_ids:
-                        continue
-                    seen_ids.add(id(failure))
-                    deduped.append(failure)
-                return deduped
-            logger.info(
-                "[ContextManager] Waiting for merge follow-up tasks sk=%s pending=%d",
-                sk,
-                len(tasks),
-            )
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            failures.extend(self._task_failures(results))
-
-    async def _take_merge_snapshot(
-        self,
-        sk: SessionKey,
-        *,
-        flush_all: bool,
-    ) -> Optional[ConversationBuffer]:
-        """Detach the current buffer snapshot for merge processing."""
-        merge_lock = self._session_merge_locks.setdefault(sk, asyncio.Lock())
-        async with merge_lock:
-            buffer = self._conversation_buffers.get(sk)
-            if not buffer or not buffer.messages:
-                return None
-            if not flush_all and buffer.token_count < self._merge_trigger_threshold():
-                return None
-
-            snapshot = ConversationBuffer(
-                messages=list(buffer.messages),
-                token_count=buffer.token_count,
-                start_msg_index=buffer.start_msg_index,
-                immediate_uris=list(buffer.immediate_uris),
-                tool_calls_per_turn=[list(item) for item in buffer.tool_calls_per_turn],
-            )
-            next_start = buffer.start_msg_index + len(buffer.messages)
-            self._conversation_buffers[sk] = ConversationBuffer(
-                start_msg_index=next_start
-            )
-            return snapshot
-
-    async def _restore_merge_snapshot(
-        self,
-        sk: SessionKey,
-        snapshot: ConversationBuffer,
-    ) -> None:
-        """Restore a detached buffer snapshot after merge failure."""
-        merge_lock = self._session_merge_locks.setdefault(sk, asyncio.Lock())
-        async with merge_lock:
-            current = self._conversation_buffers.get(sk)
-            if current is None:
-                self._conversation_buffers[sk] = snapshot
-                return
-
-            merged = ConversationBuffer(
-                messages=list(snapshot.messages) + list(current.messages),
-                token_count=snapshot.token_count + current.token_count,
-                start_msg_index=snapshot.start_msg_index,
-                immediate_uris=list(snapshot.immediate_uris)
-                + list(current.immediate_uris),
-                tool_calls_per_turn=list(snapshot.tool_calls_per_turn)
-                + list(current.tool_calls_per_turn),
-            )
-            self._conversation_buffers[sk] = merged
+        return await self._recomposition_engine._wait_for_merge_followup_tasks(sk)
 
     async def _purge_records_and_fs_subtree(self, uris: List[str]) -> None:
-        """Purge each URI's record and CortexFS subtree by URI prefix.
-
-        For every input URI:
-        - ``storage.remove_by_uri(uri)`` deletes the URI itself AND every
-          record whose URI starts with the same prefix (so derived
-          children — fact_points, abstract.json, etc. — go with it).
-        - ``fs.rm(uri, recursive=True)`` recursively removes the
-          CortexFS subtree rooted at the URI's path.
-
-        FS failures are logged but never raise — the storage delete is
-        the source of truth, the FS write is fire-and-forget on the
-        creation path. Callers don't need to compensate.
-
-        Renamed from ``_delete_immediate_families`` (REVIEW closure
-        tracker PE-1) — the old name encoded a stale concept ("immediate
-        families" was leftover terminology from the immediate-layer era
-        that no longer exists). This function deletes records + FS
-        subtrees regardless of layer; the new name reflects that.
-        """
-        unique_uris: list[str] = []
-        for uri in uris:
-            normalized = str(uri or "").strip()
-            if normalized and normalized not in unique_uris:
-                unique_uris.append(normalized)
-
-        fs = getattr(self._orchestrator, "_fs", None)
-        for uri in unique_uris:
-            await self._orchestrator._storage.remove_by_uri(
-                self._orchestrator._get_collection(),
-                uri,
-            )
-            if fs:
-                try:
-                    await fs.rm(uri, recursive=True)
-                except Exception as exc:
-                    logger.warning(
-                        "[ContextManager] CortexFS cleanup failed for %s: %s",
-                        uri,
-                        exc,
-                    )
+        """Purge each URI's record and CortexFS subtree by URI prefix."""
+        return await self._recomposition_engine._purge_records_and_fs_subtree(uris)
 
     async def _list_immediate_uris(self, session_id: str) -> List[str]:
         """Return current session immediate source URIs for fallback cleanup."""
-        records = await self._orchestrator._storage.filter(
-            self._orchestrator._get_collection(),
-            {"op": "must", "field": "session_id", "conds": [session_id]},
-            limit=10000,
-        )
-        return [
-            str(record.get("uri", "")).strip()
-            for record in records
-            if (
-                str(record.get("uri", "")).strip()
-                and str((record.get("meta") or {}).get("layer", "") or "")
-                == "immediate"
-            )
-        ]
+        return await self._recomposition_engine._list_immediate_uris(session_id)
 
     async def _merge_buffer(
         self,
@@ -3118,192 +1983,15 @@ class ContextManager:
         raise_on_error: bool = False,
     ) -> None:
         """Merge accumulated buffer snapshots into durable merged records."""
-        tokens_for_identity = None
-        coll_token = set_collection_name(collection_name) if collection_name else None
-        self._session_pending_immediate_cleanup.pop(sk, None)
-        try:
-            while True:
-                snapshot = await self._take_merge_snapshot(
-                    sk,
-                    flush_all=flush_all,
-                )
-                if snapshot is None:
-                    return
-                logger.info(
-                    "[ContextManager] Merge start sid=%s tenant=%s user=%s collection=%s flush_all=%s snapshot_messages=%d snapshot_tokens=%d snapshot_immediates=%d start_msg_index=%d",
-                    session_id,
-                    tenant_id,
-                    user_id,
-                    self._orchestrator._get_collection(),
-                    flush_all,
-                    len(snapshot.messages),
-                    snapshot.token_count,
-                    len(snapshot.immediate_uris),
-                    snapshot.start_msg_index,
-                )
-
-                records = await self._load_immediate_records(snapshot.immediate_uris)
-                source_uri = self._conversation_source_uri(
-                    tenant_id,
-                    user_id,
-                    session_id,
-                )
-                tail_records = await self._select_tail_merged_records(
-                    session_id=session_id,
-                    source_uri=source_uri,
-                )
-                entries = await self._build_recomposition_entries(
-                    snapshot=snapshot,
-                    immediate_records=records,
-                    tail_records=tail_records,
-                )
-                segments = self._build_recomposition_segments(entries)
-                logger.info(
-                    "[ContextManager] Merge planned sid=%s immediate_records=%d tail_records=%d entries=%d segments=%d segment_ranges=%s",
-                    session_id,
-                    len(records),
-                    len(tail_records),
-                    len(entries),
-                    len(segments),
-                    [segment.get("msg_range") for segment in segments[:8]],
-                )
-
-                all_tool_calls = []
-                for tc_list in snapshot.tool_calls_per_turn:
-                    all_tool_calls.extend(tc_list)
-
-                if tokens_for_identity is None:
-                    tokens_for_identity = set_request_identity(tenant_id, user_id)
-                created_merged_uris: List[str] = []
-                for segment in segments:
-                    if not segment["messages"]:
-                        continue
-                    combined = "\n\n".join(segment["messages"])
-                    aggregated_meta = await self._aggregate_records_metadata(
-                        segment["source_records"]
-                    )
-                    merged_context = await self._orchestrator.add(
-                        uri=self._merged_leaf_uri(
-                            tenant_id,
-                            user_id,
-                            session_id,
-                            segment["msg_range"],
-                        ),
-                        abstract="",
-                        content=combined,
-                        category="events",
-                        context_type="memory",
-                        meta={
-                            **aggregated_meta,
-                            "layer": "merged",
-                            "ingest_mode": "memory",
-                            "msg_range": list(segment["msg_range"]),
-                            "source_uri": source_uri,
-                            "session_id": session_id,
-                            "recomposition_stage": "online_tail",
-                            "tool_calls": all_tool_calls if all_tool_calls else [],
-                        },
-                        session_id=session_id,
-                        defer_derive=True,
-                    )
-                    created_merged_uris.append(merged_context.uri)
-
-                    async def _bounded_derive(
-                        sem=self._derive_semaphore,
-                        **dkw,
-                    ):
-                        async with sem:
-                            await self._orchestrator._complete_deferred_derive(**dkw)
-
-                    _defer_task = asyncio.create_task(
-                        _bounded_derive(
-                            uri=merged_context.uri,
-                            content=combined,
-                            abstract="",
-                            overview="",
-                            session_id=session_id,
-                            meta=aggregated_meta,
-                            raise_on_error=True,
-                        )
-                    )
-                    self._track_session_merge_followup_task(sk, _defer_task)
-                    _defer_task.add_done_callback(
-                        lambda t: (
-                            None
-                            if t.cancelled()
-                            else (
-                                logger.warning(
-                                    "[ContextManager] deferred derive failed: %s",
-                                    t.exception(),
-                                )
-                                if t.exception()
-                                else None
-                            )
-                        )
-                    )
-
-                superseded_merged_uris = self._merge_unique_strings(
-                    *[segment.get("superseded_merged_uris", []) for segment in segments]
-                )
-                superseded_merged_uris = [
-                    uri
-                    for uri in superseded_merged_uris
-                    if uri not in created_merged_uris
-                ]
-                if superseded_merged_uris:
-                    try:
-                        await self._purge_records_and_fs_subtree(superseded_merged_uris)
-                    except Exception as exc:
-                        logger.warning(
-                            "[ContextManager] Superseded merged cleanup after merge: %s",
-                            exc,
-                        )
-
-                if snapshot.immediate_uris:
-                    try:
-                        await self._purge_records_and_fs_subtree(snapshot.immediate_uris)
-                    except Exception as exc:
-                        self._session_pending_immediate_cleanup[sk] = True
-                        logger.warning(
-                            "[ContextManager] Immediate cleanup after merge: %s", exc
-                        )
-        except Exception as exc:
-            logger.error(
-                "[ContextManager] Merge failed sid=%s tenant=%s user=%s collection=%s flush_all=%s source_uri=%s snapshot_messages=%s immediate_records=%s tail_records=%s segments=%s created_merged=%s: %s",
-                session_id,
-                tenant_id,
-                user_id,
-                self._orchestrator._get_collection(),
-                flush_all,
-                locals().get("source_uri"),
-                len(snapshot.messages)
-                if "snapshot" in locals() and snapshot is not None
-                else None,
-                len(records) if "records" in locals() and records is not None else None,
-                len(tail_records)
-                if "tail_records" in locals() and tail_records is not None
-                else None,
-                len(segments)
-                if "segments" in locals() and segments is not None
-                else None,
-                len(created_merged_uris)
-                if "created_merged_uris" in locals() and created_merged_uris is not None
-                else None,
-                exc,
-                exc_info=True,
-            )
-            if "created_merged_uris" in locals() and created_merged_uris:
-                with contextlib.suppress(Exception):
-                    await self._purge_records_and_fs_subtree(created_merged_uris)
-            if "snapshot" in locals() and snapshot is not None:
-                await self._restore_merge_snapshot(sk, snapshot)
-            if raise_on_error:
-                raise
-        finally:
-            if tokens_for_identity:
-                reset_request_identity(tokens_for_identity)
-            if coll_token is not None:
-                reset_collection_name(coll_token)
+        return await self._recomposition_engine._merge_buffer(
+            sk,
+            session_id,
+            tenant_id,
+            user_id,
+            flush_all=flush_all,
+            collection_name=collection_name,
+            raise_on_error=raise_on_error,
+        )
 
     # =========================================================================
 
