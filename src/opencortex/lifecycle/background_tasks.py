@@ -107,10 +107,14 @@ class BackgroundTaskManager:
         if not hasattr(orch, "_autophagy_sweep_guard"):
             orch._autophagy_sweep_guard = asyncio.Lock()
 
-        if orch._autophagy_sweep_task is not None and not orch._autophagy_sweep_task.done():
+        if (
+            orch._autophagy_sweep_task is not None
+            and not orch._autophagy_sweep_task.done()
+        ):
             return
 
-        # Startup: one immediate batch (fire-and-forget) for crash recovery / backlog drain.
+        # Startup: one immediate batch (fire-and-forget) for crash recovery
+        # / backlog drain.
         orch._autophagy_startup_sweep_task = asyncio.create_task(
             self._run_autophagy_sweep_once(),
             name="opencortex.autophagy.startup_sweep",
@@ -132,9 +136,15 @@ class BackgroundTaskManager:
             return
 
         # Be resilient to unit tests that bypass __init__ via __new__.
-        if not hasattr(orch, "_autophagy_sweep_guard") or orch._autophagy_sweep_guard is None:
+        if (
+            not hasattr(orch, "_autophagy_sweep_guard")
+            or orch._autophagy_sweep_guard is None
+        ):
             orch._autophagy_sweep_guard = asyncio.Lock()
-        if not hasattr(orch, "_autophagy_sweep_cursors") or orch._autophagy_sweep_cursors is None:
+        if (
+            not hasattr(orch, "_autophagy_sweep_cursors")
+            or orch._autophagy_sweep_cursors is None
+        ):
             orch._autophagy_sweep_cursors = {
                 OwnerType.MEMORY: None,
                 OwnerType.TRACE: None,
@@ -150,7 +160,7 @@ class BackgroundTaskManager:
                         limit=limit,
                         cursor=cursor,
                     )
-                    # Reset to None when exhausted, so subsequent sweeps restart cleanly.
+                    # Reset to None when exhausted; next sweep restarts cleanly.
                     orch._autophagy_sweep_cursors[owner_type] = getattr(
                         result, "next_cursor", None
                     )
@@ -243,7 +253,9 @@ class BackgroundTaskManager:
             unavailable_count = 0
 
             llm_completion = getattr(orch, "_llm_completion", None)
-            llm_client = getattr(llm_completion, "client", None) if llm_completion else None
+            llm_client = (
+                getattr(llm_completion, "client", None) if llm_completion else None
+            )
             if llm_client is not None:
                 stats = extract_pool_stats(llm_client)
                 warn_count += self._maybe_warn_pool("llm_completion", stats)
@@ -296,7 +308,11 @@ class BackgroundTaskManager:
         open_count = stats.get("open_connections")
         limits = stats.get("limits") or {}
         max_conn = limits.get("max_connections")
-        if not isinstance(open_count, int) or not isinstance(max_conn, int) or max_conn <= 0:
+        if (
+            not isinstance(open_count, int)
+            or not isinstance(max_conn, int)
+            or max_conn <= 0
+        ):
             return 0
         if open_count > POOL_DEGRADED_THRESHOLD * max_conn:
             logger.warning(
@@ -378,8 +394,8 @@ class BackgroundTaskManager:
             task: The ``_DeriveTask`` item dequeued from ``_derive_queue``.
         """
         from opencortex.http.request_context import (
-            set_request_identity,
             reset_request_identity,
+            set_request_identity,
         )
 
         orch = self._orch
@@ -417,7 +433,11 @@ class BackgroundTaskManager:
                     level = 0
                 else:
                     parent_level = next(
-                        (lv for lv, idxs in levels.items() if chunk.parent_index in idxs),
+                        (
+                            lv
+                            for lv, idxs in levels.items()
+                            if chunk.parent_index in idxs
+                        ),
                         0,
                     )
                     level = parent_level + 1
@@ -439,7 +459,11 @@ class BackgroundTaskManager:
                     "section_path", ""
                 )
                 if is_dir_chunk[idx]:
-                    heading = sp.split(" > ")[-1].strip() if sp else chunk.content[:80].strip()
+                    heading = (
+                        sp.split(" > ")[-1].strip()
+                        if sp
+                        else chunk.content[:80].strip()
+                    )
                     chunk_abstract = heading
                 else:
                     chunk_abstract = ""
@@ -505,12 +529,14 @@ class BackgroundTaskManager:
                         continue
                     if len(available) < len(child_indices) / 2:
                         logger.warning(
-                            "[BackgroundTaskManager] section %d: >50%% children failed, "
-                            "skipping bottom-up",
+                            "[BackgroundTaskManager] section %d: >50%% children "
+                            "failed, skipping bottom-up",
                             si,
                         )
                         continue
-                    summary = await orch._derive_parent_summary(task.abstract, available)
+                    summary = await orch._derive_parent_summary(
+                        task.abstract, available
+                    )
                     if summary.get("abstract"):
                         try:
                             await orch.update(
@@ -523,7 +549,8 @@ class BackgroundTaskManager:
                             chunk_results[si].overview = summary["overview"]
                         except Exception as exc:
                             logger.warning(
-                                "[BackgroundTaskManager] section %d bottom-up failed: %s",
+                                "[BackgroundTaskManager] section %d "
+                                "bottom-up failed: %s",
                                 si, exc,
                             )
 
@@ -566,6 +593,7 @@ class BackgroundTaskManager:
     async def _recover_pending_derives(self) -> None:
         """Scan for .derive_pending markers and re-enqueue incomplete derives."""
         import json as _json
+
         from opencortex.orchestrator import _DeriveTask
 
         orch = self._orch
@@ -605,7 +633,9 @@ class BackgroundTaskManager:
                     parser = None
 
                 if parser:
-                    chunks = await parser.parse_content(content, source_path=source_path)
+                    chunks = await parser.parse_content(
+                        content, source_path=source_path
+                    )
                 else:
                     chunks = await orch._parser_registry.parse_content(
                         content, source_format="markdown"
@@ -638,7 +668,8 @@ class BackgroundTaskManager:
 
         if recovered:
             logger.info(
-                "[BackgroundTaskManager] Re-enqueued %d pending derive task(s)", recovered
+                "[BackgroundTaskManager] Re-enqueued %d pending "
+                "derive task(s)", recovered,
             )
 
     async def _drain_derive_queue(self) -> None:
@@ -779,7 +810,8 @@ class BackgroundTaskManager:
         # here on the first attribute miss.
         recall_tasks_set = (
             self._recall_bookkeeping_tasks_set()
-            if hasattr(orch, "_recall_bookkeeping_tasks") and orch._recall_bookkeeping_tasks
+            if hasattr(orch, "_recall_bookkeeping_tasks")
+            and orch._recall_bookkeeping_tasks
             else None
         )
         if recall_tasks_set is not None:
