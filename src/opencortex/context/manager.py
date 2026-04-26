@@ -178,6 +178,7 @@ class _BenchmarkRunCleanup:
 
     @staticmethod
     async def _safe_remove(manager: "ContextManager", uri: Optional[str]) -> None:
+        """Remove a URI, logging and swallowing exceptions."""
         if not uri:
             return
         try:
@@ -659,6 +660,7 @@ class ContextManager:
             List[str],
             Dict[str, Any],
         ]:
+            """Search memory and return formatted items, latency, skills, owners, and trace."""
             started = time.monotonic()
             try:
                 search_kwargs: Dict[str, Any] = {
@@ -709,6 +711,7 @@ class ContextManager:
                 return [], int((time.monotonic() - started) * 1000), [], [], {}
 
         async def _knowledge_search() -> Tuple[List[Dict[str, Any]], int]:
+            """Search knowledge store and return formatted results and latency."""
             started = time.monotonic()
             try:
                 k_result = await self._orchestrator.knowledge_search(
@@ -887,6 +890,19 @@ class ContextManager:
         user_id: str,
         config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        """Prepare context for a turn by running intent routing and retrieval.
+
+        Args:
+            session_id: Active session identifier.
+            turn_id: Turn within the session.
+            messages: Conversation messages for context.
+            tenant_id: Tenant identifier.
+            user_id: User identifier.
+            config: Optional override configuration.
+
+        Returns:
+            Dict with memory context, knowledge, and runtime metadata.
+        """
         options = self._build_prepare_options(
             session_id=session_id,
             tenant_id=tenant_id,
@@ -1077,6 +1093,7 @@ class ContextManager:
         user_id: str,
         session_id: str,
     ) -> str:
+        """Build the URI for a session-level summary record."""
         from opencortex.utils.uri import CortexURI
 
         return CortexURI.build_private(
@@ -1567,6 +1584,7 @@ class ContextManager:
             return result
 
         async def _read_one(uri: str) -> Tuple[str, str]:
+            """Read L2 content for a single URI, returning (uri, content)."""
             try:
                 return uri, await fs.read_file(f"{uri}/content.md")
             except Exception as exc:  # pragma: no cover - defensive
@@ -1898,6 +1916,7 @@ class ContextManager:
         ]
 
         async def _read_l2(uri: str) -> str:
+            """Read L2 content file for a URI, returning empty string on error."""
             try:
                 return await fs.read_file(f"{uri}/content.md")
             except Exception:
@@ -2072,6 +2091,7 @@ class ContextManager:
         current_messages = 0
 
         def _within_caps_with(entry_tokens: int, entry_messages: int) -> bool:
+            """Check whether adding an entry stays within token and message caps."""
             return (
                 current_tokens + entry_tokens <= _RECOMPOSE_CLUSTER_MAX_TOKENS
                 and current_messages + max(entry_messages, 1)
@@ -2079,6 +2099,7 @@ class ContextManager:
             )
 
         def _seed_with(entry: RecompositionEntry) -> None:
+            """Reset the current cluster to start with the given entry."""
             nonlocal current, current_anchors, current_tokens, current_messages
             entry_msgs = int(entry["msg_end"]) - int(entry["msg_start"]) + 1
             current = [entry]
@@ -2192,6 +2213,20 @@ class ContextManager:
         cited_uris: Optional[List[str]] = None,
         tool_calls: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
+        """Commit a turn by writing messages and triggering merge/recomposition.
+
+        Args:
+            session_id: Active session identifier.
+            turn_id: Turn within the session.
+            messages: Messages to commit.
+            tenant_id: Tenant identifier.
+            user_id: User identifier.
+            cited_uris: URIs cited during the turn for reward scoring.
+            tool_calls: Tool call records for the turn.
+
+        Returns:
+            Dict with commit status and metadata.
+        """
         sk = self._make_session_key(tenant_id, user_id, session_id)
         self._touch_session(sk)
         self._remember_session_project(sk)
@@ -2325,7 +2360,11 @@ class ContextManager:
                     for (text, idx, tc, _msg_meta), result in zip(write_items, results):
                         if isinstance(result, Exception):
                             logger.warning(
-                                "[ContextManager] Immediate write failed sid=%s turn=%s msg_index=%d chars=%d exc_type=%s exc=%r",
+                                (
+                                    "[ContextManager] Immediate write failed"
+                                    " sid=%s turn=%s msg_index=%d chars=%d"
+                                    " exc_type=%s exc=%r"
+                                ),
                                 session_id,
                                 turn_id,
                                 idx,
@@ -2413,6 +2452,7 @@ class ContextManager:
         self._pending_tasks.add(task)
 
         def _cleanup(done_task: asyncio.Task) -> None:
+            """Track merge task completion and record failures."""
             self._pending_tasks.discard(done_task)
             with contextlib.suppress(asyncio.CancelledError):
                 exc = done_task.exception()
@@ -2454,6 +2494,7 @@ class ContextManager:
         self._pending_tasks.add(task)
 
         def _cleanup(done_task: asyncio.Task) -> None:
+            """Remove full-recompose task from the session tracking map."""
             self._pending_tasks.discard(done_task)
             if self._session_full_recompose_tasks.get(sk) is done_task:
                 self._session_full_recompose_tasks.pop(sk, None)
@@ -2493,7 +2534,11 @@ class ContextManager:
                 source_uri=source_uri,
             )
             logger.info(
-                "[ContextManager] Full recompose start sid=%s tenant=%s user=%s collection=%s source_uri=%s merged=%d",
+                (
+                    "[ContextManager] Full recompose start"
+                    " sid=%s tenant=%s user=%s collection=%s"
+                    " source_uri=%s merged=%d"
+                ),
                 session_id,
                 tenant_id,
                 user_id,
@@ -2576,6 +2621,7 @@ class ContextManager:
                 directory_index: int,
                 children_abstracts: List[str],
             ) -> Tuple[int, Optional[Dict[str, Any]]]:
+                """Derive a parent summary for one directory cluster."""
                 cluster_title = f"Directory-{directory_index:03d}"
                 async with derive_semaphore:
                     return directory_index, await (
@@ -2600,7 +2646,10 @@ class ContextManager:
             for directory_index, segment, children_abstracts in eligible:
                 source_records = segment.get("source_records", [])
                 logger.info(
-                    "[ContextManager] Full recompose segment sid=%s dir_index=%d msg_range=%s children=%d",
+                    (
+                        "[ContextManager] Full recompose segment"
+                        " sid=%s dir_index=%d msg_range=%s children=%d"
+                    ),
                     session_id,
                     directory_index,
                     segment.get("msg_range"),
@@ -2694,7 +2743,10 @@ class ContextManager:
                     )
 
             logger.info(
-                "[ContextManager] Full recompose completed sid=%s directories=%d leaves_preserved=%d",
+                (
+                    "[ContextManager] Full recompose completed"
+                    " sid=%s directories=%d leaves_preserved=%d"
+                ),
                 session_id,
                 len(created_directory_uris),
                 len(merged_records),
@@ -2704,7 +2756,11 @@ class ContextManager:
             return None
         except Exception as exc:
             logger.warning(
-                "[ContextManager] Full-session recomposition failed sid=%s tenant=%s user=%s collection=%s source_uri=%s created_dirs=%d: %s",
+                (
+                    "[ContextManager] Full-session recomposition failed"
+                    " sid=%s tenant=%s user=%s collection=%s"
+                    " source_uri=%s created_dirs=%d: %s"
+                ),
                 session_id,
                 tenant_id,
                 user_id,
@@ -2749,7 +2805,7 @@ class ContextManager:
         user_id: str,
         source_uri: Optional[str],
     ) -> Optional[str]:
-        """Generate a session-level summary from directory abstracts (or leaf abstracts as fallback).
+        """Generate a session-level summary from directory or leaf abstracts.
 
         Uses ``load_layers({"merged", "directory"})`` (REVIEW closure
         tracker PERF-01): a single storage scroll returns both layers.
@@ -2916,6 +2972,7 @@ class ContextManager:
         return summary_uri
 
     def _merge_trigger_threshold(self) -> int:
+        """Return the token threshold that triggers a conversation merge."""
         cfg = getattr(self._orchestrator, "_config", None)
         if cfg is None:
             return 6144
@@ -2954,6 +3011,7 @@ class ContextManager:
         self._pending_tasks.add(task)
 
         def _cleanup(done_task: asyncio.Task) -> None:
+            """Track follow-up task completion and record failures."""
             self._pending_tasks.discard(done_task)
             with contextlib.suppress(asyncio.CancelledError):
                 exc = done_task.exception()
@@ -3130,7 +3188,12 @@ class ContextManager:
                 if snapshot is None:
                     return
                 logger.info(
-                    "[ContextManager] Merge start sid=%s tenant=%s user=%s collection=%s flush_all=%s snapshot_messages=%d snapshot_tokens=%d snapshot_immediates=%d start_msg_index=%d",
+                    (
+                        "[ContextManager] Merge start"
+                        " sid=%s tenant=%s user=%s collection=%s flush_all=%s"
+                        " snapshot_messages=%d snapshot_tokens=%d"
+                        " snapshot_immediates=%d start_msg_index=%d"
+                    ),
                     session_id,
                     tenant_id,
                     user_id,
@@ -3159,7 +3222,11 @@ class ContextManager:
                 )
                 segments = self._build_recomposition_segments(entries)
                 logger.info(
-                    "[ContextManager] Merge planned sid=%s immediate_records=%d tail_records=%d entries=%d segments=%d segment_ranges=%s",
+                    (
+                        "[ContextManager] Merge planned"
+                        " sid=%s immediate_records=%d tail_records=%d"
+                        " entries=%d segments=%d segment_ranges=%s"
+                    ),
                     session_id,
                     len(records),
                     len(tail_records),
@@ -3212,6 +3279,7 @@ class ContextManager:
                         sem=self._derive_semaphore,
                         **dkw,
                     ):
+                        """Run deferred derive under the global concurrency semaphore."""
                         async with sem:
                             await self._orchestrator._complete_deferred_derive(**dkw)
 
@@ -3269,7 +3337,13 @@ class ContextManager:
                         )
         except Exception as exc:
             logger.error(
-                "[ContextManager] Merge failed sid=%s tenant=%s user=%s collection=%s flush_all=%s source_uri=%s snapshot_messages=%s immediate_records=%s tail_records=%s segments=%s created_merged=%s: %s",
+                (
+                    "[ContextManager] Merge failed"
+                    " sid=%s tenant=%s user=%s collection=%s flush_all=%s"
+                    " source_uri=%s snapshot_messages=%s"
+                    " immediate_records=%s tail_records=%s segments=%s"
+                    " created_merged=%s: %s"
+                ),
                 session_id,
                 tenant_id,
                 user_id,
@@ -3314,6 +3388,17 @@ class ContextManager:
         user_id: str,
         config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        """End a session, flushing buffers and triggering trace processing.
+
+        Args:
+            session_id: Session to close.
+            tenant_id: Tenant identifier.
+            user_id: User identifier.
+            config: Optional override configuration (e.g. fail_fast_end).
+
+        Returns:
+            Dict with session end status, trace count, and timing.
+        """
         sk = self._make_session_key(tenant_id, user_id, session_id)
         total_turns = len(self._committed_turns.get(sk, set()))
         session_project_id = (
@@ -3338,6 +3423,7 @@ class ContextManager:
                     message: str,
                     exc: Optional[BaseException] = None,
                 ) -> None:
+                    """Log or raise an error depending on fail_fast mode."""
                     nonlocal status
                     if fail_fast:
                         raise RuntimeError(message) from exc
@@ -3524,13 +3610,21 @@ class ContextManager:
                         if integrity_errors:
                             if fail_fast:
                                 _handle_end_failure(
-                                    "End degraded "
-                                    f"sid={session_id} source_uri={source_uri} "
-                                    f"layer_counts={layer_counts} integrity_errors={integrity_errors}",
+                                    (
+                                        "End degraded"
+                                        f" sid={session_id}"
+                                        f" source_uri={source_uri}"
+                                        f" layer_counts={layer_counts}"
+                                        f" integrity_errors={integrity_errors}"
+                                    ),
                                 )
                             else:
                                 logger.warning(
-                                    "[ContextManager] End degraded sid=%s source_uri=%s layer_counts=%s integrity_errors=%s",
+                                    (
+                                        "[ContextManager] End degraded"
+                                        " sid=%s source_uri=%s"
+                                        " layer_counts=%s integrity_errors=%s"
+                                    ),
                                     session_id,
                                     source_uri,
                                     layer_counts,
@@ -3539,7 +3633,11 @@ class ContextManager:
 
                     duration_ms = int((time.monotonic() - start_time) * 1000)
                     logger.info(
-                        "[ContextManager] end sid=%s tenant=%s user=%s turns=%d traces=%d latency=%dms",
+                        (
+                            "[ContextManager] end"
+                            " sid=%s tenant=%s user=%s"
+                            " turns=%d traces=%d latency=%dms"
+                        ),
                         session_id,
                         tenant_id,
                         user_id,
@@ -3560,7 +3658,11 @@ class ContextManager:
                 except Exception as exc:
                     duration_ms = int((time.monotonic() - start_time) * 1000)
                     logger.warning(
-                        "[ContextManager] end failed sid=%s tenant=%s user=%s latency=%dms fail_fast=%s: %s",
+                        (
+                            "[ContextManager] end failed"
+                            " sid=%s tenant=%s user=%s"
+                            " latency=%dms fail_fast=%s: %s"
+                        ),
                         session_id,
                         tenant_id,
                         user_id,
@@ -3625,6 +3727,7 @@ class ContextManager:
         user_id: str,
         session_id: str,
     ) -> SessionKey:
+        """Build a (collection, tenant, user, session) tuple for session state lookup."""
         return (
             self._current_collection_name(),
             tenant_id,
@@ -3664,9 +3767,11 @@ class ContextManager:
         )
 
     def _touch_session(self, sk: SessionKey) -> None:
+        """Record the current time as last activity for a session."""
         self._session_activity[sk] = time.time()
 
     def _remember_session_project(self, sk: SessionKey) -> None:
+        """Snapshot the current project ID for a session."""
         self._session_project_ids[sk] = get_effective_project_id()
 
     def _cleanup_session(self, sk: SessionKey) -> None:
@@ -3699,11 +3804,15 @@ class ContextManager:
         user_id: str,
         owner_ids: List[str],
     ) -> None:
+        """Run autophagy metabolism for the given memory owner IDs."""
         try:
             await self._orchestrator._autophagy_kernel.metabolize_states(owner_ids)
         except Exception as exc:
             logger.warning(
-                "[ContextManager] Autophagy metabolism failed sid=%s tenant=%s user=%s owners=%d: %s",
+                (
+                    "[ContextManager] Autophagy metabolism failed"
+                    " sid=%s tenant=%s user=%s owners=%d: %s"
+                ),
                 session_id,
                 tenant_id,
                 user_id,
@@ -3934,8 +4043,14 @@ class ContextManager:
 
         guidance_map = {
             "l0": "Direct memory evidence was found. Prefer concise grounded recall.",
-            "l1": "Expanded memory context was retrieved. Synthesize across related items when useful.",
-            "l2": "Deep evidence was retrieved. Use detailed context carefully and keep citations grounded.",
+            "l1": (
+                "Expanded memory context was retrieved."
+                " Synthesize across related items when useful."
+            ),
+            "l2": (
+                "Deep evidence was retrieved."
+                " Use detailed context carefully and keep citations grounded."
+            ),
         }
         guidance = guidance_map.get(
             retrieval_depth or "",

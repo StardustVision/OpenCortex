@@ -445,6 +445,7 @@ class BackgroundTaskManager:
             sem = asyncio.Semaphore(orch._config.document_derive_concurrency)
 
             async def _process_chunk(idx: int) -> None:
+                """Derive metadata for a single chunk and persist it via add."""
                 chunk = chunks[idx]
                 chunk_parent = doc_parent_uri
                 if chunk.parent_index >= 0:

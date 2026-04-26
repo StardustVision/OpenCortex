@@ -411,7 +411,8 @@ class MemoryOrchestrator:
         # imposing the cold-start cost. ``MemoryOrchestrator.close()``
         # checks for ``None`` before invoking ``aclose`` (U3).
 
-        # 6. Cone Retrieval: entity index + scorer (BEFORE retriever, so retriever gets live reference)
+        # 6. Cone Retrieval: entity index + scorer
+        # (BEFORE retriever, so retriever gets live reference)
         if self._config.cone_retrieval_enabled:
             from opencortex.retrieve.entity_index import EntityIndex
             from opencortex.retrieve.cone_scorer import ConeScorer
@@ -1207,7 +1208,11 @@ class MemoryOrchestrator:
                 is_leaf=True,
             )
         except Exception as exc:
-            logger.warning("[MemoryOrchestrator] Immediate CortexFS write failed for %s: %s", uri, exc)
+            logger.warning(
+                "[MemoryOrchestrator] Immediate CortexFS write failed for %s: %s",
+                uri,
+                exc,
+            )
         return uri
 
     async def _derive_parent_summary(
@@ -1353,7 +1358,7 @@ class MemoryOrchestrator:
         }
 
     @staticmethod
-    def _coerce_derived_string(value: Any) -> str:
+    def _coerce_derived_string(value: str) -> str:
         """Normalize a derived string field."""
         return str(value or "").strip()
 
@@ -1395,7 +1400,18 @@ class MemoryOrchestrator:
             "fact_points": build_layer_fact_points_prompt,
         }
 
-        async def _run_field(field_name: str, prompt: str) -> tuple[str, Dict[str, Any]]:
+        async def _run_field(
+            field_name: str, prompt: str
+        ) -> tuple[str, Dict[str, Any]]:
+            """Run a single LLM derivation prompt and return parsed JSON.
+
+            Args:
+                field_name: Name of the derived field (e.g. ``"abstract"``).
+                prompt: Fully rendered LLM prompt string.
+
+            Returns:
+                Tuple of ``(field_name, parsed_dict)``.
+            """
             async with semaphore:
                 response = await self._derive_layers_llm_completion(prompt)
             parsed = parse_json_from_response(response)
@@ -1491,7 +1507,11 @@ class MemoryOrchestrator:
 
             from opencortex.core.context import Vectorize, Context
 
-            vectorize_text = f"{new_abstract} {keywords_str}".strip() if keywords_str else new_abstract
+            vectorize_text = (
+                f"{new_abstract} {keywords_str}".strip()
+                if keywords_str
+                else new_abstract
+            )
 
             loop = asyncio.get_event_loop()
             result = None
@@ -1722,7 +1742,11 @@ class MemoryOrchestrator:
                 if isinstance(a, dict)
             }
             for handle in anchor_handles:
-                if isinstance(handle, str) and handle.strip() and handle.lower() not in existing_values:
+                if (
+                    isinstance(handle, str)
+                    and handle.strip()
+                    and handle.lower() not in existing_values
+                ):
                     result.setdefault("anchors", []).append({
                         "anchor_type": "handle",
                         "value": handle.strip(),
@@ -1883,7 +1907,11 @@ class MemoryOrchestrator:
                 "parent_uri": source_uri,
                 "is_leaf": False,
                 "abstract": "",
-                "overview": anchor_text if len(anchor_text) >= 15 else f"{anchor_type}: {anchor_text}",
+                "overview": (
+                    anchor_text
+                    if len(anchor_text) >= 15
+                    else f"{anchor_type}: {anchor_text}"
+                ),
                 "content": "",
                 "context_type": source_record.get("context_type", ""),
                 "category": source_record.get("category", ""),
@@ -2063,20 +2091,24 @@ class MemoryOrchestrator:
 
     @property
     def config(self) -> CortexConfig:
+        """Active CortexConfig for this orchestrator instance."""
         return self._config
 
     @property
     def storage(self) -> StorageInterface:
+        """Initialized storage backend (Qdrant adapter)."""
         self._ensure_init()
         return self._storage
 
     @property
     def fs(self) -> CortexFS:
+        """Initialized CortexFS three-layer filesystem."""
         self._ensure_init()
         return self._fs
 
     @property
     def user(self) -> UserIdentifier:
+        """Current effective user identity."""
         self._ensure_init()
         return self._user
 
@@ -2608,6 +2640,16 @@ class MemoryOrchestrator:
         """Convert raw store records into MatchedContext objects."""
 
         async def _build_one(record: Dict[str, Any]) -> MatchedContext:
+            """Convert a single raw store record into a ``MatchedContext``.
+
+            Reads L2 content from CortexFS when *detail_level* requires it.
+
+            Args:
+                record: Raw payload dict from the storage backend.
+
+            Returns:
+                A fully populated ``MatchedContext``.
+            """
             uri = str(record.get("uri", ""))
             overview = None
             if detail_level in (DetailLevel.L1, DetailLevel.L2):
@@ -2847,6 +2889,7 @@ class MemoryOrchestrator:
 
         # URI projection: collect leaves referenced by anchor/fp hits (R21)
         def _get_target_uri(hit: Dict[str, Any]) -> str:
+            """Extract the projection target URI from an anchor or fact-point hit."""
             return str(
                 hit.get("projection_target_uri")
                 or (hit.get("meta") or {}).get("projection_target_uri", "")
@@ -2910,7 +2953,11 @@ class MemoryOrchestrator:
                     continue
                 s = max(0.0, min(1.0, float(h.get("_score", 0.0))))
                 d = 1.0 - s
-                hop = _URI_HOP_COST * _HIGH_CONF_DISCOUNT if d < _HIGH_CONF_THRESHOLD else _URI_HOP_COST
+                hop = (
+                    _URI_HOP_COST * _HIGH_CONF_DISCOUNT
+                    if d < _HIGH_CONF_THRESHOLD
+                    else _URI_HOP_COST
+                )
                 fp_c = d + hop
                 if best_fp_cost is None or fp_c < best_fp_cost:
                     best_fp_cost = fp_c
@@ -3107,6 +3154,14 @@ class MemoryOrchestrator:
         return self._background_task_manager._recall_bookkeeping_tasks_set()
 
     async def _get_record_by_uri(self, uri: str) -> Optional[Dict[str, Any]]:
+        """Look up a single record by its URI.
+
+        Args:
+            uri: The record URI to search for.
+
+        Returns:
+            The matching record dict, or ``None`` if not found or on error.
+        """
         if not uri or not self._storage:
             return None
         try:
@@ -3129,6 +3184,17 @@ class MemoryOrchestrator:
         user_id: str,
         project_id: str,
     ) -> None:
+        """Bootstrap autophagy state for a new owner (trace, session, etc.).
+
+        Silently no-ops when autophagy is disabled or *owner_id* is empty.
+
+        Args:
+            owner_type: Category of the owner entity.
+            owner_id: Unique identifier of the owner.
+            tenant_id: Tenant scope.
+            user_id: User scope.
+            project_id: Project scope.
+        """
         if not self._autophagy_kernel or not owner_id:
             return
         try:
@@ -3149,7 +3215,12 @@ class MemoryOrchestrator:
                 exc,
             )
 
-    async def _on_trace_saved(self, trace: Any) -> None:
+    async def _on_trace_saved(self, trace: "Trace") -> None:
+        """Callback invoked after a trace is persisted; bootstraps autophagy state.
+
+        Args:
+            trace: The persisted ``Trace`` object.
+        """
         await self._initialize_autophagy_owner_state(
             owner_type=OwnerType.TRACE,
             owner_id=str(getattr(trace, "trace_id", "")),
@@ -3179,6 +3250,7 @@ class MemoryOrchestrator:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         async def _one(r: dict) -> None:
+            """Increment access counters for a single record."""
             rid = r.get("id", "")
             if not rid:
                 return
