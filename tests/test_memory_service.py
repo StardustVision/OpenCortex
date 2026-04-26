@@ -6,6 +6,7 @@ Per-unit additions:
 - U2: CRUD method tests (add/update/remove/batch_add) with stub orchestrator.
 - U3: query method tests (search/list_memories/memory_index/list_memories_admin).
 - U4: scoring method tests (feedback/feedback_batch/decay/...).
+- U5: docstring presence smoke test.
 
 Integration coverage of the moved methods continues to live in the
 existing test suites (``tests/test_e2e_phase1.py``,
@@ -85,6 +86,52 @@ class TestOrchestratorMemoryServiceProperty(unittest.TestCase):
         a = orch._memory_service
         b = orch._memory_service
         self.assertIs(a, b)
+
+
+class TestDocstringPresence(unittest.TestCase):
+    """U5 smoke test — every public method has a non-empty docstring."""
+
+    _PUBLIC_METHODS = [
+        "add",
+        "batch_add",
+        "search",
+        "list_memories",
+        "memory_index",
+        "list_memories_admin",
+        "feedback",
+        "feedback_batch",
+        "decay",
+        "cleanup_expired_staging",
+        "protect",
+        "get_profile",
+        "update",
+        "remove",
+    ]
+
+    def test_public_methods_have_docstrings(self) -> None:
+        """All 14 public MemoryService methods have non-empty docstrings."""
+        for name in self._PUBLIC_METHODS:
+            method = getattr(MemoryService, name)
+            self.assertTrue(
+                method.__doc__ and method.__doc__.strip(),
+                f"MemoryService.{name} is missing a docstring",
+            )
+
+    def test_private_helpers_have_docstrings(self) -> None:
+        """Private helpers have at least a one-line docstring."""
+        private_methods = [
+            "_check_duplicate",
+            "_merge_into",
+            "_ensure_parent_records",
+            "_add_document",
+            "_build_typed_queries",
+        ]
+        for name in private_methods:
+            method = getattr(MemoryService, name)
+            self.assertTrue(
+                method.__doc__ and method.__doc__.strip(),
+                f"MemoryService.{name} is missing a docstring",
+            )
 
 
 if __name__ == "__main__":
