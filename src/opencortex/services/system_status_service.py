@@ -35,7 +35,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict
 
 from opencortex.http.request_context import get_effective_identity
 
@@ -137,21 +137,21 @@ class SystemStatusService:
         """
         if status_type == "health":
             return await self.health_check()
-        elif status_type == "stats":
+        if status_type == "stats":
             return await self.stats()
-        else:  # doctor
-            health = await self.health_check()
-            st = await self.stats()
-            issues = []
-            if not health.get("storage"):
-                issues.append("Storage unavailable")
-            if not health.get("embedder"):
-                issues.append("Embedder unavailable")
-            if not health.get("llm"):
-                issues.append(
-                    "No LLM configured — intent analysis and session extraction disabled"
-                )
-            return {**health, **st, "issues": issues}
+        # doctor
+        health = await self.health_check()
+        st = await self.stats()
+        issues = []
+        if not health.get("storage"):
+            issues.append("Storage unavailable")
+        if not health.get("embedder"):
+            issues.append("Embedder unavailable")
+        if not health.get("llm"):
+            issues.append(
+                "No LLM configured — intent analysis and session extraction disabled"
+            )
+        return {**health, **st, "issues": issues}
 
     # =========================================================================
     # Derive pipeline state
@@ -175,7 +175,7 @@ class SystemStatusService:
         try:
             orch._fs.agfs.read(f"{fs_path}/.derive_pending")
             return {"uri": uri, "status": "pending"}
-        except (FileNotFoundError, Exception):
+        except FileNotFoundError:
             pass
 
         records = await orch._storage.filter(

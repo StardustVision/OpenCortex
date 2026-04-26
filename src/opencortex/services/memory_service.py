@@ -17,10 +17,10 @@ Boundary
 
 It is explicitly NOT responsible for:
 - Knowledge management (``knowledge_*``, archivist) — Phase 2
-- System status reporting — Phase 3
-- Subsystem boot sequencing — Phase 4
+- System status reporting — Phase 4 (``SystemStatusService``)
+- Subsystem boot sequencing — Phase 5
 - Periodic background tasks (autophagy / connection sweepers / derive
-  worker) — Phase 5
+  worker) — Phase 6
 - Conversation lifecycle (``session_*``, benchmark ingest) — already
   delegated to ``ContextManager``
 - Storage adapters, embedders, recall planning, intent routing — owned
@@ -32,7 +32,7 @@ The service holds a back-reference to the orchestrator
 (``self._orch``) and reaches into orchestrator-owned subsystems
 (``_storage``, ``_embedder``, ``_fs``, ``_recall_planner``, etc.) at
 call time. This mirrors the precedent set by
-``BenchmarkConversationIngestService``. Phase 4's
+``BenchmarkConversationIngestService``. Phase 5's
 ``SubsystemBootstrapper`` will eventually replace the back-reference
 with a typed ``SubsystemContainer`` parameter; doing both swaps in
 one PR would be needless churn.
