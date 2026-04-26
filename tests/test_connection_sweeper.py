@@ -102,7 +102,7 @@ class TestConnectionSweepOnce(unittest.TestCase):
             orch._last_connection_sweep_status = "not_started"
 
             with self.assertLogs(
-                "opencortex.orchestrator", level="WARNING",
+                "opencortex.lifecycle.background_tasks", level="WARNING",
             ) as cm:
                 await orch._run_connection_sweep_once()
 
@@ -148,7 +148,7 @@ class TestConnectionSweepOnce(unittest.TestCase):
             orch._last_connection_sweep_status = "not_started"
 
             with self.assertLogs(
-                "opencortex.orchestrator", level="WARNING",
+                "opencortex.lifecycle.background_tasks", level="WARNING",
             ) as cm:
                 await orch._run_connection_sweep_once()
 
