@@ -71,10 +71,7 @@ class TestDocstringPresence(unittest.TestCase):
 
     def test_public_methods_have_docstrings(self) -> None:
         for name in self._PUBLIC_METHODS:
-            method = getattr(SubsystemBootstrapper, name, None)
-            if method is None:
-                # Method not yet moved (U2 will add them)
-                continue
+            method = getattr(SubsystemBootstrapper, name)
             self.assertTrue(
                 method.__doc__ and method.__doc__.strip(),
                 f"SubsystemBootstrapper.{name} is missing a docstring",
