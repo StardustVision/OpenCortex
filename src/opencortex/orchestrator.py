@@ -133,8 +133,6 @@ logger = logging.getLogger(__name__)
 # Default collection name for all context types
 _CONTEXT_COLLECTION = "context"
 
-# Maximum number of batch_add items processed concurrently
-_BATCH_ADD_CONCURRENCY = 8
 _IMMEDIATE_EMBED_TIMEOUT_SECONDS = 8.0
 _IMMEDIATE_LOCAL_FALLBACK_MODEL = "BAAI/bge-m3"
 
@@ -4956,123 +4954,10 @@ class MemoryOrchestrator:
         source_path: str = "",
         scan_meta: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Batch add documents. LLM generates abstract + overview per item.
-
-        When scan_meta is present, builds directory hierarchy from
-        meta.file_path values.
-        """
-        self._ensure_init()
-
-        imported = 0
-        errors = []
-        uris = []
-
-        # Hierarchical tree building when scan_meta present
-        dir_uris: Dict[str, str] = {}
-        if scan_meta:
-            from pathlib import PurePosixPath
-
-            # Collect unique directories
-            all_dirs: set = set()
-            for item in items:
-                fp = (item.get("meta") or {}).get("file_path", "")
-                if fp:
-                    parts = PurePosixPath(fp).parts
-                    for j in range(1, len(parts)):
-                        all_dirs.add("/".join(parts[:j]))
-
-            # Create directory nodes bottom-up (sorted by depth)
-            for d in sorted(all_dirs, key=lambda x: x.count("/")):
-                parent_dir = str(PurePosixPath(d).parent)
-                parent_uri = dir_uris.get(parent_dir) if parent_dir != "." else None
-                try:
-                    dir_ctx = await self.add(
-                        abstract=PurePosixPath(d).name,
-                        content="",
-                        category="documents",
-                        parent_uri=parent_uri,
-                        is_leaf=False,
-                        context_type="resource",
-                        meta={
-                            "source": "batch:scan",
-                            "dir_path": d,
-                            "ingest_mode": "memory",
-                        },
-                        dedup=False,
-                    )
-                    dir_uris[d] = dir_ctx.uri
-                    uris.append(dir_ctx.uri)
-                except Exception as exc:
-                    logger.warning("[batch_add] Dir node failed for %s: %s", d, exc)
-
-        sem = asyncio.Semaphore(_BATCH_ADD_CONCURRENCY)
-
-        async def _process_one(i: int, item: dict) -> dict:
-            async with sem:
-                content = item.get("content", "")
-                file_path = (item.get("meta") or {}).get("file_path", f"item_{i}")
-                abstract, overview = await self._generate_abstract_overview(
-                    content, file_path
-                )
-
-                item_meta = dict(item.get("meta") or {})
-                item_meta.setdefault("source", "batch:scan")
-                item_meta["ingest_mode"] = "memory"
-
-                parent_uri = None
-                if scan_meta and file_path:
-                    from pathlib import PurePosixPath
-
-                    parent_dir = str(PurePosixPath(file_path).parent)
-                    parent_uri = dir_uris.get(parent_dir)
-
-                embed_text = ""
-                if self._config.context_flattening_enabled:
-                    fp = item_meta.get("file_path", "")
-                    if fp:
-                        embed_text = f"[{fp}] {abstract}"
-
-                try:
-                    result = await self.add(
-                        abstract=abstract,
-                        content=content,
-                        overview=overview,
-                        category=item.get("category", "documents"),
-                        parent_uri=parent_uri,
-                        context_type=item.get("context_type", "resource"),
-                        meta=item_meta,
-                        dedup=False,
-                        embed_text=embed_text,
-                    )
-                    return {"uri": result.uri, "index": i}
-                except Exception as exc:
-                    return {"error": str(exc), "index": i}
-
-        outcomes = await asyncio.gather(
-            *[_process_one(i, item) for i, item in enumerate(items)],
-            return_exceptions=True,
+        """Delegate to ``MemoryService.batch_add`` (plan 011)."""
+        return await self._memory_service.batch_add(
+            items, source_path=source_path, scan_meta=scan_meta,
         )
-        for outcome in outcomes:
-            if isinstance(outcome, BaseException):
-                errors.append({"error": str(outcome)})
-            elif isinstance(outcome, dict) and "error" in outcome:
-                errors.append({"index": outcome["index"], "error": outcome["error"]})
-            else:
-                uris.append(outcome["uri"])
-                imported += 1
-
-        has_git = (scan_meta or {}).get("has_git", False)
-        project_id = (scan_meta or {}).get("project_id", "public")
-
-        return {
-            "status": "ok" if not errors else "partial",
-            "total": len(items),
-            "imported": imported,
-            "errors": errors,
-            "has_git_project": has_git and project_id != "public",
-            "project_id": project_id,
-            "uris": uris,
-        }
 
     async def promote_to_shared(
         self,
