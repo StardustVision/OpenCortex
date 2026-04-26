@@ -67,7 +67,7 @@ class SubsystemBootstrapper:
     def __init__(self, orchestrator: MemoryOrchestrator) -> None:
         self._orch = orchestrator
 
-    async def init(self) -> Any:
+    async def init(self) -> "MemoryOrchestrator":
         """Run the full 11-step subsystem boot sequence.
 
         Creates storage, embedder, CortexFS, intent analyzer, cognition
@@ -476,7 +476,6 @@ class SubsystemBootstrapper:
             An embedder instance, or ``None`` if creation fails.
         """
         import os
-
 
         orch = self._orch
         provider = (

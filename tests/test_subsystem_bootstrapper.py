@@ -59,18 +59,19 @@ class TestOrchestratorBootstrapperProperty(unittest.TestCase):
 class TestDocstringPresence(unittest.TestCase):
     """Smoke test — every public method has a non-empty docstring."""
 
-    _PUBLIC_METHODS = [
+    _DOCUMENTED_METHODS = [
         "init",
         "_init_cognition",
         "_init_alpha",
         "_init_skill_engine",
         "_create_default_embedder",
+        "_create_local_embedder",
         "_startup_maintenance",
         "_check_and_reembed",
     ]
 
     def test_public_methods_have_docstrings(self) -> None:
-        for name in self._PUBLIC_METHODS:
+        for name in self._DOCUMENTED_METHODS:
             method = getattr(SubsystemBootstrapper, name)
             self.assertTrue(
                 method.__doc__ and method.__doc__.strip(),

@@ -105,7 +105,8 @@ from opencortex.retrieve.types import (
     TypedQuery,
 )
 from opencortex.retrieve.uri_path_scorer import compute_uri_path_scores
-from opencortex.storage.cortex_fs import CortexFS
+from opencortex.storage.collection_schemas import init_context_collection
+from opencortex.storage.cortex_fs import CortexFS, init_cortex_fs
 from opencortex.storage.storage_interface import StorageInterface
 from opencortex.utils.json_parse import parse_json_from_response
 from opencortex.utils.text import chunked_llm_derive, smart_truncate
