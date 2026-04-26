@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 class KnowledgeService:
     """Knowledge management + archivist control surface.
 
-    All 6 public methods have been extracted from
+    All 7 public methods have been extracted from
     ``MemoryOrchestrator`` as part of plan 012. The service is
     lazily constructed by the orchestrator and delegates to
     orchestrator-owned subsystems via ``self._orch``.
