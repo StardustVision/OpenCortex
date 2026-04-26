@@ -329,6 +329,8 @@ class ContextManager:
         # Skill selection tracking: (session_key, turn_id) -> set of skill URIs
         # Turn-scoped to prevent stale selections leaking across turns
         self._selected_skill_uris: Dict[tuple, Set[str]] = {}
+        # Lazy-initialized recomposition engine (survives ``__new__`` bypass).
+        self._recomposition_engine_instance: Optional[Any] = None
 
         # Config
         self._prepare_cache_ttl = prepare_cache_ttl
@@ -338,6 +340,17 @@ class ContextManager:
 
         # Background task
         self._idle_checker: Optional[asyncio.Task] = None
+
+    @property
+    def _recomposition_engine(self) -> "SessionRecompositionEngine":
+        """Lazy-initialized recomposition engine (survives ``__new__`` bypass)."""
+        inst = getattr(self, "_recomposition_engine_instance", None)
+        if inst is None:
+            from opencortex.context.recomposition_engine import SessionRecompositionEngine
+
+            inst = SessionRecompositionEngine(self)
+            self._recomposition_engine_instance = inst
+        return inst
 
     # =========================================================================
     # Lifecycle
