@@ -228,6 +228,7 @@ class MemoryOrchestrator:
         # ADV-PHASE2-BYPASS-LANDMINE in plan 010 review identified this
         # — defused proactively before it bites Phase 2/3.
         self._memory_service_instance: Optional[Any] = None
+        self._knowledge_service_instance: Optional[Any] = None
         # Plan 009 / RELY-01 — InsightsAgent (when enabled in
         # ``server.py`` lifespan) holds a second LLMCompletion wrapper
         # whose pool would otherwise leak on shutdown. The lifespan
@@ -2629,6 +2630,22 @@ class MemoryOrchestrator:
             self._memory_service_instance = cached
         return cached
 
+    @property
+    def _knowledge_service(self) -> "KnowledgeService":
+        """Lazy-built KnowledgeService for delegated knowledge methods.
+
+        Phase 2 of plan 012 mirrors the ``_memory_service`` lazy-property
+        pattern. Uses ``getattr`` with default so ``__new__`` bypass
+        tests don't crash on missing attribute.
+        """
+        from opencortex.services.knowledge_service import KnowledgeService
+
+        cached = getattr(self, "_knowledge_service_instance", None)
+        if cached is None:
+            cached = KnowledgeService(self)
+            self._knowledge_service_instance = cached
+        return cached
+
     # =========================================================================
     # Add / Update / Remove
     # =========================================================================
@@ -4091,7 +4108,7 @@ class MemoryOrchestrator:
                     if self._archivist and self._trace_store:
                         count = await self._trace_store.count_new_traces(tid)
                         if self._archivist.should_trigger(count):
-                            asyncio.create_task(self._run_archivist(tid, uid))
+                            asyncio.create_task(self._knowledge_service.run_archivist(tid, uid))
 
                 except Exception as exc:
                     logger.warning("[Alpha] Trace splitting failed: %s", exc)
@@ -4109,99 +4126,8 @@ class MemoryOrchestrator:
         }
 
     async def _run_archivist(self, tenant_id: str, user_id: str) -> Dict[str, int]:
-        """Run Archivist in background to extract knowledge from traces.
-
-        Safety invariants:
-        - Only traces whose derived knowledge ALL saved successfully
-          are marked processed. Failed traces remain unprocessed for retry.
-        - If archivist.run() returns [] (e.g. concurrent run already active),
-          no traces are marked processed.
-        - Per-knowledge errors are isolated — one failure doesn't block others.
-        """
-        stats: Dict[str, int] = {"knowledge_candidates": 0, "knowledge_active": 0}
-        if not self._archivist or not self._trace_store or not self._knowledge_store:
-            return stats
-        try:
-            from opencortex.alpha.types import KnowledgeScope, KnowledgeStatus
-            from opencortex.alpha.sandbox import evaluate as sandbox_evaluate
-
-            traces = await self._trace_store.list_unprocessed(tenant_id)
-            if not traces:
-                return stats
-
-            knowledge_items = await self._archivist.run(
-                traces, tenant_id, user_id, KnowledgeScope.USER,
-            )
-
-            # Guard: if archivist returned nothing (concurrent run or no
-            # patterns found), do NOT mark traces — leave for retry.
-            if not knowledge_items:
-                return stats
-
-            alpha_cfg = self._config.cortex_alpha
-            succeeded_trace_ids: set = set()
-            failed_trace_ids: set = set()
-
-            for k in knowledge_items:
-                source_ids = set(k.source_trace_ids) if k.source_trace_ids else set()
-                try:
-                    evidence_traces = [
-                        t for t in traces
-                        if t.get("trace_id", t.get("id", "")) in source_ids
-                    ]
-
-                    # Run Sandbox evaluation
-                    if evidence_traces and self._llm_completion:
-                        eval_result = await sandbox_evaluate(
-                            knowledge_dict=k.to_dict(),
-                            traces=evidence_traces,
-                            llm_fn=self._llm_completion,
-                            min_traces=alpha_cfg.sandbox_min_traces,
-                            min_success_rate=alpha_cfg.sandbox_min_success_rate,
-                            min_source_users=alpha_cfg.sandbox_min_source_users,
-                            min_source_users_private=alpha_cfg.sandbox_min_source_users_private,
-                            llm_sample_size=alpha_cfg.sandbox_llm_sample_size,
-                            llm_min_pass_rate=alpha_cfg.sandbox_llm_min_pass_rate,
-                            require_human_approval=alpha_cfg.sandbox_require_human_approval,
-                            user_auto_approve_confidence=alpha_cfg.user_auto_approve_confidence,
-                        )
-                        status_map = {
-                            "needs_more_traces": KnowledgeStatus.CANDIDATE,
-                            "needs_improvement": KnowledgeStatus.CANDIDATE,
-                            "verified": KnowledgeStatus.VERIFIED,
-                            "active": KnowledgeStatus.ACTIVE,
-                        }
-                        k.status = status_map.get(eval_result.status, KnowledgeStatus.CANDIDATE)
-
-                    await self._knowledge_store.save(k)
-                    succeeded_trace_ids.update(source_ids)
-
-                    if k.status == KnowledgeStatus.ACTIVE:
-                        stats["knowledge_active"] += 1
-                    else:
-                        stats["knowledge_candidates"] += 1
-                except Exception as exc:
-                    failed_trace_ids.update(source_ids)
-                    logger.warning(
-                        "[Alpha] Sandbox/save failed for knowledge %s: %s",
-                        k.knowledge_id, exc,
-                    )
-
-            # Only mark traces whose knowledge all saved successfully.
-            # Traces linked to failed knowledge stay unprocessed for retry.
-            safe_ids = succeeded_trace_ids - failed_trace_ids
-            if safe_ids:
-                await self._trace_store.mark_processed(list(safe_ids))
-
-            logger.info(
-                "[Alpha] Archivist: %d candidates, %d active from %d traces "
-                "(%d traces marked processed, %d retained for retry)",
-                stats["knowledge_candidates"], stats["knowledge_active"],
-                len(traces), len(safe_ids), len(failed_trace_ids),
-            )
-        except Exception as exc:
-            logger.warning("[Alpha] Archivist failed: %s", exc)
-        return stats
+        """Delegate: run archivist via KnowledgeService."""
+        return await self._knowledge_service.run_archivist(tenant_id, user_id)
 
     # =========================================================================
     # Cortex Alpha: Knowledge API
@@ -4213,67 +4139,28 @@ class MemoryOrchestrator:
         types: Optional[List[str]] = None,
         limit: int = 10,
     ) -> Dict[str, Any]:
-        """Search the Knowledge Store."""
-        self._ensure_init()
-        if not self._knowledge_store:
-            return {"results": [], "error": "Knowledge store not initialized"}
-        tid, uid = get_effective_identity()
-        results = await self._knowledge_store.search(
-            query,
-            tid,
-            uid,
-            types=types,
-            limit=limit,
-        )
-        return {"results": results, "count": len(results)}
+        """Delegate: search the Knowledge Store."""
+        return await self._knowledge_service.knowledge_search(query, types, limit)
 
     async def knowledge_approve(self, knowledge_id: str) -> Dict[str, Any]:
-        """Approve a knowledge candidate (move to active)."""
-        self._ensure_init()
-        if not self._knowledge_store:
-            return {"ok": False, "error": "Knowledge store not initialized"}
-        ok = await self._knowledge_store.approve(knowledge_id)
-        return {
-            "ok": ok,
-            "knowledge_id": knowledge_id,
-            "status": "active" if ok else "not_found",
-        }
+        """Delegate: approve a knowledge candidate."""
+        return await self._knowledge_service.knowledge_approve(knowledge_id)
 
     async def knowledge_reject(self, knowledge_id: str) -> Dict[str, Any]:
-        """Reject a knowledge candidate (deprecate)."""
-        self._ensure_init()
-        if not self._knowledge_store:
-            return {"ok": False, "error": "Knowledge store not initialized"}
-        ok = await self._knowledge_store.reject(knowledge_id)
-        return {
-            "ok": ok,
-            "knowledge_id": knowledge_id,
-            "status": "deprecated" if ok else "not_found",
-        }
+        """Delegate: reject a knowledge candidate."""
+        return await self._knowledge_service.knowledge_reject(knowledge_id)
 
     async def knowledge_list_candidates(self) -> Dict[str, Any]:
-        """List knowledge candidates pending approval."""
-        self._ensure_init()
-        if not self._knowledge_store:
-            return {"candidates": [], "error": "Knowledge store not initialized"}
-        tid, uid = get_effective_identity()
-        candidates = await self._knowledge_store.list_candidates(tid, uid)
-        return {"candidates": candidates, "count": len(candidates)}
+        """Delegate: list knowledge candidates pending approval."""
+        return await self._knowledge_service.knowledge_list_candidates()
 
     async def archivist_trigger(self) -> Dict[str, Any]:
-        """Manually trigger the Archivist."""
-        self._ensure_init()
-        if not self._archivist:
-            return {"ok": False, "error": "Archivist not initialized"}
-        tid, uid = get_effective_identity()
-        asyncio.create_task(self._run_archivist(tid, uid))
-        return {"ok": True, "status": "triggered"}
+        """Delegate: manually trigger the Archivist."""
+        return await self._knowledge_service.archivist_trigger()
 
     async def archivist_status(self) -> Dict[str, Any]:
-        """Get Archivist status."""
-        if not self._archivist:
-            return {"enabled": False}
-        return {"enabled": True, **self._archivist.status}
+        """Delegate: get Archivist status."""
+        return await self._knowledge_service.archivist_status()
 
     # =========================================================================
     # Batch Import
