@@ -180,7 +180,7 @@ class SystemStatusService:
 
         records = await orch._storage.filter(
             orch._get_collection(),
-            {"conds": [{"field": "uri", "op": "must", "value": uri}]},
+            {"op": "must", "field": "uri", "conds": [uri]},
             limit=1,
         )
         if records:

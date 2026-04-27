@@ -150,7 +150,7 @@ class MemoryService:
         # memory_service imports from orchestrator at call time)
         # resolves cleanly. Future cleanup: extract these helpers to
         # ``opencortex/utils/strings.py``; out of scope for plan 010.
-        from opencortex.orchestrator import (
+        from opencortex.services.derivation_service import (
             _merge_unique_strings,
             _split_keyword_string,
         )
@@ -1067,9 +1067,9 @@ class MemoryService:
         )
 
         # Enqueue derive task
-        from opencortex.orchestrator import _DeriveTask
+        from opencortex.services.derivation_service import DeriveTask
 
-        task = _DeriveTask(
+        task = DeriveTask(
             parent_uri=parent_uri_candidate,
             content=content,
             abstract=doc_title,

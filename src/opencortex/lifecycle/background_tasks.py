@@ -25,9 +25,8 @@ It is explicitly NOT responsible for:
 - Memory record CRUD — owned by ``MemoryService``
 - Knowledge lifecycle — owned by ``KnowledgeService``
 - System status reporting — owned by ``SystemStatusService``
-- ``_complete_deferred_derive`` — called from the conversation write
-  path (``_write_immediate``), not from a background loop; stays on
-  the orchestrator
+- Deferred derive completion — owned by ``DerivationService`` and exposed
+  through orchestrator compatibility wrappers
 - Subsystem boot sequencing — Phase 5 (``SubsystemBootstrapper``)
 
 Design
@@ -54,7 +53,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
 if TYPE_CHECKING:
-    from opencortex.orchestrator import MemoryOrchestrator, _DeriveTask
+    from opencortex.orchestrator import MemoryOrchestrator
+    from opencortex.services.derivation_service import DeriveTask
 
 logger = logging.getLogger(__name__)
 
@@ -364,7 +364,7 @@ class BackgroundTaskManager:
             orch._derive_worker_task = asyncio.create_task(self._derive_worker())
 
     async def _derive_worker(self) -> None:
-        """Consume _DeriveTask items from the queue. Stops on None sentinel."""
+        """Consume DeriveTask items from the queue. Stops on None sentinel."""
         orch = self._orch
         while True:
             task = await orch._derive_queue.get()
@@ -382,14 +382,14 @@ class BackgroundTaskManager:
             finally:
                 orch._derive_queue.task_done()
 
-    async def _process_derive_task(self, task: "_DeriveTask") -> None:
+    async def _process_derive_task(self, task: "DeriveTask") -> None:
         """Process a single document derive task (Phase B).
 
         Creates parent record, derives chunks level-by-level, runs bottom-up
         summarization, then deletes the .derive_pending marker.
 
         Args:
-            task: The ``_DeriveTask`` item dequeued from ``_derive_queue``.
+            task: The ``DeriveTask`` item dequeued from ``_derive_queue``.
         """
         from opencortex.http.request_context import (
             reset_request_identity,
@@ -593,7 +593,7 @@ class BackgroundTaskManager:
         """Scan for .derive_pending markers and re-enqueue incomplete derives."""
         import json as _json
 
-        from opencortex.orchestrator import _DeriveTask
+        from opencortex.services.derivation_service import DeriveTask
 
         orch = self._orch
         data_root = Path(orch._config.data_root).resolve()
@@ -640,7 +640,7 @@ class BackgroundTaskManager:
                         content, source_format="markdown"
                     )
 
-                task = _DeriveTask(
+                task = DeriveTask(
                     parent_uri=parent_uri,
                     content=content,
                     abstract=marker_data.get("source_doc_title", "") or (

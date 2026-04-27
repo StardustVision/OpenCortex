@@ -275,6 +275,7 @@ class ContextManager:
         from opencortex.context.benchmark_ingest_service import (
             BenchmarkConversationIngestService,
         )
+
         self._benchmark_ingest_service = BenchmarkConversationIngestService(
             manager=self, repo=self._session_records
         )
@@ -1114,7 +1115,10 @@ class ContextManager:
         from opencortex.context.recomposition_engine import SessionRecompositionEngine
 
         return SessionRecompositionEngine._merged_leaf_uri(
-            tenant_id, user_id, session_id, msg_range,
+            tenant_id,
+            user_id,
+            session_id,
+            msg_range,
         )
 
     @staticmethod
@@ -1128,7 +1132,10 @@ class ContextManager:
         from opencortex.context.recomposition_engine import SessionRecompositionEngine
 
         return SessionRecompositionEngine._directory_uri(
-            tenant_id, user_id, session_id, index,
+            tenant_id,
+            user_id,
+            session_id,
+            index,
         )
 
     async def _run_full_session_recomposition(self, **kwargs) -> Optional[List[str]]:
@@ -1143,6 +1150,34 @@ class ContextManager:
     ) -> List[Dict[str, Any]]:
         """Split ordered recomposition entries into bounded semantic segments."""
         return self._recomposition_engine._build_recomposition_segments(entries)
+
+    async def _build_recomposition_entries(
+        self,
+        *,
+        snapshot: "ConversationBuffer",
+        immediate_records: List[Dict[str, Any]],
+        tail_records: List[Dict[str, Any]],
+    ) -> List[RecompositionEntry]:
+        """Delegate recomposition entry building to the recomposition engine."""
+        return await self._recomposition_engine._build_recomposition_entries(
+            snapshot=snapshot,
+            immediate_records=immediate_records,
+            tail_records=tail_records,
+        )
+
+    def _build_anchor_clustered_segments(
+        self,
+        entries: List[RecompositionEntry],
+    ) -> List[Dict[str, Any]]:
+        """Delegate anchor clustering to the recomposition engine."""
+        return self._recomposition_engine._build_anchor_clustered_segments(entries)
+
+    async def _aggregate_records_metadata(
+        self,
+        records: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Delegate metadata aggregation to the recomposition engine."""
+        return await self._recomposition_engine._aggregate_records_metadata(records)
 
     @classmethod
     def _render_conversation_source(
@@ -1203,9 +1238,13 @@ class ContextManager:
           any non-list/dict objects pass through unchanged.
         """
         if isinstance(value, dict):
-            return {k: ContextManager._canonicalize_for_hash(v) for k, v in value.items()}
+            return {
+                k: ContextManager._canonicalize_for_hash(v) for k, v in value.items()
+            }
         if isinstance(value, list):
-            if all(isinstance(item, (str, int, float, bool, type(None))) for item in value):
+            if all(
+                isinstance(item, (str, int, float, bool, type(None))) for item in value
+            ):
                 # Sort by string projection to keep mixed-type lists stable;
                 # primitive lists in benchmark meta are almost always
                 # homogeneous strings.
@@ -1569,7 +1608,9 @@ class ContextManager:
         if not uris:
             return {}
 
-        result: Dict[str, str] = {uri: overrides[uri] for uri in uris if uri in overrides}
+        result: Dict[str, str] = {
+            uri: overrides[uri] for uri in uris if uri in overrides
+        }
         missing = [uri for uri in uris if uri not in overrides]
         if not missing:
             return result
@@ -1687,7 +1728,6 @@ class ContextManager:
             include_session_summary=include_session_summary,
             ingest_shape=ingest_shape,
         )
-
 
     @staticmethod
     def _benchmark_evidence_uri(
@@ -1942,7 +1982,10 @@ class ContextManager:
     ) -> None:
         """Start one background merge worker for the session if needed."""
         return self._recomposition_engine._spawn_merge_task(
-            sk, session_id, tenant_id, user_id,
+            sk,
+            session_id,
+            tenant_id,
+            user_id,
         )
 
     def _spawn_full_recompose_task(

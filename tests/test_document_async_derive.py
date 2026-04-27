@@ -12,7 +12,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from opencortex.config import CortexConfig, init_config
 from opencortex.http.request_context import set_request_identity, reset_request_identity
 from opencortex.models.embedder.base import DenseEmbedderBase, EmbedResult
-from opencortex.orchestrator import MemoryOrchestrator, _DeriveTask
+from opencortex.orchestrator import MemoryOrchestrator
+from opencortex.services.derivation_service import DeriveTask
 
 
 class MockEmbedder(DenseEmbedderBase):
