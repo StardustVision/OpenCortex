@@ -11,6 +11,9 @@ class TestTraceStore(unittest.IsolatedAsyncioTestCase):
         self.storage.collection_exists = AsyncMock(return_value=True)
         self.embedder = MagicMock()
         self.embedder.embed = MagicMock(return_value=MagicMock(dense_vector=[0.1]*4))
+        self.embedder.embed_query = MagicMock(
+            return_value=MagicMock(dense_vector=[0.1] * 4)
+        )
         self.cortex_fs = AsyncMock()
         self.store = TraceStore(
             storage=self.storage,
@@ -115,6 +118,19 @@ class TestTraceStore(unittest.IsolatedAsyncioTestCase):
         self.storage.search = AsyncMock(return_value=[])
         result = await self.store.search("import error", "team", "hugo", limit=5)
         self.storage.search.assert_called_once()
+        call_args = self.storage.search.call_args
+        self.assertEqual(call_args.kwargs["collection"], "traces")
+        self.assertEqual(call_args.kwargs["query_vector"], [0.1] * 4)
+        self.assertEqual(
+            call_args.kwargs["filter"],
+            {
+                "op": "and",
+                "conds": [
+                    {"op": "must", "field": "tenant_id", "conds": ["team"]},
+                ],
+            },
+        )
+        self.assertEqual(call_args.kwargs["limit"], 5)
 
 
 if __name__ == "__main__":

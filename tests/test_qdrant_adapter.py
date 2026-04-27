@@ -17,6 +17,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from typing import Any, Dict, List
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -157,6 +158,11 @@ class TestFilterTranslator(unittest.TestCase):
         """must_not filter."""
         f = translate_filter({"op": "must_not", "field": "context_type", "conds": ["skill"]})
         self.assertTrue(f.must_not)
+
+    def test_unknown_operator_raises(self):
+        """Unknown filter operators must not become match-all filters."""
+        with self.assertRaises(ValueError):
+            translate_filter({"op": "equals", "field": "context_type", "value": "memory"})
 
 
 # =============================================================================
@@ -417,6 +423,47 @@ class TestQdrantAdapter(unittest.TestCase):
         ))
 
         self.assertEqual(len(results), 2)
+
+    def test_filter_order_by_uses_bounded_native_scroll(self):
+        """filter(order_by=...) should not drain every matching page."""
+
+        class FakeClient:
+            def __init__(self):
+                self.scroll_calls = []
+
+            async def collection_exists(self, name):
+                return True
+
+            async def scroll(self, **kwargs):
+                self.scroll_calls.append(kwargs)
+                return [
+                    SimpleNamespace(
+                        id="r-new",
+                        payload={
+                            "id": "r-new",
+                            "uri": "opencortex://t/u/m/new",
+                            "abstract": "new",
+                            "updated_at": "2026-01-02T00:00:00Z",
+                        },
+                        vector=None,
+                    )
+                ], None
+
+        fake_client = FakeClient()
+        self.adapter._client = fake_client
+
+        results = self._run(self.adapter.filter(
+            "context",
+            {"op": "must", "field": "context_type", "conds": ["memory"]},
+            limit=1,
+            order_by="updated_at",
+            order_desc=True,
+        ))
+
+        self.assertEqual([r["id"] for r in results], ["r-new"])
+        self.assertEqual(len(fake_client.scroll_calls), 1)
+        self.assertEqual(fake_client.scroll_calls[0]["limit"], 1)
+        self.assertIsNotNone(fake_client.scroll_calls[0]["order_by"])
 
     # ---- Scroll ----
 

@@ -10,6 +10,7 @@ def _make_oc(provider: str, model: str = "text-embedding-3-small"):
     """Return a MemoryOrchestrator instance bypassing __init__ for unit tests."""
     from opencortex.orchestrator import MemoryOrchestrator
     from opencortex.config import CortexConfig
+
     oc = MemoryOrchestrator.__new__(MemoryOrchestrator)
     oc._config = CortexConfig(
         embedding_provider=provider,
@@ -48,6 +49,7 @@ class TestAccessStatsNoAmplification(unittest.IsolatedAsyncioTestCase):
     async def test_single_filter_no_get_parallel_update(self):
         """One filter() call, zero get() calls, N parallel update() calls."""
         from opencortex.orchestrator import MemoryOrchestrator, _CONTEXT_COLLECTION
+
         oc = MemoryOrchestrator.__new__(MemoryOrchestrator)
         oc._storage = AsyncMock()
         oc._storage.filter.return_value = [
@@ -77,16 +79,33 @@ class TestColdStartNonBlocking(unittest.IsolatedAsyncioTestCase):
         """init() must complete in under 1 second even if maintenance is slow."""
         from opencortex.orchestrator import MemoryOrchestrator
         from opencortex.config import CortexConfig
+        from opencortex.lifecycle.bootstrapper import SubsystemBootstrapper
 
         async def slow_maintenance(self_inner):
             await asyncio.sleep(60)  # would block init if awaited
 
-        with patch.object(MemoryOrchestrator, "_startup_maintenance", slow_maintenance), \
-             patch("opencortex.orchestrator.init_context_collection", new_callable=AsyncMock), \
-             patch("opencortex.orchestrator.init_cortex_fs", return_value=MagicMock()), \
-             patch.object(MemoryOrchestrator, "_create_default_embedder", return_value=None), \
-             patch.object(MemoryOrchestrator, "_init_alpha", new_callable=AsyncMock):
-
+        with (
+            patch.object(
+                SubsystemBootstrapper, "_startup_maintenance", slow_maintenance
+            ),
+            patch(
+                "opencortex.storage.collection_schemas.init_context_collection",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "opencortex.storage.cortex_fs.init_cortex_fs", return_value=MagicMock()
+            ),
+            patch.object(
+                SubsystemBootstrapper, "_create_default_embedder", return_value=None
+            ),
+            patch.object(
+                SubsystemBootstrapper, "_init_cognition", new_callable=AsyncMock
+            ),
+            patch.object(SubsystemBootstrapper, "_init_alpha", new_callable=AsyncMock),
+            patch.object(
+                SubsystemBootstrapper, "_init_skill_engine", new_callable=AsyncMock
+            ),
+        ):
             # Provide storage directly so the lazy QdrantStorageAdapter import is skipped
             oc = MemoryOrchestrator(CortexConfig(), storage=AsyncMock())
             t0 = asyncio.get_event_loop().time()
@@ -94,7 +113,9 @@ class TestColdStartNonBlocking(unittest.IsolatedAsyncioTestCase):
             elapsed = asyncio.get_event_loop().time() - t0
 
         assert oc._initialized is True
-        assert elapsed < 1.0, f"init() took {elapsed:.2f}s — maintenance leaked into init"
+        assert elapsed < 1.0, (
+            f"init() took {elapsed:.2f}s — maintenance leaked into init"
+        )
 
 
 class TestProbeNonBlocking(unittest.IsolatedAsyncioTestCase):
@@ -171,7 +192,10 @@ class TestAutophagySweeperLifecycle(unittest.IsolatedAsyncioTestCase):
 
         async def sweep_metabolism(**kwargs):
             seen_owner_types.append(kwargs.get("owner_type"))
-            if OwnerType.MEMORY in seen_owner_types and OwnerType.TRACE in seen_owner_types:
+            if (
+                OwnerType.MEMORY in seen_owner_types
+                and OwnerType.TRACE in seen_owner_types
+            ):
                 sweep_called.set()
             return MagicMock(next_cursor=None)
 
@@ -210,21 +234,37 @@ class TestAutophagySweeperLifecycle(unittest.IsolatedAsyncioTestCase):
         async def slow_periodic_loop(self_inner):
             await asyncio.sleep(60)
 
-        with patch.object(MemoryOrchestrator, "_init_cognition", fake_init_cognition), \
-             patch.object(BackgroundTaskManager, "_run_autophagy_sweep_once", slow_startup_sweep), \
-             patch.object(BackgroundTaskManager, "_autophagy_sweep_loop", slow_periodic_loop), \
-             patch("opencortex.orchestrator.init_context_collection", new_callable=AsyncMock), \
-             patch("opencortex.orchestrator.init_cortex_fs", return_value=MagicMock()), \
-             patch.object(MemoryOrchestrator, "_create_default_embedder", return_value=None), \
-             patch.object(MemoryOrchestrator, "_init_alpha", new_callable=AsyncMock), \
-             patch.object(MemoryOrchestrator, "_init_skill_engine", new_callable=AsyncMock):
-
+        with (
+            patch.object(MemoryOrchestrator, "_init_cognition", fake_init_cognition),
+            patch.object(
+                BackgroundTaskManager, "_run_autophagy_sweep_once", slow_startup_sweep
+            ),
+            patch.object(
+                BackgroundTaskManager, "_autophagy_sweep_loop", slow_periodic_loop
+            ),
+            patch(
+                "opencortex.storage.collection_schemas.init_context_collection",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "opencortex.storage.cortex_fs.init_cortex_fs", return_value=MagicMock()
+            ),
+            patch.object(
+                MemoryOrchestrator, "_create_default_embedder", return_value=None
+            ),
+            patch.object(MemoryOrchestrator, "_init_alpha", new_callable=AsyncMock),
+            patch.object(
+                MemoryOrchestrator, "_init_skill_engine", new_callable=AsyncMock
+            ),
+        ):
             oc = MemoryOrchestrator(CortexConfig(), storage=AsyncMock())
             t0 = asyncio.get_event_loop().time()
             await oc.init()
             elapsed = asyncio.get_event_loop().time() - t0
 
-            assert elapsed < 1.0, f"init() took {elapsed:.2f}s — autophagy leaked into init"
+            assert elapsed < 1.0, (
+                f"init() took {elapsed:.2f}s — autophagy leaked into init"
+            )
             assert oc._autophagy_startup_sweep_task is not None
             assert oc._autophagy_sweep_task is not None
             assert oc._autophagy_startup_sweep_task.done() is False
@@ -237,31 +277,39 @@ class TestAutophagySweeperLifecycle(unittest.IsolatedAsyncioTestCase):
         from opencortex.config import CortexConfig
         from opencortex.orchestrator import MemoryOrchestrator
 
-        with patch.object(
-            MemoryOrchestrator,
-            "_init_cognition",
-            new_callable=AsyncMock,
-        ) as mock_init_cognition, patch.object(
-            MemoryOrchestrator,
-            "_start_autophagy_sweeper",
-        ) as mock_start_sweeper, patch(
-            "opencortex.orchestrator.init_context_collection",
-            new_callable=AsyncMock,
-        ), patch(
-            "opencortex.orchestrator.init_cortex_fs",
-            return_value=MagicMock(),
-        ), patch.object(
-            MemoryOrchestrator,
-            "_create_default_embedder",
-            return_value=None,
-        ), patch.object(
-            MemoryOrchestrator,
-            "_init_alpha",
-            new_callable=AsyncMock,
-        ), patch.object(
-            MemoryOrchestrator,
-            "_init_skill_engine",
-            new_callable=AsyncMock,
+        with (
+            patch.object(
+                MemoryOrchestrator,
+                "_init_cognition",
+                new_callable=AsyncMock,
+            ) as mock_init_cognition,
+            patch.object(
+                MemoryOrchestrator,
+                "_start_autophagy_sweeper",
+            ) as mock_start_sweeper,
+            patch(
+                "opencortex.storage.collection_schemas.init_context_collection",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "opencortex.storage.cortex_fs.init_cortex_fs",
+                return_value=MagicMock(),
+            ),
+            patch.object(
+                MemoryOrchestrator,
+                "_create_default_embedder",
+                return_value=None,
+            ),
+            patch.object(
+                MemoryOrchestrator,
+                "_init_alpha",
+                new_callable=AsyncMock,
+            ),
+            patch.object(
+                MemoryOrchestrator,
+                "_init_skill_engine",
+                new_callable=AsyncMock,
+            ),
         ):
             oc = MemoryOrchestrator(
                 CortexConfig(cognition_enabled=False),
@@ -283,7 +331,9 @@ class TestAutophagySweeperLifecycle(unittest.IsolatedAsyncioTestCase):
         from opencortex.config import CortexConfig
 
         oc = MemoryOrchestrator.__new__(MemoryOrchestrator)
-        oc._config = CortexConfig(autophagy_sweep_interval_seconds=0.01, autophagy_sweep_batch_size=2)
+        oc._config = CortexConfig(
+            autophagy_sweep_interval_seconds=0.01, autophagy_sweep_batch_size=2
+        )
         oc._storage = MagicMock()
         oc._context_manager = None
         oc._initialized = True
@@ -313,7 +363,9 @@ class TestAutophagySweeperLifecycle(unittest.IsolatedAsyncioTestCase):
         allow_exit.set()
 
         await asyncio.wait_for(asyncio.gather(t1, t2), timeout=1.0)
-        assert max_in_flight == 1, f"expected serialized sweeps; saw concurrency={max_in_flight}"
+        assert max_in_flight == 1, (
+            f"expected serialized sweeps; saw concurrency={max_in_flight}"
+        )
 
     async def test_sweep_failure_is_isolated_per_owner_type(self):
         """If MEMORY sweep fails, TRACE sweep should still run for that tick."""
@@ -324,7 +376,9 @@ class TestAutophagySweeperLifecycle(unittest.IsolatedAsyncioTestCase):
         from opencortex.cognition.state_types import OwnerType
 
         oc = MemoryOrchestrator.__new__(MemoryOrchestrator)
-        oc._config = CortexConfig(autophagy_sweep_interval_seconds=0.01, autophagy_sweep_batch_size=2)
+        oc._config = CortexConfig(
+            autophagy_sweep_interval_seconds=0.01, autophagy_sweep_batch_size=2
+        )
         oc._storage = MagicMock()
         oc._context_manager = None
         oc._initialized = True
@@ -346,13 +400,11 @@ class TestAutophagySweeperLifecycle(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(trace_called.wait(), timeout=1.0)
 
 
-
-
 class TestRecallBookkeepingAsync(unittest.IsolatedAsyncioTestCase):
     async def test_search_skips_recall_bookkeeping_side_effects(self):
         """search() should skip recall bookkeeping side effects on the hot path."""
         from opencortex.config import CortexConfig
-        from opencortex.intent import SearchResult
+        from opencortex.intent import RetrievalDepth, SearchResult
         from opencortex.orchestrator import MemoryOrchestrator
         from opencortex.retrieve.types import ContextType, FindResult, MatchedContext
 
@@ -421,7 +473,7 @@ class TestRecallBookkeepingAsync(unittest.IsolatedAsyncioTestCase):
         oc._autophagy_kernel.apply_recall_outcome = AsyncMock()
 
         probe_result = SearchResult(should_recall=True)
-        retrieve_plan = MagicMock()
+        retrieve_plan = MagicMock(retrieval_depth=RetrievalDepth.L0)
 
         t0 = asyncio.get_running_loop().time()
         result = await oc.search(
@@ -445,7 +497,7 @@ class TestRecallBookkeepingAsync(unittest.IsolatedAsyncioTestCase):
     async def test_search_no_longer_calls_hyde_rewrite(self):
         """search() should not invoke the old retrieval-time HyDE callback."""
         from opencortex.config import CortexConfig
-        from opencortex.intent import SearchResult
+        from opencortex.intent import RetrievalDepth, SearchResult
         from opencortex.orchestrator import MemoryOrchestrator
         from opencortex.retrieve.types import ContextType, FindResult, MatchedContext
 
@@ -459,7 +511,9 @@ class TestRecallBookkeepingAsync(unittest.IsolatedAsyncioTestCase):
         oc._autophagy_sweep_task = None
         oc._autophagy_kernel = None
         oc._skill_manager = None
-        oc._llm_completion = AsyncMock(side_effect=AssertionError("unexpected HyDE call"))
+        oc._llm_completion = AsyncMock(
+            side_effect=AssertionError("unexpected HyDE call")
+        )
         oc._memory_runtime = MagicMock()
         oc._memory_runtime.arbitrate_hydration.return_value = (
             {
@@ -521,7 +575,7 @@ class TestRecallBookkeepingAsync(unittest.IsolatedAsyncioTestCase):
         result = await oc.search(
             query="test question",
             probe_result=SearchResult(should_recall=True),
-            retrieve_plan=MagicMock(),
+            retrieve_plan=MagicMock(retrieval_depth=RetrievalDepth.L0),
         )
 
         self.assertEqual(len(result.memories), 1)
@@ -555,10 +609,60 @@ class TestBatchAddConcurrency(unittest.IsolatedAsyncioTestCase):
         oc._generate_abstract_overview = fake_gen_abstract
         oc.add = fake_add
 
-        items = [{"content": f"doc {i}", "meta": {"file_path": f"f{i}.txt"}}
-                 for i in range(8)]
+        items = [
+            {"content": f"doc {i}", "meta": {"file_path": f"f{i}.txt"}}
+            for i in range(8)
+        ]
         await oc.batch_add(items)
 
         assert concurrent_high_water >= 2, (
             f"Expected ≥2 concurrent items, got max {concurrent_high_water}"
         )
+
+    async def test_batch_add_creates_work_in_bounded_chunks(self):
+        """batch_add must not create tasks for the entire request at once."""
+        import opencortex.services.memory_service as memory_service
+        from opencortex.config import CortexConfig
+        from opencortex.orchestrator import MemoryOrchestrator
+
+        old_concurrency = memory_service._BATCH_ADD_CONCURRENCY
+        old_chunk_size = memory_service._BATCH_ADD_TASK_CHUNK_SIZE
+        memory_service._BATCH_ADD_CONCURRENCY = 100
+        memory_service._BATCH_ADD_TASK_CHUNK_SIZE = 3
+
+        started: list[str] = []
+        release = asyncio.Event()
+
+        async def fake_gen_abstract(content, file_path):
+            started.append(file_path)
+            await release.wait()
+            return "abstract", "overview"
+
+        async def fake_add(**kwargs):
+            m = MagicMock()
+            m.uri = f"opencortex://t/u/mem/ev/{len(started)}"
+            return m
+
+        oc = MemoryOrchestrator.__new__(MemoryOrchestrator)
+        oc._initialized = True
+        oc._config = CortexConfig()
+        oc._ensure_init = lambda: None
+        oc._generate_abstract_overview = fake_gen_abstract
+        oc.add = fake_add
+
+        items = [
+            {"content": f"doc {i}", "meta": {"file_path": f"f{i}.txt"}}
+            for i in range(7)
+        ]
+        try:
+            batch_task = asyncio.create_task(oc.batch_add(items))
+            while len(started) < 3:
+                await asyncio.sleep(0)
+            await asyncio.sleep(0.01)
+            self.assertEqual(started, ["f0.txt", "f1.txt", "f2.txt"])
+            release.set()
+            result = await batch_task
+            self.assertEqual(result["imported"], 7)
+        finally:
+            memory_service._BATCH_ADD_CONCURRENCY = old_concurrency
+            memory_service._BATCH_ADD_TASK_CHUNK_SIZE = old_chunk_size

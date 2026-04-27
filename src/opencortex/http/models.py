@@ -334,9 +334,7 @@ class BenchmarkConversationMessage(BaseModel):
         except TypeError as exc:
             raise ValueError("meta must be JSON-serializable") from exc
         if len(serialized) > _BENCHMARK_MAX_META_BYTES:
-            raise ValueError(
-                f"meta exceeds {_BENCHMARK_MAX_META_BYTES}-byte limit"
-            )
+            raise ValueError(f"meta exceeds {_BENCHMARK_MAX_META_BYTES}-byte limit")
         return value
 
 

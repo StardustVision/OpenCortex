@@ -93,6 +93,7 @@ logger = logging.getLogger(__name__)
 
 # Maximum number of batch_add items processed concurrently
 _BATCH_ADD_CONCURRENCY = 8
+_BATCH_ADD_TASK_CHUNK_SIZE = _BATCH_ADD_CONCURRENCY * 4
 
 
 class MemoryService:
@@ -1224,10 +1225,17 @@ class MemoryService:
                 except Exception as exc:
                     return {"error": str(exc), "index": i}
 
-        outcomes = await asyncio.gather(
-            *[_process_one(i, item) for i, item in enumerate(items)],
-            return_exceptions=True,
-        )
+        outcomes: List[Any] = []
+        for chunk_start in range(0, len(items), _BATCH_ADD_TASK_CHUNK_SIZE):
+            chunk = items[chunk_start : chunk_start + _BATCH_ADD_TASK_CHUNK_SIZE]
+            chunk_outcomes = await asyncio.gather(
+                *[
+                    _process_one(chunk_start + i, item)
+                    for i, item in enumerate(chunk)
+                ],
+                return_exceptions=True,
+            )
+            outcomes.extend(chunk_outcomes)
         for outcome in outcomes:
             if isinstance(outcome, BaseException):
                 errors.append({"error": str(outcome)})
