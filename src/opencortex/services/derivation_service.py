@@ -9,20 +9,11 @@ orchestrator keeps thin compatibility wrappers for existing callers.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
-from uuid import uuid4
 
-from opencortex.memory import (
-    MemoryKind,
-    memory_abstract_from_record,
-    memory_anchor_hits_from_abstract,
-    memory_kind_policy,
-    memory_merge_signature_from_abstract,
-)
 from opencortex.prompts import (
     build_layer_abstract_prompt,
     build_layer_anchor_handles_prompt,
@@ -644,46 +635,20 @@ class DerivationService:
         parent_uri: str,
         session_id: str,
     ) -> Dict[str, Any]:
-        """Build the fixed shared `.abstract.json` payload for one entry."""
-        record = {
-            "uri": uri,
-            "context_type": context_type,
-            "category": category,
-            "abstract": abstract,
-            "overview": overview,
-            "content": content,
-            "entities": entities,
-            "keywords": keywords or [],
-            "metadata": meta or {},
-            "parent_uri": parent_uri,
-            "session_id": session_id,
-        }
-        result = memory_abstract_from_record(record).to_dict()
-        # Inject anchor_handles from LLM derivation into the anchors list
-        # so that _memory_object_payload can project them into anchor_hits.
-        meta_dict = meta or {}
-        anchor_handles = meta_dict.get("anchor_handles")
-        if anchor_handles:
-            existing_values = {
-                a.get("value", "").lower()
-                for a in result.get("anchors") or []
-                if isinstance(a, dict)
-            }
-            for handle in anchor_handles:
-                if (
-                    isinstance(handle, str)
-                    and handle.strip()
-                    and handle.lower() not in existing_values
-                ):
-                    result.setdefault("anchors", []).append(
-                        {
-                            "anchor_type": "handle",
-                            "value": handle.strip(),
-                            "text": handle.strip(),
-                        }
-                    )
-                    existing_values.add(handle.lower())
-        return result
+        """Delegate to orchestrator memory-record wrapper."""
+        return self._orch._build_abstract_json(
+            uri=uri,
+            context_type=context_type,
+            category=category,
+            abstract=abstract,
+            overview=overview,
+            content=content,
+            entities=entities,
+            meta=meta,
+            keywords=keywords,
+            parent_uri=parent_uri,
+            session_id=session_id,
+        )
 
     @staticmethod
     def _memory_object_payload(
@@ -691,52 +656,33 @@ class DerivationService:
         *,
         is_leaf: bool,
     ) -> Dict[str, Any]:
-        """Project canonical abstract payload into flat vector metadata."""
-        memory_kind = MemoryKind(str(abstract_json["memory_kind"]))
-        policy = memory_kind_policy(memory_kind)
-        anchor_hits = memory_anchor_hits_from_abstract(abstract_json)
-        return {
-            "memory_kind": memory_kind.value,
-            "anchor_hits": anchor_hits,
-            "merge_signature": memory_merge_signature_from_abstract(abstract_json),
-            "mergeable": policy.mergeable,
-            "retrieval_surface": "l0_object" if is_leaf else "",
-            "anchor_surface": bool(is_leaf and anchor_hits),
-        }
+        """Delegate to MemoryRecordService._memory_object_payload."""
+        from opencortex.services.memory_record_service import MemoryRecordService
+
+        return MemoryRecordService._memory_object_payload(
+            abstract_json, is_leaf=is_leaf
+        )
 
     @staticmethod
     def _anchor_projection_prefix(uri: str) -> str:
-        """Return the reserved child prefix for derived anchor projection records."""
-        return f"{uri}/anchors"
+        """Delegate to MemoryRecordService._anchor_projection_prefix."""
+        from opencortex.services.memory_record_service import MemoryRecordService
+
+        return MemoryRecordService._anchor_projection_prefix(uri)
 
     @staticmethod
     def _fact_point_prefix(uri: str) -> str:
-        """Return the reserved child prefix for derived fact point records."""
-        return f"{uri}/fact_points"
+        """Delegate to MemoryRecordService._fact_point_prefix."""
+        from opencortex.services.memory_record_service import MemoryRecordService
+
+        return MemoryRecordService._fact_point_prefix(uri)
 
     @staticmethod
     def _is_valid_fact_point(text: str) -> bool:
-        """Quality gate: return True only if text is a short, concrete atomic fact.
+        """Delegate to MemoryRecordService._is_valid_fact_point."""
+        from opencortex.services.memory_record_service import MemoryRecordService
 
-        Rejects: too short (<8), too long (>80), multiline (paragraph-style),
-        or generic text lacking any concrete signal.
-        Accepts: text containing digits, CamelCase, ALLCAPS, paths, CJK sequences.
-        """
-        if not text or len(text) < 8 or len(text) > 80:
-            return False
-        if "\n" in text:
-            return False
-        # Must contain at least one concrete signal:
-        # digits, CamelCase, ALL_CAPS, paths, or 2+ consecutive CJK characters
-        concrete_signal = re.compile(
-            r"[\d]"  # digit
-            r"|[A-Z][a-z]+[A-Z]"  # CamelCase
-            r"|[A-Z]{2,}"  # ALLCAPS (2+ uppercase)
-            r"|[\u4e00-\u9fa5].*[\d]"  # CJK text with digit
-            r"|[/\\.]"  # path separator
-            r"|[\u4e00-\u9fa5]{2,}"  # 2+ consecutive CJK chars (Chinese proper nouns)
-        )
-        return bool(concrete_signal.search(text))
+        return MemoryRecordService._is_valid_fact_point(text)
 
     def _fact_point_records(
         self,
@@ -744,60 +690,11 @@ class DerivationService:
         source_record: Dict[str, Any],
         fact_points_list: List[str],
     ) -> List[Dict[str, Any]]:
-        """Build fact_point projection records for one leaf object.
-
-        Applies quality gate and caps at 8 records.
-        """
-        source_uri = str(source_record.get("uri", "") or "")
-        if not source_uri:
-            return []
-
-        prefix = self._fact_point_prefix(source_uri)
-        records: List[Dict[str, Any]] = []
-
-        for text in fact_points_list:
-            if len(records) >= 8:
-                break
-            if not self._is_valid_fact_point(text):
-                continue
-            digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
-            fp_record = {
-                "id": uuid4().hex,
-                "uri": f"{prefix}/{digest}",
-                "parent_uri": source_uri,
-                "is_leaf": False,
-                "abstract": "",
-                "overview": text,
-                "content": "",
-                "retrieval_surface": "fact_point",
-                "anchor_surface": False,
-                "meta": {
-                    "derived": True,
-                    "derived_kind": "fact_point",
-                    "projection_target_uri": source_uri,
-                },
-                "projection_target_uri": source_uri,
-                # Inherit access control from source leaf
-                "context_type": source_record.get("context_type", ""),
-                "category": source_record.get("category", ""),
-                "scope": source_record.get("scope", ""),
-                "source_user_id": source_record.get("source_user_id", ""),
-                "source_tenant_id": source_record.get("source_tenant_id", ""),
-                "session_id": source_record.get("session_id", ""),
-                "project_id": source_record.get("project_id", ""),
-                "memory_kind": source_record.get("memory_kind", ""),
-                "source_doc_id": source_record.get("source_doc_id", ""),
-                "source_doc_title": source_record.get("source_doc_title", ""),
-                "source_section_path": source_record.get("source_section_path", ""),
-                "keywords": text,
-                "entities": source_record.get("entities", []),
-                "mergeable": False,
-                "merge_signature": "",
-                "anchor_hits": "",
-            }
-            records.append(fp_record)
-
-        return records
+        """Delegate to orchestrator memory-record wrapper."""
+        return self._orch._fact_point_records(
+            source_record=source_record,
+            fact_points_list=fact_points_list,
+        )
 
     def _anchor_projection_records(
         self,
@@ -805,84 +702,11 @@ class DerivationService:
         source_record: Dict[str, Any],
         abstract_json: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
-        """Build dedicated anchor projection records for one leaf object."""
-        source_uri = str(source_record.get("uri", "") or "")
-        if not source_uri:
-            return []
-
-        projection_records: List[Dict[str, Any]] = []
-        anchors = abstract_json.get("anchors") or []
-        prefix = self._anchor_projection_prefix(source_uri)
-        base_anchor_hits = memory_anchor_hits_from_abstract(abstract_json)
-
-        for index, anchor in enumerate(anchors):
-            if not isinstance(anchor, dict):
-                continue
-            anchor_text = str(anchor.get("text") or anchor.get("value") or "").strip()
-            anchor_value = str(anchor.get("value") or anchor_text).strip()
-            anchor_type = str(anchor.get("anchor_type") or "topic").strip() or "topic"
-            if not anchor_text:
-                continue
-            # R11: skip anchors that are too short to be meaningful
-            if len(anchor_text) < 4:
-                continue
-
-            digest = hashlib.sha1(
-                f"{anchor_type}:{anchor_value}:{index}".encode("utf-8")
-            ).hexdigest()[:12]
-            projection_uri = f"{prefix}/{digest}"
-            projection_record = {
-                "id": uuid4().hex,
-                "uri": projection_uri,
-                "parent_uri": source_uri,
-                "is_leaf": False,
-                "abstract": "",
-                "overview": (
-                    anchor_text
-                    if len(anchor_text) >= 15
-                    else f"{anchor_type}: {anchor_text}"
-                ),
-                "content": "",
-                "context_type": source_record.get("context_type", ""),
-                "category": source_record.get("category", ""),
-                "scope": source_record.get("scope", ""),
-                "source_user_id": source_record.get("source_user_id", ""),
-                "source_tenant_id": source_record.get("source_tenant_id", ""),
-                "session_id": source_record.get("session_id", ""),
-                "project_id": source_record.get("project_id", ""),
-                "keywords": ", ".join(
-                    value for value in [anchor_text, anchor_value] if value
-                ),
-                "entities": source_record.get("entities", []),
-                "meta": {
-                    "derived": True,
-                    "derived_kind": "anchor_projection",
-                    "anchor_type": anchor_type,
-                    "anchor_value": anchor_value,
-                    "anchor_text": anchor_text,
-                    "projection_target_uri": source_uri,
-                },
-                "memory_kind": source_record.get("memory_kind", ""),
-                "anchor_hits": _merge_unique_strings(
-                    anchor_text, anchor_value, *base_anchor_hits
-                ),
-                "merge_signature": "",
-                "mergeable": False,
-                "retrieval_surface": "anchor_projection",
-                "anchor_surface": True,
-                "source_doc_id": source_record.get("source_doc_id", ""),
-                "source_doc_title": source_record.get("source_doc_title", ""),
-                "source_section_path": source_record.get("source_section_path", ""),
-                "chunk_role": source_record.get("chunk_role", ""),
-                "speaker": source_record.get("speaker", ""),
-                "event_date": source_record.get("event_date"),
-                "projection_target_uri": source_uri,
-                "projection_target_abstract": source_record.get("abstract", ""),
-                "projection_target_overview": source_record.get("overview", ""),
-            }
-            projection_records.append(projection_record)
-
-        return projection_records
+        """Delegate to orchestrator memory-record wrapper."""
+        return self._orch._anchor_projection_records(
+            source_record=source_record,
+            abstract_json=abstract_json,
+        )
 
     async def _delete_derived_stale(
         self,
@@ -890,48 +714,8 @@ class DerivationService:
         prefix: str,
         keep_uris: set,
     ) -> None:
-        """Delete derived records under *prefix* whose URIs are not in *keep_uris*.
-
-        This implements the write-then-delete contract: caller writes new records
-        first, then calls this to remove only the records that were NOT just written.
-        Records with matching URIs (same content → same digest) are kept.
-
-        Filter DSL ``op=prefix`` on the Qdrant adapter is tokenised (MatchText)
-        and over-matches when a sibling URI shares a literal substring with
-        *prefix* (see tests/test_cascade_qdrant_integration.py,
-        ``test_delete_derived_stale_does_not_touch_sibling_prefix``).  To avoid
-        deleting sibling records that happen to token-match, every candidate
-        URI is re-checked with literal ``startswith`` before it is marked
-        stale.
-        """
-        try:
-            old_records = await self._storage.filter(
-                collection,
-                {"op": "prefix", "field": "uri", "prefix": prefix},
-                limit=50,
-            )
-        except Exception as exc:
-            logger.warning(
-                "[DerivationService] _delete_derived_stale filter failed prefix=%s: %s",
-                prefix,
-                exc,
-            )
-            return
-        descendant_prefix = prefix if prefix.endswith("/") else prefix + "/"
-        stale_ids = [
-            str(r["id"])
-            for r in old_records
-            if isinstance(r.get("uri"), str)
-            and (r["uri"] == prefix or r["uri"].startswith(descendant_prefix))
-            and r["uri"] not in keep_uris
-        ]
-        if stale_ids:
-            try:
-                await self._storage.delete(collection, stale_ids)
-            except Exception as exc:
-                logger.warning(
-                    "[DerivationService] _delete_derived_stale delete failed: %s", exc
-                )
+        """Delegate to orchestrator memory-record wrapper."""
+        await self._orch._delete_derived_stale(collection, prefix, keep_uris)
 
     async def _sync_anchor_projection_records(
         self,
@@ -939,80 +723,8 @@ class DerivationService:
         source_record: Dict[str, Any],
         abstract_json: Dict[str, Any],
     ) -> None:
-        """Replace derived anchor and fact_point records for one leaf object.
-
-        Ordering: write-new-then-delete-old (R25).
-        Both anchor projections and fact_points are embedded in a single
-        embed_batch() call for efficiency.
-        """
-        if not bool(source_record.get("is_leaf", False)):
-            return
-
-        source_uri = str(source_record.get("uri", "") or "")
-        if not source_uri:
-            return
-
-        anchor_prefix = self._anchor_projection_prefix(source_uri)
-        fp_prefix = self._fact_point_prefix(source_uri)
-
-        # Build new anchor records
-        anchor_records = self._anchor_projection_records(
+        """Delegate to orchestrator memory-record wrapper."""
+        await self._orch._sync_anchor_projection_records(
             source_record=source_record,
             abstract_json=abstract_json,
         )
-
-        # Build new fact_point records from abstract_json
-        raw_fact_points = abstract_json.get("fact_points") or []
-        if not isinstance(raw_fact_points, list):
-            raw_fact_points = []
-        fp_records = self._fact_point_records(
-            source_record=source_record,
-            fact_points_list=raw_fact_points,
-        )
-
-        all_new_records = anchor_records + fp_records
-
-        # REVIEW closure tracker R3-P-06 — short-circuit when the new
-        # projection is empty AND there's no abstract_json input.
-        # The defer_derive initial leaf write hits this path with both
-        # inputs empty and would otherwise pay 2 stale-filter scans
-        # over Qdrant prefixes that are guaranteed to be empty (the
-        # leaf is brand new). The ``not abstract_json`` guard keeps
-        # the cleanup path on legitimate update flows where
-        # abstract_json is present but happens to contribute no
-        # anchors or fact_points — those updates DO need stale
-        # cleanup.
-        if not all_new_records and not abstract_json:
-            return
-
-        # Embed all texts in a single batch call
-        if all_new_records and self._embedder:
-            texts = [r["overview"] for r in all_new_records]
-            loop = asyncio.get_running_loop()
-            try:
-                embed_results = await asyncio.wait_for(
-                    loop.run_in_executor(None, self._embedder.embed_batch, texts),
-                    timeout=5.0,
-                )
-                for record, embed_result in zip(
-                    all_new_records, embed_results, strict=False
-                ):
-                    if embed_result.dense_vector:
-                        record["vector"] = embed_result.dense_vector
-                    if getattr(embed_result, "sparse_vector", None):
-                        record["sparse_vector"] = embed_result.sparse_vector
-            except Exception as exc:
-                logger.warning(
-                    "[DerivationService] derived records embed_batch failed: %s", exc
-                )
-
-        # Write new records FIRST (write-then-delete)
-        for new_record in all_new_records:
-            await self._storage.upsert(self._get_collection(), new_record)
-
-        # Only THEN delete stale records (those NOT in the new set)
-        new_anchor_uris = {r["uri"] for r in anchor_records}
-        new_fp_uris = {r["uri"] for r in fp_records}
-        collection = self._get_collection()
-        await self._delete_derived_stale(collection, anchor_prefix, new_anchor_uris)
-        await self._delete_derived_stale(collection, fp_prefix, new_fp_uris)

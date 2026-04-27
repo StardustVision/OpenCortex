@@ -34,9 +34,7 @@ Typical usage::
 import asyncio
 import logging
 import re
-from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
-from uuid import uuid4
 
 from opencortex.cognition.state_types import OwnerType
 from opencortex.config import CortexConfig, get_config
@@ -45,7 +43,6 @@ from opencortex.core.message import Message
 from opencortex.core.user_id import UserIdentifier
 from opencortex.http.request_context import (
     get_effective_identity,
-    get_effective_project_id,
 )
 from opencortex.intent import (
     MemoryExecutor,
@@ -138,6 +135,7 @@ class MemoryOrchestrator:
         self._derivation_service_instance: Optional[Any] = None
         self._retrieval_service_instance: Optional[Any] = None
         self._session_lifecycle_service_instance: Optional[Any] = None
+        self._memory_record_service_instance: Optional[Any] = None
         # Plan 009 / RELY-01 — InsightsAgent (when enabled in
         # ``server.py`` lifespan) holds a second LLMCompletion wrapper
         # whose pool would otherwise leak on shutdown. The lifespan
@@ -608,8 +606,8 @@ class MemoryOrchestrator:
         parent_uri: str,
         session_id: str,
     ) -> Dict[str, Any]:
-        """Delegate to DerivationService._build_abstract_json."""
-        return self._derivation_service._build_abstract_json(
+        """Delegate to MemoryRecordService._build_abstract_json."""
+        return self._memory_record_service._build_abstract_json(
             uri=uri,
             context_type=context_type,
             category=category,
@@ -629,33 +627,33 @@ class MemoryOrchestrator:
         *,
         is_leaf: bool,
     ) -> Dict[str, Any]:
-        """Delegate to DerivationService._memory_object_payload."""
-        from opencortex.services.derivation_service import DerivationService
+        """Delegate to MemoryRecordService._memory_object_payload."""
+        from opencortex.services.memory_record_service import MemoryRecordService
 
-        return DerivationService._memory_object_payload(
+        return MemoryRecordService._memory_object_payload(
             abstract_json, is_leaf=is_leaf
         )
 
     @staticmethod
     def _anchor_projection_prefix(uri: str) -> str:
-        """Delegate to DerivationService._anchor_projection_prefix."""
-        from opencortex.services.derivation_service import DerivationService
+        """Delegate to MemoryRecordService._anchor_projection_prefix."""
+        from opencortex.services.memory_record_service import MemoryRecordService
 
-        return DerivationService._anchor_projection_prefix(uri)
+        return MemoryRecordService._anchor_projection_prefix(uri)
 
     @staticmethod
     def _fact_point_prefix(uri: str) -> str:
-        """Delegate to DerivationService._fact_point_prefix."""
-        from opencortex.services.derivation_service import DerivationService
+        """Delegate to MemoryRecordService._fact_point_prefix."""
+        from opencortex.services.memory_record_service import MemoryRecordService
 
-        return DerivationService._fact_point_prefix(uri)
+        return MemoryRecordService._fact_point_prefix(uri)
 
     @staticmethod
     def _is_valid_fact_point(text: str) -> bool:
-        """Delegate to DerivationService._is_valid_fact_point."""
-        from opencortex.services.derivation_service import DerivationService
+        """Delegate to MemoryRecordService._is_valid_fact_point."""
+        from opencortex.services.memory_record_service import MemoryRecordService
 
-        return DerivationService._is_valid_fact_point(text)
+        return MemoryRecordService._is_valid_fact_point(text)
 
     def _fact_point_records(
         self,
@@ -663,8 +661,8 @@ class MemoryOrchestrator:
         source_record: Dict[str, Any],
         fact_points_list: List[str],
     ) -> List[Dict[str, Any]]:
-        """Delegate to DerivationService._fact_point_records."""
-        return self._derivation_service._fact_point_records(
+        """Delegate to MemoryRecordService._fact_point_records."""
+        return self._memory_record_service._fact_point_records(
             source_record=source_record, fact_points_list=fact_points_list
         )
 
@@ -674,8 +672,8 @@ class MemoryOrchestrator:
         source_record: Dict[str, Any],
         abstract_json: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
-        """Delegate to DerivationService._anchor_projection_records."""
-        return self._derivation_service._anchor_projection_records(
+        """Delegate to MemoryRecordService._anchor_projection_records."""
+        return self._memory_record_service._anchor_projection_records(
             source_record=source_record, abstract_json=abstract_json
         )
 
@@ -685,8 +683,8 @@ class MemoryOrchestrator:
         prefix: str,
         keep_uris: set,
     ) -> None:
-        """Delegate to DerivationService._delete_derived_stale."""
-        await self._derivation_service._delete_derived_stale(
+        """Delegate to MemoryRecordService._delete_derived_stale."""
+        await self._memory_record_service._delete_derived_stale(
             collection, prefix, keep_uris
         )
 
@@ -696,8 +694,8 @@ class MemoryOrchestrator:
         source_record: Dict[str, Any],
         abstract_json: Dict[str, Any],
     ) -> None:
-        """Delegate to DerivationService._sync_anchor_projection_records."""
-        await self._derivation_service._sync_anchor_projection_records(
+        """Delegate to MemoryRecordService._sync_anchor_projection_records."""
+        await self._memory_record_service._sync_anchor_projection_records(
             source_record=source_record, abstract_json=abstract_json
         )
 
@@ -790,6 +788,17 @@ class MemoryOrchestrator:
         if cached is None:
             cached = SessionLifecycleService(self)
             self._session_lifecycle_service_instance = cached
+        return cached
+
+    @property
+    def _memory_record_service(self) -> "MemoryRecordService":
+        """Lazy-built MemoryRecordService for record/projection/URI helpers."""
+        from opencortex.services.memory_record_service import MemoryRecordService
+
+        cached = getattr(self, "_memory_record_service_instance", None)
+        if cached is None:
+            cached = MemoryRecordService(self)
+            self._memory_record_service_instance = cached
         return cached
 
     @property
@@ -898,11 +907,8 @@ class MemoryOrchestrator:
         )
 
     def _ttl_from_hours(self, hours: int) -> str:
-        """Return RFC3339 UTC expiry string. Non-positive values disable TTL."""
-        if hours <= 0:
-            return ""
-        expires = datetime.now(timezone.utc) + timedelta(hours=hours)
-        return expires.strftime("%Y-%m-%dT%H:%M:%SZ")
+        """Delegate to MemoryRecordService._ttl_from_hours."""
+        return self._memory_record_service._ttl_from_hours(hours)
 
     async def update(
         self,
@@ -1634,150 +1640,43 @@ class MemoryOrchestrator:
         return file_path, fallback_overview
 
     def _auto_uri(self, context_type: str, category: str, abstract: str = "") -> str:
-        """Generate a URI based on context type, category, and abstract text.
-
-        Uses semantic node names (deterministic) instead of random UUIDs
-        when an abstract is provided. Falls back to uuid4 hex otherwise.
-
-        Routing table:
-          memory  + category  -> user/{uid}/memories/{category}/{nid}
-          memory  + (empty)   -> user/{uid}/memories/events/{nid}
-          case    + *         -> shared/cases/{nid}
-          pattern + *         -> shared/patterns/{nid}
-          skill   + section   -> shared/skills/{section}/{nid}
-          skill   + (empty)   -> shared/skills/general/{nid}
-          resource+ category  -> resources/{project}/{category}/{nid}
-          staging + *         -> user/{uid}/staging/{nid}
-        """
-        from opencortex.utils.semantic_name import semantic_node_name
-
-        tid, uid = get_effective_identity()
-        node_name = semantic_node_name(abstract) if abstract else uuid4().hex
-
-        if context_type == "memory":
-            cat = category if category in self._USER_MEMORY_CATEGORIES else "events"
-            return CortexURI.build_private(tid, uid, "memories", cat, node_name)
-
-        if context_type == "case":
-            return CortexURI.build_shared(tid, "shared", "cases", node_name)
-
-        if context_type == "pattern":
-            return CortexURI.build_shared(tid, "shared", "patterns", node_name)
-
-        if context_type == "resource":
-            project = get_effective_project_id()  # e.g. "OpenCortex" or "public"
-            if category:
-                return CortexURI.build_shared(
-                    tid, "resources", project, category, node_name
-                )
-            return CortexURI.build_shared(tid, "resources", project, node_name)
-
-        if context_type == "staging":
-            return CortexURI.build_private(tid, uid, "staging", node_name)
-
-        # Fallback: treat as user memory event
-        return CortexURI.build_private(tid, uid, "memories", "events", node_name)
+        """Delegate to MemoryRecordService._auto_uri."""
+        return self._memory_record_service._auto_uri(
+            context_type=context_type,
+            category=category,
+            abstract=abstract,
+        )
 
     async def _uri_exists(self, uri: str) -> bool:
-        """Check if a URI already exists in the context collection."""
-        try:
-            results = await self._storage.filter(
-                self._get_collection(),
-                {"op": "must", "field": "uri", "conds": [uri]},
-                limit=1,
-            )
-            return len(results) > 0
-        except Exception:
-            return False
+        """Delegate to MemoryRecordService._uri_exists."""
+        return await self._memory_record_service._uri_exists(uri)
 
     async def _resolve_unique_uri(self, uri: str, max_attempts: int = 100) -> str:
-        """Ensure URI is unique, appending _1, _2, ... if needed."""
-        if not await self._uri_exists(uri):
-            return uri
-        for i in range(1, max_attempts + 1):
-            candidate = f"{uri}_{i}"
-            if not await self._uri_exists(candidate):
-                return candidate
-        raise ValueError(
-            f"URI conflict unresolved after {max_attempts} attempts: {uri}"
+        """Delegate to MemoryRecordService._resolve_unique_uri."""
+        return await self._memory_record_service._resolve_unique_uri(
+            uri,
+            max_attempts=max_attempts,
         )
 
     @staticmethod
     def _extract_category_from_uri(uri: str) -> str:
-        """Extract category from URI path. E.g. /memories/preferences/abc -> preferences.
+        """Delegate to MemoryRecordService._extract_category_from_uri."""
+        from opencortex.services.memory_record_service import MemoryRecordService
 
-        For resources the path is resources/{project}/{category}/{nid},
-        so the category is two segments after "resources".
-        """
-        parts = uri.split("/")
-        # Look for known parent segments, return next part
-        for parent in (
-            "memories",
-            "cases",
-            "patterns",
-            "skills",
-            "staging",
-            "resources",
-        ):
-            if parent in parts:
-                idx = parts.index(parent)
-                if parent in ("cases", "patterns"):
-                    return parent
-                if parent == "resources":
-                    # resources/{project}/{category}/{nid} — skip project
-                    cat_idx = idx + 2
-                    if cat_idx < len(parts):
-                        candidate = parts[cat_idx]
-                        if len(candidate) != 12:
-                            return candidate
-                    continue
-                if idx + 1 < len(parts):
-                    candidate = parts[idx + 1]
-                    # Skip node_id (12-char hex)
-                    if len(candidate) != 12:
-                        return candidate
-        return ""
+        return MemoryRecordService._extract_category_from_uri(uri)
 
     @staticmethod
     def _enrich_abstract(abstract: str, content: str) -> str:
-        """Append missing hard keywords when the abstract has poor term coverage."""
-        if not content.strip():
-            return abstract
+        """Delegate to MemoryRecordService._enrich_abstract."""
+        from opencortex.services.memory_record_service import MemoryRecordService
 
-        term_pattern = re.compile(
-            r"[a-z]+[A-Z][a-zA-Z0-9]*|\b[A-Z]{2,}\b|[a-zA-Z0-9]+[_./-][a-zA-Z0-9]+"
-        )
-        candidates: list[str] = []
-        seen: set[str] = set()
-        for match in term_pattern.finditer(content):
-            term = match.group(0)
-            key = term.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            candidates.append(term)
-
-        if not candidates:
-            return abstract
-
-        abstract_lower = abstract.lower()
-        covered = [term for term in candidates if term.lower() in abstract_lower]
-        if len(covered) / len(candidates) >= 0.6:
-            return abstract
-
-        missing = [term for term in candidates if term.lower() not in abstract_lower][:10]
-        if not missing:
-            return abstract
-        return f"{abstract} [{', '.join(missing)}]"
+        return MemoryRecordService._enrich_abstract(abstract, content)
 
     def _derive_parent_uri(self, uri: str) -> str:
-        """Derive parent URI by removing the last path segment."""
-        try:
-            parsed = CortexURI(uri)
-            parent = parsed.parent
-            return str(parent) if parent else ""
-        except ValueError:
-            return ""
+        """Delegate to MemoryRecordService._derive_parent_uri."""
+        from opencortex.services.memory_record_service import MemoryRecordService
+
+        return MemoryRecordService._derive_parent_uri(uri)
 
     def _aggregate_results(
         self,
