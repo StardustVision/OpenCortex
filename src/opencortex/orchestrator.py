@@ -33,9 +33,7 @@ Typical usage::
 
 import asyncio
 import logging
-import math
 import re
-import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -51,25 +49,9 @@ from opencortex.http.request_context import (
 )
 from opencortex.intent import (
     MemoryExecutor,
-    QueryAnchorKind,
     RecallPlanner,
     RetrievalPlan,
-    ScopeLevel,
     SearchResult,
-)
-from opencortex.intent.retrieval_support import (
-    anchor_rerank_bonus,
-    build_probe_scope_input,
-    build_scope_filter,
-    build_start_point_filter,
-    merge_filter_clauses,
-    record_anchor_groups,
-)
-from opencortex.intent.retrieval_support import (
-    probe_candidate_ranks as build_probe_candidate_ranks,
-)
-from opencortex.intent.retrieval_support import (
-    query_anchor_groups as build_query_anchor_groups,
 )
 from opencortex.models.embedder.base import EmbedderBase
 from opencortex.prompts import (
@@ -84,16 +66,14 @@ from opencortex.retrieve.types import (
     FindResult,
     MatchedContext,
     QueryResult,
-    SearchExplain,
     TypedQuery,
 )
-from opencortex.retrieve.uri_path_scorer import compute_uri_path_scores
-from opencortex.storage.cortex_fs import CortexFS
-from opencortex.storage.storage_interface import StorageInterface
 from opencortex.services.derivation_service import (
     _merge_unique_strings,
     _split_keyword_string,
 )
+from opencortex.storage.cortex_fs import CortexFS
+from opencortex.storage.storage_interface import StorageInterface
 from opencortex.utils.json_parse import parse_json_from_response
 from opencortex.utils.text import chunked_llm_derive, smart_truncate
 from opencortex.utils.uri import CortexURI
@@ -157,6 +137,7 @@ class MemoryOrchestrator:
         self._bootstrapper_instance: Optional[Any] = None
         self._derivation_service_instance: Optional[Any] = None
         self._retrieval_service_instance: Optional[Any] = None
+        self._session_lifecycle_service_instance: Optional[Any] = None
         # Plan 009 / RELY-01 — InsightsAgent (when enabled in
         # ``server.py`` lifespan) holds a second LLMCompletion wrapper
         # whose pool would otherwise leak on shutdown. The lifespan
@@ -484,166 +465,14 @@ class MemoryOrchestrator:
         tool_calls: Optional[list] = None,
         meta: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """Write a single message for immediate searchability using the shared contract."""
-        from uuid import uuid4
-
-        from opencortex.http.request_context import (
-            get_effective_identity,
-            get_effective_project_id,
-        )
-        from opencortex.utils.uri import CortexURI
-
-        tid, uid = get_effective_identity()
-        nid = uuid4().hex
-        uri = CortexURI.build_private(tid, uid, "memories", "events", nid)
-        meta = dict(meta or {})
-        explicit_entities = _merge_unique_strings(meta.get("entities"))
-        explicit_topics = _merge_unique_strings(meta.get("topics"))
-        record_meta = dict(meta)
-        if explicit_topics:
-            record_meta["topics"] = _merge_unique_strings(
-                record_meta.get("topics"),
-                explicit_topics,
-            )
-        record_meta.update(
-            {
-                "layer": "immediate",
-                "msg_index": msg_index,
-                "session_id": session_id,
-                "tool_calls": tool_calls or [],
-            }
-        )
-
-        # Embed without LLM
-        embed_input = text
-        if self._config.context_flattening_enabled:
-            speaker = ""
-            for prefix in ("user:", "assistant:", "system:"):
-                if text.lower().startswith(prefix):
-                    speaker = prefix.rstrip(":")
-                    break
-            if speaker:
-                embed_input = f"[{speaker}] {text}"
-
-        vector = None
-        sparse_vector = None
-        if self._embedder:
-            loop = asyncio.get_running_loop()
-            try:
-                result = await asyncio.wait_for(
-                    loop.run_in_executor(None, self._embedder.embed, embed_input),
-                    timeout=_IMMEDIATE_EMBED_TIMEOUT_SECONDS,
-                )
-            except Exception as exc:
-                fallback_embedder = None
-                if (
-                    (self._config.embedding_provider or "").strip().lower() == "openai"
-                    and self._is_retryable_immediate_embed_exception(exc)
-                ):
-                    fallback_embedder = self._get_immediate_fallback_embedder()
-                if fallback_embedder is None:
-                    raise
-                logger.warning(
-                    "[Orchestrator] Immediate remote embedding failed; "
-                    "retrying local fallback model=%s exc_type=%s exc=%r",
-                    getattr(fallback_embedder, "model_name", "local-fallback"),
-                    type(exc).__name__,
-                    exc,
-                )
-                try:
-                    result = await loop.run_in_executor(
-                        None,
-                        fallback_embedder.embed,
-                        embed_input,
-                    )
-                except Exception as fallback_exc:
-                    logger.warning(
-                        "[Orchestrator] Immediate local fallback embedding failed "
-                        "model=%s exc_type=%s exc=%r",
-                        getattr(fallback_embedder, "model_name", "local-fallback"),
-                        type(fallback_exc).__name__,
-                        fallback_exc,
-                    )
-                    raise exc from fallback_exc
-            vector = result.dense_vector
-            sparse_vector = result.sparse_vector
-
-        record = {
-            "uri": uri,
-            "parent_uri": CortexURI.build_private(
-                tid, uid, "memories", "events", session_id
-            ),
-            "is_leaf": True,
-            "abstract": text,
-            "overview": "",
-            "context_type": "memory",
-            "category": "events",
-            "scope": "private",
-            "source_user_id": uid,
-            "source_tenant_id": tid,
-            "keywords": ", ".join(explicit_topics),
-            "entities": explicit_entities,
-            "meta": {
-                **record_meta,
-            },
-            "session_id": session_id,
-            "project_id": get_effective_project_id(),
-            "ttl_expires_at": self._ttl_from_hours(
-                self._config.immediate_event_ttl_hours
-            ),
-            "speaker": str(record_meta.get("speaker", "") or ""),
-            "event_date": record_meta.get("event_date"),
-        }
-
-        if vector:
-            record["vector"] = vector
-        if sparse_vector:
-            record["sparse_vector"] = sparse_vector
-
-        abstract_json = self._build_abstract_json(
-            uri=uri,
-            context_type="memory",
-            category="events",
-            abstract=text,
-            overview="",
-            content=text,
-            entities=explicit_entities,
-            meta=record_meta,
-            keywords=explicit_topics,
-            parent_uri=record["parent_uri"],
+        """Delegate to SessionLifecycleService._write_immediate."""
+        return await self._session_lifecycle_service._write_immediate(
             session_id=session_id,
+            msg_index=msg_index,
+            text=text,
+            tool_calls=tool_calls,
+            meta=meta,
         )
-        record.update(self._memory_object_payload(abstract_json, is_leaf=True))
-        record["abstract_json"] = abstract_json
-
-        record_id = await self._storage.upsert(self._get_collection(), record)
-        record["id"] = record_id
-        await self._sync_anchor_projection_records(
-            source_record=record,
-            abstract_json=abstract_json,
-        )
-        if self._entity_index and explicit_entities:
-            self._entity_index.add(
-                self._get_collection(),
-                str(record.get("id") or record_id),
-                explicit_entities,
-            )
-        try:
-            await self._fs.write_context(
-                uri=uri,
-                content=text,
-                abstract=text,
-                abstract_json=abstract_json,
-                overview="",
-                is_leaf=True,
-            )
-        except Exception as exc:
-            logger.warning(
-                "[MemoryOrchestrator] Immediate CortexFS write failed for %s: %s",
-                uri,
-                exc,
-            )
-        return uri
 
     async def _derive_parent_summary(
         self,
@@ -948,6 +777,19 @@ class MemoryOrchestrator:
         if cached is None:
             cached = RetrievalService(self)
             self._retrieval_service_instance = cached
+        return cached
+
+    @property
+    def _session_lifecycle_service(self) -> "SessionLifecycleService":
+        """Lazy-built SessionLifecycleService for session/trace lifecycle methods."""
+        from opencortex.services.session_lifecycle_service import (
+            SessionLifecycleService,
+        )
+
+        cached = getattr(self, "_session_lifecycle_service_instance", None)
+        if cached is None:
+            cached = SessionLifecycleService(self)
+            self._session_lifecycle_service_instance = cached
         return cached
 
     @property
@@ -1326,39 +1168,8 @@ class MemoryOrchestrator:
         )
 
     async def _resolve_memory_owner_ids(self, matches: List[Any]) -> List[str]:
-        """Resolve memory owner ids from matched contexts using persisted record ids."""
-        if not matches or not self._storage:
-            return []
-
-        uris = []
-        for match in matches:
-            uri = getattr(match, "uri", "")
-            if isinstance(uri, str) and uri:
-                uris.append(uri)
-        if not uris:
-            return []
-
-        try:
-            records = await self._storage.filter(
-                self._get_collection(),
-                {"op": "must", "field": "uri", "conds": list(dict.fromkeys(uris))},
-                limit=max(len(uris), 1) * 4,
-            )
-        except Exception as exc:
-            logger.debug("[Orchestrator] Failed to resolve memory owner ids: %s", exc)
-            return []
-
-        ids_by_uri = {
-            record.get("uri", ""): str(record.get("id", ""))
-            for record in records
-            if record.get("uri") and record.get("id")
-        }
-        owner_ids: List[str] = []
-        for uri in uris:
-            owner_id = ids_by_uri.get(uri)
-            if owner_id and owner_id not in owner_ids:
-                owner_ids.append(owner_id)
-        return owner_ids
+        """Delegate to SessionLifecycleService._resolve_memory_owner_ids."""
+        return await self._session_lifecycle_service._resolve_memory_owner_ids(matches)
 
     def _schedule_recall_bookkeeping(
         self,
@@ -1381,19 +1192,8 @@ class MemoryOrchestrator:
         return self._background_task_manager._recall_bookkeeping_tasks_set()
 
     async def _get_record_by_uri(self, uri: str) -> Optional[Dict[str, Any]]:
-        """Look up a single record by its URI."""
-        if not uri or not self._storage:
-            return None
-        try:
-            records = await self._storage.filter(
-                self._get_collection(),
-                {"op": "must", "field": "uri", "conds": [uri]},
-                limit=1,
-            )
-        except Exception as exc:
-            logger.debug("[Orchestrator] Failed to load record for uri=%s: %s", uri, exc)
-            return None
-        return records[0] if records else None
+        """Delegate to SessionLifecycleService._get_record_by_uri."""
+        return await self._session_lifecycle_service._get_record_by_uri(uri)
 
     async def _initialize_autophagy_owner_state(
         self,
@@ -1404,80 +1204,26 @@ class MemoryOrchestrator:
         user_id: str,
         project_id: str,
     ) -> None:
-        """Bootstrap autophagy state for a new owner when autophagy is enabled."""
-        if not self._autophagy_kernel or not owner_id:
-            return
-        try:
-            await self._autophagy_kernel.initialize_owner(
-                owner_type=owner_type,
-                owner_id=owner_id,
-                tenant_id=tenant_id,
-                user_id=user_id,
-                project_id=project_id,
-            )
-        except Exception as exc:
-            logger.warning(
-                "[Orchestrator] Autophagy owner init failed type=%s owner=%s "
-                "tenant=%s user=%s: %s",
-                owner_type.value,
-                owner_id,
-                tenant_id,
-                user_id,
-                exc,
-            )
-
-    async def _on_trace_saved(self, trace: "Trace") -> None:
-        """Callback invoked after a trace is persisted."""
-        await self._initialize_autophagy_owner_state(
-            owner_type=OwnerType.TRACE,
-            owner_id=str(getattr(trace, "trace_id", "")),
-            tenant_id=str(getattr(trace, "tenant_id", "")),
-            user_id=str(getattr(trace, "user_id", "")),
-            project_id=str(getattr(trace, "project_id", ""))
-            or get_effective_project_id(),
+        """Delegate to SessionLifecycleService._initialize_autophagy_owner_state."""
+        await self._session_lifecycle_service._initialize_autophagy_owner_state(
+            owner_type=owner_type,
+            owner_id=owner_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            project_id=project_id,
         )
 
+    async def _on_trace_saved(self, trace: "Trace") -> None:
+        """Delegate to SessionLifecycleService._on_trace_saved."""
+        await self._session_lifecycle_service._on_trace_saved(trace)
+
     async def _resolve_and_update_access_stats(self, uris: list) -> None:
-        """Resolve URIs once, then update access stats in parallel."""
-        if not uris:
-            return
-        try:
-            recs = await self._storage.filter(
-                self._get_collection(),
-                {"op": "must", "field": "uri", "conds": uris},
-                limit=len(uris),
-            )
-        except Exception:
-            return
-        if not recs:
-            return
-        await self._update_access_stats_batch(recs)
+        """Delegate to SessionLifecycleService._resolve_and_update_access_stats."""
+        await self._session_lifecycle_service._resolve_and_update_access_stats(uris)
 
     async def _update_access_stats_batch(self, records: list) -> None:
-        """Parallel batch update access_count + accessed_at."""
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-        async def _one(record: dict) -> None:
-            record_id = record.get("id", "")
-            if not record_id:
-                return
-            try:
-                await self._storage.update(
-                    self._get_collection(),
-                    record_id,
-                    {
-                        "active_count": record.get("active_count", 0) + 1,
-                        "accessed_at": now,
-                    },
-                )
-            except Exception as exc:
-                logger.debug(
-                    "[Orchestrator] Access stats update failed for %s: %s",
-                    record_id,
-                    exc,
-                )
-
-        await asyncio.gather(*[_one(record) for record in records], return_exceptions=True)
+        """Delegate to SessionLifecycleService._update_access_stats_batch."""
+        await self._session_lifecycle_service._update_access_stats_batch(records)
 
     async def session_search(
         self,
@@ -1600,37 +1346,11 @@ class MemoryOrchestrator:
         session_id: str,
         meta: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Begin a new session.
-
-        Starts Observer recording for the session.
-
-        Args:
-            session_id: Unique session identifier.
-            meta: Optional metadata.
-
-        Returns:
-            Dict with session info.
-        """
-        self._ensure_init()
-        tid, uid = get_effective_identity()
-        if self._observer:
-            self._observer.begin_session(
-                session_id=self._observer_session_id(
-                    session_id,
-                    tenant_id=tid,
-                    user_id=uid,
-                ),
-                tenant_id=tid,
-                user_id=uid,
-                meta=meta,
-            )
-        from opencortex.utils.time_utils import get_current_timestamp
-
-        return {
-            "session_id": session_id,
-            "started_at": get_current_timestamp(),
-            "status": "active",
-        }
+        """Delegate to SessionLifecycleService.session_begin."""
+        return await self._session_lifecycle_service.session_begin(
+            session_id=session_id,
+            meta=meta,
+        )
 
     async def session_message(
         self,
@@ -1639,41 +1359,13 @@ class MemoryOrchestrator:
         content: str,
         meta: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Add a message to an active session.
-
-        Records the message via Observer for later trace splitting.
-
-        Args:
-            session_id: Session identifier.
-            role: Message role.
-            content: Message content.
-            meta: Optional metadata.
-
-        Returns:
-            Dict with message count.
-        """
-        self._ensure_init()
-        tid, uid = get_effective_identity()
-        message_count = 0
-        if self._observer:
-            observer_session_id = self._observer_session_id(
-                session_id,
-                tenant_id=tid,
-                user_id=uid,
-            )
-            self._observer.record_message(
-                session_id=observer_session_id,
-                role=role,
-                content=content,
-                tenant_id=tid,
-                user_id=uid,
-                meta=meta,
-            )
-            message_count = len(self._observer.get_transcript(observer_session_id))
-        return {
-            "added": True,
-            "message_count": message_count,
-        }
+        """Delegate to SessionLifecycleService.session_message."""
+        return await self._session_lifecycle_service.session_message(
+            session_id=session_id,
+            role=role,
+            content=content,
+            meta=meta,
+        )
 
     async def benchmark_conversation_ingest(
         self,
@@ -1686,40 +1378,15 @@ class MemoryOrchestrator:
         ingest_shape: str = "merged_recompose",
         enforce_admin: bool = True,
     ) -> Dict[str, Any]:
-        """Public facade for benchmark-only offline conversation ingest.
-
-        Delegates to :meth:`ContextManager.benchmark_ingest_conversation`.
-
-        Defense-in-depth: by default this method requires the request
-        role contextvar to be ``admin`` (REVIEW api-contract-007). The
-        HTTP layer's ``_require_admin()`` already gates the only
-        production caller, but the facade is now public on the
-        orchestrator, so a future internal caller cannot accidentally
-        bypass the policy by skipping the HTTP route. Direct in-process
-        callers (benchmark CLI runs that pre-seed the role contextvar,
-        unit tests, or maintenance scripts) can pass
-        ``enforce_admin=False`` to opt out explicitly — the kwarg is
-        deliberately verbose so the bypass shows up in code review.
-        """
-        self._ensure_init()
-        if not self._context_manager:
-            raise RuntimeError("ContextManager not initialized")
-        if enforce_admin:
-            from opencortex.http.request_context import is_admin
-
-            if not is_admin():
-                raise PermissionError(
-                    "benchmark_conversation_ingest requires admin role "
-                    "(set request role contextvar to 'admin' or pass "
-                    "enforce_admin=False for trusted in-process callers)"
-                )
-        return await self._context_manager.benchmark_ingest_conversation(
+        """Delegate to SessionLifecycleService.benchmark_conversation_ingest."""
+        return await self._session_lifecycle_service.benchmark_conversation_ingest(
             session_id=session_id,
             tenant_id=tenant_id,
             user_id=user_id,
             segments=segments,
             include_session_summary=include_session_summary,
             ingest_shape=ingest_shape,
+            enforce_admin=enforce_admin,
         )
 
     async def session_end(
@@ -1727,68 +1394,11 @@ class MemoryOrchestrator:
         session_id: str,
         quality_score: float = 0.5,
     ) -> Dict[str, Any]:
-        """End a session and trigger trace splitting.
-
-        Flushes Observer transcript, splits into traces via TraceSplitter,
-        and persists traces via TraceStore. May trigger Archivist for
-        knowledge extraction.
-
-        Args:
-            session_id: Session to end.
-            quality_score: Session quality (0-1).
-
-        Returns:
-            Dict with trace results.
-        """
-        self._ensure_init()
-
-        alpha_traces_count = 0
-        if self._observer:
-            tid, uid = get_effective_identity()
-            transcript = self._observer.flush(
-                self._observer_session_id(
-                    session_id,
-                    tenant_id=tid,
-                    user_id=uid,
-                )
-            )
-            if transcript and self._trace_splitter and self._trace_store:
-                try:
-                    traces = await self._trace_splitter.split(
-                        messages=transcript,
-                        session_id=session_id,
-                        tenant_id=tid,
-                        user_id=uid,
-                    )
-                    for trace in traces:
-                        await self._trace_store.save(trace)
-                    alpha_traces_count = len(traces)
-                    logger.info(
-                        "[Alpha] Split session %s into %d traces",
-                        session_id,
-                        alpha_traces_count,
-                    )
-
-                    # Check Archivist trigger (background — non-blocking)
-                    if self._archivist and self._trace_store:
-                        count = await self._trace_store.count_new_traces(tid)
-                        if self._archivist.should_trigger(count):
-                            asyncio.create_task(self._knowledge_service.run_archivist(tid, uid))
-
-                except Exception as exc:
-                    logger.warning("[Alpha] Trace splitting failed: %s", exc)
-
-            # Skill evaluator trigger — runs independently of trace splitting
-            if self._skill_evaluator:
-                asyncio.create_task(
-                    self._skill_evaluator.evaluate_session(tid, uid, session_id)
-                )
-
-        return {
-            "session_id": session_id,
-            "quality_score": quality_score,
-            "alpha_traces": alpha_traces_count,
-        }
+        """Delegate to SessionLifecycleService.session_end."""
+        return await self._session_lifecycle_service.session_end(
+            session_id=session_id,
+            quality_score=quality_score,
+        )
 
     async def _run_archivist(self, tenant_id: str, user_id: str) -> Dict[str, int]:
         """Delegate: run archivist via KnowledgeService."""
