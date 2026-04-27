@@ -13,6 +13,9 @@ class TestKnowledgeStore(unittest.IsolatedAsyncioTestCase):
         self.storage.collection_exists = AsyncMock(return_value=True)
         self.embedder = MagicMock()
         self.embedder.embed = MagicMock(return_value=MagicMock(dense_vector=[0.1]*4))
+        self.embedder.embed_query = MagicMock(
+            return_value=MagicMock(dense_vector=[0.1] * 4)
+        )
         self.cortex_fs = AsyncMock()
         self.store = KnowledgeStore(
             storage=self.storage,
@@ -47,12 +50,15 @@ class TestKnowledgeStore(unittest.IsolatedAsyncioTestCase):
         self.storage.search.assert_called_once()
         # Check the filter includes type constraint (new DSL: conds/op:must)
         call_args = self.storage.search.call_args
-        filter_expr = call_args[0][2]
+        self.assertEqual(call_args.kwargs["collection"], "knowledge")
+        self.assertEqual(call_args.kwargs["query_vector"], [0.1] * 4)
+        filter_expr = call_args.kwargs["filter"]
         self.assertEqual(filter_expr["op"], "and")
         type_cond = [c for c in filter_expr["conds"]
                      if c.get("field") == "knowledge_type"]
         self.assertEqual(len(type_cond), 1)
         self.assertEqual(type_cond[0]["conds"], ["belief", "sop"])
+        self.assertEqual(call_args.kwargs["limit"], 10)
 
     async def test_approve_moves_to_active(self):
         """approve() transitions to active."""

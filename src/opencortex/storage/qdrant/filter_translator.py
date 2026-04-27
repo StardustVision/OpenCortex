@@ -34,6 +34,8 @@ def translate_filter(dsl: Dict[str, Any]) -> models.Filter:
     op = dsl.get("op", "")
 
     if op == "and":
+        if "conds" not in dsl:
+            raise ValueError("Filter operator 'and' requires 'conds'")
         children = [translate_filter(c) for c in dsl.get("conds", [])]
         # Flatten: collect all must conditions from children into a single list
         must_conditions: List[models.Condition] = []
@@ -50,6 +52,8 @@ def translate_filter(dsl: Dict[str, Any]) -> models.Filter:
         return models.Filter(must=must_conditions) if must_conditions else models.Filter()
 
     elif op == "or":
+        if "conds" not in dsl:
+            raise ValueError("Filter operator 'or' requires 'conds'")
         children = [translate_filter(c) for c in dsl.get("conds", [])]
         should_conditions: List[models.Condition] = []
         for child in children:
@@ -103,8 +107,7 @@ def translate_filter(dsl: Dict[str, Any]) -> models.Filter:
             models.IsEmptyCondition(is_empty=models.PayloadField(key=field)),
         ])
 
-    # Unknown op — return empty filter (match all)
-    return models.Filter()
+    raise ValueError(f"Unknown filter operator: {op!r}")
 
 
 def _must_condition(field: str, conds: List[Any]) -> models.FieldCondition:

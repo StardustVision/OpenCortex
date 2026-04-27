@@ -64,14 +64,13 @@ class TestKnowledgeStoreFilters(unittest.TestCase):
         self.assertTrue(f.must, "Top-level must should be non-empty")
         self.assertEqual(len(f.must), 2)
 
-    def test_old_dsl_format_produces_empty_filter(self):
-        """Demonstrate the OLD broken format produces an empty (match-all) filter."""
+    def test_old_dsl_format_raises(self):
+        """Old broken format must not degrade to an empty match-all filter."""
         old_format = {"op": "and", "conditions": [
             {"field": "tenant_id", "op": "=", "value": "team1"},
         ]}
-        f = translate_filter(old_format)
-        self.assertFalse(f.must, "Old format should produce empty filter (no must)")
-        self.assertFalse(f.should, "Old format should produce empty filter (no should)")
+        with self.assertRaises(ValueError):
+            translate_filter(old_format)
 
 
 if __name__ == "__main__":

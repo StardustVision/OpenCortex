@@ -110,7 +110,9 @@ class KnowledgeStore:
 
         filter_expr = {"op": "and", "conds": must_conds}
         return await self._storage.search(
-            self._collection, embed_result.dense_vector, filter_expr,
+            collection=self._collection,
+            query_vector=embed_result.dense_vector,
+            filter=filter_expr,
             limit=limit,
         )
 

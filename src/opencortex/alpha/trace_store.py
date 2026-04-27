@@ -122,7 +122,10 @@ class TraceStore:
             {"op": "must", "field": "tenant_id", "conds": [tenant_id]},
         ]}
         return await self._storage.search(
-            self._collection, embed_result.dense_vector, filter_expr, limit=limit
+            collection=self._collection,
+            query_vector=embed_result.dense_vector,
+            filter=filter_expr,
+            limit=limit,
         )
 
     async def count_new_traces(self, tenant_id: str) -> int:

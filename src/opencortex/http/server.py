@@ -516,7 +516,7 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.post("/api/v1/memory/wait_derives")
     async def memory_wait_derives() -> Dict[str, Any]:
-        """Wait until all in-flight deferred derives complete. Returns count of completed derives."""
+        """Wait until all in-flight deferred derives complete."""
         await _orchestrator.wait_deferred_derives()
         return {"status": "ok"}
 

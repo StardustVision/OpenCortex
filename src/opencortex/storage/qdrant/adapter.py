@@ -67,6 +67,7 @@ class QdrantStorageAdapter(StorageInterface):
     # Named vector spaces
     _DENSE_NAME = "dense"
     _SPARSE_NAME = "sparse"
+    _ORDERED_FILTER_FALLBACK_SCAN_LIMIT = 2048
 
     def __init__(self, path: str = "./.qdrant", embedding_dim: int = 1024, url: str = ""):
         self._path = path
@@ -644,26 +645,16 @@ class QdrantStorageAdapter(StorageInterface):
         qdrant_filter = translate_filter(filter) if filter else None
 
         if order_by:
-            batch_size = max(limit + offset, 128)
-            all_points = []
-            next_offset = None
-            while True:
-                page, next_offset = await client.scroll(
-                    collection_name=collection,
-                    scroll_filter=qdrant_filter,
-                    limit=batch_size,
-                    offset=next_offset,
-                    with_payload=True,
-                )
-                all_points.extend(page)
-                if next_offset is None:
-                    break
-            points = sorted(
-                all_points,
-                key=lambda point: (point.payload or {}).get(order_by, ""),
-                reverse=order_desc,
+            points = await self._ordered_filter_points(
+                client=client,
+                collection=collection,
+                qdrant_filter=qdrant_filter,
+                filter_dsl=filter,
+                order_by=order_by,
+                order_desc=order_desc,
+                limit=limit,
+                offset=offset,
             )
-            points = points[offset : offset + limit]
         else:
             points, _ = await client.scroll(
                 collection_name=collection,
@@ -674,6 +665,149 @@ class QdrantStorageAdapter(StorageInterface):
             points = points[offset:]
 
         return [self._from_point(p) for p in points]
+
+    async def _ordered_filter_points(
+        self,
+        *,
+        client: AsyncQdrantClient,
+        collection: str,
+        qdrant_filter: Optional[models.Filter],
+        filter_dsl: Optional[Dict[str, Any]],
+        order_by: str,
+        order_desc: bool,
+        limit: int,
+        offset: int,
+    ) -> List[Any]:
+        """Return ordered filter results without draining the whole collection."""
+        requested = max(limit + offset, 0)
+        if requested <= 0:
+            return []
+
+        direction = models.Direction.DESC if order_desc else models.Direction.ASC
+        try:
+            ordered_points, _ = await client.scroll(
+                collection_name=collection,
+                scroll_filter=qdrant_filter,
+                limit=requested,
+                order_by=models.OrderBy(key=order_by, direction=direction),
+                with_payload=True,
+            )
+        except Exception as exc:
+            logger.info(
+                "[QdrantAdapter] Native order_by failed for %s.%s: %s; "
+                "falling back to bounded scan",
+                collection,
+                order_by,
+                exc,
+            )
+            return await self._bounded_ordered_filter_points(
+                client=client,
+                collection=collection,
+                qdrant_filter=qdrant_filter,
+                order_by=order_by,
+                order_desc=order_desc,
+                limit=limit,
+                offset=offset,
+            )
+
+        # Qdrant order_by returns records that have the ordered field. Preserve
+        # previous adapter behavior for missing fields by treating them as "".
+        if order_desc:
+            if len(ordered_points) >= requested:
+                return ordered_points[offset:requested]
+            missing = await self._missing_order_field_points(
+                client=client,
+                collection=collection,
+                filter_dsl=filter_dsl,
+                order_by=order_by,
+                limit=requested - len(ordered_points),
+            )
+            return (ordered_points + missing)[offset:requested]
+
+        missing = await self._missing_order_field_points(
+            client=client,
+            collection=collection,
+            filter_dsl=filter_dsl,
+            order_by=order_by,
+            limit=requested,
+        )
+        if len(missing) >= requested:
+            return missing[offset:requested]
+        return (missing + ordered_points)[offset:requested]
+
+    async def _missing_order_field_points(
+        self,
+        *,
+        client: AsyncQdrantClient,
+        collection: str,
+        filter_dsl: Optional[Dict[str, Any]],
+        order_by: str,
+        limit: int,
+    ) -> List[Any]:
+        """Fetch records missing the order field, bounded by caller page needs."""
+        if limit <= 0:
+            return []
+        missing_filter_dsl = self._and_filter(
+            filter_dsl,
+            {"op": "is_null", "field": order_by},
+        )
+        points, _ = await client.scroll(
+            collection_name=collection,
+            scroll_filter=translate_filter(missing_filter_dsl),
+            limit=limit,
+            with_payload=True,
+        )
+        return points
+
+    async def _bounded_ordered_filter_points(
+        self,
+        *,
+        client: AsyncQdrantClient,
+        collection: str,
+        qdrant_filter: Optional[models.Filter],
+        order_by: str,
+        order_desc: bool,
+        limit: int,
+        offset: int,
+    ) -> List[Any]:
+        """Compatibility fallback for clients without native ordered scroll."""
+        requested = max(limit + offset, 0)
+        scan_limit = max(
+            requested,
+            min(
+                self._ORDERED_FILTER_FALLBACK_SCAN_LIMIT,
+                max(requested * 4, 128),
+            ),
+        )
+        points, _ = await client.scroll(
+            collection_name=collection,
+            scroll_filter=qdrant_filter,
+            limit=scan_limit,
+            with_payload=True,
+        )
+        points.sort(
+            key=lambda point: (point.payload or {}).get(order_by, ""),
+            reverse=order_desc,
+        )
+        if len(points) >= self._ORDERED_FILTER_FALLBACK_SCAN_LIMIT:
+            logger.info(
+                "[QdrantAdapter] Ordered filter fallback reached scan limit=%d "
+                "for %s.%s; results may be truncated",
+                self._ORDERED_FILTER_FALLBACK_SCAN_LIMIT,
+                collection,
+                order_by,
+            )
+        return points[offset:requested]
+
+    @staticmethod
+    def _and_filter(
+        left: Optional[Dict[str, Any]],
+        right: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Join two filter DSL clauses with AND, ignoring an empty left side."""
+        if not left:
+            return right
+        return {"op": "and", "conds": [left, right]}
 
     async def scroll(
         self,
