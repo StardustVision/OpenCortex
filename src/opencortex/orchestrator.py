@@ -156,6 +156,7 @@ class MemoryOrchestrator:
         self._background_task_manager_instance: Optional[Any] = None
         self._bootstrapper_instance: Optional[Any] = None
         self._derivation_service_instance: Optional[Any] = None
+        self._retrieval_service_instance: Optional[Any] = None
         # Plan 009 / RELY-01 — InsightsAgent (when enabled in
         # ``server.py`` lifespan) holds a second LLMCompletion wrapper
         # whose pool would otherwise leak on shutdown. The lifespan
@@ -939,6 +940,17 @@ class MemoryOrchestrator:
         return cached
 
     @property
+    def _retrieval_service(self) -> "RetrievalService":
+        """Lazy-built RetrievalService for search/retrieve-domain methods."""
+        from opencortex.services.retrieval_service import RetrievalService
+
+        cached = getattr(self, "_retrieval_service_instance", None)
+        if cached is None:
+            cached = RetrievalService(self)
+            self._retrieval_service_instance = cached
+        return cached
+
+    @property
     def _knowledge_service(self) -> "KnowledgeService":
         """Lazy-built KnowledgeService for delegated knowledge methods.
 
@@ -1092,40 +1104,23 @@ class MemoryOrchestrator:
         session_context: Optional[Dict[str, Any]] = None,
         metadata_filter: Optional[Dict[str, Any]] = None,
     ) -> SearchResult:
-        """Run the Phase 1 bootstrap probe."""
-        self._ensure_init()
-        if self._memory_probe is None:
-            raise RuntimeError("memory probe is not initialized")
-        scope_input = build_probe_scope_input(
-            context_type=context_type,
-            target_uri=target_uri,
-            target_doc_id=target_doc_id,
-            session_context=session_context,
-        )
-        scope_filter = build_scope_filter(
+        """Delegate to RetrievalService.probe_memory."""
+        return await self._retrieval_service.probe_memory(
+            query,
             context_type=context_type,
             target_uri=target_uri,
             target_doc_id=target_doc_id,
             session_context=session_context,
             metadata_filter=metadata_filter,
         )
-        return await self._memory_probe.probe(
-            query,
-            scope_filter=scope_filter,
-            scope_input=scope_input,
-        )
 
     def memory_probe_mode(self) -> str:
-        """Return the active probe backend."""
-        if self._memory_probe is None:
-            return "unavailable"
-        return self._memory_probe.mode
+        """Delegate to RetrievalService.memory_probe_mode."""
+        return self._retrieval_service.memory_probe_mode()
 
     def memory_probe_trace(self) -> Dict[str, Any]:
-        """Return machine-readable attribution for the last probe call."""
-        if self._memory_probe is None:
-            return {}
-        return self._memory_probe.probe_trace()
+        """Delegate to RetrievalService.memory_probe_trace."""
+        return self._retrieval_service.memory_probe_trace()
 
     def plan_memory(
         self,
@@ -1137,8 +1132,8 @@ class MemoryOrchestrator:
         detail_level_override: Optional[str],
         scope_input: Optional[Any] = None,
     ) -> Optional[RetrievalPlan]:
-        """Run the Phase 2 evidence-driven planner."""
-        return self._recall_planner.semantic_plan(
+        """Delegate to RetrievalService.plan_memory."""
+        return self._retrieval_service.plan_memory(
             query=query,
             probe_result=probe_result,
             max_items=max_items,
@@ -1156,16 +1151,12 @@ class MemoryOrchestrator:
         session_context: Optional[Dict[str, Any]],
         include_knowledge: bool,
     ) -> Dict[str, Any]:
-        """Run the Phase 3 runtime binder."""
-        tid, uid = get_effective_identity()
-        return self._memory_runtime.bind(
+        """Delegate to RetrievalService.bind_memory_runtime."""
+        return self._retrieval_service.bind_memory_runtime(
             probe_result=probe_result,
             retrieve_plan=retrieve_plan,
             max_items=max_items,
-            session_id=(session_context or {}).get("session_id", ""),
-            tenant_id=tid,
-            user_id=uid,
-            project_id=get_effective_project_id(),
+            session_context=session_context,
             include_knowledge=include_knowledge,
         )
 
@@ -1175,69 +1166,15 @@ class MemoryOrchestrator:
         category_filter: Optional[List[str]] = None,
         metadata_filter: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Build the shared search filter used by probe and retrieval."""
-        tid, uid = get_effective_identity()
-
-        staging_exclude = {
-            "op": "must_not",
-            "field": "context_type",
-            "conds": ["staging"],
-        }
-        scope_filter = {
-            "op": "or",
-            "conds": [
-                {"op": "must", "field": "scope", "conds": ["shared", ""]},
-                {
-                    "op": "and",
-                    "conds": [
-                        {"op": "must", "field": "scope", "conds": ["private"]},
-                        {"op": "must", "field": "source_user_id", "conds": [uid]},
-                    ],
-                },
-            ],
-        }
-
-        combined_conds = [staging_exclude, scope_filter]
-        if tid:
-            combined_conds.append(
-                {
-                    "op": "must",
-                    "field": "source_tenant_id",
-                    "conds": [tid, ""],
-                }
-            )
-
-        project_id = get_effective_project_id()
-        if project_id and project_id != "public":
-            combined_conds.append(
-                {
-                    "op": "or",
-                    "conds": [
-                        {
-                            "op": "must",
-                            "field": "project_id",
-                            "conds": [project_id, "public"],
-                        },
-                    ],
-                }
-            )
-
-        if category_filter:
-            combined_conds.append(
-                {"op": "must", "field": "category", "conds": list(category_filter)}
-            )
-
-        combined_conds.append(
-            {"op": "must_not", "field": "meta.superseded", "conds": [True]}
+        """Delegate to RetrievalService._build_search_filter."""
+        return self._retrieval_service._build_search_filter(
+            category_filter=category_filter,
+            metadata_filter=metadata_filter,
         )
 
-        if metadata_filter:
-            return {"op": "and", "conds": [metadata_filter] + combined_conds}
-        return {"op": "and", "conds": combined_conds}
-
     def _build_probe_filter(self) -> Dict[str, Any]:
-        """Return the bounded Phase 1 probe filter."""
-        return self._build_search_filter()
+        """Delegate to RetrievalService._build_probe_filter."""
+        return self._retrieval_service._build_probe_filter()
 
     def _cone_query_entities(
         self,
@@ -1246,20 +1183,12 @@ class MemoryOrchestrator:
         query_anchor_groups: Dict[str, set[str]],
         records: List[Dict[str, Any]],
     ) -> set[str]:
-        """Choose bounded query entities for cone expansion and scoring."""
-        entities = set(query_anchor_groups.get(QueryAnchorKind.ENTITY.value, set()))
-        if entities:
-            return set(sorted(entities, key=len, reverse=True)[:6])
-        if self._cone_scorer is None:
-            return set()
-        extracted = self._cone_scorer.extract_query_entities(
-            typed_query.query,
-            records,
-            self._get_collection(),
+        """Delegate to RetrievalService._cone_query_entities."""
+        return self._retrieval_service._cone_query_entities(
+            typed_query=typed_query,
+            query_anchor_groups=query_anchor_groups,
+            records=records,
         )
-        if not extracted:
-            return set()
-        return set(sorted(extracted, key=len, reverse=True)[:6])
 
     async def _apply_cone_rerank(
         self,
@@ -1269,69 +1198,17 @@ class MemoryOrchestrator:
         query_anchor_groups: Dict[str, set[str]],
         records: List[Dict[str, Any]],
     ) -> tuple[List[Dict[str, Any]], bool]:
-        """Apply lightweight cone expansion/scoring over the dense candidate pool."""
-        if (
-            self._cone_scorer is None
-            or self._entity_index is None
-            or retrieve_plan is None
-            or retrieve_plan.search_profile.association_budget <= 0.0
-            or not records
-        ):
-            return records, False
-
-        collection = self._get_collection()
-        if not self._entity_index.is_ready(collection):
-            await self._entity_index.build_for_collection(
-                self._storage, collection
-            )
-        if not self._entity_index.is_ready(collection):
-            return records, False
-
-        query_entities = self._cone_query_entities(
+        """Delegate to RetrievalService._apply_cone_rerank."""
+        return await self._retrieval_service._apply_cone_rerank(
             typed_query=typed_query,
+            retrieve_plan=retrieve_plan,
             query_anchor_groups=query_anchor_groups,
             records=records,
         )
-        if not query_entities:
-            return records, False
-
-        tid, uid = get_effective_identity()
-        project_id = get_effective_project_id()
-        cone_candidates = [dict(record) for record in records]
-        cone_candidates.sort(
-            key=lambda record: float(record.get("_score", record.get("score", 0.0)) or 0.0),
-            reverse=True,
-        )
-        cone_candidates = await self._cone_scorer.expand_candidates(
-            cone_candidates,
-            query_entities,
-            self._get_collection(),
-            self._storage,
-            tenant_id=tid,
-            user_id=uid,
-            project_id=project_id,
-        )
-        cone_candidates = self._cone_scorer.compute_cone_scores(
-            cone_candidates,
-            query_entities,
-            self._get_collection(),
-        )
-        return cone_candidates, True
 
     async def _embed_retrieval_query(self, query_text: str) -> Optional[List[float]]:
-        """Embed one retrieval query for dense search."""
-        if not self._embedder or not query_text:
-            return None
-        loop = asyncio.get_running_loop()
-        try:
-            result = await loop.run_in_executor(
-                None,
-                self._embedder.embed_query,
-                query_text,
-            )
-        except Exception:
-            return None
-        return getattr(result, "dense_vector", None)
+        """Delegate to RetrievalService._embed_retrieval_query."""
+        return await self._retrieval_service._embed_retrieval_query(query_text)
 
     def _score_object_record(
         self,
@@ -1344,75 +1221,16 @@ class MemoryOrchestrator:
         cone_weight: float,
         uri_path_costs: Optional[Dict[str, float]] = None,
     ) -> tuple[float, str]:
-        """Fuse URI path score (primary) with object-aware boosts."""
-        leaf_uri = str(record.get("uri", "") or "")
-        if uri_path_costs is not None and leaf_uri in uri_path_costs:
-            # URI path score replaces raw cosine _score as the base. Note this
-            # introduces a score offset vs the original vector similarity:
-            #   direct path:    score = cosine - URI_DIRECT_PENALTY (-0.15)
-            #   anchor path:    score = cosine - URI_HOP_COST       (-0.05)
-            #   fp path:        score = cosine - URI_HOP_COST       (-0.05)
-            #   fp high-conf:   score = cosine - URI_HOP_COST * 0.5 (-0.025)
-            # Callers passing a fixed score_threshold should account for this
-            # shift (e.g. a 0.80 cosine threshold becomes ~0.65 for direct hits).
-            # See uri_path_scorer.py module docstring for full semantics.
-            score = 1.0 - uri_path_costs[leaf_uri]
-        else:
-            score = float(record.get("_score", record.get("score", 0.0)) or 0.0)
-        reasons: List[str] = []
-        target_kinds = (
-            [kind.value for kind in retrieve_plan.target_memory_kinds]
-            if retrieve_plan is not None
-            else []
-        )
-        record_kind = str(record.get("memory_kind", ""))
-        if record_kind in target_kinds:
-            kind_rank = target_kinds.index(record_kind)
-            score += 0.14 * (len(target_kinds) - kind_rank) / max(len(target_kinds), 1)
-            reasons.append("kind")
-
-        anchor_bonus, anchor_reasons = anchor_rerank_bonus(
+        """Delegate to RetrievalService._score_object_record."""
+        return self._retrieval_service._score_object_record(
+            record=record,
+            typed_query=typed_query,
+            retrieve_plan=retrieve_plan,
             query_anchor_groups=query_anchor_groups,
-            record_anchor_groups=record_anchor_groups(record),
+            probe_candidate_ranks=probe_candidate_ranks,
+            cone_weight=cone_weight,
+            uri_path_costs=uri_path_costs,
         )
-        if anchor_bonus > 0:
-            score += anchor_bonus
-            reasons.extend(anchor_reasons)
-
-        probe_rank = probe_candidate_ranks.get(str(record.get("uri", "") or ""))
-        if probe_rank is not None:
-            score += max(0.04, 0.14 - min(probe_rank, 5) * 0.02)
-            reasons.append("probe")
-
-        if typed_query.target_directories and any(
-            str(record.get("uri", "")).startswith(prefix)
-            for prefix in typed_query.target_directories
-        ):
-            score += 0.06
-            reasons.append("scope")
-
-        if typed_query.target_doc_id and (
-            str(record.get("source_doc_id", "")) == typed_query.target_doc_id
-        ):
-            score += 0.08
-            reasons.append("doc")
-
-        reward = float(record.get("reward_score", 0.0) or 0.0)
-        if reward:
-            score += max(min(0.06, reward * 0.03), -0.03)
-            reasons.append("reward")
-
-        active_count = int(record.get("active_count", 0) or 0)
-        if active_count > 0:
-            score += min(0.05, math.log1p(active_count) * 0.01)
-            reasons.append("hot")
-
-        cone_bonus = float(record.get("_cone_bonus", 0.0) or 0.0)
-        if cone_weight > 0.0 and cone_bonus > 0.0:
-            score += min(0.30, cone_weight * min(1.0, cone_bonus))
-            reasons.append("cone")
-
-        return score, ",".join(reasons) or "semantic"
 
     @staticmethod
     def _record_passes_acl(
@@ -1421,16 +1239,12 @@ class MemoryOrchestrator:
         user_id: str,
         project_id: str,
     ) -> bool:
-        """Return True if record passes tenant/scope/project access control."""
-        r_tenant = str(record.get("source_tenant_id", "") or "")
-        if tenant_id and r_tenant and r_tenant != tenant_id:
-            return False
-        if record.get("scope") == "private" and record.get("source_user_id") != user_id:
-            return False
-        r_project = str(record.get("project_id", "") or "")
-        if project_id and project_id != "public" and r_project not in (project_id, "public", ""):
-            return False
-        return True
+        """Delegate to RetrievalService._record_passes_acl."""
+        from opencortex.services.retrieval_service import RetrievalService
+
+        return RetrievalService._record_passes_acl(
+            record, tenant_id, user_id, project_id
+        )
 
     @staticmethod
     def _matched_record_anchors(
@@ -1438,17 +1252,13 @@ class MemoryOrchestrator:
         record: Dict[str, Any],
         query_anchor_groups: Dict[str, set[str]],
     ) -> List[str]:
-        """Return normalized query anchors that concretely matched this record."""
-        if not query_anchor_groups:
-            return []
-        matched: List[str] = []
-        record_groups = record_anchor_groups(record)
-        for kind, query_values in query_anchor_groups.items():
-            record_values = record_groups.get(kind, set())
-            for value in sorted(query_values.intersection(record_values)):
-                if value not in matched:
-                    matched.append(value)
-        return matched[:8]
+        """Delegate to RetrievalService._matched_record_anchors."""
+        from opencortex.services.retrieval_service import RetrievalService
+
+        return RetrievalService._matched_record_anchors(
+            record=record,
+            query_anchor_groups=query_anchor_groups,
+        )
 
     async def _records_to_matched_contexts(
         self,
@@ -1457,88 +1267,12 @@ class MemoryOrchestrator:
         context_type: ContextType,
         detail_level: DetailLevel,
     ) -> List[MatchedContext]:
-        """Convert raw store records into MatchedContext objects."""
-
-        async def _build_one(record: Dict[str, Any]) -> MatchedContext:
-            """Convert a single raw store record into a ``MatchedContext``.
-
-            Reads L2 content from CortexFS when *detail_level* requires it.
-
-            Args:
-                record: Raw payload dict from the storage backend.
-
-            Returns:
-                A fully populated ``MatchedContext``.
-            """
-            uri = str(record.get("uri", ""))
-            overview = None
-            if detail_level in (DetailLevel.L1, DetailLevel.L2):
-                overview = str(record.get("overview", "") or "") or None
-
-            content = None
-            if detail_level == DetailLevel.L2:
-                content = str(record.get("content", "") or "") or None
-                if content is None and self._fs:
-                    try:
-                        content = await self._fs.read_file(f"{uri}/content.md")
-                    except Exception:
-                        content = None
-
-            effective_type = context_type
-            if context_type == ContextType.ANY:
-                try:
-                    effective_type = ContextType(str(record.get("context_type", "memory")))
-                except ValueError:
-                    effective_type = ContextType.MEMORY
-
-            return MatchedContext(
-                uri=uri,
-                context_type=effective_type,
-                is_leaf=bool(record.get("is_leaf", False)),
-                abstract=str(record.get("abstract", "") or ""),
-                overview=overview,
-                content=content,
-                keywords=str(record.get("keywords", "") or ""),
-                category=str(record.get("category", "") or ""),
-                score=float(record.get("_final_score", record.get("_score", 0.0)) or 0.0),
-                match_reason=str(record.get("_match_reason", "") or ""),
-                session_id=str(record.get("session_id", "") or ""),
-                source_doc_id=record.get("source_doc_id"),
-                source_doc_title=record.get("source_doc_title"),
-                source_section_path=record.get("source_section_path"),
-                source_uri=(
-                    dict(record.get("meta") or {}).get("source_uri")
-                    if isinstance(record.get("meta"), dict)
-                    else None
-                ),
-                msg_range=(
-                    dict(record.get("meta") or {}).get("msg_range")
-                    if isinstance(record.get("meta"), dict)
-                    else None
-                ),
-                recomposition_stage=(
-                    dict(record.get("meta") or {}).get("recomposition_stage")
-                    if isinstance(record.get("meta"), dict)
-                    else None
-                ),
-                layer=(
-                    dict(record.get("meta") or {}).get("layer")
-                    if isinstance(record.get("meta"), dict)
-                    else None
-                ),
-                matched_anchors=list(record.get("_matched_anchors", []) or []),
-                cone_used=bool(record.get("_cone_used", False)),
-                path_source=record.get("_path_source") or None,
-                path_cost=(
-                    float(record["_path_cost"])
-                    if record.get("_path_cost") is not None
-                    else None
-                ),
-                path_breakdown=record.get("_path_breakdown") or None,
-                relations=[],
-            )
-
-        return list(await asyncio.gather(*[_build_one(record) for record in candidates]))
+        """Delegate to RetrievalService._records_to_matched_contexts."""
+        return await self._retrieval_service._records_to_matched_contexts(
+            candidates=candidates,
+            context_type=context_type,
+            detail_level=detail_level,
+        )
 
     async def _execute_object_query(
         self,
@@ -1551,347 +1285,16 @@ class MemoryOrchestrator:
         probe_result: Optional[SearchResult],
         bound_plan: Optional[Dict[str, Any]] = None,
     ) -> QueryResult:
-        """Execute one object-aware retrieval query with three-layer parallel search."""
-        started = time.perf_counter()
-        embed_started = started
-        query_vector = await self._embed_retrieval_query(typed_query.query)
-        embed_finished = time.perf_counter()
-
-        kind_filter = None
-        if retrieve_plan is not None and retrieve_plan.target_memory_kinds:
-            kind_filter = {
-                "op": "must",
-                "field": "memory_kind",
-                "conds": [kind.value for kind in retrieve_plan.target_memory_kinds],
-            }
-
-        start_point_filter = build_start_point_filter(
+        """Delegate to RetrievalService._execute_object_query."""
+        return await self._retrieval_service._execute_object_query(
+            typed_query=typed_query,
+            limit=limit,
+            score_threshold=score_threshold,
+            search_filter=search_filter,
             retrieve_plan=retrieve_plan,
             probe_result=probe_result,
             bound_plan=bound_plan,
         )
-
-        # Scope-aware filter (R3/R6).
-        # ADV-002 fix: scope_only_filter (parent_uri / session_id / source_doc_id)
-        # must apply to all three surface searches AND the missing_uris batch load,
-        # because anchor_projection and fact_point records inherit these fields
-        # from their source leaf (see _anchor_projection_records / _fact_point_records).
-        # Without this, out-of-scope fact_points or anchors would project leaves back
-        # into results, violating CONTAINER_SCOPED / SESSION_ONLY / DOCUMENT_ONLY.
-        # is_leaf=True stays only on the leaf search (anchor/fp records are non-leaf).
-        scope_only_filter: Optional[Dict[str, Any]] = None
-        if retrieve_plan is not None:
-            if retrieve_plan.scope_filter:
-                scope_only_filter = retrieve_plan.scope_filter
-            elif retrieve_plan.scope_level != ScopeLevel.GLOBAL:
-                if probe_result and probe_result.starting_points:
-                    if retrieve_plan.scope_level == ScopeLevel.CONTAINER_SCOPED:
-                        parent_uris = [
-                            sp.uri for sp in probe_result.starting_points if sp.uri
-                        ]
-                        if parent_uris:
-                            scope_only_filter = {
-                                "op": "must",
-                                "field": "parent_uri",
-                                "conds": parent_uris,
-                            }
-                    elif retrieve_plan.scope_level == ScopeLevel.SESSION_ONLY:
-                        session_ids = sorted({
-                            sp.session_id
-                            for sp in probe_result.starting_points
-                            if sp.session_id
-                        })
-                        if session_ids:
-                            scope_only_filter = {
-                                "op": "must",
-                                "field": "session_id",
-                                "conds": session_ids,
-                            }
-                    elif retrieve_plan.scope_level == ScopeLevel.DOCUMENT_ONLY:
-                        doc_ids = sorted({
-                            sp.source_doc_id
-                            for sp in probe_result.starting_points
-                            if sp.source_doc_id
-                        })
-                        if doc_ids:
-                            scope_only_filter = {
-                                "op": "must",
-                                "field": "source_doc_id",
-                                "conds": doc_ids,
-                            }
-
-        is_leaf_filter = {"op": "must", "field": "is_leaf", "conds": [True]}
-
-        # Leaf filter: scope + kind + is_leaf + start_point
-        leaf_filter_merged = merge_filter_clauses(
-            search_filter,
-            kind_filter,
-            scope_only_filter,
-            is_leaf_filter,
-            start_point_filter,
-        )
-        # Anchor filter: scope + start_point + retrieval_surface=anchor_projection
-        anchor_filter_merged = merge_filter_clauses(
-            search_filter,
-            start_point_filter,
-            scope_only_filter,
-            {"op": "must", "field": "retrieval_surface", "conds": ["anchor_projection"]},
-        )
-        # Fact-point filter: scope + start_point + retrieval_surface=fact_point
-        fp_filter_merged = merge_filter_clauses(
-            search_filter,
-            start_point_filter,
-            scope_only_filter,
-            {"op": "must", "field": "retrieval_surface", "conds": ["fact_point"]},
-        )
-
-        query_anchor_groups = build_query_anchor_groups(retrieve_plan, probe_result)
-        rerank_enabled = bool(query_anchor_groups) or bool(
-            retrieve_plan is not None and retrieve_plan.search_profile.rerank
-        )
-        candidate_limit = int((bound_plan or {}).get("raw_candidate_cap") or 0)
-        if candidate_limit <= 0:
-            recall_budget = (
-                retrieve_plan.search_profile.recall_budget
-                if retrieve_plan is not None
-                else 0.4
-            )
-            candidate_limit = max(limit, min(64, limit + max(4, int(round(recall_budget * 20)))))
-            if rerank_enabled:
-                candidate_limit = min(64, candidate_limit + 8)
-
-        # Three-layer parallel search (R14, R20)
-        leaf_limit = candidate_limit
-        anchor_limit = min(64, candidate_limit * 2)
-        fp_limit = min(96, candidate_limit * 3)
-
-        _search_results = await asyncio.gather(
-            self._storage.search(
-                self._get_collection(),
-                query_vector=query_vector,
-                filter=leaf_filter_merged,
-                limit=leaf_limit,
-                text_query=typed_query.query,
-            ),
-            self._storage.search(
-                self._get_collection(),
-                query_vector=query_vector,
-                filter=anchor_filter_merged,
-                limit=anchor_limit,
-                text_query=None,  # derived records: no lexical search
-            ),
-            self._storage.search(
-                self._get_collection(),
-                query_vector=query_vector,
-                filter=fp_filter_merged,
-                limit=fp_limit,
-                text_query=None,  # derived records: no lexical search
-            ),
-            return_exceptions=True,
-        )
-        leaf_hits: List[Dict[str, Any]] = (
-            _search_results[0] if not isinstance(_search_results[0], Exception) else []
-        )
-        anchor_hits: List[Dict[str, Any]] = (
-            _search_results[1] if not isinstance(_search_results[1], Exception) else []
-        )
-        fp_hits: List[Dict[str, Any]] = (
-            _search_results[2] if not isinstance(_search_results[2], Exception) else []
-        )
-        if isinstance(_search_results[0], Exception):
-            logger.debug("[Orchestrator] leaf search failed: %s", _search_results[0])
-        if isinstance(_search_results[1], Exception):
-            logger.debug("[Orchestrator] anchor search failed: %s", _search_results[1])
-        if isinstance(_search_results[2], Exception):
-            logger.debug("[Orchestrator] fp search failed: %s", _search_results[2])
-
-        search_finished = time.perf_counter()
-
-        # URI projection: collect leaves referenced by anchor/fp hits (R21)
-        def _get_target_uri(hit: Dict[str, Any]) -> str:
-            """Extract the projection target URI from an anchor or fact-point hit."""
-            return str(
-                hit.get("projection_target_uri")
-                or (hit.get("meta") or {}).get("projection_target_uri", "")
-                or ""
-            )
-
-        known_leaf_uris = {str(r.get("uri", "")) for r in leaf_hits if r.get("uri")}
-        projected_uris = {
-            _get_target_uri(h)
-            for h in anchor_hits + fp_hits
-            if _get_target_uri(h)
-        }
-        missing_uris = [u for u in projected_uris if u and u not in known_leaf_uris]
-
-        # Batch load missing projected leaves (R22)
-        # ADV-002 fix: apply scope_only_filter + is_leaf to the batch load so an
-        # out-of-scope fact_point / anchor cannot pull its leaf back in via URI projection.
-        if missing_uris:
-            try:
-                tid, uid = get_effective_identity()
-                project_id = get_effective_project_id()
-                missing_filter = merge_filter_clauses(
-                    search_filter,
-                    scope_only_filter,
-                    is_leaf_filter,
-                    {"op": "must", "field": "uri", "conds": missing_uris},
-                )
-                loaded = await self._storage.search(
-                    self._get_collection(),
-                    query_vector=None,
-                    filter=missing_filter,
-                    limit=len(missing_uris) + 5,
-                )
-                for r in loaded:
-                    if self._record_passes_acl(r, tid, uid, project_id):
-                        leaf_hits.append(r)
-                        known_leaf_uris.add(str(r.get("uri", "") or ""))
-            except Exception as exc:
-                logger.debug("[Orchestrator] batch URI load failed: %s", exc)
-
-        # URI path scoring (R12, R15-R19)
-        uri_path_costs = compute_uri_path_scores(leaf_hits, anchor_hits, fp_hits)
-
-        # Determine path_source per leaf (for trace)
-        from opencortex.retrieve.uri_path_scorer import (
-            HIGH_CONFIDENCE_DISCOUNT as _HIGH_CONF_DISCOUNT,
-        )
-        from opencortex.retrieve.uri_path_scorer import (
-            HIGH_CONFIDENCE_THRESHOLD as _HIGH_CONF_THRESHOLD,
-        )
-        from opencortex.retrieve.uri_path_scorer import (
-            URI_HOP_COST as _URI_HOP_COST,
-        )
-
-        def _determine_path_source(leaf_uri: str) -> tuple[str, Optional[float]]:
-            """Return (path_source, path_cost) for a leaf URI."""
-            if leaf_uri not in uri_path_costs:
-                return "direct", None
-            cost = uri_path_costs[leaf_uri]
-            # Check if best path comes from fp
-            best_fp_cost = None
-            for h in fp_hits:
-                t = _get_target_uri(h)
-                if t != leaf_uri:
-                    continue
-                s = max(0.0, min(1.0, float(h.get("_score", 0.0))))
-                d = 1.0 - s
-                hop = (
-                    _URI_HOP_COST * _HIGH_CONF_DISCOUNT
-                    if d < _HIGH_CONF_THRESHOLD
-                    else _URI_HOP_COST
-                )
-                fp_c = d + hop
-                if best_fp_cost is None or fp_c < best_fp_cost:
-                    best_fp_cost = fp_c
-            if best_fp_cost is not None and abs(best_fp_cost - cost) < 1e-9:
-                return "fact_point", cost
-            # Check anchor
-            best_anchor_cost = None
-            for h in anchor_hits:
-                t = _get_target_uri(h)
-                if t != leaf_uri:
-                    continue
-                s = max(0.0, min(1.0, float(h.get("_score", 0.0))))
-                anchor_c = (1.0 - s) + _URI_HOP_COST
-                if best_anchor_cost is None or anchor_c < best_anchor_cost:
-                    best_anchor_cost = anchor_c
-            if best_anchor_cost is not None and abs(best_anchor_cost - cost) < 1e-9:
-                return "anchor", cost
-            return "direct", cost
-
-        rerank_started = search_finished
-        frontier_waves = 0
-        probe_candidate_ranks = build_probe_candidate_ranks(probe_result)
-
-        # Cone expansion operates on leaf_hits (independent of URI scoring, R391)
-        records, cone_used = await self._apply_cone_rerank(
-            typed_query=typed_query,
-            retrieve_plan=retrieve_plan,
-            query_anchor_groups=query_anchor_groups,
-            records=leaf_hits,
-        )
-        if cone_used:
-            frontier_waves = 1
-
-        cone_weight = 0.0
-        if retrieve_plan is not None and cone_used:
-            association_budget = retrieve_plan.search_profile.association_budget
-            cone_weight = min(
-                0.24,
-                self._config.cone_weight * (0.6 + 0.8 * association_budget),
-            )
-
-        rescored: List[Dict[str, Any]] = []
-        for record in records:
-            leaf_uri = str(record.get("uri", "") or "")
-            final_score, match_reason = self._score_object_record(
-                record=record,
-                typed_query=typed_query,
-                retrieve_plan=retrieve_plan,
-                query_anchor_groups=query_anchor_groups,
-                probe_candidate_ranks=probe_candidate_ranks,
-                cone_weight=cone_weight,
-                uri_path_costs=uri_path_costs,
-            )
-            if score_threshold is not None and final_score < score_threshold:
-                continue
-            path_src, path_cst = _determine_path_source(leaf_uri)
-            rescored_record = dict(record)
-            rescored_record["_final_score"] = final_score
-            rescored_record["_match_reason"] = match_reason
-            rescored_record["_matched_anchors"] = self._matched_record_anchors(
-                record=record,
-                query_anchor_groups=query_anchor_groups,
-            )
-            rescored_record["_cone_used"] = bool(cone_used)
-            rescored_record["_path_source"] = path_src
-            rescored_record["_path_cost"] = path_cst
-            rescored_record["_path_breakdown"] = (
-                {"uri_path_cost": path_cst, "path_source": path_src}
-                if path_cst is not None else None
-            )
-            rescored.append(rescored_record)
-        rescored.sort(key=lambda record: record.get("_final_score", 0.0), reverse=True)
-        rerank_finished = time.perf_counter()
-
-        matched_contexts = await self._records_to_matched_contexts(
-            candidates=rescored[:limit],
-            context_type=typed_query.context_type,
-            detail_level=typed_query.detail_level,
-        )
-        assembled = time.perf_counter()
-
-        result = QueryResult(
-            query=typed_query,
-            matched_contexts=matched_contexts,
-            searched_directories=list(typed_query.target_directories or []),
-            timing_ms={
-                "embed": round((embed_finished - embed_started) * 1000, 4),
-                "search": round((search_finished - embed_finished) * 1000, 4),
-                "rerank": round((rerank_finished - rerank_started) * 1000, 4),
-                "assemble": round((assembled - rerank_finished) * 1000, 4),
-                "total": round((assembled - started) * 1000, 4),
-            },
-        )
-        result.explain = SearchExplain(
-            query_class=typed_query.intent or "",
-            path="object_recall",
-            intent_ms=0.0,
-            embed_ms=(embed_finished - embed_started) * 1000,
-            search_ms=(search_finished - embed_finished) * 1000,
-            rerank_ms=(rerank_finished - rerank_started) * 1000,
-            assemble_ms=(assembled - rerank_finished) * 1000,
-            doc_scope_hit=bool(typed_query.target_doc_id),
-            time_filter_hit=False,
-            candidates_before_rerank=len(records),
-            candidates_after_rerank=len(matched_contexts),
-            frontier_waves=frontier_waves,
-            frontier_budget_exceeded=False,
-            total_ms=(assembled - started) * 1000,
-        )
-        return result
 
     async def search(
         self,
@@ -1978,14 +1381,7 @@ class MemoryOrchestrator:
         return self._background_task_manager._recall_bookkeeping_tasks_set()
 
     async def _get_record_by_uri(self, uri: str) -> Optional[Dict[str, Any]]:
-        """Look up a single record by its URI.
-
-        Args:
-            uri: The record URI to search for.
-
-        Returns:
-            The matching record dict, or ``None`` if not found or on error.
-        """
+        """Look up a single record by its URI."""
         if not uri or not self._storage:
             return None
         try:
@@ -2008,17 +1404,7 @@ class MemoryOrchestrator:
         user_id: str,
         project_id: str,
     ) -> None:
-        """Bootstrap autophagy state for a new owner (trace, session, etc.).
-
-        Silently no-ops when autophagy is disabled or *owner_id* is empty.
-
-        Args:
-            owner_type: Category of the owner entity.
-            owner_id: Unique identifier of the owner.
-            tenant_id: Tenant scope.
-            user_id: User scope.
-            project_id: Project scope.
-        """
+        """Bootstrap autophagy state for a new owner when autophagy is enabled."""
         if not self._autophagy_kernel or not owner_id:
             return
         try:
@@ -2031,7 +1417,8 @@ class MemoryOrchestrator:
             )
         except Exception as exc:
             logger.warning(
-                "[Orchestrator] Autophagy owner init failed type=%s owner=%s tenant=%s user=%s: %s",
+                "[Orchestrator] Autophagy owner init failed type=%s owner=%s "
+                "tenant=%s user=%s: %s",
                 owner_type.value,
                 owner_id,
                 tenant_id,
@@ -2040,21 +1427,18 @@ class MemoryOrchestrator:
             )
 
     async def _on_trace_saved(self, trace: "Trace") -> None:
-        """Callback invoked after a trace is persisted; bootstraps autophagy state.
-
-        Args:
-            trace: The persisted ``Trace`` object.
-        """
+        """Callback invoked after a trace is persisted."""
         await self._initialize_autophagy_owner_state(
             owner_type=OwnerType.TRACE,
             owner_id=str(getattr(trace, "trace_id", "")),
             tenant_id=str(getattr(trace, "tenant_id", "")),
             user_id=str(getattr(trace, "user_id", "")),
-            project_id=str(getattr(trace, "project_id", "")) or get_effective_project_id(),
+            project_id=str(getattr(trace, "project_id", ""))
+            or get_effective_project_id(),
         )
 
     async def _resolve_and_update_access_stats(self, uris: list) -> None:
-        """1 filter + N parallel updates. Old: N filter + N get + N update (serial)."""
+        """Resolve URIs once, then update access stats in parallel."""
         if not uris:
             return
         try:
@@ -2070,26 +1454,30 @@ class MemoryOrchestrator:
         await self._update_access_stats_batch(recs)
 
     async def _update_access_stats_batch(self, records: list) -> None:
-        """Parallel batch update access_count + accessed_at (no individual get)."""
+        """Parallel batch update access_count + accessed_at."""
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        async def _one(r: dict) -> None:
-            """Increment access counters for a single record."""
-            rid = r.get("id", "")
-            if not rid:
+        async def _one(record: dict) -> None:
+            record_id = record.get("id", "")
+            if not record_id:
                 return
             try:
                 await self._storage.update(
                     self._get_collection(),
-                    rid,
-                    {"active_count": r.get("active_count", 0) + 1, "accessed_at": now},
+                    record_id,
+                    {
+                        "active_count": record.get("active_count", 0) + 1,
+                        "accessed_at": now,
+                    },
                 )
             except Exception as exc:
                 logger.debug(
-                    "[Orchestrator] Access stats update failed for %s: %s", rid, exc
+                    "[Orchestrator] Access stats update failed for %s: %s",
+                    record_id,
+                    exc,
                 )
 
-        await asyncio.gather(*[_one(r) for r in records], return_exceptions=True)
+        await asyncio.gather(*[_one(record) for record in records], return_exceptions=True)
 
     async def session_search(
         self,
@@ -2103,81 +1491,18 @@ class MemoryOrchestrator:
         metadata_filter: Optional[Dict[str, Any]] = None,
         llm_completion: Optional[LLMCompletionCallable] = None,
     ) -> FindResult:
-        """Session-aware search using IntentAnalyzer for query planning.
-
-        Uses conversation history to generate multiple targeted queries,
-        then executes them concurrently via hierarchical retrieval.
-
-        Args:
-            query: Current user message.
-            messages: Recent conversation messages for context.
-            session_summary: Compressed session summary.
-            context_type: Restrict to a specific type.
-            target_uri: Restrict to a directory subtree.
-            limit: Maximum results per type.
-            score_threshold: Minimum relevance score.
-            metadata_filter: Additional filter conditions.
-            llm_completion: Override LLM callable for this call.
-
-        Returns:
-            FindResult with query_plan attached.
-
-        Raises:
-            ValueError: If no LLM callable is configured.
-        """
-        self._ensure_init()
-
-        completion_fn = llm_completion or self._llm_completion
-        if not completion_fn:
-            raise ValueError(
-                "session_search requires an LLM callable. "
-                "Provide one via constructor or llm_completion parameter."
-            )
-
-        analyzer = self._analyzer or IntentAnalyzer(llm_completion=completion_fn)
-
-        # Read target abstract if applicable
-        target_abstract = ""
-        if target_uri:
-            try:
-                target_abstract = await self._fs.abstract(target_uri)
-            except Exception:
-                pass
-
-        query_plan = await analyzer.analyze(
-            compression_summary=session_summary,
-            messages=messages or [],
-            current_message=query,
+        """Delegate to RetrievalService.session_search."""
+        return await self._retrieval_service.session_search(
+            query=query,
+            messages=messages,
+            session_summary=session_summary,
             context_type=context_type,
-            target_abstract=target_abstract,
-            llm_completion=completion_fn,
+            target_uri=target_uri,
+            limit=limit,
+            score_threshold=score_threshold,
+            metadata_filter=metadata_filter,
+            llm_completion=llm_completion,
         )
-
-        # Set target directories on queries if specified
-        if target_uri:
-            for tq in query_plan.queries:
-                tq.target_directories = [target_uri]
-
-        search_filter = self._build_search_filter(metadata_filter=metadata_filter)
-
-        query_results = await asyncio.gather(
-            *[
-                self._execute_object_query(
-                    typed_query=tq,
-                    limit=limit,
-                    score_threshold=score_threshold,
-                    search_filter=search_filter,
-                    retrieve_plan=None,
-                    probe_result=None,
-                )
-                for tq in query_plan.queries
-            ]
-        )
-
-        result = self._aggregate_results(query_results, limit=limit)
-        result.query_plan = query_plan
-        result.query_results = list(query_results)
-        return result
 
     # =========================================================================
     # Memory Listing
@@ -2850,43 +2175,10 @@ class MemoryOrchestrator:
         *,
         limit: Optional[int] = None,
     ) -> FindResult:
-        """Aggregate multiple QueryResults into a single FindResult (deduped by URI)."""
-        ranked_contexts = []
-        seen_uris: set = set()
-
-        for result in query_results:
-            for ctx in result.matched_contexts:
-                if ctx.uri in seen_uris:
-                    continue
-                seen_uris.add(ctx.uri)
-                ranked_contexts.append(ctx)
-
-        ranked_contexts.sort(
-            key=lambda ctx: float(getattr(ctx, "score", 0.0) or 0.0),
-            reverse=True,
-        )
-        if limit is not None:
-            ranked_contexts = ranked_contexts[: max(limit, 0)]
-
-        memories, resources, skills = [], [], []
-        for ctx in ranked_contexts:
-            if ctx.context_type in (
-                ContextType.MEMORY,
-                ContextType.CASE,
-                ContextType.PATTERN,
-            ):
-                memories.append(ctx)
-            elif ctx.context_type == ContextType.RESOURCE:
-                resources.append(ctx)
-            elif ctx.context_type == ContextType.SKILL:
-                skills.append(ctx)
-            else:
-                memories.append(ctx)
-
-        return FindResult(
-            memories=memories,
-            resources=resources,
-            skills=skills,
+        """Delegate to RetrievalService._aggregate_results."""
+        return self._retrieval_service._aggregate_results(
+            query_results,
+            limit=limit,
         )
 
     async def get_user_memory_stats(
