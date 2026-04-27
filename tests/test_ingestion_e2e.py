@@ -120,6 +120,8 @@ class TestIngestionE2E(unittest.TestCase):
                     self.assertIsNotNone(result)
                     self.assertIsNotNone(result.uri)
 
+                    await orch._drain_derive_queue()
+
                     # Should be searchable
                     results = await orch.search("introduction methods results", limit=10)
                     self.assertGreater(results.total, 0)
