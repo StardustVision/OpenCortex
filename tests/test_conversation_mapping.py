@@ -5,9 +5,9 @@ R4-P2-8 / R4-P2-9). Each public helper has direct unit coverage so
 future refactors of `LongMemEvalBench` / `LoCoMoBench` cannot silently
 break the helpers without these tests failing first.
 
-The integration test at the bottom (`TestStoreMcpEquivalence`) closes
-TG-3 from the closure tracker — locks that the store-path and
-mcp-path produce identical session→URI mappings for the same fixture.
+The integration test at the bottom (`TestStoreContextLifecycleEquivalence`)
+closes TG-3 from the closure tracker — locks that the store-path and context
+lifecycle path produce identical session→URI mappings for the same fixture.
 """
 
 from __future__ import annotations
@@ -471,7 +471,7 @@ class TestMapSessionUris(unittest.TestCase):
 
 
 class _DualPathOCStub:
-    """OC stub that supports both store-path and mcp-path call chains.
+    """OC stub that supports both store and context lifecycle call chains.
 
     Returns the same record set via either path so the equivalence test
     can assert both produce identical session→URI mappings.
@@ -494,7 +494,7 @@ class _DualPathOCStub:
 
     async def memory_list(self, **kwargs: Any) -> Dict[str, Any]:
         self.memory_list_calls.append(dict(kwargs))
-        # mcp path: a memory_list snapshot returns the same records.
+        # Context lifecycle path: memory_list snapshot returns the same records.
         # First page is full result; second page empty so the loop exits.
         offset = kwargs.get("offset", 0)
         limit = kwargs.get("limit", 500)
@@ -503,9 +503,8 @@ class _DualPathOCStub:
         return {"results": []}
 
 
-class TestStoreMcpEquivalence(unittest.IsolatedAsyncioTestCase):
-    """REVIEW closure tracker TG-3 — store-path and mcp-path must produce
-    identical session→URI mappings for the same fixture.
+class TestStoreContextLifecycleEquivalence(unittest.IsolatedAsyncioTestCase):
+    """Store and context lifecycle paths must produce identical URI mappings.
 
     Locks the equivalence the §25 Phase 7 refactor preserves. If a future
     change silently mutates either path's record-extraction shape,
@@ -556,10 +555,10 @@ class TestStoreMcpEquivalence(unittest.IsolatedAsyncioTestCase):
             return_all=return_all,
         )
 
-    async def _mcp_path_mapping(
+    async def _context_lifecycle_path_mapping(
         self, *, return_all: bool
     ) -> Dict[int, List[str]]:
-        """Exercise the mcp-path chain: context_end + before/after diff."""
+        """Exercise context_end + before/after snapshot diff."""
         # before snapshot — empty (nothing ingested yet)
         empty_oc = _DualPathOCStub([])
         before_records = await memory_record_snapshot(empty_oc)
@@ -581,20 +580,20 @@ class TestStoreMcpEquivalence(unittest.IsolatedAsyncioTestCase):
             return_all=return_all,
         )
 
-    async def test_store_and_mcp_paths_produce_equivalent_uri_mapping(self):
+    async def test_store_and_context_paths_produce_equivalent_uri_mapping(self):
         """The two paths must produce the same Dict[int, List[str]] for
         the same fixture. Asserts both ``return_all=False`` and
         ``return_all=True`` shapes match.
         """
         # Single-best (conversation.py contract)
         store_single = await self._store_path_mapping(return_all=False)
-        mcp_single = await self._mcp_path_mapping(return_all=False)
-        self.assertEqual(store_single, mcp_single)
+        context_single = await self._context_lifecycle_path_mapping(return_all=False)
+        self.assertEqual(store_single, context_single)
 
         # Full sorted (locomo.py contract)
         store_all = await self._store_path_mapping(return_all=True)
-        mcp_all = await self._mcp_path_mapping(return_all=True)
-        self.assertEqual(store_all, mcp_all)
+        context_all = await self._context_lifecycle_path_mapping(return_all=True)
+        self.assertEqual(store_all, context_all)
 
     async def test_empty_records_produces_empty_mapping_on_both_paths(self):
         """Edge case: no records in either path → both return empty lists
@@ -612,9 +611,9 @@ class TestStoreMcpEquivalence(unittest.IsolatedAsyncioTestCase):
             return_all=False,
         )
 
-        # mcp path with empty memory_list
+        # Context lifecycle path with empty memory_list.
         snapshot = await memory_record_snapshot(empty_oc)
-        mcp_mapping = map_session_uris(
+        context_mapping = map_session_uris(
             session_spans=self.SESSION_SPANS,
             session_time_refs=self.SESSION_TIME_REFS,
             records_by_uri=snapshot,
@@ -622,7 +621,7 @@ class TestStoreMcpEquivalence(unittest.IsolatedAsyncioTestCase):
             return_all=False,
         )
 
-        self.assertEqual(store_mapping, mcp_mapping)
+        self.assertEqual(store_mapping, context_mapping)
         self.assertEqual(store_mapping, {1: [], 2: []})
 
 

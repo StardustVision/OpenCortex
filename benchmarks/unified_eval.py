@@ -251,11 +251,20 @@ def _is_user_set(args, attr_name: str) -> bool:
     return False
 
 
+def _normalize_ingest_method(value: str) -> str:
+    """Normalize deprecated benchmark ingest method aliases."""
+    if value == "mcp":
+        return "context_lifecycle"
+    return value
+
+
 def _resolve_benchmark_options(args) -> BenchmarkRunOptions:
     """Resolve flavor, retrieval, ingest, and top-k options for a run."""
     flavor = _benchmark_flavor(args)
     dataset = _normalize_dataset_name(args)
-    ingest_method = str(getattr(args, "ingest_method", "store") or "store")
+    ingest_method = _normalize_ingest_method(
+        str(getattr(args, "ingest_method", "store") or "store")
+    )
     retrieve_method = str(getattr(args, "retrieve_method", "search") or "search")
 
     evidence_datasets = {"longmemeval", "locomo"}
@@ -1129,11 +1138,19 @@ def main():
     p.add_argument(
         "--ingest-method",
         default="store",
-        choices=["store", "mcp", "longmemeval-mainstream", "mainstream", "pairs"],
+        choices=[
+            "store",
+            "context_lifecycle",
+            "mcp",
+            "longmemeval-mainstream",
+            "mainstream",
+            "pairs",
+        ],
         help=(
             "Ingest method for conversation mode: store "
-            "(benchmark-only offline ingest) or mcp "
-            "(prepare/commit/end lifecycle)"
+            "(benchmark-only offline ingest), context_lifecycle "
+            "(/api/v1/context prepare/commit/end), or mcp "
+            "(deprecated alias for context_lifecycle)"
         ),
     )
     p.add_argument(
@@ -1143,8 +1160,8 @@ def main():
         help=(
             "Number of conversations to ingest concurrently when "
             "ingest-method is store / mainstream / longmemeval-mainstream / "
-            "pairs. mcp stays serial. Raise on faster machines once the "
-            "embedded Qdrant + local embedder show headroom."
+            "pairs. context_lifecycle stays serial. Raise on faster machines "
+            "once the embedded Qdrant + local embedder show headroom."
         ),
     )
     p.add_argument(

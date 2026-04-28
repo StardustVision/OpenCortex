@@ -234,7 +234,7 @@ class TestCommitToolCalls(unittest.TestCase):
 
 
 class TestNoiseReductionE2E(unittest.TestCase):
-    """Full pipeline: MCP-style add_message with tool_calls → verify storage."""
+    """Full context commit pipeline with tool_calls storage verification."""
 
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp(prefix="noise_e2e_")

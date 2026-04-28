@@ -24,6 +24,14 @@ _MAINSTREAM_INGEST_METHODS = {
     "pairs",
     "recall-eval",
 }
+_CONTEXT_LIFECYCLE_INGEST_METHOD = "context_lifecycle"
+
+
+def _normalize_ingest_method(value: str) -> str:
+    """Normalize deprecated benchmark ingest method aliases."""
+    if value == "mcp":
+        return _CONTEXT_LIFECYCLE_INGEST_METHOD
+    return value
 
 
 class LongMemEvalBench(EvalAdapter):
@@ -168,14 +176,18 @@ class LongMemEvalBench(EvalAdapter):
         """Ingest each LongMemEval item using mainstream or internal mode.
 
         Mainstream and store paths run with bounded concurrency so the
-        benchmark suite finishes in operationally feasible time. The mcp
-        path stays serial because it relies on per-session live buffers.
+        benchmark suite finishes in operationally feasible time. The context
+        lifecycle path stays serial because it relies on per-session live
+        buffers.
         """
         max_qa = int(kwargs.get("max_qa", 0) or 0)
         per_type = int(kwargs.get("per_type", 0) or 0)
-        ingest_method = str(
-            kwargs.get("ingest_method") or getattr(self, "_ingest_method", "mcp")
-        ).lower()
+        ingest_method = _normalize_ingest_method(
+            str(
+                kwargs.get("ingest_method")
+                or getattr(self, "_ingest_method", _CONTEXT_LIFECYCLE_INGEST_METHOD)
+            ).lower()
+        )
         ingest_concurrency = max(
             1, int(kwargs.get("ingest_concurrency", getattr(self, "_ingest_concurrency", 4)))
         )
@@ -188,9 +200,8 @@ class LongMemEvalBench(EvalAdapter):
         self._lme_session_to_uri = {}
         errors: List[str] = []
         ingested = 0
-        # Store / mainstream paths get bounded concurrency; mcp stays
-        # effectively serial via Semaphore(1) because each context_commit
-        # mutates per-session live state.
+        # Store / mainstream paths get bounded concurrency; context lifecycle
+        # stays serial because each context_commit mutates per-session state.
         concurrent_paths = _MAINSTREAM_INGEST_METHODS | {"store"}
         semaphore = asyncio.Semaphore(
             ingest_concurrency if ingest_method in concurrent_paths else 1
@@ -211,7 +222,7 @@ class LongMemEvalBench(EvalAdapter):
                     committed_segments = 0
                     segments: List[List[Dict[str, Any]]] = []
 
-                    if ingest_method == "mcp":
+                    if ingest_method == _CONTEXT_LIFECYCLE_INGEST_METHOD:
                         before_records = await cm.memory_record_snapshot(oc)
 
                     for session_index, session_messages in enumerate(sessions):
@@ -262,7 +273,7 @@ class LongMemEvalBench(EvalAdapter):
 
                         if ingest_method == "store":
                             segments.append(messages)
-                        elif ingest_method == "mcp":
+                        elif ingest_method == _CONTEXT_LIFECYCLE_INGEST_METHOD:
                             await oc.context_commit(
                                 session_id=conversation_session_id,
                                 turn_id=f"turn-{session_index}",
