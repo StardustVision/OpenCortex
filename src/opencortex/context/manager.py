@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""ContextManager — three-phase lifecycle for the HTTP context API.
+"""ContextManager — commit/end lifecycle for the HTTP context API.
 
-Manages prepare/commit/end phases for platform-agnostic memory recall and
-session recording through a single lifecycle endpoint.
+Manages session recording and closeout. Recall now uses the intent/search
+pipeline directly instead of a context prepare phase.
 
 Design doc: docs/memory-context-protocol.md v1.2
 """
@@ -13,7 +13,6 @@ import hashlib
 import logging
 import re
 import time
-from copy import deepcopy
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from pathlib import Path
@@ -31,14 +30,6 @@ from opencortex.http.request_context import (
     reset_request_identity,
     set_request_identity,
 )
-from opencortex.intent import RetrievalPlan, SearchResult
-from opencortex.intent.retrieval_support import build_probe_scope_input
-from opencortex.intent.timing import StageTimingCollector, measure_async, measure_sync
-from opencortex.retrieve.types import (
-    ContextType,
-    DetailLevel,
-)
-from opencortex.utils.text import smart_truncate
 
 logger = logging.getLogger(__name__)
 
@@ -72,9 +63,6 @@ _COARSE_WEEKDAY_RE = re.compile(
 
 # Type aliases — all internal state keyed by these to prevent cross-collection collision
 SessionKey = Tuple[str, str, str, str]  # (collection, tenant_id, user_id, session_id)
-CacheKey = Tuple[
-    str, str, str, str, str
-]  # (collection, tenant_id, user_id, session_id, turn_id)
 
 
 class RecompositionError(Exception):
@@ -196,52 +184,14 @@ class ConversationBuffer:
     tool_calls_per_turn: list = dc_field(default_factory=list)
 
 
-@dataclass
-class PrepareOptions:
-    """Normalized prepare-phase inputs used across helper boundaries."""
-
-    max_items: int
-    detail_level_override: Optional[str]
-    recall_mode: str
-    category: Optional[str]
-    context_type: Optional[ContextType]
-    include_knowledge: bool
-    session_scope_enabled: bool
-    session_context: Optional[Dict[str, str]]
-
-
-@dataclass
-class PreparePlanningState:
-    """Recall-planning outputs needed by retrieval and result assembly."""
-
-    query: str
-    probe_result: SearchResult
-    retrieve_plan: Optional[RetrievalPlan]
-    runtime_bound: Dict[str, Any]
-    intent_ms: int
-
-
-@dataclass
-class PrepareRetrievalState:
-    """Retrieved prepare payloads and runtime attribution."""
-
-    memory_items: List[Dict[str, Any]] = dc_field(default_factory=list)
-    knowledge_items: List[Dict[str, Any]] = dc_field(default_factory=list)
-    memory_ms: int = 0
-    knowledge_ms: int = 0
-    memory_runtime_trace: Dict[str, Any] = dc_field(default_factory=dict)
-
-
 class ContextManager:
-    """Manages the prepare/commit/end lifecycle for memory_context protocol.
+    """Manages commit/end lifecycle for the context protocol.
 
     Args:
         orchestrator: MemoryOrchestrator instance.
         observer: Observer instance for transcript recording.
-        prepare_cache_ttl: Prepare result cache TTL in seconds (default 5min).
         session_idle_ttl: Session idle auto-close TTL in seconds (default 30min).
         idle_check_interval: Idle sweep interval in seconds (default 60s).
-        max_content_chars: Per-item content hard limit (default 50k chars).
     """
 
     def __init__(
@@ -249,10 +199,8 @@ class ContextManager:
         orchestrator,  # MemoryOrchestrator (avoid circular import)
         observer,  # Observer
         *,
-        prepare_cache_ttl: float = 300.0,
         session_idle_ttl: float = 1800.0,
         idle_check_interval: float = 60.0,
-        max_content_chars: int = 50_000,
     ):
         self._orchestrator = orchestrator
         self._observer = observer
@@ -278,10 +226,6 @@ class ContextManager:
             manager=self, repo=self._session_records
         )
 
-        # Prepare cache: {(collection, tid, uid, sid, turn_id): (result, timestamp)}
-        self._prepare_cache: Dict[CacheKey, Tuple[Dict, float]] = {}
-        # Reverse index: {session_key: set(cache_key)} — for end cleanup
-        self._session_cache_keys: Dict[SessionKey, Set[CacheKey]] = {}
         # Committed turn_ids: {session_key: set(turn_id)}
         self._committed_turns: Dict[SessionKey, Set[str]] = {}
         # Session activity: {session_key: last_activity_timestamp}
@@ -304,8 +248,6 @@ class ContextManager:
         self._session_project_ids: Dict[SessionKey, str] = {}
         # Pending async tasks (cited_uris reward, etc.)
         self._pending_tasks: Set[asyncio.Task] = set()
-        # Session-scoped memory owner ids recalled during prepare().
-        self._session_memory_owner_ids: Dict[SessionKey, Set[str]] = {}
         # Session-scoped flag for rare full immediate cleanup retries.
         self._session_pending_immediate_cleanup: Dict[SessionKey, bool] = {}
         # Conversation buffers: per-session incremental chunking
@@ -321,9 +263,6 @@ class ContextManager:
         self._directory_derive_semaphore = asyncio.Semaphore(
             _DIRECTORY_DERIVE_CONCURRENCY
         )
-        # Skill selection tracking: (session_key, turn_id) -> set of skill URIs
-        # Turn-scoped to prevent stale selections leaking across turns
-        self._selected_skill_uris: Dict[tuple, Set[str]] = {}
         # Lazy-initialized recomposition engine (survives ``__new__`` bypass).
         self._recomposition_engine_instance: Optional[Any] = None
         # Lazy-initialized commit service (survives ``__new__`` bypass).
@@ -332,10 +271,8 @@ class ContextManager:
         self._end_service_instance: Optional[Any] = None
 
         # Config
-        self._prepare_cache_ttl = prepare_cache_ttl
         self._session_idle_ttl = session_idle_ttl
         self._idle_check_interval = idle_check_interval
-        self._max_content_chars = max_content_chars
 
         # Background task
         self._idle_checker: Optional[asyncio.Task] = None
@@ -416,20 +353,9 @@ class ContextManager:
         config: Optional[Dict[str, Any]] = None,
         tool_calls: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
-        """Unified entry point — dispatches to prepare/commit/end."""
+        """Unified entry point for context commit/end lifecycle calls."""
         if phase == "prepare":
-            if not turn_id:
-                raise ValueError("turn_id is required for prepare")
-            if not messages or not any(m.get("role") == "user" for m in messages):
-                raise ValueError("prepare requires at least one user message")
-            return await self._prepare(
-                session_id,
-                turn_id,
-                messages,
-                tenant_id,
-                user_id,
-                config,
-            )
+            raise ValueError("prepare phase has been removed; use intent/search APIs")
 
         if phase == "commit":
             if not turn_id:
@@ -450,610 +376,6 @@ class ContextManager:
             return await self._end(session_id, tenant_id, user_id, config)
 
         raise ValueError(f"Unknown phase: {phase}")
-
-    # =========================================================================
-    # Phase: prepare
-    # =========================================================================
-
-    @staticmethod
-    def _safe_detail_level(value: Optional[str]) -> DetailLevel:
-        """Coerce detail level strings without raising on invalid input."""
-        try:
-            return DetailLevel(value or "l1")
-        except (TypeError, ValueError):
-            return DetailLevel.L1
-
-    @staticmethod
-    def _safe_context_type(value: Optional[str]) -> Optional[ContextType]:
-        """Coerce context type strings without raising on invalid input."""
-        if not value:
-            return None
-        try:
-            return ContextType(value)
-        except (TypeError, ValueError):
-            return None
-
-    @staticmethod
-    def _safe_max_items(value: Any, *, default: int = 5, maximum: int = 20) -> int:
-        """Coerce max_items without raising on invalid input."""
-        try:
-            return min(max(int(value), 1), maximum)
-        except (TypeError, ValueError):
-            return default
-
-    @staticmethod
-    def _extract_skill_uris(skills: Any) -> List[str]:
-        """Best-effort skill URI extraction that ignores malformed items."""
-        skill_uris: List[str] = []
-        for skill in skills or []:
-            uri = getattr(skill, "uri", None)
-            if uri is None and isinstance(skill, dict):
-                uri = skill.get("uri")
-            if isinstance(uri, str) and uri:
-                skill_uris.append(uri)
-        return skill_uris
-
-    def _build_prepare_options(
-        self,
-        *,
-        session_id: str,
-        tenant_id: str,
-        user_id: str,
-        config: Optional[Dict[str, Any]],
-    ) -> PrepareOptions:
-        """Normalize raw prepare config into a stable typed container."""
-        config = config or {}
-        context_type = self._safe_context_type(config.get("context_type"))
-        # Priority: client explicit > server config > default False.
-        server_default = False
-        if hasattr(self._orchestrator, "_config") and self._orchestrator._config:
-            server_default = (
-                self._orchestrator._config.cortex_alpha.knowledge_recall_enabled
-            )
-        session_scope_enabled = bool(config.get("session_scope", False))
-        session_context = None
-        if session_scope_enabled:
-            session_context = {
-                "session_id": session_id,
-                "tenant_id": tenant_id,
-                "user_id": user_id,
-            }
-        return PrepareOptions(
-            max_items=self._safe_max_items(config.get("max_items", 5)),
-            detail_level_override=config.get("detail_level"),
-            recall_mode=config.get("recall_mode", "auto"),
-            category=config.get("category"),
-            context_type=context_type,
-            include_knowledge=config.get("include_knowledge", server_default),
-            session_scope_enabled=session_scope_enabled,
-            session_context=session_context,
-        )
-
-    @staticmethod
-    def _prepare_category_filter(category: Optional[str]) -> Optional[Dict[str, Any]]:
-        """Build the category metadata filter for prepare-time recall."""
-        if not category:
-            return None
-        return {"op": "must", "field": "category", "conds": [category]}
-
-    async def _ensure_prepare_session(
-        self,
-        *,
-        sk: SessionKey,
-        session_id: str,
-        tenant_id: str,
-        user_id: str,
-    ) -> None:
-        """Touch session state and lazily auto-create the observer session."""
-        self._touch_session(sk)
-        self._remember_session_project(sk)
-        lock = self._session_locks.setdefault(sk, asyncio.Lock())
-        observer_session_id = self._observer_session_id(
-            session_id,
-            tenant_id=tenant_id,
-            user_id=user_id,
-        )
-        async with lock:
-            if observer_session_id not in self._observer.active_sessions():
-                self._observer.begin_session(
-                    observer_session_id,
-                    tenant_id,
-                    user_id,
-                )
-
-    async def _plan_prepare_recall(
-        self,
-        *,
-        query: str,
-        session_id: str,
-        turn_id: str,
-        tenant_id: str,
-        user_id: str,
-        options: PrepareOptions,
-        stage_timings: StageTimingCollector,
-    ) -> PreparePlanningState:
-        """Run probe/planner/runtime bind and keep no-recall baseline on failures."""
-        detail_level = self._safe_detail_level(options.detail_level_override)
-        probe_result = SearchResult(should_recall=False)
-        retrieve_plan: Optional[RetrievalPlan] = None
-        runtime_bound: Dict[str, Any] = {
-            "probe": probe_result.to_dict(),
-            "planner": None,
-            "sources": [],
-            "context_types": [],
-            "category_filter": [],
-            "memory_limit": 0,
-            "knowledge_limit": 0,
-            "planned_depth": detail_level.value,
-            "effective_depth": detail_level.value,
-            "association_mode": "off",
-            "rerank": False,
-            "hydration_allowed": detail_level != DetailLevel.L2,
-            "scope": {},
-            "degrade": {"applied": False, "reasons": [], "actions": []},
-        }
-        if options.recall_mode != "never":
-            try:
-                probe_result = await asyncio.wait_for(
-                    measure_async(
-                        stage_timings,
-                        "probe",
-                        self._orchestrator.probe_memory,
-                        query,
-                        context_type=options.context_type,
-                        session_context=options.session_context,
-                        metadata_filter=self._prepare_category_filter(options.category),
-                    ),
-                    timeout=10.0,
-                )
-                scope_input = build_probe_scope_input(
-                    context_type=options.context_type,
-                    target_uri="",
-                    target_doc_id=None,
-                    session_context=options.session_context,
-                )
-                retrieve_plan = measure_sync(
-                    stage_timings,
-                    "plan",
-                    self._orchestrator.plan_memory,
-                    query=query,
-                    probe_result=probe_result,
-                    max_items=options.max_items,
-                    recall_mode=options.recall_mode,
-                    detail_level_override=options.detail_level_override,
-                    scope_input=scope_input,
-                )
-                if retrieve_plan is not None:
-                    runtime_bound = measure_sync(
-                        stage_timings,
-                        "bind",
-                        self._orchestrator.bind_memory_runtime,
-                        probe_result=probe_result,
-                        retrieve_plan=retrieve_plan,
-                        max_items=options.max_items,
-                        session_context=options.session_context,
-                        include_knowledge=options.include_knowledge,
-                    )
-            except asyncio.TimeoutError:
-                retrieve_plan = None
-                logger.warning(
-                    "[ContextManager] Recall planning timeout sid=%s turn=%s tenant=%s user=%s",
-                    session_id,
-                    turn_id,
-                    tenant_id,
-                    user_id,
-                )
-            except Exception as exc:
-                retrieve_plan = None
-                logger.warning(
-                    "[ContextManager] Recall planning failed sid=%s turn=%s tenant=%s user=%s: %s",
-                    session_id,
-                    turn_id,
-                    tenant_id,
-                    user_id,
-                    exc,
-                )
-        intent_timings = stage_timings.snapshot()
-        intent_ms = (
-            intent_timings["probe"] + intent_timings["plan"] + intent_timings["bind"]
-        )
-        return PreparePlanningState(
-            query=query,
-            probe_result=probe_result,
-            retrieve_plan=retrieve_plan,
-            runtime_bound=runtime_bound,
-            intent_ms=intent_ms,
-        )
-
-    async def _retrieve_prepare_payload(
-        self,
-        *,
-        sk: SessionKey,
-        session_id: str,
-        turn_id: str,
-        tenant_id: str,
-        user_id: str,
-        options: PrepareOptions,
-        planning: PreparePlanningState,
-        stage_timings: StageTimingCollector,
-    ) -> PrepareRetrievalState:
-        """Run memory/knowledge retrieval fan-out for prepare()."""
-        should_recall = planning.retrieve_plan is not None
-        if not should_recall:
-            return PrepareRetrievalState()
-
-        detail_level = planning.runtime_bound["effective_depth"]
-        include_memory = (
-            "memory" in planning.runtime_bound["sources"]
-            and planning.runtime_bound["memory_limit"] > 0
-        )
-        include_knowledge = (
-            "knowledge" in planning.runtime_bound["sources"]
-            and planning.runtime_bound["knowledge_limit"] > 0
-        )
-        retrieval_started = time.monotonic()
-
-        async def _memory_search() -> Tuple[
-            List[Dict[str, Any]],
-            int,
-            List[str],
-            List[str],
-            Dict[str, Any],
-        ]:
-            """Search memory and return formatted items, latency, skills, owners, and trace."""
-            started = time.monotonic()
-            try:
-                search_kwargs: Dict[str, Any] = {
-                    "query": planning.query,
-                    "limit": options.max_items,
-                    "detail_level": detail_level,
-                    "probe_result": planning.probe_result,
-                    "retrieve_plan": planning.retrieve_plan,
-                }
-                if options.session_context is not None:
-                    search_kwargs["session_context"] = options.session_context
-                if options.context_type:
-                    search_kwargs["context_type"] = options.context_type
-                if options.category:
-                    search_kwargs["metadata_filter"] = self._prepare_category_filter(
-                        options.category
-                    )
-                find_result = await self._orchestrator.search(**search_kwargs)
-                # Expand directory hits into children leaf records
-                find_result.memories = await self._expand_directory_hits(
-                    find_result.memories
-                )
-                owner_ids = await self._orchestrator._resolve_memory_owner_ids(
-                    find_result.memories
-                )
-                skill_uris = self._extract_skill_uris(
-                    getattr(find_result, "skills", []) or []
-                )
-                runtime_trace = {}
-                if getattr(find_result, "runtime_result", None) is not None:
-                    runtime_trace = find_result.runtime_result.trace.to_dict()
-                return (
-                    self._format_memories(find_result, detail_level),
-                    int((time.monotonic() - started) * 1000),
-                    skill_uris,
-                    owner_ids,
-                    runtime_trace,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "[ContextManager] Memory search failed sid=%s turn=%s tenant=%s user=%s: %s",
-                    session_id,
-                    turn_id,
-                    tenant_id,
-                    user_id,
-                    exc,
-                )
-                return [], int((time.monotonic() - started) * 1000), [], [], {}
-
-        async def _knowledge_search() -> Tuple[List[Dict[str, Any]], int]:
-            """Search knowledge store and return formatted results and latency."""
-            started = time.monotonic()
-            try:
-                k_result = await self._orchestrator.knowledge_search(
-                    query=planning.query,
-                    limit=planning.runtime_bound["knowledge_limit"],
-                )
-                return (
-                    self._format_knowledge(k_result.get("results", [])),
-                    int((time.monotonic() - started) * 1000),
-                )
-            except Exception as exc:
-                logger.warning(
-                    "[ContextManager] Knowledge search failed sid=%s turn=%s tenant=%s user=%s: %s",
-                    session_id,
-                    turn_id,
-                    tenant_id,
-                    user_id,
-                    exc,
-                )
-                return [], int((time.monotonic() - started) * 1000)
-
-        coros = []
-        if include_memory:
-            coros.append(_memory_search())
-        if include_knowledge:
-            coros.append(_knowledge_search())
-
-        results = await asyncio.gather(*coros) if coros else []
-        retrieval = PrepareRetrievalState()
-        result_idx = 0
-        if include_memory:
-            (
-                retrieval.memory_items,
-                retrieval.memory_ms,
-                skill_uris,
-                memory_owner_ids,
-                retrieval.memory_runtime_trace,
-            ) = results[result_idx]
-            if memory_owner_ids:
-                self._session_memory_owner_ids.setdefault(sk, set()).update(
-                    memory_owner_ids
-                )
-            if (
-                skill_uris
-                and hasattr(self._orchestrator, "_skill_event_store")
-                and self._orchestrator._skill_event_store
-            ):
-                self._selected_skill_uris[(sk, turn_id)] = set(skill_uris)
-                for skill_uri in skill_uris:
-                    await self._append_skill_event(
-                        session_id,
-                        turn_id,
-                        skill_uri,
-                        tenant_id,
-                        user_id,
-                        "selected",
-                    )
-            result_idx += 1
-        if include_knowledge:
-            retrieval.knowledge_items, retrieval.knowledge_ms = results[result_idx]
-
-        stage_timings.record_elapsed("retrieve", retrieval_started)
-        return retrieval
-
-    def _build_prepare_result(
-        self,
-        *,
-        session_id: str,
-        turn_id: str,
-        stage_timings: StageTimingCollector,
-        planning: PreparePlanningState,
-        retrieval: PrepareRetrievalState,
-    ) -> Dict[str, Any]:
-        """Assemble the stable prepare response envelope."""
-        should_recall = planning.retrieve_plan is not None
-        detail_level = planning.runtime_bound["effective_depth"]
-        instructions = self._build_instructions(
-            detail_level,
-            retrieval.memory_items,
-            retrieval.knowledge_items,
-        )
-
-        result = {
-            "session_id": session_id,
-            "turn_id": turn_id,
-            "intent": {
-                "should_recall": should_recall,
-                "probe_candidate_count": planning.probe_result.evidence.candidate_count,
-                "probe_top_score": planning.probe_result.evidence.top_score,
-                "depth": detail_level,
-            },
-            "memory": retrieval.memory_items,
-            "knowledge": retrieval.knowledge_items,
-            "instructions": instructions,
-        }
-        result["intent"]["memory_pipeline"] = {
-            "probe": planning.probe_result.to_dict(),
-            "planner": (
-                planning.retrieve_plan.to_dict() if planning.retrieve_plan else None
-            ),
-            "runtime": {
-                "trace": {
-                    "probe_mode": (
-                        self._orchestrator.memory_probe_mode()
-                        if hasattr(self._orchestrator, "memory_probe_mode")
-                        else "unavailable"
-                    ),
-                    "probe_trace": (
-                        self._orchestrator.memory_probe_trace()
-                        if hasattr(self._orchestrator, "memory_probe_trace")
-                        else {
-                            "backend": "unavailable",
-                            "top_k": 0,
-                            "degraded": True,
-                            "degrade_reason": "probe_trace_unavailable",
-                        }
-                    ),
-                    "probe": dict(
-                        retrieval.memory_runtime_trace.get(
-                            "probe", planning.probe_result.to_dict()
-                        )
-                    ),
-                    "planner": dict(
-                        retrieval.memory_runtime_trace.get(
-                            "planner",
-                            (
-                                planning.retrieve_plan.to_dict()
-                                if planning.retrieve_plan
-                                else {}
-                            ),
-                        )
-                    ),
-                    "effective": dict(
-                        retrieval.memory_runtime_trace.get(
-                            "effective",
-                            {
-                                "sources": list(planning.runtime_bound["sources"]),
-                                "retrieval_depth": planning.runtime_bound[
-                                    "effective_depth"
-                                ],
-                            },
-                        )
-                    ),
-                    "hydration": list(
-                        retrieval.memory_runtime_trace.get("hydration", [])
-                    ),
-                    "latency_ms": dict(
-                        retrieval.memory_runtime_trace.get(
-                            "latency_ms",
-                            {
-                                "execution": 0,
-                                "stages": stage_timings.snapshot(),
-                                "retrieve": {
-                                    "embed": 0.0,
-                                    "search": 0.0,
-                                    "rerank": 0.0,
-                                    "assemble": 0.0,
-                                    "total": 0.0,
-                                },
-                            },
-                        )
-                    ),
-                    "stage_timing_ms": stage_timings.snapshot(),
-                },
-                "degrade": dict(planning.runtime_bound["degrade"]),
-            },
-        }
-        return result
-
-    async def _prepare(
-        self,
-        session_id: str,
-        turn_id: str,
-        messages: List[Dict[str, str]],
-        tenant_id: str,
-        user_id: str,
-        config: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        """Prepare context for a turn by running intent routing and retrieval.
-
-        Args:
-            session_id: Active session identifier.
-            turn_id: Turn within the session.
-            messages: Conversation messages for context.
-            tenant_id: Tenant identifier.
-            user_id: User identifier.
-            config: Optional override configuration.
-
-        Returns:
-            Dict with memory context, knowledge, and runtime metadata.
-        """
-        options = self._build_prepare_options(
-            session_id=session_id,
-            tenant_id=tenant_id,
-            user_id=user_id,
-            config=config,
-        )
-        sk = self._make_session_key(tenant_id, user_id, session_id)
-        prepare_started = time.monotonic()
-        stage_timings = StageTimingCollector()
-
-        # 1. Idempotent: cache hit → return directly
-        cache_key = self._make_cache_key(
-            tenant_id=tenant_id,
-            user_id=user_id,
-            session_id=session_id,
-            turn_id=turn_id,
-        )
-        cached = self._get_cached_prepare(cache_key)
-        if cached is not None:
-            cached_result = deepcopy(cached)
-            self._touch_session(sk)
-            cache_total_ms = int((time.monotonic() - prepare_started) * 1000)
-            runtime_trace = (
-                cached_result.get("intent", {})
-                .get("memory_pipeline", {})
-                .get("runtime", {})
-                .get("trace")
-            )
-            if isinstance(runtime_trace, dict):
-                cache_stage_timings = StageTimingCollector()
-                cache_stage_timings.record_ms("total", cache_total_ms)
-                runtime_trace["cache_hit"] = True
-                runtime_trace["stage_timing_ms"] = cache_stage_timings.snapshot()
-            logger.debug(
-                "[ContextManager] prepare CACHE_HIT sid=%s turn=%s tenant=%s user=%s",
-                session_id,
-                turn_id,
-                tenant_id,
-                user_id,
-            )
-            return cached_result
-
-        # 2. Session auto-create (session-level lock prevents concurrent begin)
-        await self._ensure_prepare_session(
-            sk=sk,
-            session_id=session_id,
-            tenant_id=tenant_id,
-            user_id=user_id,
-        )
-
-        # 3. Extract user query
-        query = self._extract_query(messages)
-        if not query:
-            result = self._empty_prepare(session_id, turn_id)
-            self._cache_prepare(cache_key, sk, result)
-            return result
-
-        planning = await self._plan_prepare_recall(
-            query=query,
-            session_id=session_id,
-            turn_id=turn_id,
-            tenant_id=tenant_id,
-            user_id=user_id,
-            options=options,
-            stage_timings=stage_timings,
-        )
-        retrieval = await self._retrieve_prepare_payload(
-            sk=sk,
-            session_id=session_id,
-            turn_id=turn_id,
-            tenant_id=tenant_id,
-            user_id=user_id,
-            options=options,
-            planning=planning,
-            stage_timings=stage_timings,
-        )
-
-        aggregate_started = time.monotonic()
-        result = self._build_prepare_result(
-            session_id=session_id,
-            turn_id=turn_id,
-            stage_timings=stage_timings,
-            planning=planning,
-            retrieval=retrieval,
-        )
-
-        total_ms = int((time.monotonic() - prepare_started) * 1000)
-        stage_timings.record_elapsed("aggregate", aggregate_started)
-        stage_timings.record_ms("total", total_ms)
-        result["intent"]["memory_pipeline"]["runtime"]["trace"]["stage_timing_ms"] = (
-            stage_timings.snapshot()
-        )
-        logger.info(
-            "[ContextManager] prepare sid=%s turn=%s tenant=%s user=%s "
-            "probe_candidates=%d recall=%s memory=%d knowledge=%d "
-            "timing_ms(total=%d intent=%d memory=%d knowledge=%d)",
-            session_id,
-            turn_id,
-            tenant_id,
-            user_id,
-            planning.probe_result.evidence.candidate_count,
-            planning.retrieve_plan is not None,
-            len(retrieval.memory_items),
-            len(retrieval.knowledge_items),
-            total_ms,
-            planning.intent_ms,
-            retrieval.memory_ms,
-            retrieval.knowledge_ms,
-        )
-        self._cache_prepare(cache_key, sk, result)
-        return result
 
     # =========================================================================
     # Phase: commit
@@ -1945,38 +1267,6 @@ class ContextManager:
         )
 
     # =========================================================================
-    # Cache management
-    # =========================================================================
-
-    def _cache_prepare(self, cache_key: CacheKey, sk: SessionKey, result: Dict) -> None:
-        """Cache prepare result with reverse index for session cleanup."""
-        now = time.time()
-
-        # LRU eviction: over 1000 entries → evict oldest
-        if len(self._prepare_cache) >= 1000:
-            oldest_key = min(
-                self._prepare_cache,
-                key=lambda k: self._prepare_cache[k][1],
-            )
-            self._prepare_cache.pop(oldest_key)
-            for keys in self._session_cache_keys.values():
-                keys.discard(oldest_key)
-
-        self._prepare_cache[cache_key] = (result, now)
-        self._session_cache_keys.setdefault(sk, set()).add(cache_key)
-
-    def _get_cached_prepare(self, cache_key: CacheKey) -> Optional[Dict]:
-        """Return cached result if exists and not expired."""
-        entry = self._prepare_cache.get(cache_key)
-        if entry is None:
-            return None
-        result, ts = entry
-        if time.time() - ts > self._prepare_cache_ttl:
-            self._prepare_cache.pop(cache_key, None)
-            return None
-        return result
-
-    # =========================================================================
     # Session state helpers
     # =========================================================================
 
@@ -1996,23 +1286,6 @@ class ContextManager:
             tenant_id,
             user_id,
             session_id,
-        )
-
-    def _make_cache_key(
-        self,
-        *,
-        tenant_id: str,
-        user_id: str,
-        session_id: str,
-        turn_id: str,
-    ) -> CacheKey:
-        """Build one prepare cache key scoped to the active collection."""
-        return (
-            self._current_collection_name(),
-            tenant_id,
-            user_id,
-            session_id,
-            turn_id,
         )
 
     def _observer_session_id(
@@ -2039,9 +1312,6 @@ class ContextManager:
 
     def _cleanup_session(self, sk: SessionKey) -> None:
         """Remove all session state including cache entries via reverse index."""
-        cache_keys = self._session_cache_keys.pop(sk, set())
-        for key in cache_keys:
-            self._prepare_cache.pop(key, None)
         self._committed_turns.pop(sk, None)
         self._session_activity.pop(sk, None)
         self._session_locks.pop(sk, None)
@@ -2052,36 +1322,7 @@ class ContextManager:
         self._session_merge_followup_failures.pop(sk, None)
         self._conversation_buffers.pop(sk, None)
         self._session_project_ids.pop(sk, None)
-        self._session_memory_owner_ids.pop(sk, None)
         self._session_pending_immediate_cleanup.pop(sk, None)
-        # Clean up turn-scoped skill selections for this session
-        stale_keys = [k for k in self._selected_skill_uris if k[0] == sk]
-        for k in stale_keys:
-            del self._selected_skill_uris[k]
-
-    async def _run_autophagy_metabolism(
-        self,
-        *,
-        session_id: str,
-        tenant_id: str,
-        user_id: str,
-        owner_ids: List[str],
-    ) -> None:
-        """Run autophagy metabolism for the given memory owner IDs."""
-        try:
-            await self._orchestrator._autophagy_kernel.metabolize_states(owner_ids)
-        except Exception as exc:
-            logger.warning(
-                (
-                    "[ContextManager] Autophagy metabolism failed"
-                    " sid=%s tenant=%s user=%s owners=%d: %s"
-                ),
-                session_id,
-                tenant_id,
-                user_id,
-                len(owner_ids),
-                exc,
-            )
 
     # =========================================================================
     # Idle session auto-close
@@ -2119,262 +1360,6 @@ class ContextManager:
                         sid,
                         exc,
                     )
-
-    # =========================================================================
-    # Formatting helpers
-    # =========================================================================
-
-    def _extract_query(self, messages: List[Dict[str, str]]) -> str:
-        """Extract the last user message content as query."""
-        for msg in reversed(messages):
-            if msg.get("role") == "user":
-                return msg.get("content", "").strip()
-        return ""
-
-    def _empty_prepare(self, session_id: str, turn_id: str) -> Dict[str, Any]:
-        """Return an empty prepare result (no query to search)."""
-        return {
-            "session_id": session_id,
-            "turn_id": turn_id,
-            "intent": {
-                "should_recall": False,
-                "probe_candidate_count": 0,
-                "probe_top_score": None,
-                "depth": "l1",
-            },
-            "memory": [],
-            "knowledge": [],
-            "instructions": self._empty_instructions(),
-        }
-
-    async def _expand_directory_hits(
-        self,
-        find_result,
-    ) -> list:
-        """Replace directory records with their children leaf records.
-
-        Directories serve as broad semantic surfaces for vector matching.
-        When hit, we expand to the actual leaf records for content delivery.
-        """
-        from opencortex.retrieve.types import DetailLevel
-
-        expanded = []
-        seen_uris: set = set()
-
-        for matched in find_result:
-            if getattr(matched, "layer", None) != "directory":
-                if matched.uri not in seen_uris:
-                    expanded.append(matched)
-                    seen_uris.add(matched.uri)
-                continue
-
-            # Directory hit — load children URIs from meta
-            meta = {}
-            try:
-                records = await self._orchestrator._storage.filter(
-                    self._orchestrator._get_collection(),
-                    {"op": "must", "field": "uri", "conds": [matched.uri]},
-                    limit=1,
-                )
-                if records:
-                    meta = dict(records[0].get("meta") or {})
-            except Exception:
-                pass
-
-            child_uris = meta.get("child_uris") or []
-            if not child_uris:
-                continue
-
-            # Load child leaf records
-            try:
-                children = await self._orchestrator._storage.filter(
-                    self._orchestrator._get_collection(),
-                    {
-                        "op": "or",
-                        "conds": [
-                            {"op": "must", "field": "uri", "conds": [uri]}
-                            for uri in child_uris
-                        ],
-                    },
-                    limit=len(child_uris),
-                )
-            except Exception:
-                continue
-
-            if not children:
-                continue
-
-            # Convert to MatchedContext via orchestrator helper
-            child_contexts = await self._orchestrator._records_to_matched_contexts(
-                candidates=children,
-                context_type=matched.context_type,
-                detail_level=DetailLevel.L1,
-            )
-            for child in child_contexts:
-                if child.uri in seen_uris:
-                    continue
-                seen_uris.add(child.uri)
-                # Carry the directory's score as a floor for ranking
-                if child.score < matched.score:
-                    child.score = matched.score
-                expanded.append(child)
-
-        # Re-sort by score descending
-        expanded.sort(key=lambda m: m.score, reverse=True)
-        return expanded
-
-    def _format_memories(
-        self,
-        find_result,
-        detail_level: str,
-    ) -> List[Dict[str, Any]]:
-        """Format FindResult into response items."""
-        items = []
-        for matched in find_result:
-            item: Dict[str, Any] = {
-                "uri": matched.uri,
-                "abstract": matched.abstract,
-                "score": round(matched.score, 3),
-                "context_type": str(matched.context_type),
-                "category": matched.category,
-            }
-            if getattr(matched, "session_id", ""):
-                item["session_id"] = matched.session_id
-            if getattr(matched, "msg_range", None) is not None:
-                item["msg_range"] = list(matched.msg_range)
-            if getattr(matched, "source_uri", None):
-                item["source_uri"] = matched.source_uri
-            if getattr(matched, "recomposition_stage", None):
-                item["recomposition_stage"] = matched.recomposition_stage
-            item["matched_anchors"] = list(
-                getattr(matched, "matched_anchors", []) or []
-            )
-            if getattr(matched, "cone_used", None) is not None:
-                item["cone_used"] = bool(matched.cone_used)
-            if detail_level in ("l1", "l2") and matched.overview:
-                item["overview"] = self._clamp(matched.overview)
-            if detail_level == "l2" and matched.content:
-                item["content"] = self._clamp(matched.content)
-            items.append(item)
-        return items
-
-    def _format_knowledge(
-        self,
-        results: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
-        """Format knowledge search results."""
-        items = []
-        for r in results:
-            items.append(
-                {
-                    "knowledge_id": r.get("knowledge_id", r.get("id", "")),
-                    "type": r.get("knowledge_type", ""),
-                    "abstract": r.get("abstract", ""),
-                    "confidence": r.get("confidence", 0.0),
-                }
-            )
-        return items
-
-    def _clamp(self, text: str) -> str:
-        """Limit per-item content to max_content_chars at paragraph boundary."""
-        if len(text) <= self._max_content_chars:
-            return text
-        truncated = smart_truncate(text, self._max_content_chars)
-        omitted = len(text) - len(truncated)
-        return f"{truncated} [...{omitted} chars omitted]"
-
-    def _build_instructions(
-        self,
-        retrieval_depth: Optional[str],
-        memory_items: List[Dict[str, Any]],
-        knowledge_items: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        """Build instructions for Agent based on retrieval posture and results."""
-        total_items = len(memory_items) + len(knowledge_items)
-
-        if total_items == 0:
-            return self._empty_instructions()
-
-        avg_score = sum(m.get("score", 0) for m in memory_items) / max(
-            len(memory_items), 1
-        )
-        max_confidence = max(
-            [k.get("confidence", 0) for k in knowledge_items],
-            default=0.0,
-        )
-        confidence = max(avg_score, max_confidence)
-
-        guidance_map = {
-            "l0": "Direct memory evidence was found. Prefer concise grounded recall.",
-            "l1": (
-                "Expanded memory context was retrieved."
-                " Synthesize across related items when useful."
-            ),
-            "l2": (
-                "Deep evidence was retrieved."
-                " Use detailed context carefully and keep citations grounded."
-            ),
-        }
-        guidance = guidance_map.get(
-            retrieval_depth or "",
-            "Context available for reference.",
-        )
-
-        return {
-            "should_cite_memory": confidence >= 0.5,
-            "memory_confidence": round(confidence, 3),
-            "recall_count": total_items,
-            "guidance": guidance,
-        }
-
-    @staticmethod
-    def _empty_instructions() -> Dict[str, Any]:
-        """Return the stable empty-instructions payload shape."""
-        return {
-            "should_cite_memory": False,
-            "memory_confidence": 0.0,
-            "recall_count": 0,
-            "guidance": "",
-        }
-
-    # =========================================================================
-    # Skill event helpers
-    # =========================================================================
-
-    async def _append_skill_event(
-        self,
-        session_id: str,
-        turn_id: str,
-        skill_uri: str,
-        tenant_id: str,
-        user_id: str,
-        event_type: str,
-    ) -> None:
-        """Append a single skill event to the event store (fire-and-forget safe)."""
-        try:
-            from datetime import datetime, timezone
-            from uuid import uuid4
-
-            from opencortex.skill_engine.types import (
-                SkillEvent,
-                extract_skill_id_from_uri,
-            )
-
-            await self._orchestrator._skill_event_store.append(
-                SkillEvent(
-                    event_id=uuid4().hex,
-                    session_id=session_id,
-                    turn_id=turn_id,
-                    skill_id=extract_skill_id_from_uri(skill_uri),
-                    skill_uri=skill_uri,
-                    tenant_id=tenant_id,
-                    user_id=user_id,
-                    event_type=event_type,
-                    timestamp=datetime.now(timezone.utc).isoformat(),
-                )
-            )
-        except Exception:
-            pass
 
     # =========================================================================
     # Fallback log

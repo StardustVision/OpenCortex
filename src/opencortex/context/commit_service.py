@@ -74,14 +74,6 @@ class ContextCommitService:
             manager._committed_turns.setdefault(sk, set()).add(turn_id)
 
             self._schedule_cited_rewards(cited_uris)
-            await self._record_valid_skill_citations(
-                sk=sk,
-                session_id=session_id,
-                turn_id=turn_id,
-                tenant_id=tenant_id,
-                user_id=user_id,
-                cited_uris=cited_uris,
-            )
 
             buffer = manager._conversation_buffers.setdefault(
                 sk,
@@ -190,39 +182,6 @@ class ContextCommitService:
         task = asyncio.create_task(manager._apply_cited_rewards(valid_uris))
         manager._pending_tasks.add(task)
         task.add_done_callback(manager._pending_tasks.discard)
-
-    async def _record_valid_skill_citations(
-        self,
-        *,
-        sk: "SessionKey",
-        session_id: str,
-        turn_id: str,
-        tenant_id: str,
-        user_id: str,
-        cited_uris: Optional[List[str]],
-    ) -> None:
-        manager = self._manager
-        if (
-            not cited_uris
-            or not hasattr(manager._orchestrator, "_skill_event_store")
-            or not manager._orchestrator._skill_event_store
-        ):
-            return
-
-        skill_uris = [uri for uri in cited_uris if "/skills/" in uri]
-        server_selected = manager._selected_skill_uris.get((sk, turn_id), set())
-        for uri in skill_uris:
-            if uri not in server_selected:
-                logger.debug("[ContextManager] Dropped forged skill citation: %s", uri)
-                continue
-            await manager._append_skill_event(
-                session_id,
-                turn_id,
-                uri,
-                tenant_id,
-                user_id,
-                "cited",
-            )
 
     def _build_write_items(
         self,

@@ -28,7 +28,6 @@ from opencortex.auth.token import (
 from opencortex.config import get_config
 from opencortex.http.models import (
     # Context Protocol
-    ContextPrepareResponse,
     ContextRequest,
     IntentShouldRecallRequest,
     KnowledgeApproveRequest,
@@ -643,11 +642,17 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.post("/api/v1/context")
     async def context_handler(req: ContextRequest) -> Dict[str, Any]:
-        """Unified memory_context lifecycle: prepare / commit / end."""
+        """Context lifecycle endpoint for commit / end."""
         from opencortex.http.request_context import get_effective_identity
 
+        if req.phase == "prepare":
+            raise HTTPException(
+                status_code=400,
+                detail="prepare phase has been removed; use intent/search APIs",
+            )
+
         tid, uid = get_effective_identity()
-        response = await _orchestrator._context_manager.handle(
+        return await _orchestrator._context_manager.handle(
             session_id=req.session_id,
             phase=req.phase,
             tenant_id=tid,
@@ -660,11 +665,6 @@ def _register_routes(app: FastAPI) -> None:
             if req.tool_calls
             else None,
         )
-        if req.phase == "prepare":
-            return ContextPrepareResponse.model_validate(response).model_dump(
-                exclude_none=True
-            )
-        return response
 
     # =====================================================================
     # System Status

@@ -29,7 +29,6 @@ class EndRunState:
     start_time: float
     total_turns: int
     fail_fast: bool
-    session_owner_ids: List[str]
     status: str = "closed"
     traces: int = 0
     knowledge_candidates: int = 0
@@ -69,9 +68,6 @@ class ContextEndService:
                     start_time=time.monotonic(),
                     total_turns=len(manager._committed_turns.get(sk, set())),
                     fail_fast=bool((config or {}).get("fail_fast_end", False)),
-                    session_owner_ids=sorted(
-                        manager._session_memory_owner_ids.get(sk, set())
-                    ),
                 )
                 try:
                     await self._wait_for_background_merge(
@@ -96,12 +92,6 @@ class ContextEndService:
                         user_id=user_id,
                     )
                     await self._persist_source_and_end_session(
-                        state,
-                        session_id=session_id,
-                        tenant_id=tenant_id,
-                        user_id=user_id,
-                    )
-                    self._schedule_autophagy(
                         state,
                         session_id=session_id,
                         tenant_id=tenant_id,
@@ -282,31 +272,6 @@ class ContextEndService:
                 f"sid={session_id} tenant={tenant_id} user={user_id}",
                 exc,
             )
-
-    def _schedule_autophagy(
-        self,
-        state: EndRunState,
-        *,
-        session_id: str,
-        tenant_id: str,
-        user_id: str,
-    ) -> None:
-        manager = self._manager
-        if (
-            not state.session_owner_ids
-            or getattr(manager._orchestrator, "_autophagy_kernel", None) is None
-        ):
-            return
-        task = asyncio.create_task(
-            manager._run_autophagy_metabolism(
-                session_id=session_id,
-                tenant_id=tenant_id,
-                user_id=user_id,
-                owner_ids=state.session_owner_ids,
-            )
-        )
-        manager._pending_tasks.add(task)
-        task.add_done_callback(manager._pending_tasks.discard)
 
     async def _wait_for_merge_followups(
         self,

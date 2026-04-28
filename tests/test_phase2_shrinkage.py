@@ -110,11 +110,7 @@ class TestPhase2Shrinkage(unittest.TestCase):
         async def _test():
             async with _shrinkage_test_app() as (client, orch):
                 cm = orch._context_manager
-                # Run full lifecycle
-                await cm.handle(session_id="s1", phase="prepare",
-                                tenant_id="testteam", user_id="alice",
-                                turn_id="t1",
-                                messages=[{"role": "user", "content": "hello"}])
+                # Run commit/end lifecycle.
                 await cm.handle(session_id="s1", phase="commit",
                                 tenant_id="testteam", user_id="alice",
                                 turn_id="t1",
