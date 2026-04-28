@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     )
     from opencortex.services.memory_write_dedup_service import MemoryWriteDedupService
     from opencortex.services.memory_write_derive_service import MemoryWriteDeriveService
+    from opencortex.services.memory_write_embed_service import MemoryWriteEmbedService
 
 logger = logging.getLogger(__name__)
 
@@ -451,16 +452,8 @@ class MemoryWriteService:
         merge_signature = assembled.merge_signature
         mergeable = assembled.mergeable
 
-        # Embed (offload sync embedder to thread so we don't block the loop)
-        result = None
-        if orch._embedder:
-            loop = asyncio.get_event_loop()
-            embed_started = asyncio.get_running_loop().time()
-            result = await loop.run_in_executor(
-                None, orch._embedder.embed, ctx.get_vectorization_text()
-            )
-            embed_ms = int((asyncio.get_running_loop().time() - embed_started) * 1000)
-            ctx.vector = result.dense_vector
+        embed_result = await self._write_embed_service.embed_for_write(ctx)
+        embed_ms = embed_result.embed_ms
 
         # --- Write-time semantic dedup ---
         if dedup and ctx.vector and is_leaf and mergeable:
@@ -501,11 +494,6 @@ class MemoryWriteService:
         if is_leaf and parent_uri:
             await self._service._ensure_parent_records(parent_uri)
 
-        sparse_vector = (
-            result.sparse_vector
-            if orch._embedder and result is not None and result.sparse_vector
-            else None
-        )
         store_result = await self._store_record_service.persist_context_record(
             ctx=ctx,
             content=content,
@@ -519,7 +507,7 @@ class MemoryWriteService:
             session_id=session_id,
             tenant_id=tid,
             user_id=uid,
-            sparse_vector=sparse_vector,
+            sparse_vector=embed_result.sparse_vector,
             is_leaf=is_leaf,
         )
         upsert_ms = store_result.upsert_ms
@@ -597,6 +585,19 @@ class MemoryWriteService:
         if cached is None:
             cached = MemoryWriteDeriveService(self)
             self._write_derive_service_instance = cached
+        return cached
+
+    @property
+    def _write_embed_service(self) -> "MemoryWriteEmbedService":
+        """Lazy-built service for write-path embedding."""
+        from opencortex.services.memory_write_embed_service import (
+            MemoryWriteEmbedService,
+        )
+
+        cached = getattr(self, "_write_embed_service_instance", None)
+        if cached is None:
+            cached = MemoryWriteEmbedService(self)
+            self._write_embed_service_instance = cached
         return cached
 
     async def _check_duplicate(
