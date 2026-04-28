@@ -180,8 +180,7 @@ class ContextCommitService:
             return
         manager = self._manager
         task = asyncio.create_task(manager._apply_cited_rewards(valid_uris))
-        manager._pending_tasks.add(task)
-        task.add_done_callback(manager._pending_tasks.discard)
+        manager._recomposition_tasks.track_pending_task(task)
 
     def _build_write_items(
         self,
@@ -245,7 +244,7 @@ class ContextCommitService:
         finally:
             reset_request_identity(tokens_for_identity)
 
-        merge_lock = manager._session_merge_locks.setdefault(sk, asyncio.Lock())
+        merge_lock = manager._recomposition_tasks.merge_lock(sk)
         async with merge_lock:
             active_buffer = manager._conversation_buffers.get(sk)
             if active_buffer is None:

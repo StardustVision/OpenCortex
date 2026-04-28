@@ -1992,7 +1992,7 @@ class TestContextManager(unittest.TestCase):
                 for record in self.storage._records.get("context", {}).values()
                 if record.get("meta", {}).get("layer") == "immediate"
             ]
-            self.assertIn(sk, cm._session_merge_tasks)
+            self.assertIn(sk, cm._recomposition_tasks.session_merge_tasks)
             await asyncio.wait_for(merge_started.wait(), timeout=1.0)
 
             end_task = asyncio.create_task(
@@ -2029,7 +2029,7 @@ class TestContextManager(unittest.TestCase):
                     for record in self.storage._records.get("context", {}).values()
                 )
             )
-            self.assertNotIn(sk, cm._session_merge_tasks)
+            self.assertNotIn(sk, cm._recomposition_tasks.session_merge_tasks)
 
             await orch.close()
 
@@ -2078,8 +2078,8 @@ class TestContextManager(unittest.TestCase):
 
             await asyncio.wait_for(derive_started.wait(), timeout=1.0)
             await cm._wait_for_merge_task(sk)
-            self.assertNotIn(sk, cm._session_merge_tasks)
-            self.assertIn(sk, cm._session_merge_followup_tasks)
+            self.assertNotIn(sk, cm._recomposition_tasks.session_merge_tasks)
+            self.assertIn(sk, cm._recomposition_tasks.session_merge_followup_tasks)
 
             end_task = asyncio.create_task(
                 cm.handle(
@@ -2098,7 +2098,7 @@ class TestContextManager(unittest.TestCase):
 
             self.assertEqual(result["status"], "closed")
             self.assertTrue(full_recompose_spawned.is_set())
-            self.assertNotIn(sk, cm._session_merge_followup_tasks)
+            self.assertNotIn(sk, cm._recomposition_tasks.session_merge_followup_tasks)
 
             await orch.close()
 
