@@ -17,7 +17,7 @@
 
 LLM agents forget. Session context, user preferences, design decisions, debugging history, and reusable workflows disappear unless they are stored outside the model window.
 
-OpenCortex is the persistence layer for that problem. It combines layered memory storage, intent-aware recall planning, and retrieval tuned for agent workflows, then exposes the result through one HTTP backend and one MCP package.
+OpenCortex is the persistence layer for that problem. It combines layered memory storage, intent-aware recall planning, and retrieval tuned for agent workflows, then exposes the result through one HTTP API backend.
 
 In practice, OpenCortex is built for:
 
@@ -63,7 +63,7 @@ Core memory, optional knowledge extraction, insights reporting, and the skill en
 
 ```text
 AI client
-  -> MCP package (plugins/opencortex-memory/)
+  -> HTTP API
   -> FastAPI server
   -> MemoryOrchestrator
      -> ingest pipelines for memory / document / conversation
@@ -73,20 +73,20 @@ AI client
   -> optional web console at /console
 ```
 
-At a high level, agents talk to the MCP package, the MCP package talks to the FastAPI backend, and the backend coordinates storage, recall, context lifecycle, and optional higher-level analysis services.
+At a high level, agents and client applications call the FastAPI backend directly over HTTP. The backend coordinates storage, recall, context lifecycle, and optional higher-level analysis services.
 
 ## Quick Start
 
 ### Requirements
 
 - Python `>=3.10`
-- Node.js `>=18`
+- Node.js `>=18` only for optional console development
 - `uv`
 
 ### 1. Install
 
 ```bash
-git clone --recurse-submodules https://github.com/StardustVision/OpenCortex.git
+git clone https://github.com/StardustVision/OpenCortex.git
 cd OpenCortex
 uv sync
 ```
@@ -104,33 +104,17 @@ uv run opencortex-token generate
 uv run opencortex-token list
 ```
 
-### 3. Connect an MCP client
+### 3. Call the HTTP API
 
-Claude Code:
-
-```bash
-claude mcp add opencortex -- npx -y opencortex-memory
-```
-
-Codex CLI:
+Create or reuse a token, then send requests directly to the running backend:
 
 ```bash
-codex mcp add opencortex -- npx -y opencortex-memory
+uv run opencortex-token generate
+export OPENCORTEX_TOKEN="<token printed by opencortex-token>"
+curl -H "Authorization: Bearer $OPENCORTEX_TOKEN" http://127.0.0.1:8921/api/v1/memory/health
 ```
 
-Gemini CLI:
-
-```bash
-gemini mcp add opencortex -- npx -y opencortex-memory
-```
-
-Then run the setup wizard:
-
-```bash
-npx opencortex-cli setup
-```
-
-The MCP config lives in `./mcp.json` or `~/.opencortex/mcp.json`, depending on mode and scope.
+The central agent lifecycle endpoint is `/api/v1/context`. Memory and content endpoints live under `/api/v1/memory` and `/api/v1/content`.
 
 ### 4. Docker option
 
@@ -163,7 +147,7 @@ Concrete next stops for route-level details:
 
 ## Repository Layout
 
-At the top level, the repository is organized around the core backend in `src/opencortex/`, the optional console in `web/`, the MCP integration layer in `plugins/opencortex-memory/`, automated verification in `tests/`, and supporting material under `docs/`, `scripts/`, and `examples/`.
+At the top level, the repository is organized around the core backend in `src/opencortex/`, the optional console in `web/`, automated verification in `tests/`, and supporting material under `docs/`, `scripts/`, and `examples/`.
 
 ## Deep Dives
 
@@ -177,8 +161,6 @@ At the top level, the repository is organized around the core backend in `src/op
 ```bash
 uv run --group dev pytest
 ```
-
-The MCP package under `plugins/opencortex-memory/` also carries its own Node.js test suite.
 
 ## Python Style Gate
 
@@ -205,7 +187,7 @@ burned down, not a safe place for new code.
 
 ## Tech Stack
 
-OpenCortex uses a Python/FastAPI backend, CortexFS plus embedded Qdrant for storage, a Node.js MCP package for client integration, and React/Vite for the optional console.
+OpenCortex uses a Python/FastAPI backend, CortexFS plus embedded Qdrant for storage, and React/Vite for the optional console.
 
 ## License
 

@@ -66,7 +66,7 @@ class MockEmbedder(DenseEmbedderBase):
 
 
 # =============================================================================
-# In-Memory Storage (same as test_e2e_phase1.py / test_mcp_server.py)
+# In-memory storage helpers shared with HTTP integration tests.
 # =============================================================================
 
 

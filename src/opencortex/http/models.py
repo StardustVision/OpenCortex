@@ -1,9 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Pydantic request/response models for the OpenCortex HTTP Server.
-
-Each model mirrors the parameters of the corresponding MCP tool in
-``mcp_server.py``.
-"""
+"""Pydantic request/response models for the OpenCortex HTTP API."""
 
 from __future__ import annotations
 
@@ -265,7 +261,7 @@ class TraceListRequest(BaseModel):
 
 
 class ToolCallRecord(BaseModel):
-    """Structured tool usage record from MCP add_message."""
+    """Structured tool usage record captured from an agent turn."""
 
     name: str
     summary: str = ""

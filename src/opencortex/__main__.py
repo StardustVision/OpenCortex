@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Allow running as ``python -m opencortex.mcp_server``."""
+"""Allow running the OpenCortex HTTP server with ``python -m opencortex``."""
 
-from opencortex.mcp_server import main
+from opencortex.http.__main__ import main
 
 main()
