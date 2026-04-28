@@ -39,11 +39,11 @@ TEST_QUESTIONS: list[RecallQuestion] = [
         description="HTTP server framework and port",
     ),
     RecallQuestion(
-        query="MCP Server 默认监听哪个端口？",
-        expected_keywords=["8920"],
+        query="OpenCortex 默认 HTTP API 端口是什么？",
+        expected_keywords=["8921"],
         difficulty="easy",
-        source_doc="mcp-server.md",
-        description="MCP server default port",
+        source_doc="architecture.md",
+        description="HTTP API default port",
     ),
     RecallQuestion(
         query="三层文件系统 L0 L1 L2 分别存什么？",
@@ -74,11 +74,11 @@ TEST_QUESTIONS: list[RecallQuestion] = [
         description="ACE v2 three roles",
     ),
     RecallQuestion(
-        query="MCP Server 支持哪几种传输协议？",
-        expected_keywords=["stdio", "SSE", "streamable"],
+        query="OpenCortex 上下文生命周期端点支持哪三个阶段？",
+        expected_keywords=["prepare", "commit", "end"],
         difficulty="easy",
-        source_doc="mcp-server.md",
-        description="MCP transport protocols",
+        source_doc="architecture.md",
+        description="Context lifecycle phases",
     ),
     RecallQuestion(
         query="记忆检索质量的 Recall@5 通过标准是多少？",

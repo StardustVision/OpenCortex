@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""ContextManager — three-phase lifecycle for the Memory Context Protocol.
+"""ContextManager — three-phase lifecycle for the HTTP context API.
 
 Manages prepare/commit/end phases for platform-agnostic memory recall and
-session recording.  Replaces Claude Code hooks with a single MCP tool.
+session recording through a single lifecycle endpoint.
 
 Design doc: docs/memory-context-protocol.md v1.2
 """

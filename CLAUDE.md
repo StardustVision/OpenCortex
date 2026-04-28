@@ -9,7 +9,7 @@ Core subsystems:
 - **CortexFS** — three-layer filesystem (L0 abstract / L1 overview / L2 content)
 - **HierarchicalRetriever** — frontier-batching wave search with reward score fusion
 - **IntentRouter** — 3-layer query analysis (keywords → LLM → memory triggers)
-- **ContextManager** — three-phase lifecycle for Memory Context Protocol (prepare/commit/end)
+- **ContextManager** — three-phase lifecycle for the HTTP context API (prepare/commit/end)
 - **Observer** — real-time session transcript recording
 - **TraceSplitter** — LLM-driven conversation → task trace decomposition
 - **TraceStore** — persistent trace storage (Qdrant + CortexFS)
@@ -22,13 +22,12 @@ Core subsystems:
 ## Tech Stack
 
 - Python 3.10+, async-first (HTTP server backend)
-- Node.js >= 18 (MCP server + plugin hooks, zero external deps)
+- Node.js >= 18 (optional React/Vite console)
 - Vector store: Qdrant (embedded local mode, no separate process)
 - Embedding: Local (multilingual-e5-large) / OpenAI-compatible
 - Reranking: Local (jina-reranker-v2-base-multilingual) / API
 - HTTP: FastAPI + uvicorn + httpx
-- MCP: Node.js stdio proxy (9 tools → HTTP API)
-- Tests: unittest (140+ Python) + node:test (8 Node.js MCP)
+- Tests: unittest / pytest Python coverage
 
 ## Directory Structure
 
@@ -43,7 +42,7 @@ src/opencortex/
     models.py                    # Pydantic request models
     __main__.py                  # CLI entry point (opencortex-server)
   context/
-    manager.py                   # ContextManager — Memory Context Protocol lifecycle
+    manager.py                   # ContextManager — HTTP context lifecycle
     session_records.py           # SessionRecordsRepository — session-scoped record queries (paging + scope)
     benchmark_ingest_service.py  # BenchmarkConversationIngestService — admin benchmark ingest orchestration
     recomposition_types.py       # RecompositionError + shared recomposition dataclasses
@@ -94,13 +93,11 @@ benchmarks/adapters/             # Benchmark eval adapters (LongMemEval, LoCoMo,
   locomo.py                      # LoCoMoBench
   beam.py                        # BeamBench
 
-plugins/opencortex-memory/       # Git submodule → github.com/StardustVision/OpenCortex-Memory
-
 tests/
   test_e2e_phase1.py             # 24 E2E tests
   test_ingestion_e2e.py          # Ingestion pipeline E2E (memory/document/conversation modes)
   test_write_dedup.py            # Write dedup tests
-  test_context_manager.py        # Memory Context Protocol tests (8 scenarios)
+  test_context_manager.py        # Context lifecycle tests
   test_alpha_*.py                # Cortex Alpha component tests
   test_parse_*.py                # Parser subsystem tests
   test_ingest_resolver.py        # IngestModeResolver routing tests
@@ -118,7 +115,6 @@ docs/solutions/                  # documented solutions to past problems and pat
 - **Client-side identity via JWT**: identity is NOT in server-side `CortexConfig`. It's embedded in the JWT token claims (`tid`/`uid`). `RequestContextMiddleware` decodes the Bearer token → contextvars.
   - Identity: JWT claims `tid`/`uid` → `get_effective_identity()`
 - **Server config** (`CortexConfig`): only server-side settings — storage, embedding, LLM, rerank, HTTP bind. Loads from `server.json` or `~/.opencortex/server.json`.
-- **Client config** (`mcp.json`): connection + token. Loads from `mcp.json` or `~/.opencortex/mcp.json`. Node.js `buildClientHeaders()` attaches `Authorization: Bearer <token>` to every HTTP request.
 - Reward scoring methods (`update_reward`, `get_profile`, `apply_decay`, `set_protected`) are not in the interface — detected via `hasattr` on the adapter
 - Package management uses `uv` (not pip)
 - VikingFS has been renamed to CortexFS; old name retained for backward compatibility
@@ -128,13 +124,13 @@ docs/solutions/                  # documented solutions to past problems and pat
 ### Call Chains
 
 ```
-MCP path:   Agent → node mcp-server.mjs (stdio) → fetch + headers → HTTP Server (FastAPI) → Orchestrator → Qdrant
+HTTP path:  Agent / client → HTTP Server (FastAPI) → Orchestrator → Qdrant
 
-Headers:    mcp.json → buildClientHeaders() → Authorization: Bearer <JWT>
-            → RequestContextMiddleware → decode JWT (tid/uid) → contextvars → get_effective_identity()
+Headers:    Authorization: Bearer <JWT> → RequestContextMiddleware
+            → decode JWT (tid/uid) → contextvars → get_effective_identity()
 ```
 
-### Memory Context Protocol
+### Context Lifecycle
 
 ```
 recall (prepare)         → ContextManager → IntentRouter + search() + knowledge_search()
@@ -207,10 +203,6 @@ Each memory is written to both:
 
 Search returns L0/L1 from Qdrant (zero filesystem I/O). L2 requires a CortexFS read.
 
-### MCP Server
-
-Pure Node.js stdio proxy with built-in session lifecycle management. The MCP client manages its lifecycle via `.mcp.json`. The server translates MCP tool calls into HTTP requests to the FastAPI server. Session state (recall/add_message/end) is managed internally — no hooks required.
-
 ## HTTP Server
 
 ```bash
@@ -228,9 +220,6 @@ docker compose up -d
 ```bash
 # Python core tests (no external dependencies)
 uv run python3 -m unittest tests.test_e2e_phase1 tests.test_write_dedup tests.test_context_manager -v
-
-# Node.js MCP tests (in plugin submodule, requires running HTTP server)
-cd plugins/opencortex-memory && npm test
 
 # Full regression
 uv run python3 -m unittest discover -s tests -v

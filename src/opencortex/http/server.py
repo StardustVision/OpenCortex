@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""FastAPI HTTP Server for OpenCortex.
+"""FastAPI HTTP server for OpenCortex.
 
-Hosts the MemoryOrchestrator and exposes all MCP tool capabilities as REST
-endpoints.  This is the primary deployment target — the MCP Server acts as
-a thin client that forwards requests here.
+Hosts the MemoryOrchestrator and exposes memory, context, retrieval, and
+administrative capabilities as REST endpoints.
 
 Usage::
 

@@ -6,10 +6,10 @@ OpenCortex gives AI agents persistent memory that survives across sessions. It s
 
 ## Quick Start
 
-Prerequisites: Python >= 3.10, Node.js >= 18, uv (Python package manager)
+Prerequisites: Python >= 3.10, uv (Python package manager). Node.js >= 18 is only needed for optional console development.
 
 ```bash
-git clone --recurse-submodules https://github.com/StardustVision/OpenCortex.git
+git clone https://github.com/StardustVision/OpenCortex.git
 cd OpenCortex
 uv sync
 uv run opencortex-token generate   # create JWT identity token
@@ -37,9 +37,9 @@ Reward-based feedback ranking. Positive feedback boosts memory score; unused mem
 final_score = beta * rerank_score + (1-beta) * retrieval_score + reward_weight * reward_score
 ```
 
-### Memory Context Protocol
+### Context Lifecycle
 
-Platform-agnostic three-phase lifecycle replacing client-specific hooks:
+Platform-agnostic three-phase lifecycle through `/api/v1/context`:
 
 - **prepare**: Before generating a response — recalls relevant memories and knowledge
 - **commit**: After generating a response — records the conversation turn, applies RL reward
@@ -76,7 +76,7 @@ Complete data isolation between tenants and users via JWT-based identity.
 
 ```
 AI Agent (Claude Code / Cursor / Custom)
-  → MCP Protocol (stdio) → Node.js MCP Server (9 tools) → HTTP → FastAPI Server (:8921)
+  → HTTP API → FastAPI Server (:8921)
     → MemoryOrchestrator → IntentRouter + HierarchicalRetriever + ContextManager + Observer
       → CortexFS (L0/L1/L2 filesystem) + Qdrant (vectors + RL scoring)
 ```
@@ -94,7 +94,7 @@ Search reads from Qdrant (zero filesystem I/O). L2 requires CortexFS read.
 ## Tech Stack
 
 - Python 3.10+ async-first (FastAPI + uvicorn + httpx)
-- Node.js >= 18 (MCP server, zero external deps)
+- Node.js >= 18 for optional console development
 - Qdrant embedded (no separate process)
 - Embedding: local (multilingual-e5-large) or OpenAI-compatible API
 - Reranking: local (jina-reranker-v2-base-multilingual) or API
@@ -149,14 +149,6 @@ All endpoints require JWT Bearer token (except /health).
 - `POST /api/v1/intent/should_recall` — Decide if recall is needed for a query
 - `GET  /api/v1/system/status` — Unified health/stats/doctor status
 
-## MCP Tools (9 tools)
-
-- `store` / `batch_store` / `search` / `feedback` / `decay`
-- `recall` (prepare → search → return context)
-- `add_message` (commit turn to Observer)
-- `end` (close session → trace splitting → knowledge extraction)
-- `system_status`
-
 ## Python API
 
 ```python
@@ -207,24 +199,10 @@ Search order: `./server.json` → `~/.opencortex/server.json`
 
 All fields overridable via `OPENCORTEX_` env prefix.
 
-### Client Config (mcp.json)
-
-Search order: `./mcp.json` → `~/.opencortex/mcp.json`
-
-```json
-{
-  "mode": "remote",
-  "token": "<jwt-token>",
-  "remote": { "http_url": "http://your-server:8921" }
-}
-```
-
-Env overrides: `OPENCORTEX_MODE`, `OPENCORTEX_HTTP_URL`, `OPENCORTEX_TOKEN`.
-
 ## Deployment Modes
 
-- **Local**: Auto-starts HTTP server via SessionStart hook; MCP server managed by client
-- **Remote**: Connect to pre-deployed HTTP server; no Python needed on client
+- **Local**: Run `uv run opencortex-server --port 8921` and call the HTTP API on localhost
+- **Remote**: Connect clients to a pre-deployed HTTP server
 - **Docker**: `docker compose up -d` with volume-mounted config
 
 ## Project Structure
@@ -235,7 +213,7 @@ src/opencortex/
   config.py                # CortexConfig dataclass + env overrides
   http/                    # FastAPI server + async client + request context
   retrieve/                # IntentRouter + HierarchicalRetriever + reranking
-  context/                 # ContextManager (Memory Context Protocol lifecycle)
+  context/                 # ContextManager (HTTP context lifecycle)
   alpha/                   # Observer, TraceSplitter, Archivist, Sandbox, KnowledgeStore
   storage/                 # VikingDBInterface + CortexFS + Qdrant adapter
   ingest/                  # IngestModeResolver (memory/document/conversation routing)
@@ -243,20 +221,17 @@ src/opencortex/
   models/                  # Embedder abstractions (local/API)
   auth/                    # JWT token generation and validation
   utils/                   # CortexURI tenant-isolated URI scheme
-plugins/opencortex-memory/ # Git submodule — Node.js MCP server (stdio proxy)
-tests/                     # 140+ Python tests + 8 Node.js tests
+tests/                     # Python tests
 ```
 
 ## Testing
 
 ```bash
 uv run python3 -m unittest tests.test_e2e_phase1 tests.test_write_dedup tests.test_context_manager -v
-cd plugins/opencortex-memory && npm test   # requires running HTTP server
 uv run python3 -m unittest discover -s tests -v   # full regression
 ```
 
 ## Links
 
 - Source: https://github.com/StardustVision/OpenCortex
-- MCP Plugin: https://github.com/StardustVision/OpenCortex-Memory
 - License: Apache-2.0

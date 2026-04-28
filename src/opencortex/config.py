@@ -37,8 +37,8 @@ DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "server.json"
 # Legacy config path (for migration)
 _LEGACY_CONFIG_PATH = DEFAULT_CONFIG_DIR / "opencortex.json"
 
-# Fields that belong to MCP config (excluded from server.json)
-_MCP_ONLY_FIELDS = {"mcp_transport", "mcp_port", "mcp_mode"}
+# Legacy client-side fields excluded when migrating old config into server.json.
+_LEGACY_CLIENT_ONLY_FIELDS = {"mcp_transport", "mcp_port", "mcp_mode"}
 
 
 @dataclass
@@ -323,8 +323,11 @@ class CortexConfig:
                 with open(_LEGACY_CONFIG_PATH, "r", encoding="utf-8") as f:
                     legacy_data = json.load(f)
                 known_fields = {f.name for f in cls.__dataclass_fields__.values()}
-                filtered = {k: v for k, v in legacy_data.items()
-                            if k in known_fields and k not in _MCP_ONLY_FIELDS}
+                filtered = {
+                    k: v
+                    for k, v in legacy_data.items()
+                    if k in known_fields and k not in _LEGACY_CLIENT_ONLY_FIELDS
+                }
                 config = cls(**filtered)
             except Exception:
                 config = cls()
