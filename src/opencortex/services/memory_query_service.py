@@ -24,6 +24,7 @@ from opencortex.retrieve.types import (
     QueryResult,
     TypedQuery,
 )
+from opencortex.services.memory_signals import RecallCompletedSignal
 
 if TYPE_CHECKING:
     from opencortex.services.memory_service import MemoryService
@@ -294,35 +295,19 @@ class MemoryQueryService:
                 ),
             )
 
-        # Skill Engine: search active skills and merge into FindResult.skills
-        if orch._skill_manager:
-            try:
-                from opencortex.retrieve.types import MatchedContext
-
-                skill_results = await orch._skill_manager.search(
-                    query,
-                    tid,
-                    uid,
-                    top_k=3,
-                )
-                for sr in skill_results:
-                    result.skills.append(
-                        MatchedContext(
-                            uri=sr.uri,
-                            context_type=ContextType.SKILL,
-                            is_leaf=True,
-                            abstract=sr.abstract,
-                            overview=sr.overview,
-                            content=sr.content,
-                            category=sr.category.value,
-                            score=0.0,
-                            session_id="",
-                        )
-                    )
-            except Exception as exc:
-                logger.debug("[search] Skill search failed: %s", exc)
-
         result.total = len(result.memories) + len(result.resources) + len(result.skills)
+        signal_bus = getattr(orch, "_memory_signal_bus", None)
+        if signal_bus is not None:
+            signal_bus.publish_nowait(
+                RecallCompletedSignal(
+                    query=query,
+                    tenant_id=tid,
+                    user_id=uid,
+                    memories=list(result.memories),
+                    resources=list(result.resources),
+                    skills=list(result.skills),
+                )
+            )
         return result
 
     def _build_typed_queries(

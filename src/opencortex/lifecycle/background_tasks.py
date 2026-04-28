@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Background task lifecycle service extracted from MemoryOrchestrator.
 
-All background sweeper, worker, and recall-bookkeeping methods have been
+All background sweeper and worker methods have been
 extracted from ``MemoryOrchestrator`` as part of plan 014 (Phase 3 of
 the God Object decomposition). This module owns the startup and teardown
 of every async background loop that runs inside the orchestrator process.
@@ -17,8 +17,6 @@ Boundary
 - Document derive worker (``_start_derive_worker``, ``_derive_worker``,
   ``_process_derive_task``, ``_recover_pending_derives``,
   ``_drain_derive_queue``)
-- Recall bookkeeping dispatch (``_schedule_recall_bookkeeping``,
-  ``_recall_bookkeeping_tasks_set``, ``_run_recall_bookkeeping``)
 - Reverse-order teardown of all background tasks (``close``)
 
 It is explicitly NOT responsible for:
@@ -50,7 +48,7 @@ import asyncio
 import logging
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 if TYPE_CHECKING:
     from opencortex.orchestrator import MemoryOrchestrator
@@ -676,93 +674,6 @@ class BackgroundTaskManager:
         await self._orch._derive_queue.join()
 
     # =========================================================================
-    # Recall bookkeeping
-    # =========================================================================
-
-    def _schedule_recall_bookkeeping(
-        self,
-        *,
-        memories: List[Any],
-        query: str,
-        tenant_id: str,
-        user_id: str,
-    ) -> None:
-        """Run recall-side autophagy bookkeeping off the request hot path.
-
-        Args:
-            memories: Retrieved memory records from the search result.
-            query: The original search query string.
-            tenant_id: Tenant identifier for the recall context.
-            user_id: User identifier for the recall context.
-        """
-        if not memories or getattr(self._orch, "_autophagy_kernel", None) is None:
-            return
-        task = asyncio.create_task(
-            self._run_recall_bookkeeping(
-                memories=memories,
-                query=query,
-                tenant_id=tenant_id,
-                user_id=user_id,
-            ),
-            name="opencortex.autophagy.recall_bookkeeping",
-        )
-        tasks = self._recall_bookkeeping_tasks_set()
-        tasks.add(task)
-        task.add_done_callback(tasks.discard)
-
-    def _recall_bookkeeping_tasks_set(self) -> Set[asyncio.Task]:
-        """Return the tracked background recall bookkeeping task set.
-
-        Returns:
-            The mutable set of in-flight recall bookkeeping tasks held on
-            the orchestrator. Creates the set on first access.
-        """
-        orch = self._orch
-        if not hasattr(orch, "_recall_bookkeeping_tasks"):
-            orch._recall_bookkeeping_tasks = set()
-        return orch._recall_bookkeeping_tasks
-
-    async def _run_recall_bookkeeping(
-        self,
-        *,
-        memories: List[Any],
-        query: str,
-        tenant_id: str,
-        user_id: str,
-    ) -> None:
-        """Apply autophagy recall bookkeeping without blocking retrieval.
-
-        Args:
-            memories: Retrieved memory records for which recall outcomes
-                should be recorded.
-            query: The original search query string.
-            tenant_id: Tenant identifier for scoped logging.
-            user_id: User identifier for scoped logging.
-        """
-        orch = self._orch
-        recalled_owner_ids: List[str] = []
-        try:
-            recalled_owner_ids = await orch._resolve_memory_owner_ids(memories)
-            if not recalled_owner_ids or orch._autophagy_kernel is None:
-                return
-            await orch._autophagy_kernel.apply_recall_outcome(
-                owner_ids=recalled_owner_ids,
-                query=query,
-                recall_outcome={"selected_results": recalled_owner_ids},
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.warning(
-                "[BackgroundTaskManager] Autophagy recall application failed "
-                "tenant=%s user=%s owners=%d: %s",
-                tenant_id,
-                user_id,
-                len(recalled_owner_ids),
-                exc,
-            )
-
-    # =========================================================================
     # Teardown
     # =========================================================================
 
@@ -772,7 +683,7 @@ class BackgroundTaskManager:
         Teardown order:
         1. Connection sweeper (cancel first — must not inspect half-closed pools)
         2. Autophagy sweeper tasks (startup + periodic)
-        3. Recall bookkeeping tasks
+        3. Memory signal handler tasks
         4. Derive worker (graceful drain via sentinel, then forced cancel on timeout)
 
         Resets each task handle attribute on the orchestrator to ``None``
@@ -808,21 +719,9 @@ class BackgroundTaskManager:
         # unit tests that build instances via ``__new__`` to skip
         # ``__init__`` (e.g. tests/test_perf_fixes.py) used to crash
         # here on the first attribute miss.
-        recall_tasks_set = (
-            self._recall_bookkeeping_tasks_set()
-            if hasattr(orch, "_recall_bookkeeping_tasks")
-            and orch._recall_bookkeeping_tasks
-            else None
-        )
-        if recall_tasks_set is not None:
-            recall_tasks = list(recall_tasks_set)
-            for task in recall_tasks:
-                if not task.done():
-                    task.cancel()
-            for task in recall_tasks:
-                with suppress(asyncio.CancelledError):
-                    await task
-            recall_tasks_set.clear()
+        signal_bus = getattr(orch, "_memory_signal_bus", None)
+        if signal_bus is not None:
+            await signal_bus.close()
 
         derive_worker_task = getattr(orch, "_derive_worker_task", None)
         if derive_worker_task and not derive_worker_task.done():

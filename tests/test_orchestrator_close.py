@@ -2,7 +2,7 @@
 """Shutdown ordering and idempotency tests for MemoryOrchestrator.close().
 
 Locks the contract added by U3 (plan 009): the existing close()
-sequence (autophagy tasks -> recall tasks -> derive worker ->
+sequence (autophagy tasks -> signal tasks -> derive worker ->
 context_manager) is extended with the new pooled-client teardown
 steps for ``_llm_completion`` and ``_rerank_client`` between
 ``context_manager.close()`` and ``immediate_fallback_embedder.close()``.

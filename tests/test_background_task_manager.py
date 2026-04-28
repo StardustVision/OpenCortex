@@ -88,7 +88,7 @@ class TestCloseLifecycle(unittest.IsolatedAsyncioTestCase):
         mock_orch._connection_sweep_task = None
         mock_orch._autophagy_startup_sweep_task = None
         mock_orch._autophagy_sweep_task = None
-        mock_orch._recall_bookkeeping_tasks = set()
+        mock_orch._memory_signal_bus = None
         mock_orch._derive_worker_task = None
         mgr = BackgroundTaskManager(mock_orch)
         # Should complete without error
@@ -104,7 +104,7 @@ class TestCloseLifecycle(unittest.IsolatedAsyncioTestCase):
         mock_orch._connection_sweep_task = task
         mock_orch._autophagy_startup_sweep_task = None
         mock_orch._autophagy_sweep_task = None
-        mock_orch._recall_bookkeeping_tasks = set()
+        mock_orch._memory_signal_bus = None
         mock_orch._derive_worker_task = None
 
         mgr = BackgroundTaskManager(mock_orch)
@@ -117,31 +117,13 @@ class TestCloseLifecycle(unittest.IsolatedAsyncioTestCase):
         mock_orch._connection_sweep_task = None
         mock_orch._autophagy_startup_sweep_task = None
         mock_orch._autophagy_sweep_task = None
-        mock_orch._recall_bookkeeping_tasks = set()
+        mock_orch._memory_signal_bus = None
         mock_orch._derive_worker_task = None
 
         mgr = BackgroundTaskManager(mock_orch)
         await mgr.close()
 
         self.assertIsNone(mock_orch._connection_sweep_task)
-
-
-class TestRecallBookkeepingTasksSet(unittest.TestCase):
-    """_recall_bookkeeping_tasks_set returns and caches the set."""
-
-    def test_returns_empty_set_on_first_access(self) -> None:
-        mock_orch = MagicMock(spec=[])  # no attributes
-        mgr = BackgroundTaskManager(mock_orch)
-        result = mgr._recall_bookkeeping_tasks_set()
-        self.assertIsInstance(result, set)
-        self.assertEqual(len(result), 0)
-
-    def test_same_set_returned_on_second_access(self) -> None:
-        mock_orch = MagicMock(spec=[])
-        mgr = BackgroundTaskManager(mock_orch)
-        a = mgr._recall_bookkeeping_tasks_set()
-        b = mgr._recall_bookkeeping_tasks_set()
-        self.assertIs(a, b)
 
 
 class TestDocstringPresence(unittest.TestCase):
@@ -156,9 +138,6 @@ class TestDocstringPresence(unittest.TestCase):
         "_start_derive_worker",
         "_recover_pending_derives",
         "_drain_derive_queue",
-        "_schedule_recall_bookkeeping",
-        "_recall_bookkeeping_tasks_set",
-        "_run_recall_bookkeeping",
         "close",
     ]
 
