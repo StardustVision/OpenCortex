@@ -28,6 +28,7 @@ if TYPE_CHECKING:
         MemoryWriteContextBuilder,
     )
     from opencortex.services.memory_write_dedup_service import MemoryWriteDedupService
+    from opencortex.services.memory_write_derive_service import MemoryWriteDeriveService
 
 logger = logging.getLogger(__name__)
 
@@ -394,7 +395,6 @@ class MemoryWriteService:
             )
 
         add_started = asyncio.get_running_loop().time()
-        derive_layers_ms = 0
         embed_ms = 0
         dedup_ms = 0
         upsert_ms = 0
@@ -411,35 +411,17 @@ class MemoryWriteService:
         uri = target.uri
         parent_uri = target.parent_uri
 
-        # Derive L0/L1/keywords from L2 via structured LLM calls
-        layers = {}
-        if content and is_leaf and not defer_derive:
-            derive_started = asyncio.get_running_loop().time()
-            layers = await orch._derive_layers(
-                user_abstract=abstract,
-                content=content,
-                user_overview=overview,
-            )
-            derive_layers_ms = int(
-                (asyncio.get_running_loop().time() - derive_started) * 1000,
-            )
-            if not abstract:
-                abstract = layers["abstract"]
-            if not overview:
-                overview = layers["overview"]
-        elif content and is_leaf and defer_derive:
-            # Deferred derive: use deterministic truncation as placeholder
-            if not overview:
-                overview = orch._fallback_overview_from_content(
-                    user_overview=overview,
-                    content=content,
-                )
-            if not abstract:
-                abstract = orch._derive_abstract_from_overview(
-                    user_abstract=abstract,
-                    overview=overview,
-                    content=content,
-                )
+        derive_result = await self._write_derive_service.derive_for_write(
+            abstract=abstract,
+            overview=overview,
+            content=content,
+            is_leaf=is_leaf,
+            defer_derive=defer_derive,
+        )
+        abstract = derive_result.abstract
+        overview = derive_result.overview
+        layers = derive_result.layers
+        derive_layers_ms = derive_result.derive_layers_ms
 
         # Read effective identity for downstream dedup and persistence.
         tid, uid = get_effective_identity()
@@ -602,6 +584,19 @@ class MemoryWriteService:
         if cached is None:
             cached = MemoryWriteContextBuilder(self)
             self._context_builder_instance = cached
+        return cached
+
+    @property
+    def _write_derive_service(self) -> "MemoryWriteDeriveService":
+        """Lazy-built service for write-path derive coordination."""
+        from opencortex.services.memory_write_derive_service import (
+            MemoryWriteDeriveService,
+        )
+
+        cached = getattr(self, "_write_derive_service_instance", None)
+        if cached is None:
+            cached = MemoryWriteDeriveService(self)
+            self._write_derive_service_instance = cached
         return cached
 
     async def _check_duplicate(
