@@ -73,15 +73,11 @@ from opencortex.storage.cortex_fs import CortexFS
 from opencortex.storage.storage_interface import StorageInterface
 from opencortex.utils.json_parse import parse_json_from_response
 from opencortex.utils.text import chunked_llm_derive, smart_truncate
-from opencortex.utils.uri import CortexURI
 
 logger = logging.getLogger(__name__)
 
 # Default collection name for all context types
 _CONTEXT_COLLECTION = "context"
-
-_IMMEDIATE_EMBED_TIMEOUT_SECONDS = 8.0
-_IMMEDIATE_LOCAL_FALLBACK_MODEL = "BAAI/bge-m3"
 
 
 class MemoryOrchestrator:
@@ -136,6 +132,8 @@ class MemoryOrchestrator:
         self._retrieval_service_instance: Optional[Any] = None
         self._session_lifecycle_service_instance: Optional[Any] = None
         self._memory_record_service_instance: Optional[Any] = None
+        self._model_runtime_service_instance: Optional[Any] = None
+        self._memory_sharing_service_instance: Optional[Any] = None
         # Plan 009 / RELY-01 — InsightsAgent (when enabled in
         # ``server.py`` lifespan) holds a second LLMCompletion wrapper
         # whose pool would otherwise leak on shutdown. The lifespan
@@ -238,7 +236,7 @@ class MemoryOrchestrator:
         )
 
     # =========================================================================
-    # Initialization
+    # Bootstrap and model runtime facade
     # =========================================================================
 
     async def init(self) -> "MemoryOrchestrator":
@@ -252,8 +250,6 @@ class MemoryOrchestrator:
             self (for chaining)
         """
         return await self._bootstrapper.init()
-
-    # Delegates to SubsystemBootstrapper (bodies live in bootstrapper.py)
 
     async def _init_cognition(self) -> None:
         """Delegate to SubsystemBootstrapper._init_cognition."""
@@ -285,99 +281,48 @@ class MemoryOrchestrator:
 
     def _is_retryable_immediate_embed_exception(self, exc: Exception) -> bool:
         """Return True when immediate remote embedding should fall back locally."""
-        if isinstance(exc, TimeoutError):
-            return True
-        try:
-            import httpx
-
-            return isinstance(exc, (httpx.TimeoutException, httpx.TransportError))
-        except Exception:
-            return False
+        return self._model_runtime_service._is_retryable_immediate_embed_exception(exc)
 
     def _create_immediate_fallback_embedder(self) -> Optional[EmbedderBase]:
         """Create a local fallback embedder for immediate-write remote failures."""
-        try:
-            from opencortex.models.embedder.local_embedder import LocalEmbedder
-
-            local_config = {"onnx_intra_op_threads": self._config.onnx_intra_op_threads}
-            embedder = LocalEmbedder(
-                model_name=_IMMEDIATE_LOCAL_FALLBACK_MODEL,
-                config=local_config,
-            )
-            if not embedder.is_available:
-                logger.warning(
-                    "[MemoryOrchestrator] Immediate local fallback unavailable "
-                    "(model=%s)",
-                    _IMMEDIATE_LOCAL_FALLBACK_MODEL,
-                )
-                return None
-
-            detected_dim = embedder.get_dimension()
-            expected_dim = self._config.embedding_dimension or detected_dim
-            if expected_dim and detected_dim != expected_dim:
-                logger.warning(
-                    "[MemoryOrchestrator] Immediate local fallback disabled: "
-                    "model=%s dim=%d != configured_dim=%d",
-                    _IMMEDIATE_LOCAL_FALLBACK_MODEL,
-                    detected_dim,
-                    expected_dim,
-                )
-                embedder.close()
-                return None
-
-            logger.info(
-                "[MemoryOrchestrator] Created immediate local fallback embedder "
-                "(model=%s, dim=%d)",
-                _IMMEDIATE_LOCAL_FALLBACK_MODEL,
-                detected_dim,
-            )
-            return self._wrap_with_cache(self._wrap_with_hybrid(embedder))
-        except Exception as exc:
-            logger.warning(
-                "[MemoryOrchestrator] Failed to create immediate local fallback "
-                "embedder: %s",
-                exc,
-            )
-            return None
+        return self._model_runtime_service._create_immediate_fallback_embedder()
 
     def _get_immediate_fallback_embedder(self) -> Optional[EmbedderBase]:
         """Return cached immediate local fallback embedder if available."""
-        if self._immediate_fallback_embedder_attempted:
-            return self._immediate_fallback_embedder
-        self._immediate_fallback_embedder_attempted = True
-        self._immediate_fallback_embedder = self._create_immediate_fallback_embedder()
-        return self._immediate_fallback_embedder
+        return self._model_runtime_service._get_immediate_fallback_embedder()
 
-    def _wrap_with_hybrid(self, embedder):
+    def _wrap_with_hybrid(self, embedder: EmbedderBase) -> EmbedderBase:
         """Wrap dense embedder with BM25 sparse for hybrid search.
 
         No-op if embedder is already hybrid.
         """
-        from opencortex.models.embedder.base import HybridEmbedderBase
-
-        if isinstance(embedder, HybridEmbedderBase):
-            return embedder
-        from opencortex.models.embedder.base import CompositeHybridEmbedder
-        from opencortex.models.embedder.sparse import BM25SparseEmbedder
-
-        return CompositeHybridEmbedder(embedder, BM25SparseEmbedder())
+        return self._model_runtime_service._wrap_with_hybrid(embedder)
 
     def _wrap_with_cache(self, embedder: EmbedderBase) -> EmbedderBase:
         """Wrap an embedder with LRU cache."""
-        try:
-            from opencortex.models.embedder.cache import CachedEmbedder
+        return self._model_runtime_service._wrap_with_cache(embedder)
 
-            cached = CachedEmbedder(embedder, max_size=10000, ttl_seconds=3600)
-            logger.info(
-                "[MemoryOrchestrator] Wrapped embedder with LRU cache (max=10000, ttl=3600s)"
-            )
-            return cached
-        except Exception as exc:
-            logger.warning("[MemoryOrchestrator] Failed to wrap with cache: %s", exc)
-            return embedder
+    def _get_or_create_rerank_client(self) -> RerankClient:
+        """Return the process-lifetime RerankClient singleton (lazy).
+
+        Plan 009: Constructed on first access so the orchestrator's
+        normal init path stays cheap (eager construction would fire
+        ``_init_local_reranker`` -> fastembed model download in every
+        test). Once built, the same instance serves every caller for
+        the process lifetime — closes the per-request leak that
+        triggered the original CLOSE_WAIT incident.
+        """
+        return self._model_runtime_service._get_or_create_rerank_client()
+
+    def _build_rerank_config(self) -> RerankConfig:
+        """Build RerankConfig by merging explicit rerank_config with CortexConfig fields.
+
+        Priority: explicit rerank_config > CortexConfig rerank_* fields > defaults.
+        """
+        return self._model_runtime_service._build_rerank_config()
 
     # =========================================================================
-    # Background task lifecycle — delegates (bodies live in BackgroundTaskManager)
+    # Background task and system facade
     # =========================================================================
 
     def _start_derive_worker(self) -> None:
@@ -415,45 +360,6 @@ class MemoryOrchestrator:
     async def reembed_all(self) -> int:
         """Re-embed all records with the current embedder."""
         return await self._system_status_service.reembed_all()
-
-    def _get_or_create_rerank_client(self) -> RerankClient:
-        """Return the process-lifetime RerankClient singleton (lazy).
-
-        Plan 009: Constructed on first access so the orchestrator's
-        normal init path stays cheap (eager construction would fire
-        ``_init_local_reranker`` -> fastembed model download in every
-        test). Once built, the same instance serves every caller for
-        the process lifetime — closes the per-request leak that
-        triggered the original CLOSE_WAIT incident.
-        """
-        if self._rerank_client is None:
-            self._rerank_client = RerankClient(
-                self._build_rerank_config(),
-                llm_completion=self._llm_completion,
-            )
-        return self._rerank_client
-
-    def _build_rerank_config(self) -> RerankConfig:
-        """Build RerankConfig by merging explicit rerank_config with CortexConfig fields.
-
-        Priority: explicit rerank_config > CortexConfig rerank_* fields > defaults.
-        """
-        # Start from the explicit rerank_config (if provided) or defaults
-        base = self._rerank_config or RerankConfig()
-
-        # Overlay CortexConfig rerank_* fields (only if they're set and base is default)
-        cfg = self._config
-        return RerankConfig(
-            model=base.model or cfg.rerank_model,
-            api_key=base.api_key or cfg.rerank_api_key or cfg.embedding_api_key,
-            api_base=base.api_base or cfg.rerank_api_base,
-            threshold=base.threshold or cfg.rerank_threshold,
-            provider=getattr(base, "provider", "") or cfg.rerank_provider,
-            fusion_beta=getattr(base, "fusion_beta", 0.0) or cfg.rerank_fusion_beta,
-            max_candidates=getattr(base, "max_candidates", 0)
-            or cfg.rerank_max_candidates,
-            use_llm_fallback=getattr(base, "use_llm_fallback", True),
-        )
 
     async def _write_immediate(
         self,
@@ -751,6 +657,7 @@ class MemoryOrchestrator:
         cached = getattr(self, "_memory_service_instance", None)
         if cached is None:
             from opencortex.services.memory_service import MemoryService
+
             cached = MemoryService(self)
             self._memory_service_instance = cached
         return cached
@@ -799,6 +706,28 @@ class MemoryOrchestrator:
         if cached is None:
             cached = MemoryRecordService(self)
             self._memory_record_service_instance = cached
+        return cached
+
+    @property
+    def _model_runtime_service(self) -> "ModelRuntimeService":
+        """Lazy-built ModelRuntimeService for embedder/rerank runtime helpers."""
+        from opencortex.services.model_runtime_service import ModelRuntimeService
+
+        cached = getattr(self, "_model_runtime_service_instance", None)
+        if cached is None:
+            cached = ModelRuntimeService(self)
+            self._model_runtime_service_instance = cached
+        return cached
+
+    @property
+    def _memory_sharing_service(self) -> "MemorySharingService":
+        """Lazy-built MemorySharingService for sharing/admin mutations."""
+        from opencortex.services.memory_sharing_service import MemorySharingService
+
+        cached = getattr(self, "_memory_sharing_service_instance", None)
+        if cached is None:
+            cached = MemorySharingService(self)
+            self._memory_sharing_service_instance = cached
         return cached
 
     @property
@@ -866,7 +795,7 @@ class MemoryOrchestrator:
         return cached
 
     # =========================================================================
-    # Add / Update / Remove
+    # Memory write/mutation facade
     # =========================================================================
 
     async def add(
@@ -927,7 +856,6 @@ class MemoryOrchestrator:
             overview=overview,
         )
 
-
     async def remove(self, uri: str, recursive: bool = True) -> int:
         """Delegate to ``MemoryService.remove`` (plan 010 / Phase 1)."""
         return await self._memory_service.remove(uri, recursive=recursive)
@@ -936,7 +864,9 @@ class MemoryOrchestrator:
         self, existing_uri: str, new_abstract: str, new_content: str
     ) -> None:
         """Delegate to ``MemoryService._merge_into`` (plan 011)."""
-        return await self._memory_service._merge_into(existing_uri, new_abstract, new_content)
+        return await self._memory_service._merge_into(
+            existing_uri, new_abstract, new_content
+        )
 
     # =========================================================================
     # Search / Retrieve
@@ -1444,7 +1374,7 @@ class MemoryOrchestrator:
         return await self._knowledge_service.archivist_status()
 
     # =========================================================================
-    # Batch Import
+    # Batch import and sharing/admin facade
     # =========================================================================
 
     async def batch_add(
@@ -1455,7 +1385,9 @@ class MemoryOrchestrator:
     ) -> Dict[str, Any]:
         """Delegate to ``MemoryService.batch_add`` (plan 011)."""
         return await self._memory_service.batch_add(
-            items, source_path=source_path, scan_meta=scan_meta,
+            items,
+            source_path=source_path,
+            scan_meta=scan_meta,
         )
 
     async def promote_to_shared(
@@ -1468,63 +1400,10 @@ class MemoryOrchestrator:
         Rewrites URIs from user/{uid}/resources/... to resources/{project}/documents/...
         Updates Qdrant scope field and CortexFS paths.
         """
-        self._ensure_init()
-        tid, uid = get_effective_identity()
-        promoted = 0
-        errors = []
-
-        for uri in uris:
-            try:
-                # 1. Get existing record
-                results = await self._storage.filter(
-                    self._get_collection(),
-                    filter={"op": "must", "field": "uri", "conds": [uri]},
-                    limit=1,
-                )
-                if not results:
-                    errors.append({"uri": uri, "error": "not found"})
-                    continue
-
-                record = results[0]
-
-                # 2. Build new shared URI
-                # Extract node name from old URI (last path segment)
-                parts = uri.rstrip("/").split("/")
-                node_name = parts[-1] if parts else "unnamed"
-                new_uri = CortexURI.build_shared(
-                    tid, "resources", project_id, "documents", node_name
-                )
-
-                # 3. Update record fields
-                record["uri"] = new_uri
-                record["scope"] = "shared"
-                record["project_id"] = project_id
-                record["parent_uri"] = CortexURI.build_shared(
-                    tid, "resources", project_id, "documents"
-                )
-
-                # 4. Upsert with new URI
-                await self._storage.upsert(self._get_collection(), record)
-
-                # 5. Delete old record if URI changed
-                if new_uri != uri:
-                    old_id = record.get("id", "")
-                    if old_id:
-                        try:
-                            await self._storage.delete(self._get_collection(), [old_id])
-                        except Exception:
-                            pass  # best-effort cleanup
-
-                promoted += 1
-            except Exception as exc:
-                errors.append({"uri": uri, "error": str(exc)})
-
-        return {
-            "status": "ok" if not errors else "partial",
-            "promoted": promoted,
-            "total": len(uris),
-            "errors": errors,
-        }
+        return await self._memory_sharing_service.promote_to_shared(
+            uris=uris,
+            project_id=project_id,
+        )
 
     # =========================================================================
     # Lifecycle
@@ -1549,9 +1428,7 @@ class MemoryOrchestrator:
             ("insights_llm_completion", "_insights_llm_completion"),
         ):
             wrapper = getattr(self, attr, None)
-            wrapper_aclose = (
-                getattr(wrapper, "aclose", None) if wrapper else None
-            )
+            wrapper_aclose = getattr(wrapper, "aclose", None) if wrapper else None
             if wrapper_aclose is None:
                 continue
             try:
@@ -1560,7 +1437,9 @@ class MemoryOrchestrator:
                 logger.warning(
                     "[MemoryOrchestrator] %s aclose failed: %s "
                     "(continuing teardown — pool socket may linger "
-                    "until kernel reclaims)", label, exc,
+                    "until kernel reclaims)",
+                    label,
+                    exc,
                 )
         rerank_client = getattr(self, "_rerank_client", None)
         if rerank_client is not None:
@@ -1569,7 +1448,8 @@ class MemoryOrchestrator:
             except Exception as exc:
                 logger.warning(
                     "[MemoryOrchestrator] rerank_client aclose failed: %s "
-                    "(continuing teardown)", exc,
+                    "(continuing teardown)",
+                    exc,
                 )
 
         immediate_fallback_embedder = getattr(
