@@ -116,8 +116,8 @@ class CortexConfig:
     embedding_model: str = DEFAULT_LOCAL_EMBEDDING_MODEL
     embedding_api_key: str = ""
     embedding_api_base: str = ""
-    # LLM completion (for IntentAnalyzer)
-    llm_model: str = ""           # LLM model name for intent analysis
+    # LLM completion (for derivation and optional plugins)
+    llm_model: str = ""           # LLM model name for LLM-backed features
     llm_api_key: str = ""         # LLM API key (defaults to embedding_api_key if empty)
     llm_api_base: str = ""        # LLM API base URL
     llm_api_format: str = "openai"  # "openai" | "anthropic"

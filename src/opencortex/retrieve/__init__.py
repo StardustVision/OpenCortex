@@ -2,7 +2,7 @@
 """
 OpenCortex retrieval module.
 
-Provides types and classes for hierarchical retrieval and intent analysis.
+Provides types and classes for hierarchical retrieval.
 """
 
 from opencortex.retrieve.types import (

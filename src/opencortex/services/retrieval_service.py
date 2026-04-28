@@ -2,8 +2,8 @@
 """Search and retrieval domain service for OpenCortex.
 
 This module owns probe/planner/runtime binding, object-aware retrieval,
-reranking, and session-aware search. The orchestrator keeps thin
-compatibility wrappers for existing callers and tests.
+and reranking. The orchestrator keeps thin compatibility wrappers for
+existing callers and tests.
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from opencortex.core.message import Message
 from opencortex.http.request_context import (
     get_effective_identity,
     get_effective_project_id,
@@ -36,7 +35,6 @@ from opencortex.intent.retrieval_support import (
 from opencortex.intent.retrieval_support import (
     query_anchor_groups as build_query_anchor_groups,
 )
-from opencortex.retrieve.intent_analyzer import IntentAnalyzer, LLMCompletionCallable
 from opencortex.retrieve.types import (
     ContextType,
     DetailLevel,
@@ -55,6 +53,9 @@ from opencortex.retrieve.uri_path_scorer import (
 
 if TYPE_CHECKING:
     from opencortex.orchestrator import MemoryOrchestrator
+    from opencortex.services.retrieval_candidate_service import (
+        RetrievalCandidateService,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -100,14 +101,6 @@ class RetrievalService:
     @property
     def _entity_index(self) -> Any:
         return self._orch._entity_index
-
-    @property
-    def _analyzer(self) -> Any:
-        return self._orch._analyzer
-
-    @property
-    def _llm_completion(self) -> Any:
-        return self._orch._llm_completion
 
     @property
     def _retrieval_candidate_service(self) -> "RetrievalCandidateService":
@@ -450,91 +443,124 @@ class RetrievalService:
             detail_level=detail_level,
         )
 
-    async def _execute_object_query(
+    @staticmethod
+    def _object_query_kind_filter(
+        retrieve_plan: Optional[RetrievalPlan],
+    ) -> Optional[Dict[str, Any]]:
+        """Build memory-kind narrowing for one object query."""
+        if retrieve_plan is None or not retrieve_plan.target_memory_kinds:
+            return None
+        return {
+            "op": "must",
+            "field": "memory_kind",
+            "conds": [kind.value for kind in retrieve_plan.target_memory_kinds],
+        }
+
+    @staticmethod
+    def _object_query_scope_filter(
+        retrieve_plan: Optional[RetrievalPlan],
+        probe_result: Optional[SearchResult],
+    ) -> Optional[Dict[str, Any]]:
+        """Build planner-selected scope narrowing for one object query."""
+        if retrieve_plan is None:
+            return None
+        if retrieve_plan.scope_filter:
+            return retrieve_plan.scope_filter
+        if retrieve_plan.scope_level == ScopeLevel.GLOBAL:
+            return None
+        if not probe_result or not probe_result.starting_points:
+            return None
+
+        if retrieve_plan.scope_level == ScopeLevel.CONTAINER_SCOPED:
+            parent_uris = [sp.uri for sp in probe_result.starting_points if sp.uri]
+            if parent_uris:
+                return {"op": "must", "field": "parent_uri", "conds": parent_uris}
+        elif retrieve_plan.scope_level == ScopeLevel.SESSION_ONLY:
+            session_ids = sorted(
+                {sp.session_id for sp in probe_result.starting_points if sp.session_id}
+            )
+            if session_ids:
+                return {"op": "must", "field": "session_id", "conds": session_ids}
+        elif retrieve_plan.scope_level == ScopeLevel.DOCUMENT_ONLY:
+            doc_ids = sorted(
+                {
+                    sp.source_doc_id
+                    for sp in probe_result.starting_points
+                    if sp.source_doc_id
+                }
+            )
+            if doc_ids:
+                return {"op": "must", "field": "source_doc_id", "conds": doc_ids}
+        return None
+
+    @staticmethod
+    def _object_query_candidate_limit(
+        *,
+        limit: int,
+        retrieve_plan: Optional[RetrievalPlan],
+        bound_plan: Optional[Dict[str, Any]],
+        rerank_enabled: bool,
+    ) -> int:
+        """Resolve the raw candidate cap for one object query."""
+        candidate_limit = int((bound_plan or {}).get("raw_candidate_cap") or 0)
+        if candidate_limit > 0:
+            return candidate_limit
+
+        recall_budget = (
+            retrieve_plan.search_profile.recall_budget
+            if retrieve_plan is not None
+            else 0.4
+        )
+        candidate_limit = max(
+            limit,
+            min(64, limit + max(4, int(round(recall_budget * 20)))),
+        )
+        if rerank_enabled:
+            candidate_limit = min(64, candidate_limit + 8)
+        return candidate_limit
+
+    @staticmethod
+    def _projection_target_uri(hit: Dict[str, Any]) -> str:
+        """Return the leaf URI targeted by an anchor/fact projection."""
+        return str(
+            hit.get("projection_target_uri")
+            or (hit.get("meta") or {}).get("projection_target_uri", "")
+            or ""
+        )
+
+    def _object_query_filters(
         self,
         *,
-        typed_query: TypedQuery,
-        limit: int,
-        score_threshold: Optional[float],
         search_filter: Optional[Dict[str, Any]],
         retrieve_plan: Optional[RetrievalPlan],
         probe_result: Optional[SearchResult],
-        bound_plan: Optional[Dict[str, Any]] = None,
-    ) -> QueryResult:
-        """Execute one object-aware retrieval query with three-layer parallel search."""
-        started = time.perf_counter()
-        embed_started = started
-        query_vector = await self._orch._embed_retrieval_query(typed_query.query)
-        embed_finished = time.perf_counter()
-
-        kind_filter = None
-        if retrieve_plan is not None and retrieve_plan.target_memory_kinds:
-            kind_filter = {
-                "op": "must",
-                "field": "memory_kind",
-                "conds": [kind.value for kind in retrieve_plan.target_memory_kinds],
-            }
-
+        bound_plan: Optional[Dict[str, Any]],
+    ) -> tuple[
+        Dict[str, Any],
+        Dict[str, Any],
+        Dict[str, Any],
+        Optional[Dict[str, Any]],
+    ]:
+        """Build leaf, anchor, fact-point, and planner scope filters."""
+        kind_filter = self._object_query_kind_filter(retrieve_plan)
         start_point_filter = build_start_point_filter(
             retrieve_plan=retrieve_plan,
             probe_result=probe_result,
             bound_plan=bound_plan,
         )
-
-        scope_only_filter: Optional[Dict[str, Any]] = None
-        if retrieve_plan is not None:
-            if retrieve_plan.scope_filter:
-                scope_only_filter = retrieve_plan.scope_filter
-            elif retrieve_plan.scope_level != ScopeLevel.GLOBAL:
-                if probe_result and probe_result.starting_points:
-                    if retrieve_plan.scope_level == ScopeLevel.CONTAINER_SCOPED:
-                        parent_uris = [
-                            sp.uri for sp in probe_result.starting_points if sp.uri
-                        ]
-                        if parent_uris:
-                            scope_only_filter = {
-                                "op": "must",
-                                "field": "parent_uri",
-                                "conds": parent_uris,
-                            }
-                    elif retrieve_plan.scope_level == ScopeLevel.SESSION_ONLY:
-                        session_ids = sorted(
-                            {
-                                sp.session_id
-                                for sp in probe_result.starting_points
-                                if sp.session_id
-                            }
-                        )
-                        if session_ids:
-                            scope_only_filter = {
-                                "op": "must",
-                                "field": "session_id",
-                                "conds": session_ids,
-                            }
-                    elif retrieve_plan.scope_level == ScopeLevel.DOCUMENT_ONLY:
-                        doc_ids = sorted(
-                            {
-                                sp.source_doc_id
-                                for sp in probe_result.starting_points
-                                if sp.source_doc_id
-                            }
-                        )
-                        if doc_ids:
-                            scope_only_filter = {
-                                "op": "must",
-                                "field": "source_doc_id",
-                                "conds": doc_ids,
-                            }
-
+        scope_only_filter = self._object_query_scope_filter(
+            retrieve_plan,
+            probe_result,
+        )
         is_leaf_filter = {"op": "must", "field": "is_leaf", "conds": [True]}
-        leaf_filter_merged = merge_filter_clauses(
+        leaf_filter = merge_filter_clauses(
             search_filter,
             kind_filter,
             scope_only_filter,
             is_leaf_filter,
             start_point_filter,
         )
-        anchor_filter_merged = merge_filter_clauses(
+        anchor_filter = merge_filter_clauses(
             search_filter,
             start_point_filter,
             scope_only_filter,
@@ -544,54 +570,48 @@ class RetrievalService:
                 "conds": ["anchor_projection"],
             },
         )
-        fp_filter_merged = merge_filter_clauses(
+        fact_point_filter = merge_filter_clauses(
             search_filter,
             start_point_filter,
             scope_only_filter,
             {"op": "must", "field": "retrieval_surface", "conds": ["fact_point"]},
         )
+        return leaf_filter, anchor_filter, fact_point_filter, scope_only_filter
 
-        query_anchor_groups = build_query_anchor_groups(retrieve_plan, probe_result)
-        rerank_enabled = bool(query_anchor_groups) or bool(
-            retrieve_plan is not None and retrieve_plan.search_profile.rerank
-        )
-        candidate_limit = int((bound_plan or {}).get("raw_candidate_cap") or 0)
-        if candidate_limit <= 0:
-            recall_budget = (
-                retrieve_plan.search_profile.recall_budget
-                if retrieve_plan is not None
-                else 0.4
-            )
-            candidate_limit = max(
-                limit, min(64, limit + max(4, int(round(recall_budget * 20))))
-            )
-            if rerank_enabled:
-                candidate_limit = min(64, candidate_limit + 8)
-
+    async def _search_object_layers(
+        self,
+        *,
+        typed_query: TypedQuery,
+        query_vector: Optional[List[float]],
+        leaf_filter: Dict[str, Any],
+        anchor_filter: Dict[str, Any],
+        fact_point_filter: Dict[str, Any],
+        candidate_limit: int,
+    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Run leaf, anchor, and fact-point searches in parallel."""
         leaf_limit = candidate_limit
         anchor_limit = min(64, candidate_limit * 2)
-        fp_limit = min(96, candidate_limit * 3)
-
+        fact_point_limit = min(96, candidate_limit * 3)
         search_results = await asyncio.gather(
             self._storage.search(
                 self._get_collection(),
                 query_vector=query_vector,
-                filter=leaf_filter_merged,
+                filter=leaf_filter,
                 limit=leaf_limit,
                 text_query=typed_query.query,
             ),
             self._storage.search(
                 self._get_collection(),
                 query_vector=query_vector,
-                filter=anchor_filter_merged,
+                filter=anchor_filter,
                 limit=anchor_limit,
                 text_query=None,
             ),
             self._storage.search(
                 self._get_collection(),
                 query_vector=query_vector,
-                filter=fp_filter_merged,
-                limit=fp_limit,
+                filter=fact_point_filter,
+                limit=fact_point_limit,
                 text_query=None,
             ),
             return_exceptions=True,
@@ -602,7 +622,7 @@ class RetrievalService:
         anchor_hits: List[Dict[str, Any]] = (
             search_results[1] if not isinstance(search_results[1], Exception) else []
         )
-        fp_hits: List[Dict[str, Any]] = (
+        fact_point_hits: List[Dict[str, Any]] = (
             search_results[2] if not isinstance(search_results[2], Exception) else []
         )
         if isinstance(search_results[0], Exception):
@@ -613,86 +633,112 @@ class RetrievalService:
             )
         if isinstance(search_results[2], Exception):
             logger.debug("[RetrievalService] fp search failed: %s", search_results[2])
+        return leaf_hits, anchor_hits, fact_point_hits
 
-        search_finished = time.perf_counter()
-
-        def _get_target_uri(hit: Dict[str, Any]) -> str:
-            return str(
-                hit.get("projection_target_uri")
-                or (hit.get("meta") or {}).get("projection_target_uri", "")
-                or ""
-            )
-
+    async def _load_missing_projected_leaves(
+        self,
+        *,
+        leaf_hits: List[Dict[str, Any]],
+        anchor_hits: List[Dict[str, Any]],
+        fact_point_hits: List[Dict[str, Any]],
+        search_filter: Optional[Dict[str, Any]],
+        scope_only_filter: Optional[Dict[str, Any]],
+    ) -> None:
+        """Hydrate leaves referenced only through projection records."""
         known_leaf_uris = {str(r.get("uri", "")) for r in leaf_hits if r.get("uri")}
         projected_uris = {
-            _get_target_uri(h) for h in anchor_hits + fp_hits if _get_target_uri(h)
+            self._projection_target_uri(hit)
+            for hit in anchor_hits + fact_point_hits
+            if self._projection_target_uri(hit)
         }
         missing_uris = [u for u in projected_uris if u and u not in known_leaf_uris]
+        if not missing_uris:
+            return
 
-        if missing_uris:
-            try:
-                tid, uid = get_effective_identity()
-                project_id = get_effective_project_id()
-                missing_filter = merge_filter_clauses(
-                    search_filter,
-                    scope_only_filter,
-                    is_leaf_filter,
-                    {"op": "must", "field": "uri", "conds": missing_uris},
-                )
-                loaded = await self._storage.search(
-                    self._get_collection(),
-                    query_vector=None,
-                    filter=missing_filter,
-                    limit=len(missing_uris) + 5,
-                )
-                for record in loaded:
-                    if self._orch._record_passes_acl(record, tid, uid, project_id):
-                        leaf_hits.append(record)
-                        known_leaf_uris.add(str(record.get("uri", "") or ""))
-            except Exception as exc:
-                logger.debug("[RetrievalService] batch URI load failed: %s", exc)
+        try:
+            tid, uid = get_effective_identity()
+            project_id = get_effective_project_id()
+            missing_filter = merge_filter_clauses(
+                search_filter,
+                scope_only_filter,
+                {"op": "must", "field": "is_leaf", "conds": [True]},
+                {"op": "must", "field": "uri", "conds": missing_uris},
+            )
+            loaded = await self._storage.search(
+                self._get_collection(),
+                query_vector=None,
+                filter=missing_filter,
+                limit=len(missing_uris) + 5,
+            )
+            for record in loaded:
+                if self._orch._record_passes_acl(record, tid, uid, project_id):
+                    leaf_hits.append(record)
+                    known_leaf_uris.add(str(record.get("uri", "") or ""))
+        except Exception as exc:
+            logger.debug("[RetrievalService] batch URI load failed: %s", exc)
 
-        uri_path_costs = compute_uri_path_scores(leaf_hits, anchor_hits, fp_hits)
+    @classmethod
+    def _object_query_path_source(
+        cls,
+        *,
+        leaf_uri: str,
+        uri_path_costs: Dict[str, float],
+        anchor_hits: List[Dict[str, Any]],
+        fact_point_hits: List[Dict[str, Any]],
+    ) -> tuple[str, Optional[float]]:
+        """Explain whether a leaf matched directly, through anchors, or facts."""
+        if leaf_uri not in uri_path_costs:
+            return "direct", None
+        cost = uri_path_costs[leaf_uri]
 
-        def _determine_path_source(leaf_uri: str) -> tuple[str, Optional[float]]:
-            if leaf_uri not in uri_path_costs:
-                return "direct", None
-            cost = uri_path_costs[leaf_uri]
-            best_fp_cost = None
-            for hit in fp_hits:
-                target_uri = _get_target_uri(hit)
-                if target_uri != leaf_uri:
-                    continue
-                score = max(0.0, min(1.0, float(hit.get("_score", 0.0))))
-                distance = 1.0 - score
-                hop = (
-                    URI_HOP_COST * HIGH_CONFIDENCE_DISCOUNT
-                    if distance < HIGH_CONFIDENCE_THRESHOLD
-                    else URI_HOP_COST
-                )
-                fp_cost = distance + hop
-                if best_fp_cost is None or fp_cost < best_fp_cost:
-                    best_fp_cost = fp_cost
-            if best_fp_cost is not None and abs(best_fp_cost - cost) < 1e-9:
-                return "fact_point", cost
+        best_fact_point_cost = None
+        for hit in fact_point_hits:
+            if cls._projection_target_uri(hit) != leaf_uri:
+                continue
+            score = max(0.0, min(1.0, float(hit.get("_score", 0.0))))
+            distance = 1.0 - score
+            hop = (
+                URI_HOP_COST * HIGH_CONFIDENCE_DISCOUNT
+                if distance < HIGH_CONFIDENCE_THRESHOLD
+                else URI_HOP_COST
+            )
+            fact_point_cost = distance + hop
+            if (
+                best_fact_point_cost is None
+                or fact_point_cost < best_fact_point_cost
+            ):
+                best_fact_point_cost = fact_point_cost
+        if best_fact_point_cost is not None and abs(best_fact_point_cost - cost) < 1e-9:
+            return "fact_point", cost
 
-            best_anchor_cost = None
-            for hit in anchor_hits:
-                target_uri = _get_target_uri(hit)
-                if target_uri != leaf_uri:
-                    continue
-                score = max(0.0, min(1.0, float(hit.get("_score", 0.0))))
-                anchor_cost = (1.0 - score) + URI_HOP_COST
-                if best_anchor_cost is None or anchor_cost < best_anchor_cost:
-                    best_anchor_cost = anchor_cost
-            if best_anchor_cost is not None and abs(best_anchor_cost - cost) < 1e-9:
-                return "anchor", cost
-            return "direct", cost
+        best_anchor_cost = None
+        for hit in anchor_hits:
+            if cls._projection_target_uri(hit) != leaf_uri:
+                continue
+            score = max(0.0, min(1.0, float(hit.get("_score", 0.0))))
+            anchor_cost = (1.0 - score) + URI_HOP_COST
+            if best_anchor_cost is None or anchor_cost < best_anchor_cost:
+                best_anchor_cost = anchor_cost
+        if best_anchor_cost is not None and abs(best_anchor_cost - cost) < 1e-9:
+            return "anchor", cost
+        return "direct", cost
 
-        rerank_started = search_finished
+    async def _rescore_object_records(
+        self,
+        *,
+        typed_query: TypedQuery,
+        retrieve_plan: Optional[RetrievalPlan],
+        probe_result: Optional[SearchResult],
+        query_anchor_groups: Dict[str, set[str]],
+        leaf_hits: List[Dict[str, Any]],
+        uri_path_costs: Dict[str, float],
+        anchor_hits: List[Dict[str, Any]],
+        fact_point_hits: List[Dict[str, Any]],
+        score_threshold: Optional[float],
+    ) -> tuple[List[Dict[str, Any]], int, int]:
+        """Apply cone rerank, score fusion, and path metadata."""
         frontier_waves = 0
         probe_candidate_ranks = build_probe_candidate_ranks(probe_result)
-
         records, cone_used = await self._orch._apply_cone_rerank(
             typed_query=typed_query,
             retrieve_plan=retrieve_plan,
@@ -724,7 +770,12 @@ class RetrievalService:
             )
             if score_threshold is not None and final_score < score_threshold:
                 continue
-            path_src, path_cst = _determine_path_source(leaf_uri)
+            path_source, path_cost = self._object_query_path_source(
+                leaf_uri=leaf_uri,
+                uri_path_costs=uri_path_costs,
+                anchor_hits=anchor_hits,
+                fact_point_hits=fact_point_hits,
+            )
             rescored_record = dict(record)
             rescored_record["_final_score"] = final_score
             rescored_record["_match_reason"] = match_reason
@@ -733,24 +784,33 @@ class RetrievalService:
                 query_anchor_groups=query_anchor_groups,
             )
             rescored_record["_cone_used"] = bool(cone_used)
-            rescored_record["_path_source"] = path_src
-            rescored_record["_path_cost"] = path_cst
+            rescored_record["_path_source"] = path_source
+            rescored_record["_path_cost"] = path_cost
             rescored_record["_path_breakdown"] = (
-                {"uri_path_cost": path_cst, "path_source": path_src}
-                if path_cst is not None
+                {"uri_path_cost": path_cost, "path_source": path_source}
+                if path_cost is not None
                 else None
             )
             rescored.append(rescored_record)
         rescored.sort(key=lambda record: record.get("_final_score", 0.0), reverse=True)
-        rerank_finished = time.perf_counter()
+        return rescored, frontier_waves, len(records)
 
-        matched_contexts = await self._orch._records_to_matched_contexts(
-            candidates=rescored[:limit],
-            context_type=typed_query.context_type,
-            detail_level=typed_query.detail_level,
-        )
-        assembled = time.perf_counter()
-
+    @staticmethod
+    def _object_query_result(
+        *,
+        typed_query: TypedQuery,
+        matched_contexts: List[MatchedContext],
+        started: float,
+        embed_started: float,
+        embed_finished: float,
+        search_finished: float,
+        rerank_started: float,
+        rerank_finished: float,
+        assembled: float,
+        candidates_before_rerank: int,
+        frontier_waves: int,
+    ) -> QueryResult:
+        """Assemble the public QueryResult and explain payload."""
         result = QueryResult(
             query=typed_query,
             matched_contexts=matched_contexts,
@@ -773,7 +833,7 @@ class RetrievalService:
             assemble_ms=(assembled - rerank_finished) * 1000,
             doc_scope_hit=bool(typed_query.target_doc_id),
             time_filter_hit=False,
-            candidates_before_rerank=len(records),
+            candidates_before_rerank=candidates_before_rerank,
             candidates_after_rerank=len(matched_contexts),
             frontier_waves=frontier_waves,
             frontier_budget_exceeded=False,
@@ -781,70 +841,103 @@ class RetrievalService:
         )
         return result
 
-    async def session_search(
+    async def _execute_object_query(
         self,
-        query: str,
-        messages: Optional[List[Message]] = None,
-        session_summary: str = "",
-        context_type: Optional[ContextType] = None,
-        target_uri: str = "",
-        limit: int = 5,
-        score_threshold: Optional[float] = None,
-        metadata_filter: Optional[Dict[str, Any]] = None,
-        llm_completion: Optional[LLMCompletionCallable] = None,
-    ) -> FindResult:
-        """Session-aware search using IntentAnalyzer for query planning."""
-        self._ensure_init()
+        *,
+        typed_query: TypedQuery,
+        limit: int,
+        score_threshold: Optional[float],
+        search_filter: Optional[Dict[str, Any]],
+        retrieve_plan: Optional[RetrievalPlan],
+        probe_result: Optional[SearchResult],
+        bound_plan: Optional[Dict[str, Any]] = None,
+    ) -> QueryResult:
+        """Execute one object-aware retrieval query with three-layer parallel search."""
+        started = time.perf_counter()
+        embed_started = started
+        query_vector = await self._orch._embed_retrieval_query(typed_query.query)
+        embed_finished = time.perf_counter()
 
-        completion_fn = llm_completion or self._llm_completion
-        if not completion_fn:
-            raise ValueError(
-                "session_search requires an LLM callable. "
-                "Provide one via constructor or llm_completion parameter."
+        query_anchor_groups = build_query_anchor_groups(retrieve_plan, probe_result)
+        rerank_enabled = bool(query_anchor_groups) or bool(
+            retrieve_plan is not None and retrieve_plan.search_profile.rerank
+        )
+        candidate_limit = self._object_query_candidate_limit(
+            limit=limit,
+            retrieve_plan=retrieve_plan,
+            bound_plan=bound_plan,
+            rerank_enabled=rerank_enabled,
+        )
+        (
+            leaf_filter,
+            anchor_filter,
+            fact_point_filter,
+            scope_only_filter,
+        ) = self._object_query_filters(
+            search_filter=search_filter,
+            retrieve_plan=retrieve_plan,
+            probe_result=probe_result,
+            bound_plan=bound_plan,
+        )
+        leaf_hits, anchor_hits, fact_point_hits = await self._search_object_layers(
+            typed_query=typed_query,
+            query_vector=query_vector,
+            leaf_filter=leaf_filter,
+            anchor_filter=anchor_filter,
+            fact_point_filter=fact_point_filter,
+            candidate_limit=candidate_limit,
+        )
+        search_finished = time.perf_counter()
+
+        await self._load_missing_projected_leaves(
+            leaf_hits=leaf_hits,
+            anchor_hits=anchor_hits,
+            fact_point_hits=fact_point_hits,
+            search_filter=search_filter,
+            scope_only_filter=scope_only_filter,
+        )
+        uri_path_costs = compute_uri_path_scores(
+            leaf_hits,
+            anchor_hits,
+            fact_point_hits,
+        )
+
+        rerank_started = search_finished
+        rescored, frontier_waves, candidates_before_rerank = (
+            await self._rescore_object_records(
+                typed_query=typed_query,
+                retrieve_plan=retrieve_plan,
+                probe_result=probe_result,
+                query_anchor_groups=query_anchor_groups,
+                leaf_hits=leaf_hits,
+                uri_path_costs=uri_path_costs,
+                anchor_hits=anchor_hits,
+                fact_point_hits=fact_point_hits,
+                score_threshold=score_threshold,
             )
-
-        analyzer = self._analyzer or IntentAnalyzer(llm_completion=completion_fn)
-
-        target_abstract = ""
-        if target_uri:
-            try:
-                target_abstract = await self._fs.abstract(target_uri)
-            except Exception:
-                pass
-
-        query_plan = await analyzer.analyze(
-            compression_summary=session_summary,
-            messages=messages or [],
-            current_message=query,
-            context_type=context_type,
-            target_abstract=target_abstract,
-            llm_completion=completion_fn,
         )
+        rerank_finished = time.perf_counter()
 
-        if target_uri:
-            for typed_query in query_plan.queries:
-                typed_query.target_directories = [target_uri]
-
-        search_filter = self._orch._build_search_filter(metadata_filter=metadata_filter)
-
-        query_results = await asyncio.gather(
-            *[
-                self._orch._execute_object_query(
-                    typed_query=typed_query,
-                    limit=limit,
-                    score_threshold=score_threshold,
-                    search_filter=search_filter,
-                    retrieve_plan=None,
-                    probe_result=None,
-                )
-                for typed_query in query_plan.queries
-            ]
+        matched_contexts = await self._orch._records_to_matched_contexts(
+            candidates=rescored[:limit],
+            context_type=typed_query.context_type,
+            detail_level=typed_query.detail_level,
         )
+        assembled = time.perf_counter()
 
-        result = self._orch._aggregate_results(query_results, limit=limit)
-        result.query_plan = query_plan
-        result.query_results = list(query_results)
-        return result
+        return self._object_query_result(
+            typed_query=typed_query,
+            matched_contexts=matched_contexts,
+            started=started,
+            embed_started=embed_started,
+            embed_finished=embed_finished,
+            search_finished=search_finished,
+            rerank_started=rerank_started,
+            rerank_finished=rerank_finished,
+            assembled=assembled,
+            candidates_before_rerank=candidates_before_rerank,
+            frontier_waves=frontier_waves,
+        )
 
     def _aggregate_results(
         self,
