@@ -29,9 +29,7 @@ from opencortex.context.session_records import (
 from opencortex.http.request_context import (
     get_effective_project_id,
     reset_request_identity,
-    reset_request_project_id,
     set_request_identity,
-    set_request_project_id,
 )
 from opencortex.intent import RetrievalPlan, SearchResult
 from opencortex.intent.retrieval_support import build_probe_scope_input
@@ -330,6 +328,8 @@ class ContextManager:
         self._recomposition_engine_instance: Optional[Any] = None
         # Lazy-initialized commit service (survives ``__new__`` bypass).
         self._commit_service_instance: Optional[Any] = None
+        # Lazy-initialized end service (survives ``__new__`` bypass).
+        self._end_service_instance: Optional[Any] = None
 
         # Config
         self._prepare_cache_ttl = prepare_cache_ttl
@@ -362,6 +362,17 @@ class ContextManager:
 
             inst = ContextCommitService(self)
             self._commit_service_instance = inst
+        return inst
+
+    @property
+    def _end_service(self) -> "ContextEndService":
+        """Lazy-initialized end coordinator."""
+        inst = getattr(self, "_end_service_instance", None)
+        if inst is None:
+            from opencortex.context.end_service import ContextEndService
+
+            inst = ContextEndService(self)
+            self._end_service_instance = inst
         return inst
 
     @staticmethod
@@ -1926,287 +1937,12 @@ class ContextManager:
         Returns:
             Dict with session end status, trace count, and timing.
         """
-        sk = self._make_session_key(tenant_id, user_id, session_id)
-        total_turns = len(self._committed_turns.get(sk, set()))
-        session_project_id = (
-            self._session_project_ids.get(sk) or get_effective_project_id()
+        return await self._end_service.end(
+            session_id=session_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            config=config,
         )
-        project_token = set_request_project_id(session_project_id)
-        lock = self._session_locks.setdefault(sk, asyncio.Lock())
-
-        try:
-            async with lock:
-                start_time = time.monotonic()
-                status = "closed"
-                traces = 0
-                knowledge_candidates = 0
-                session_owner_ids = sorted(
-                    self._session_memory_owner_ids.get(sk, set())
-                )
-                source_uri = None
-                fail_fast = bool((config or {}).get("fail_fast_end", False))
-
-                def _handle_end_failure(
-                    message: str,
-                    exc: Optional[BaseException] = None,
-                ) -> None:
-                    """Log or raise an error depending on fail_fast mode."""
-                    nonlocal status
-                    if fail_fast:
-                        raise RuntimeError(message) from exc
-                    status = "partial"
-                    if exc is None:
-                        logger.warning("[ContextManager] %s", message)
-                    else:
-                        logger.warning(
-                            "[ContextManager] %s: %s",
-                            message,
-                            exc,
-                            exc_info=(
-                                type(exc),
-                                exc,
-                                exc.__traceback__,
-                            ),
-                        )
-
-                try:
-                    merge_failures = await self._wait_for_merge_task(sk)
-                    if fail_fast and merge_failures:
-                        _handle_end_failure(
-                            "Background merge task failed "
-                            f"sid={session_id} tenant={tenant_id} user={user_id} "
-                            f"failures={len(merge_failures)}",
-                            merge_failures[0],
-                        )
-
-                    buffer = self._conversation_buffers.get(sk)
-                    if buffer and buffer.messages:
-                        try:
-                            await self._merge_buffer(
-                                sk,
-                                session_id,
-                                tenant_id,
-                                user_id,
-                                flush_all=True,
-                                raise_on_error=True,
-                            )
-                        except Exception as exc:
-                            _handle_end_failure(
-                                "End-of-session buffer flush failed "
-                                f"sid={session_id} tenant={tenant_id} user={user_id}",
-                                exc,
-                            )
-
-                    if self._session_pending_immediate_cleanup.pop(sk, False):
-                        try:
-                            immediate_uris = await self._list_immediate_uris(session_id)
-                            await self._purge_records_and_fs_subtree(immediate_uris)
-                        except Exception as exc:
-                            _handle_end_failure(
-                                "End cleanup immediates failed "
-                                f"sid={session_id} tenant={tenant_id} user={user_id}",
-                                exc,
-                            )
-
-                    try:
-                        source_uri = await self._persist_conversation_source(
-                            session_id=session_id,
-                            tenant_id=tenant_id,
-                            user_id=user_id,
-                        )
-                        result = await self._orchestrator.session_end(
-                            session_id=session_id,
-                            quality_score=0.5,
-                        )
-                        traces = result.get("alpha_traces", 0)
-                        knowledge_candidates = result.get("knowledge_candidates", 0)
-                    except Exception as exc:
-                        _handle_end_failure(
-                            "session_end failed "
-                            f"sid={session_id} tenant={tenant_id} user={user_id}",
-                            exc,
-                        )
-
-                    if (
-                        session_owner_ids
-                        and getattr(self._orchestrator, "_autophagy_kernel", None)
-                        is not None
-                    ):
-                        task = asyncio.create_task(
-                            self._run_autophagy_metabolism(
-                                session_id=session_id,
-                                tenant_id=tenant_id,
-                                user_id=user_id,
-                                owner_ids=session_owner_ids,
-                            )
-                        )
-                        self._pending_tasks.add(task)
-                        task.add_done_callback(self._pending_tasks.discard)
-
-                    followup_failures = await self._wait_for_merge_followup_tasks(sk)
-                    if fail_fast and followup_failures:
-                        _handle_end_failure(
-                            "Merge follow-up task failed "
-                            f"sid={session_id} tenant={tenant_id} user={user_id} "
-                            f"failures={len(followup_failures)}",
-                            followup_failures[0],
-                        )
-
-                    # Full recompose: re-segment all merged records semantically,
-                    # preserve conversation order, delete intermediate chunks.
-                    # Await completion so callers see final records, not intermediates.
-                    self._spawn_full_recompose_task(
-                        sk,
-                        session_id=session_id,
-                        tenant_id=tenant_id,
-                        user_id=user_id,
-                        source_uri=source_uri,
-                        raise_on_error=fail_fast,
-                    )
-                    recompose_task = self._session_full_recompose_tasks.get(sk)
-                    if recompose_task is not None:
-                        try:
-                            await asyncio.wait_for(
-                                asyncio.shield(recompose_task),
-                                timeout=120.0,
-                            )
-                        except asyncio.TimeoutError as exc:
-                            recompose_task.cancel()
-                            with contextlib.suppress(asyncio.CancelledError):
-                                await recompose_task
-                            _handle_end_failure(
-                                "Full-session recomposition timed out "
-                                f"sid={session_id} tenant={tenant_id} user={user_id} timeout=120s",
-                                exc,
-                            )
-                        except Exception as exc:
-                            _handle_end_failure(
-                                "Full-session recomposition wait failed "
-                                f"sid={session_id} tenant={tenant_id} user={user_id}",
-                                exc,
-                            )
-
-                    # Generate session-level directory summary from final merged records.
-                    try:
-                        await self._generate_session_summary(
-                            session_id=session_id,
-                            tenant_id=tenant_id,
-                            user_id=user_id,
-                            source_uri=source_uri,
-                        )
-                    except Exception as exc:
-                        _handle_end_failure(
-                            f"Session summary generation failed sid={session_id}",
-                            exc,
-                        )
-
-                    layer_counts: Optional[Dict[str, int]] = None
-                    try:
-                        layer_counts = await self._session_records.layer_counts(
-                            session_id,
-                            source_uri=source_uri,
-                            tenant_id=tenant_id,
-                            user_id=user_id,
-                        )
-                        logger.info(
-                            "[ContextManager] End state sid=%s source_uri=%s layer_counts=%s",
-                            session_id,
-                            source_uri,
-                            layer_counts,
-                        )
-                    except Exception as exc:
-                        _handle_end_failure(
-                            f"Failed to inspect end state sid={session_id}",
-                            exc,
-                        )
-
-                    if layer_counts is not None:
-                        integrity_errors: List[str] = []
-                        if total_turns > 0 and layer_counts.get("merged", 0) == 0:
-                            integrity_errors.append("merged=0")
-                        if layer_counts.get("immediate", 0) > 0:
-                            integrity_errors.append(
-                                f"immediate={layer_counts.get('immediate', 0)}",
-                            )
-                        if (
-                            layer_counts.get("merged", 0) >= 2
-                            and self._orchestrator._llm_completion is not None
-                            and layer_counts.get("session_summary", 0) == 0
-                        ):
-                            integrity_errors.append("session_summary=0")
-                        if integrity_errors:
-                            if fail_fast:
-                                _handle_end_failure(
-                                    (
-                                        "End degraded"
-                                        f" sid={session_id}"
-                                        f" source_uri={source_uri}"
-                                        f" layer_counts={layer_counts}"
-                                        f" integrity_errors={integrity_errors}"
-                                    ),
-                                )
-                            else:
-                                logger.warning(
-                                    (
-                                        "[ContextManager] End degraded"
-                                        " sid=%s source_uri=%s"
-                                        " layer_counts=%s integrity_errors=%s"
-                                    ),
-                                    session_id,
-                                    source_uri,
-                                    layer_counts,
-                                    integrity_errors,
-                                )
-
-                    duration_ms = int((time.monotonic() - start_time) * 1000)
-                    logger.info(
-                        (
-                            "[ContextManager] end"
-                            " sid=%s tenant=%s user=%s"
-                            " turns=%d traces=%d latency=%dms"
-                        ),
-                        session_id,
-                        tenant_id,
-                        user_id,
-                        total_turns,
-                        traces,
-                        duration_ms,
-                    )
-
-                    return {
-                        "session_id": session_id,
-                        "status": status,
-                        "total_turns": total_turns,
-                        "traces": traces,
-                        "knowledge_candidates": knowledge_candidates,
-                        "duration_ms": duration_ms,
-                        "source_uri": source_uri,
-                    }
-                except Exception as exc:
-                    duration_ms = int((time.monotonic() - start_time) * 1000)
-                    logger.warning(
-                        (
-                            "[ContextManager] end failed"
-                            " sid=%s tenant=%s user=%s"
-                            " latency=%dms fail_fast=%s: %s"
-                        ),
-                        session_id,
-                        tenant_id,
-                        user_id,
-                        duration_ms,
-                        fail_fast,
-                        exc,
-                        exc_info=(
-                            type(exc),
-                            exc,
-                            exc.__traceback__,
-                        ),
-                    )
-                    raise
-                finally:
-                    self._cleanup_session(sk)
-        finally:
-            reset_request_project_id(project_token)
 
     # =========================================================================
     # Cache management
