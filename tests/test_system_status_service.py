@@ -59,7 +59,7 @@ class TestHealthCheck(unittest.TestCase):
     """health_check delegates to storage and returns expected shape."""
 
     def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        return asyncio.run(coro)
 
     def _make_service(self, *, initialized=True, storage_healthy=True):
         mock_orch = MagicMock()
@@ -95,7 +95,7 @@ class TestSystemStatus(unittest.TestCase):
     """system_status routes to the correct sub-method."""
 
     def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        return asyncio.run(coro)
 
     def _make_service(self):
         mock_orch = MagicMock()
@@ -109,7 +109,7 @@ class TestSystemStatus(unittest.TestCase):
             is_available=lambda: False
         )
         mock_orch._config.rerank_model = None
-        from opencortex.http.request_context import get_effective_identity
+
         return SystemStatusService(mock_orch)
 
     def test_system_status_health_routes_to_health_check(self) -> None:
@@ -129,7 +129,7 @@ class TestDeriveStatus(unittest.TestCase):
     """derive_status returns correct status strings."""
 
     def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        return asyncio.run(coro)
 
     def test_derive_status_pending_when_inflight(self) -> None:
         mock_orch = MagicMock()
@@ -154,7 +154,7 @@ class TestWaitDeferredDerives(unittest.TestCase):
     """wait_deferred_derives returns immediately when count is zero."""
 
     def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        return asyncio.run(coro)
 
     def test_returns_immediately_when_no_pending_derives(self) -> None:
         mock_orch = MagicMock()

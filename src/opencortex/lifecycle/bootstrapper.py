@@ -22,9 +22,9 @@ It is explicitly NOT responsible for:
 - Knowledge lifecycle — owned by ``KnowledgeService``
 - Background task lifecycle — owned by ``BackgroundTaskManager``
 - System status reporting — owned by ``SystemStatusService``
-- Embedder wrapping helpers (``_wrap_with_hybrid``, ``_wrap_with_cache``)
-  — shared with ``_create_immediate_fallback_embedder`` on the
-  orchestrator; called via ``self._orch._wrap_with_*()``.
+- Embedder wrapping and rerank runtime helpers — owned by
+  ``ModelRuntimeService`` and exposed through orchestrator compatibility
+  wrappers such as ``self._orch._wrap_with_*()``.
 - Retrieval-time helpers (``_build_probe_filter``, etc.) — stay on
   the orchestrator
 
@@ -93,8 +93,7 @@ class SubsystemBootstrapper:
                 url=qdrant_url,
             )
             logger.info(
-                "[SubsystemBootstrapper] Auto-created "
-                "QdrantStorageAdapter at %s",
+                "[SubsystemBootstrapper] Auto-created QdrantStorageAdapter at %s",
                 qdrant_url or db_path,
             )
 
@@ -241,17 +240,13 @@ class SubsystemBootstrapper:
         orch._consolidation_gate = ConsolidationGate(
             candidate_store=orch._candidate_store,
         )
-        orch._cognitive_metabolism_controller = (
-            CognitiveMetabolismController()
-        )
+        orch._cognitive_metabolism_controller = CognitiveMetabolismController()
         orch._autophagy_kernel = AutophagyKernel(
             state_store=orch._cognitive_state_store,
             mutation_engine=orch._recall_mutation_engine,
             consolidation_gate=orch._consolidation_gate,
             candidate_store=orch._candidate_store,
-            metabolism_controller=(
-                orch._cognitive_metabolism_controller
-            ),
+            metabolism_controller=(orch._cognitive_metabolism_controller),
         )
 
     async def _init_alpha(self) -> None:
@@ -264,11 +259,7 @@ class SubsystemBootstrapper:
 
         orch._observer = Observer()
 
-        if (
-            orch._storage
-            and orch._embedder
-            and alpha_cfg.trace_splitter_enabled
-        ):
+        if orch._storage and orch._embedder and alpha_cfg.trace_splitter_enabled:
             from opencortex.alpha.trace_store import TraceStore
 
             orch._trace_store = TraceStore(
@@ -278,18 +269,12 @@ class SubsystemBootstrapper:
                 collection_name=alpha_cfg.trace_collection_name,
                 embedding_dim=orch._config.embedding_dimension,
                 on_trace_saved=(
-                    orch._on_trace_saved
-                    if orch._autophagy_kernel
-                    else None
+                    orch._on_trace_saved if orch._autophagy_kernel else None
                 ),
             )
             await orch._trace_store.init()
 
-        if (
-            orch._storage
-            and orch._embedder
-            and alpha_cfg.archivist_enabled
-        ):
+        if orch._storage and orch._embedder and alpha_cfg.archivist_enabled:
             from opencortex.alpha.knowledge_store import KnowledgeStore
 
             orch._knowledge_store = KnowledgeStore(
@@ -307,9 +292,7 @@ class SubsystemBootstrapper:
 
             orch._trace_splitter = TraceSplitter(
                 llm_fn=orch._llm_completion,
-                max_context_tokens=(
-                    alpha_cfg.trace_splitter_max_context_tokens
-                ),
+                max_context_tokens=(alpha_cfg.trace_splitter_max_context_tokens),
             )
 
         # Archivist (needs LLM)
@@ -404,19 +387,14 @@ class SubsystemBootstrapper:
 
             # Sandbox TDD (Phase B — default OFF)
             sandbox_tdd = None
-            if (
-                orch._config.cortex_alpha.sandbox_tdd_enabled
-                and llm_adapter
-            ):
+            if orch._config.cortex_alpha.sandbox_tdd_enabled and llm_adapter:
                 from opencortex.skill_engine.sandbox_tdd import (
                     SandboxTDD,
                 )
 
                 sandbox_tdd = SandboxTDD(
                     llm=llm_adapter,
-                    max_llm_calls=(
-                        orch._config.cortex_alpha.sandbox_tdd_max_llm_calls
-                    ),
+                    max_llm_calls=(orch._config.cortex_alpha.sandbox_tdd_max_llm_calls),
                 )
 
             orch._skill_manager = SkillManager(
@@ -451,13 +429,9 @@ class SubsystemBootstrapper:
 
             # Startup sweeper for crash recovery
             if orch._skill_evaluator:
-                asyncio.create_task(
-                    orch._skill_evaluator.sweep_unevaluated()
-                )
+                asyncio.create_task(orch._skill_evaluator.sweep_unevaluated())
 
-            logger.info(
-                "[SubsystemBootstrapper] Skill Engine initialized"
-            )
+            logger.info("[SubsystemBootstrapper] Skill Engine initialized")
         except Exception as exc:
             logger.info(
                 "[SubsystemBootstrapper] Skill Engine not available: %s",
@@ -478,9 +452,7 @@ class SubsystemBootstrapper:
         import os
 
         orch = self._orch
-        provider = (
-            orch._config.embedding_provider or ""
-        ).strip().lower()
+        provider = (orch._config.embedding_provider or "").strip().lower()
 
         # Explicitly disabled
         if provider in ("none", "disabled", "off"):
@@ -531,21 +503,16 @@ class SubsystemBootstrapper:
                     model_name=model_name,
                     api_key=api_key,
                     api_base=(
-                        orch._config.embedding_api_base
-                        or "https://api.openai.com/v1"
+                        orch._config.embedding_api_base or "https://api.openai.com/v1"
                     ),
-                    dimension=(
-                        orch._config.embedding_dimension or None
-                    ),
+                    dimension=(orch._config.embedding_dimension or None),
                 )
                 logger.info(
                     "[SubsystemBootstrapper] Auto-created "
                     "OpenAIDenseEmbedder (model=%s)",
                     model_name,
                 )
-                return orch._wrap_with_cache(
-                    orch._wrap_with_hybrid(embedder)
-                )
+                return orch._wrap_with_cache(orch._wrap_with_hybrid(embedder))
             except ImportError as exc:
                 logger.warning(
                     "[SubsystemBootstrapper] Cannot create OpenAI "
@@ -555,8 +522,7 @@ class SubsystemBootstrapper:
                 return None
             except Exception as exc:
                 logger.warning(
-                    "[SubsystemBootstrapper] Failed to create OpenAI "
-                    "embedder: %s",
+                    "[SubsystemBootstrapper] Failed to create OpenAI embedder: %s",
                     exc,
                 )
                 return None
@@ -591,17 +557,13 @@ class SubsystemBootstrapper:
                 LocalEmbedder,
             )
 
-            model_name = (
-                orch._config.embedding_model
-                or DEFAULT_LOCAL_EMBEDDING_MODEL
-            )
+            model_name = orch._config.embedding_model or DEFAULT_LOCAL_EMBEDDING_MODEL
             local_config = {
-                "onnx_intra_op_threads": (
-                    orch._config.onnx_intra_op_threads
-                ),
+                "onnx_intra_op_threads": (orch._config.onnx_intra_op_threads),
             }
             embedder = LocalEmbedder(
-                model_name=model_name, config=local_config,
+                model_name=model_name,
+                config=local_config,
             )
             if not embedder.is_available:
                 logger.warning(
@@ -613,10 +575,7 @@ class SubsystemBootstrapper:
 
             # Update dimension from detected model
             detected_dim = embedder.get_dimension()
-            if (
-                detected_dim
-                and detected_dim != orch._config.embedding_dimension
-            ):
+            if detected_dim and detected_dim != orch._config.embedding_dimension:
                 logger.info(
                     "[SubsystemBootstrapper] Updating "
                     "embedding_dimension %d → %d from local model",
@@ -626,15 +585,12 @@ class SubsystemBootstrapper:
                 orch._config.embedding_dimension = detected_dim
 
             logger.info(
-                "[SubsystemBootstrapper] Auto-created LocalEmbedder "
-                "(model=%s, dim=%d)",
+                "[SubsystemBootstrapper] Auto-created LocalEmbedder (model=%s, dim=%d)",
                 model_name,
                 detected_dim,
             )
 
-            return orch._wrap_with_cache(
-                orch._wrap_with_hybrid(embedder)
-            )
+            return orch._wrap_with_cache(orch._wrap_with_hybrid(embedder))
 
         except ImportError as exc:
             logger.warning(
@@ -645,8 +601,7 @@ class SubsystemBootstrapper:
             return None
         except Exception as exc:
             logger.warning(
-                "[SubsystemBootstrapper] Failed to create local "
-                "embedder: %s",
+                "[SubsystemBootstrapper] Failed to create local embedder: %s",
                 exc,
             )
             return None
@@ -672,12 +627,8 @@ class SubsystemBootstrapper:
                 cleanup_root_junk,
             )
 
-            await cleanup_root_junk(
-                orch._storage, orch._fs, orch._get_collection()
-            )
-            await backfill_new_fields(
-                orch._storage, orch._get_collection()
-            )
+            await cleanup_root_junk(orch._storage, orch._fs, orch._get_collection())
+            await backfill_new_fields(orch._storage, orch._get_collection())
         except Exception as exc:
             logger.warning(
                 "[SubsystemBootstrapper] Migration v0.3 skipped: %s",
@@ -689,9 +640,7 @@ class SubsystemBootstrapper:
                 backfill_project_id,
             )
 
-            await backfill_project_id(
-                orch._storage, orch._get_collection()
-            )
+            await backfill_project_id(orch._storage, orch._get_collection())
         except Exception as exc:
             logger.warning(
                 "[SubsystemBootstrapper] Migration v0.4 skipped: %s",
@@ -716,9 +665,7 @@ class SubsystemBootstrapper:
             return
 
         marker = Path(orch._config.data_root) / ".embedding_model"
-        previous_model = (
-            marker.read_text().strip() if marker.exists() else ""
-        )
+        previous_model = marker.read_text().strip() if marker.exists() else ""
 
         if previous_model == current_model:
             return
@@ -751,8 +698,7 @@ class SubsystemBootstrapper:
             orch._embedder,
         )
         logger.info(
-            "[SubsystemBootstrapper] Re-embedded %d records "
-            "(model: %s → %s)",
+            "[SubsystemBootstrapper] Re-embedded %d records (model: %s → %s)",
             updated,
             previous_model or "(none)",
             current_model,
