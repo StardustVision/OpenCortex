@@ -27,6 +27,7 @@ if TYPE_CHECKING:
         MemoryDocumentWriteService,
     )
     from opencortex.services.memory_service import MemoryService
+    from opencortex.services.memory_store_record_service import MemoryStoreRecordService
 
 logger = logging.getLogger(__name__)
 
@@ -605,99 +606,28 @@ class MemoryWriteService:
         if is_leaf and parent_uri:
             await self._service._ensure_parent_records(parent_uri)
 
-        # Store in vector DB
-        record = ctx.to_dict()
-        if ctx.vector:
-            record["vector"] = ctx.vector
-        if orch._embedder and result.sparse_vector:
-            record["sparse_vector"] = result.sparse_vector
-
-        # Populate scope/category/source fields for path-redesign
-        inferred_scope = "private" if CortexURI(uri).is_private else "shared"
-        record["scope"] = inferred_scope
-        record["category"] = effective_category
-        record["source_user_id"] = uid
-        record["session_id"] = session_id or ""
-        record["ttl_expires_at"] = ""
-        record["project_id"] = get_effective_project_id()
-        record["source_tenant_id"] = tid
-        record["keywords"] = keywords
-        record["entities"] = entities
-        record.update(object_payload)
-        record["abstract_json"] = abstract_json
-
-        # v0.6: Flatten doc/conversation enrichment fields to top-level payload
-        record["source_doc_id"] = (meta or {}).get("source_doc_id", "")
-        record["source_doc_title"] = (meta or {}).get("source_doc_title", "")
-        record["source_section_path"] = (meta or {}).get("source_section_path", "")
-        record["chunk_role"] = (meta or {}).get("chunk_role", "")
-        record["speaker"] = (meta or {}).get("speaker", "")
-        record["event_date"] = (meta or {}).get("event_date")
-
-        # Set TTL for short-lived record types
-        if context_type == "staging":
-            record["ttl_expires_at"] = orch._ttl_from_hours(
-                orch._config.immediate_event_ttl_hours
-            )
-        elif (
-            (context_type or "memory") == "memory"
-            and effective_category == "events"
-            and (meta or {}).get("layer") == "merged"
-        ):
-            record["ttl_expires_at"] = orch._ttl_from_hours(
-                orch._config.merged_event_ttl_hours
-            )
-
-        upsert_started = asyncio.get_running_loop().time()
-        await orch._storage.upsert(orch._get_collection(), record)
-        upsert_ms = int((asyncio.get_running_loop().time() - upsert_started) * 1000)
-        await orch._sync_anchor_projection_records(
-            source_record=record,
+        sparse_vector = (
+            result.sparse_vector
+            if orch._embedder and result is not None and result.sparse_vector
+            else None
+        )
+        store_result = await self._store_record_service.persist_context_record(
+            ctx=ctx,
+            content=content,
             abstract_json=abstract_json,
+            object_payload=object_payload,
+            effective_category=effective_category,
+            keywords=keywords,
+            entities=entities,
+            meta=meta,
+            context_type=context_type,
+            session_id=session_id,
+            tenant_id=tid,
+            user_id=uid,
+            sparse_vector=sparse_vector,
+            is_leaf=is_leaf,
         )
-
-        signal_bus = getattr(orch, "_memory_signal_bus", None)
-        if signal_bus is not None:
-            signal_bus.publish_nowait(
-                MemoryStoredSignal(
-                    uri=uri,
-                    record_id=str(record["id"]),
-                    tenant_id=tid,
-                    user_id=uid,
-                    project_id=str(record["project_id"]),
-                    context_type=str(context_type or ctx.context_type or "memory"),
-                    category=effective_category,
-                    record=dict(record),
-                )
-            )
-
-        # Sync EntityIndex (if available)
-        _entity_idx = getattr(orch, "_entity_index", None)
-        if _entity_idx and entities:
-            _entity_idx.add(orch._get_collection(), str(record["id"]), entities)
-
-        # CortexFS write — fire-and-forget (Qdrant upsert is the synchronous path)
-        def _on_fs_done(t: asyncio.Task) -> None:
-            """Handle completion of a fire-and-forget CortexFS write task."""
-            if t.cancelled():
-                return
-            exc = t.exception()
-            if exc:
-                logger.warning(
-                    "[MemoryService] CortexFS write failed for %s: %s", uri, exc
-                )
-
-        _fs_task = asyncio.create_task(
-            orch._fs.write_context(
-                uri=uri,
-                content=content,
-                abstract=abstract,
-                abstract_json=abstract_json,
-                overview=overview,
-                is_leaf=is_leaf,
-            )
-        )
-        _fs_task.add_done_callback(_on_fs_done)
+        upsert_ms = store_result.upsert_ms
         fs_write_ms = 0  # Non-blocking
 
         ctx.meta["dedup_action"] = "created"
@@ -721,6 +651,19 @@ class MemoryWriteService:
     # ------------------------------------------------------------------
     # Write-time dedup helpers
     # ------------------------------------------------------------------
+
+    @property
+    def _store_record_service(self) -> "MemoryStoreRecordService":
+        """Lazy-built service for store record persistence."""
+        from opencortex.services.memory_store_record_service import (
+            MemoryStoreRecordService,
+        )
+
+        cached = getattr(self, "_store_record_service_instance", None)
+        if cached is None:
+            cached = MemoryStoreRecordService(self)
+            self._store_record_service_instance = cached
+        return cached
 
     async def _check_duplicate(
         self,
