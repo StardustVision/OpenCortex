@@ -1,14 +1,13 @@
 """Tests for LocalEmbedder (BGE-M3 via FastEmbed)."""
 
+import threading
 import unittest
 from unittest.mock import MagicMock, patch
-import numpy as np
 
 from opencortex.models.embedder.base import EmbedResult
 
 
 class TestLocalEmbedderInit(unittest.TestCase):
-
     @patch("opencortex.models.embedder.local_embedder.TextEmbedding", create=True)
     def test_init_success(self, MockTextEmbedding):
         """Model loads and dimension detected from test embedding."""
@@ -18,14 +17,13 @@ class TestLocalEmbedderInit(unittest.TestCase):
         mock_model.embed.return_value = iter([fake_vec])
         MockTextEmbedding.return_value = mock_model
 
-        with patch.dict("sys.modules", {"fastembed": MagicMock(TextEmbedding=MockTextEmbedding)}):
+        with patch.dict(
+            "sys.modules",
+            {"fastembed": MagicMock(TextEmbedding=MockTextEmbedding)},
+        ):
             from opencortex.models.embedder.local_embedder import LocalEmbedder
-            embedder = LocalEmbedder.__new__(LocalEmbedder)
-            embedder.model_name = "BAAI/bge-m3"
-            embedder.config = {}
-            embedder._model = None
-            embedder._dimension = None
-            embedder._init_model()
+
+            embedder = LocalEmbedder(model_name="BAAI/bge-m3", config={})
 
         self.assertTrue(embedder.is_available)
         self.assertEqual(embedder._dimension, 1024)
@@ -33,32 +31,32 @@ class TestLocalEmbedderInit(unittest.TestCase):
     def test_init_without_fastembed(self):
         """LocalEmbedder handles missing fastembed gracefully."""
         from opencortex.models.embedder.local_embedder import LocalEmbedder
-        with patch.object(LocalEmbedder, "_init_model", side_effect=_set_model_none):
-            embedder = LocalEmbedder.__new__(LocalEmbedder)
-            embedder.model_name = "BAAI/bge-m3"
-            embedder.config = {}
-            embedder._model = None
-            embedder._dimension = None
+
+        with patch.object(LocalEmbedder, "_init_model", return_value=None):
+            embedder = LocalEmbedder(model_name="BAAI/bge-m3", config={})
         self.assertFalse(embedder.is_available)
 
 
 class TestLocalEmbedderEmbed(unittest.TestCase):
-
     def _make_embedder(self):
         """Create a LocalEmbedder with mocked model."""
         from opencortex.models.embedder.local_embedder import LocalEmbedder
+
         embedder = LocalEmbedder.__new__(LocalEmbedder)
         embedder.model_name = "BAAI/bge-m3"
         embedder.config = {}
+        embedder._needs_prefix = False
+        embedder._local = threading.local()
         embedder._dimension = 4
-        embedder._model = MagicMock()
+        embedder._available = True
+        embedder._local.model = MagicMock()
         return embedder
 
     def test_embed_single(self):
         embedder = self._make_embedder()
         fake_array = MagicMock()
         fake_array.tolist.return_value = [0.1, 0.2, 0.3, 0.4]
-        embedder._model.embed.return_value = iter([fake_array])
+        embedder._local.model.embed.return_value = iter([fake_array])
 
         result = embedder.embed("hello world")
         self.assertIsInstance(result, EmbedResult)
@@ -70,7 +68,7 @@ class TestLocalEmbedderEmbed(unittest.TestCase):
         fake1.tolist.return_value = [0.1, 0.2, 0.3, 0.4]
         fake2 = MagicMock()
         fake2.tolist.return_value = [0.5, 0.6, 0.7, 0.8]
-        embedder._model.embed.return_value = iter([fake1, fake2])
+        embedder._local.model.embed.return_value = iter([fake1, fake2])
 
         results = embedder.embed_batch(["hello", "world"])
         self.assertEqual(len(results), 2)
@@ -79,10 +77,13 @@ class TestLocalEmbedderEmbed(unittest.TestCase):
 
     def test_embed_raises_when_model_not_loaded(self):
         from opencortex.models.embedder.local_embedder import LocalEmbedder
+
         embedder = LocalEmbedder.__new__(LocalEmbedder)
         embedder.model_name = "BAAI/bge-m3"
         embedder.config = {}
-        embedder._model = None
+        embedder._needs_prefix = False
+        embedder._local = threading.local()
+        embedder._local.model = None
         embedder._dimension = None
 
         with self.assertRaises(RuntimeError):
@@ -90,10 +91,10 @@ class TestLocalEmbedderEmbed(unittest.TestCase):
 
     def test_get_dimension_default(self):
         from opencortex.models.embedder.local_embedder import LocalEmbedder
+
         embedder = LocalEmbedder.__new__(LocalEmbedder)
         embedder.model_name = "BAAI/bge-m3"
         embedder.config = {}
-        embedder._model = None
         embedder._dimension = None
         self.assertEqual(embedder.get_dimension(), 1024)
 
@@ -104,11 +105,7 @@ class TestLocalEmbedderEmbed(unittest.TestCase):
     def test_close(self):
         embedder = self._make_embedder()
         embedder.close()
-        self.assertIsNone(embedder._model)
-
-
-def _set_model_none(self):
-    self._model = None
+        self.assertIsNone(embedder._local.model)
 
 
 if __name__ == "__main__":

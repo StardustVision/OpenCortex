@@ -15,15 +15,19 @@ class MockStorage:
         self.records: List[Dict[str, Any]] = []
 
     async def filter(
-        self, collection: str, filter_expr: dict, limit: int = 1000,
+        self,
+        collection: str,
+        filter_expr: dict,
+        limit: int = 1000,
     ) -> List[Dict[str, Any]]:
         conditions = filter_expr.get("conditions", [])
+        conditions.extend(filter_expr.get("conds", []))
         tid = uid = None
         for c in conditions:
             if c.get("field") == "tenant_id":
-                tid = c.get("value")
+                tid = c.get("value") or next(iter(c.get("conds", [])), None)
             if c.get("field") == "user_id":
-                uid = c.get("value")
+                uid = c.get("value") or next(iter(c.get("conds", [])), None)
 
         results = []
         for r in self.records:
@@ -95,7 +99,8 @@ class TestInsightsCollector(unittest.IsolatedAsyncioTestCase):
     async def test_fetch_traces_empty(self):
         """Empty trace store returns empty list."""
         traces = await self.collector.fetch_traces(
-            self.tenant_id, self.user_id,
+            self.tenant_id,
+            self.user_id,
             start_date=date.today() - timedelta(days=7),
             end_date=date.today(),
         )
@@ -106,7 +111,8 @@ class TestInsightsCollector(unittest.IsolatedAsyncioTestCase):
         self._add_trace_record("t1", "s1", user_message_count=3)
 
         traces = await self.collector.fetch_traces(
-            self.tenant_id, self.user_id,
+            self.tenant_id,
+            self.user_id,
             start_date=date.today() - timedelta(days=7),
             end_date=date.today(),
         )
@@ -123,12 +129,14 @@ class TestInsightsCollector(unittest.IsolatedAsyncioTestCase):
         self._add_trace_record("t1", "s1", created_at=self.now)
         # Outside range (30 days ago)
         self._add_trace_record(
-            "t2", "s2",
+            "t2",
+            "s2",
             created_at=self.now - timedelta(days=30),
         )
 
         traces = await self.collector.fetch_traces(
-            self.tenant_id, self.user_id,
+            self.tenant_id,
+            self.user_id,
             start_date=date.today() - timedelta(days=7),
             end_date=date.today(),
         )
@@ -141,15 +149,19 @@ class TestInsightsCollector(unittest.IsolatedAsyncioTestCase):
         self._add_trace_record("t1", "s1")
         # Different tenant
         other_record = {
-            "trace_id": "t2", "session_id": "s2",
-            "tenant_id": "other-tenant", "user_id": self.user_id,
-            "source": "claude_code", "turns": [],
+            "trace_id": "t2",
+            "session_id": "s2",
+            "tenant_id": "other-tenant",
+            "user_id": self.user_id,
+            "source": "claude_code",
+            "turns": [],
             "created_at": self.now.isoformat(),
         }
         self.trace_store.add_record(other_record)
 
         traces = await self.collector.fetch_traces(
-            self.tenant_id, self.user_id,
+            self.tenant_id,
+            self.user_id,
             start_date=date.today() - timedelta(days=7),
             end_date=date.today(),
         )
@@ -162,7 +174,8 @@ class TestInsightsCollector(unittest.IsolatedAsyncioTestCase):
         self._add_trace_record("t1", "s1", user_message_count=2)
 
         traces = await self.collector.fetch_traces(
-            self.tenant_id, self.user_id,
+            self.tenant_id,
+            self.user_id,
             start_date=date.today() - timedelta(days=7),
             end_date=date.today(),
         )
@@ -176,7 +189,8 @@ class TestInsightsCollector(unittest.IsolatedAsyncioTestCase):
         self._add_trace_record("t1", "s1")
 
         traces = await self.collector.fetch_traces(
-            self.tenant_id, self.user_id,
+            self.tenant_id,
+            self.user_id,
             start_date=date.today() - timedelta(days=7),
             end_date=date.today(),
         )

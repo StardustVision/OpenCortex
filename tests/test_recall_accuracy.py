@@ -19,8 +19,9 @@ from typing import Optional
 # Test Questions (extracted from docs)
 # ---------------------------------------------------------------------------
 
+
 @dataclass
-class TestQuestion:
+class RecallQuestion:
     query: str
     expected_keywords: list[str]  # at least one must appear in top results
     difficulty: str  # easy / medium / hard
@@ -28,146 +29,144 @@ class TestQuestion:
     description: str
 
 
-TEST_QUESTIONS: list[TestQuestion] = [
+TEST_QUESTIONS: list[RecallQuestion] = [
     # ========== EASY (60%) - Direct fact recall ==========
-    TestQuestion(
+    RecallQuestion(
         query="OpenCortex HTTP Server 用的什么框架和端口？",
         expected_keywords=["FastAPI", "8921"],
         difficulty="easy",
         source_doc="architecture.md",
         description="HTTP server framework and port",
     ),
-    TestQuestion(
+    RecallQuestion(
         query="MCP Server 默认监听哪个端口？",
         expected_keywords=["8920"],
         difficulty="easy",
         source_doc="mcp-server.md",
         description="MCP server default port",
     ),
-    TestQuestion(
+    RecallQuestion(
         query="三层文件系统 L0 L1 L2 分别存什么？",
         expected_keywords=["abstract", "overview", "content"],
         difficulty="easy",
         source_doc="architecture.md",
         description="Three-layer filesystem contents",
     ),
-    TestQuestion(
+    RecallQuestion(
         query="反馈排序的 reward_weight 参数是多少？",
         expected_keywords=["0.05"],
         difficulty="easy",
         source_doc="architecture.md",
         description="RL weight parameter value",
     ),
-    TestQuestion(
+    RecallQuestion(
         query="QdrantStorageAdapter 的 decay_rate 默认值？",
         expected_keywords=["0.95"],
         difficulty="easy",
         source_doc="architecture.md",
         description="Decay rate default value",
     ),
-    TestQuestion(
+    RecallQuestion(
         query="ACE v2 有哪三个角色？",
         expected_keywords=["Reflector", "SkillManager", "Skillbook"],
         difficulty="easy",
         source_doc="ace-design.md",
         description="ACE v2 three roles",
     ),
-    TestQuestion(
+    RecallQuestion(
         query="MCP Server 支持哪几种传输协议？",
         expected_keywords=["stdio", "SSE", "streamable"],
         difficulty="easy",
         source_doc="mcp-server.md",
         description="MCP transport protocols",
     ),
-    TestQuestion(
+    RecallQuestion(
         query="记忆检索质量的 Recall@5 通过标准是多少？",
         expected_keywords=["0.80", "80"],
         difficulty="easy",
         source_doc="memory-test-plan.md",
         description="Recall@5 pass criterion",
     ),
-    TestQuestion(
+    RecallQuestion(
         query="Plugin Hook 的四个生命周期阶段是什么？",
         expected_keywords=["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"],
         difficulty="easy",
         source_doc="architecture.md",
         description="Hook lifecycle stages",
     ),
-    TestQuestion(
+    RecallQuestion(
         query="OpenCortex 的 URI 格式是怎样的？",
         expected_keywords=["opencortex://", "team", "user", "node_id"],
         difficulty="easy",
         source_doc="architecture.md",
         description="URI format",
     ),
-    TestQuestion(
+    RecallQuestion(
         query="分数融合公式中 beta 参数代表什么？值是多少？",
         expected_keywords=["rerank", "0.7"],
         difficulty="easy",
         source_doc="architecture.md",
         description="Beta parameter meaning and value",
     ),
-    TestQuestion(
+    RecallQuestion(
         query="OpenFang 用什么数据库做持久化？",
         expected_keywords=["SQLite", "WAL"],
         difficulty="easy",
         source_doc="openfang-memory-system.md",
         description="OpenFang storage backend",
     ),
-
     # ========== MEDIUM (30%) - Paraphrased / conceptual ==========
-    TestQuestion(
+    RecallQuestion(
         query="系统如何防止无向量时检索质量下降？",
         expected_keywords=["词法", "lexical", "后备", "fallback", "关键词"],
         difficulty="medium",
         source_doc="memory-enhancement-rationale.md",
         description="Lexical fallback for no-vector scenario",
     ),
-    TestQuestion(
+    RecallQuestion(
         query="怎么让常用的记忆不被衰减清理掉？",
         expected_keywords=["access", "访问", "遗忘", "decay", "保鲜", "protected"],
         difficulty="medium",
         source_doc="memory-enhancement-rationale.md",
         description="Access-driven forgetting mechanism",
     ),
-    TestQuestion(
+    RecallQuestion(
         query="文档批量导入是在服务端还是客户端执行扫描？",
         expected_keywords=["agent", "客户端", "client", "Claude"],
         difficulty="medium",
         source_doc="document-scan-design.md",
         description="Document scan execution location",
     ),
-    TestQuestion(
+    RecallQuestion(
         query="如何避免技能库无限膨胀？",
         expected_keywords=["UPDATE", "优先", "ADD", "合并"],
         difficulty="medium",
         source_doc="ace-design.md",
         description="Skillbook growth prevention",
     ),
-    TestQuestion(
+    RecallQuestion(
         query="用户身份信息是怎么传递到服务端的？",
         expected_keywords=["header", "X-Tenant", "X-User", "middleware", "contextvars"],
         difficulty="medium",
         source_doc="architecture.md",
         description="Identity propagation mechanism",
     ),
-    TestQuestion(
+    RecallQuestion(
         query="重复扫描同一目录会产生重复记忆吗？",
         expected_keywords=["URI", "upsert", "去重", "幂等", "确定性"],
         difficulty="medium",
         source_doc="document-scan-design.md",
         description="Idempotent scan deduplication",
     ),
-
     # ========== HARD (10%) - Cross-doc reasoning ==========
-    TestQuestion(
+    RecallQuestion(
         query="OpenCortex 和 OpenFang 在遗忘机制上有什么区别？",
         expected_keywords=["reward", "access", "decay", "confidence", "7天"],
         difficulty="hard",
         source_doc="architecture.md + openfang-memory-system.md",
         description="Compare decay mechanisms across systems",
     ),
-    TestQuestion(
+    RecallQuestion(
         query="如果检索指标下降了，应该按什么顺序排查问题？",
         expected_keywords=["Router", "Retriever", "rerank", "排序", "召回", "归因"],
         difficulty="hard",
@@ -181,9 +180,13 @@ TEST_QUESTIONS: list[TestQuestion] = [
 # HTTP Client
 # ---------------------------------------------------------------------------
 
-async def memory_search(query: str, limit: int = 5, base_url: str = "http://127.0.0.1:8921") -> dict:
+
+async def memory_search(
+    query: str, limit: int = 5, base_url: str = "http://127.0.0.1:8921"
+) -> dict:
     """Call memory_search via HTTP API."""
     import httpx
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(
             f"{base_url}/api/v1/memory/search",
@@ -201,6 +204,7 @@ async def memory_search(query: str, limit: int = 5, base_url: str = "http://127.
 # Evaluation
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class RecallResult:
     query: str
@@ -214,7 +218,7 @@ class RecallResult:
     latency_ms: float
 
 
-async def evaluate_question(q: TestQuestion, base_url: str) -> RecallResult:
+async def evaluate_question(q: RecallQuestion, base_url: str) -> RecallResult:
     """Evaluate a single question's recall accuracy."""
     t0 = time.monotonic()
     try:
@@ -278,7 +282,9 @@ async def run_evaluation(base_url: str = "http://127.0.0.1:8921"):
         results.append(r)
         status = "HIT" if r.hit else "MISS"
         icon = "\u2705" if r.hit else "\u274c"
-        print(f"  [{i:2d}/{len(TEST_QUESTIONS)}] {icon} {status} [{r.difficulty:6s}] {r.description}")
+        print(
+            f"  [{i:2d}/{len(TEST_QUESTIONS)}] {icon} {status} [{r.difficulty:6s}] {r.description}"
+        )
         if r.hit:
             print(f"         Matched: {r.matched_keywords}")
         else:
@@ -295,7 +301,7 @@ async def run_evaluation(base_url: str = "http://127.0.0.1:8921"):
 
     total_hit = sum(1 for r in results if r.hit)
     total = len(results)
-    print(f"\n  Overall Hit Rate: {total_hit}/{total} = {total_hit/total*100:.1f}%")
+    print(f"\n  Overall Hit Rate: {total_hit}/{total} = {total_hit / total * 100:.1f}%")
 
     for diff in ["easy", "medium", "hard"]:
         subset = [r for r in results if r.difficulty == diff]
@@ -303,7 +309,9 @@ async def run_evaluation(base_url: str = "http://127.0.0.1:8921"):
             continue
         hits = sum(1 for r in subset if r.hit)
         avg_latency = sum(r.latency_ms for r in subset) / len(subset)
-        print(f"  {diff:8s}: {hits}/{len(subset)} = {hits/len(subset)*100:.1f}%  (avg latency: {avg_latency:.0f}ms)")
+        print(
+            f"  {diff:8s}: {hits}/{len(subset)} = {hits / len(subset) * 100:.1f}%  (avg latency: {avg_latency:.0f}ms)"
+        )
 
     avg_latency_all = sum(r.latency_ms for r in results) / len(results)
     print(f"\n  Average Latency: {avg_latency_all:.0f}ms")
