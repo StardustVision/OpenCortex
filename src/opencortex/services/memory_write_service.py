@@ -12,7 +12,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from opencortex.core.context import Context, Vectorize
+from opencortex.core.context import Context
 from opencortex.core.user_id import UserIdentifier
 from opencortex.http.request_context import get_effective_identity
 from opencortex.memory import MemoryKind
@@ -24,6 +24,9 @@ if TYPE_CHECKING:
     )
     from opencortex.services.memory_service import MemoryService
     from opencortex.services.memory_store_record_service import MemoryStoreRecordService
+    from opencortex.services.memory_write_context_builder import (
+        MemoryWriteContextBuilder,
+    )
     from opencortex.services.memory_write_dedup_service import MemoryWriteDedupService
 
 logger = logging.getLogger(__name__)
@@ -363,24 +366,16 @@ class MemoryWriteService:
             The created ``Context`` with ``meta["dedup_action"]`` set
             to ``"created"`` or ``"merged"``.
         """
-        from opencortex.orchestrator import (
-            _merge_unique_strings,
-            _split_keyword_string,
-        )
-
         orch = self._orch
         orch._ensure_init()
-        meta = dict(meta or {})
-        explicit_entities = _merge_unique_strings(meta.get("entities"))
-        explicit_topics = _merge_unique_strings(meta.get("topics"))
 
         # Determine ingestion mode
         from opencortex.ingest.resolver import IngestModeResolver
 
         ingest_mode = IngestModeResolver.resolve(
             content=content,
-            meta=meta,
-            source_path=meta.get("source_path", ""),
+            meta=meta or {},
+            source_path=(meta or {}).get("source_path", ""),
             session_id=session_id or "",
         )
 
@@ -395,7 +390,7 @@ class MemoryWriteService:
                 context_type=context_type or "resource",
                 meta=meta,
                 session_id=session_id,
-                source_path=meta.get("source_path", ""),
+                source_path=(meta or {}).get("source_path", ""),
             )
 
         add_started = asyncio.get_running_loop().time()
@@ -405,20 +400,18 @@ class MemoryWriteService:
         upsert_ms = 0
         fs_write_ms = 0
 
-        # Build URI if not provided
-        if not uri:
-            uri = orch._auto_uri(context_type or "memory", category, abstract=abstract)
-            uri = await orch._resolve_unique_uri(uri)
-            existing_record = None
-        else:
-            existing_record = await orch._get_record_by_uri(uri)
-
-        # Build parent URI if not provided
-        if not parent_uri:
-            parent_uri = orch._derive_parent_uri(uri)
+        target = await self._context_builder.resolve_target(
+            abstract=abstract,
+            category=category,
+            context_type=context_type,
+            meta=meta,
+            parent_uri=parent_uri,
+            uri=uri,
+        )
+        uri = target.uri
+        parent_uri = target.parent_uri
 
         # Derive L0/L1/keywords from L2 via structured LLM calls
-        keywords = ""
         layers = {}
         if content and is_leaf and not defer_derive:
             derive_started = asyncio.get_running_loop().time()
@@ -434,11 +427,6 @@ class MemoryWriteService:
                 abstract = layers["abstract"]
             if not overview:
                 overview = layers["overview"]
-            keywords = layers["keywords"]
-            entities = _merge_unique_strings(
-                layers.get("entities", []),
-                explicit_entities,
-            )
         elif content and is_leaf and defer_derive:
             # Deferred derive: use deterministic truncation as placeholder
             if not overview:
@@ -452,78 +440,34 @@ class MemoryWriteService:
                     overview=overview,
                     content=content,
                 )
-            entities = explicit_entities
-        else:
-            entities = explicit_entities
 
-        keywords_list = _merge_unique_strings(
-            _split_keyword_string(keywords),
-            explicit_topics,
-        )
-        if keywords_list:
-            meta["topics"] = _merge_unique_strings(meta.get("topics"), keywords_list)
-        anchor_handles = _merge_unique_strings(
-            meta.get("anchor_handles"),
-            (layers.get("anchor_handles", []) if content and is_leaf else []),
-        )
-        if anchor_handles:
-            meta["anchor_handles"] = anchor_handles
-        keywords = ", ".join(keywords_list)
-
-        # Build effective user identity (per-request or config default)
+        # Read effective identity for downstream dedup and persistence.
         tid, uid = get_effective_identity()
-        effective_user = UserIdentifier(tid, uid)
-
-        # Create context object
-        ctx = Context(
-            uri=uri,
-            parent_uri=parent_uri,
-            is_leaf=is_leaf,
-            abstract=abstract,
-            overview=overview,
-            context_type=context_type,
-            category=category,
-            related_uri=related_uri or [],
-            meta=meta,
-            session_id=session_id,
-            user=effective_user,
-            id=(
-                str(existing_record.get("id", "") or "")
-                if existing_record is not None
-                else None
-            ),
-        )
-
-        # Override vectorization text.
-        # Priority: embed_text > abstract+keywords > abstract (default from Context)
-        base_text = embed_text or abstract
-        if keywords:
-            ctx.vectorize = Vectorize(f"{base_text} {keywords}")
-        elif embed_text:
-            ctx.vectorize = Vectorize(embed_text)
-
-        effective_category = category or orch._extract_category_from_uri(uri)
-        abstract_json = orch._build_abstract_json(
-            uri=uri,
-            context_type=context_type or "",
-            category=effective_category,
+        assembled = self._context_builder.assemble_context(
+            target=target,
             abstract=abstract,
             overview=overview,
             content=content,
-            entities=entities,
-            meta=meta,
-            keywords=keywords_list,
-            parent_uri=parent_uri,
+            category=category,
+            context_type=context_type,
+            is_leaf=is_leaf,
+            related_uri=related_uri or [],
             session_id=session_id,
+            embed_text=embed_text,
+            layers=layers,
         )
-        # Inject fact_points from LLM derivation so _sync_anchor_projection_records
-        # can generate fact_point records. Only present when content+is_leaf path ran.
-        if content and is_leaf:
-            abstract_json["fact_points"] = layers.get("fact_points", [])
-        object_payload = orch._memory_object_payload(abstract_json, is_leaf=is_leaf)
+        ctx = assembled.ctx
+        abstract = assembled.abstract
+        overview = assembled.overview
+        keywords = assembled.keywords
+        entities = assembled.entities
+        meta = assembled.meta
+        effective_category = assembled.effective_category
+        abstract_json = assembled.abstract_json
+        object_payload = assembled.object_payload
         memory_kind = MemoryKind(object_payload["memory_kind"])
-        merge_signature = str(object_payload["merge_signature"])
-        mergeable = bool(object_payload["mergeable"])
+        merge_signature = assembled.merge_signature
+        mergeable = assembled.mergeable
 
         # Embed (offload sync embedder to thread so we don't block the loop)
         result = None
@@ -645,6 +589,19 @@ class MemoryWriteService:
         if cached is None:
             cached = MemoryWriteDedupService(self)
             self._write_dedup_service_instance = cached
+        return cached
+
+    @property
+    def _context_builder(self) -> "MemoryWriteContextBuilder":
+        """Lazy-built builder for write context assembly."""
+        from opencortex.services.memory_write_context_builder import (
+            MemoryWriteContextBuilder,
+        )
+
+        cached = getattr(self, "_context_builder_instance", None)
+        if cached is None:
+            cached = MemoryWriteContextBuilder(self)
+            self._context_builder_instance = cached
         return cached
 
     async def _check_duplicate(
