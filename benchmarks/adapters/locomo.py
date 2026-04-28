@@ -234,7 +234,7 @@ class LoCoMoBench(EvalAdapter):
 
     def __init__(self) -> None:
         super().__init__()
-        self._ingest_method = "mcp"
+        self._ingest_method = "context_lifecycle"
         self._retrieve_method = "recall"
         self._conversation_uris_by_id: Dict[str, List[str]] = {}
         self._conversation_by_id: Dict[str, Dict[str, Any]] = {}
@@ -313,8 +313,8 @@ class LoCoMoBench(EvalAdapter):
         For ingest_method='store' the per-conversation work is independent
         (each conversation has its own session_id, source_uri, and merged
         leaves) so we dispatch with bounded concurrency to amortize the
-        ~30-60s of LLM + embed time per conversation. The 'mcp' path uses
-        the legacy serial loop because each conversation's
+        ~30-60s of LLM + embed time per conversation. The context lifecycle
+        path uses the serial loop because each conversation's
         context_commit / context_end touches the live conversation buffer.
         """
         conversations = self._selected_conversations(
@@ -322,8 +322,11 @@ class LoCoMoBench(EvalAdapter):
             max_qa=kwargs.get("max_qa", 0),
         )
         ingest_method = str(
-            kwargs.get("ingest_method") or getattr(self, "_ingest_method", "mcp")
+            kwargs.get("ingest_method")
+            or getattr(self, "_ingest_method", "context_lifecycle")
         ).lower()
+        if ingest_method == "mcp":
+            ingest_method = "context_lifecycle"
         ingest_concurrency = max(
             1, int(kwargs.get("ingest_concurrency", getattr(self, "_ingest_concurrency", 4)))
         )
@@ -334,7 +337,7 @@ class LoCoMoBench(EvalAdapter):
         total = len(conversations)
         ingested = 0
         errors: List[str] = []
-        # Local concurrency knob; mcp path stays serial. Semaphore is
+        # Local concurrency knob; context lifecycle stays serial. Semaphore is
         # only consulted by store-path dispatch below.
         semaphore = asyncio.Semaphore(
             ingest_concurrency if ingest_method == "store" else 1
@@ -350,7 +353,7 @@ class LoCoMoBench(EvalAdapter):
             segments: List[List[Dict[str, Any]]] = []
             async with semaphore:
                 try:
-                    if ingest_method == "mcp":
+                    if ingest_method == "context_lifecycle":
                         before_records = await cm.memory_record_snapshot(oc)
                     for session in _parse_locomo_sessions(conv):
                         session_num = int(session["session_num"])

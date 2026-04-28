@@ -29,10 +29,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
-# Page size for ``memory_record_snapshot``. Picked to keep mcp-path
+# Page size for ``memory_record_snapshot``. Picked to keep context lifecycle
 # snapshot round-trips bounded for typical benchmark conversation sizes
-# (~50–200 records per session) while still draining large fixtures in
-# one or two pages.
+# (~50–200 records per session) while still draining large fixtures in one or
+# two pages.
 _MEMORY_LIST_PAGE_SIZE = 500
 
 
@@ -96,8 +96,8 @@ async def memory_record_snapshot(oc: Any) -> Dict[str, Dict[str, Any]]:
 
     Pages through ``oc.memory_list(context_type="memory", category="events")``
     in ``_MEMORY_LIST_PAGE_SIZE``-record batches until exhausted. Used by
-    both adapters' mcp-path branch to capture the before/after record
-    set so the new ingest's URIs can be derived by set difference.
+    both adapters' context lifecycle branch to capture the before/after
+    record set so the new ingest's URIs can be derived by set difference.
     """
     offset = 0
     limit = _MEMORY_LIST_PAGE_SIZE

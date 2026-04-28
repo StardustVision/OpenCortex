@@ -181,7 +181,7 @@ class OCClient:
         detail_level: Optional[str] = None,
         session_scope: bool = False,
     ) -> Dict:
-        """MCP recall: context phase=prepare with messages containing the query.
+        """Context lifecycle prepare with messages containing the query.
 
         When detail_level is None, the server's IntentRouter decides the
         appropriate level (L0/L1/L2) based on query analysis.
@@ -208,7 +208,7 @@ class OCClient:
         turn_id: str,
         messages: List[Dict[str, Any]],
     ) -> Dict:
-        """MCP commit: write messages via conversation mode (immediate + merge)."""
+        """Context lifecycle commit via conversation mode."""
         return await self._post(
             "/api/v1/context",
             {
@@ -227,7 +227,7 @@ class OCClient:
         )
 
     async def context_end(self, session_id: str, fail_fast_end: bool = True) -> Dict:
-        """MCP end: flush session → Alpha pipeline.
+        """Context lifecycle end: flush session into post-processing.
 
         Benchmarks default to fail-fast so degraded end-state never slips
         through as a successful ingest.

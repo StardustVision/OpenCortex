@@ -564,7 +564,7 @@ class TestLongMemEvalBench(unittest.IsolatedAsyncioTestCase):
             },
         ]
 
-        result = await bench.ingest(oc, max_qa=1, ingest_method="mcp")
+        result = await bench.ingest(oc, max_qa=1, ingest_method="context_lifecycle")
 
         self.assertEqual(result.total_items, 1)
         self.assertEqual(result.ingested_items, 1)
@@ -865,6 +865,20 @@ class TestLongMemEvalRunnerOptions(unittest.TestCase):
         self.assertEqual(options.retrieval_cutoffs, [10, 20, 50, 200])
         self.assertEqual(options.retrieval_metric_top_k, 200)
         self.assertEqual(options.effective_top_k, 200)
+
+    def test_deprecated_mcp_ingest_method_aliases_to_context_lifecycle(self):
+        class Args:
+            dataset = "locomo"
+            benchmark_flavor = "internal"
+            ingest_method = "mcp"
+            retrieve_method = "search"
+            retrieval_cutoffs = ""
+            top_k = 10
+
+        options = _resolve_benchmark_options(Args())
+
+        self.assertEqual(options.ingest_method, "context_lifecycle")
+        self.assertEqual(options.ingest_shape, "context_lifecycle")
 
     def test_pressure_defaults_to_recall_unless_search_is_explicit(self):
         class DefaultArgs:
