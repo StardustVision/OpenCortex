@@ -51,9 +51,6 @@ from opencortex.intent import (
     SearchResult,
 )
 from opencortex.models.embedder.base import EmbedderBase
-from opencortex.prompts import (
-    build_doc_summarization_prompt,
-)
 from opencortex.retrieve.intent_analyzer import IntentAnalyzer, LLMCompletionCallable
 from opencortex.retrieve.rerank_client import RerankClient
 from opencortex.retrieve.rerank_config import RerankConfig
@@ -71,8 +68,6 @@ from opencortex.services.derivation_service import (
 )
 from opencortex.storage.cortex_fs import CortexFS
 from opencortex.storage.storage_interface import StorageInterface
-from opencortex.utils.json_parse import parse_json_from_response
-from opencortex.utils.text import chunked_llm_derive, smart_truncate
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +129,7 @@ class MemoryOrchestrator:
         self._memory_record_service_instance: Optional[Any] = None
         self._model_runtime_service_instance: Optional[Any] = None
         self._memory_sharing_service_instance: Optional[Any] = None
+        self._memory_admin_stats_service_instance: Optional[Any] = None
         # Plan 009 / RELY-01 — InsightsAgent (when enabled in
         # ``server.py`` lifespan) holds a second LLMCompletion wrapper
         # whose pool would otherwise leak on shutdown. The lifespan
@@ -728,6 +724,19 @@ class MemoryOrchestrator:
         if cached is None:
             cached = MemorySharingService(self)
             self._memory_sharing_service_instance = cached
+        return cached
+
+    @property
+    def _memory_admin_stats_service(self) -> "MemoryAdminStatsService":
+        """Lazy-built MemoryAdminStatsService for admin memory statistics."""
+        from opencortex.services.memory_admin_stats_service import (
+            MemoryAdminStatsService,
+        )
+
+        cached = getattr(self, "_memory_admin_stats_service_instance", None)
+        if cached is None:
+            cached = MemoryAdminStatsService(self)
+            self._memory_admin_stats_service_instance = cached
         return cached
 
     @property
@@ -1481,43 +1490,11 @@ class MemoryOrchestrator:
     _USER_MEMORY_CATEGORIES = {"profile", "preferences", "entities", "events"}
 
     async def _generate_abstract_overview(self, content: str, file_path: str) -> tuple:
-        """Use LLM to generate abstract (L0) and overview (L1) from content."""
-        fallback_overview = smart_truncate(content, 500)
-
-        if not self._llm_completion:
-            return file_path, fallback_overview
-
-        if len(content) > 3000:
-            try:
-                result = await chunked_llm_derive(
-                    content=content,
-                    prompt_builder=lambda chunk: build_doc_summarization_prompt(
-                        file_path, chunk
-                    ),
-                    llm_fn=self._llm_completion,
-                    parse_fn=parse_json_from_response,
-                    merge_policy="abstract_overview",
-                    max_chars_per_chunk=3000,
-                )
-                return result.get("abstract", file_path), result.get(
-                    "overview", fallback_overview
-                )
-            except Exception:
-                pass
-            return file_path, fallback_overview
-
-        prompt = build_doc_summarization_prompt(file_path, content)
-        try:
-            response = await self._llm_completion(prompt)
-            data = parse_json_from_response(response)
-            if isinstance(data, dict):
-                return data.get("abstract", file_path), data.get(
-                    "overview", fallback_overview
-                )
-        except Exception:
-            pass
-
-        return file_path, fallback_overview
+        """Delegate to MemoryService._generate_abstract_overview."""
+        return await self._memory_service._generate_abstract_overview(
+            content,
+            file_path,
+        )
 
     def _auto_uri(self, context_type: str, category: str, abstract: str = "") -> str:
         """Delegate to MemoryRecordService._auto_uri."""
@@ -1584,34 +1561,7 @@ class MemoryOrchestrator:
             - total_positive_feedback: int
             - total_negative_feedback: int
         """
-        self._ensure_init()
-
-        conds: List[Dict[str, Any]] = [
-            {"op": "must_not", "field": "context_type", "conds": ["staging"]},
-            {"op": "must", "field": "source_tenant_id", "conds": [tenant_id]},
-            {"op": "must", "field": "source_user_id", "conds": [user_id]},
-        ]
-        filter_expr: Dict[str, Any] = {"op": "and", "conds": conds}
-
-        memories = await self._storage.filter(
-            self._get_collection(),
-            filter_expr,
-            limit=10000,
+        return await self._memory_admin_stats_service.get_user_memory_stats(
+            tenant_id=tenant_id,
+            user_id=user_id,
         )
-
-        created_in_session: Dict[str, int] = {}
-        total_positive = 0
-        total_negative = 0
-
-        for mem in memories:
-            session_id = mem.get("session_id", "unknown")
-            created_in_session[session_id] = created_in_session.get(session_id, 0) + 1
-            total_positive += mem.get("positive_feedback_count", 0) or 0
-            total_negative += mem.get("negative_feedback_count", 0) or 0
-
-        return {
-            "created_in_session": created_in_session,
-            "total_memories": len(memories),
-            "total_positive_feedback": total_positive,
-            "total_negative_feedback": total_negative,
-        }

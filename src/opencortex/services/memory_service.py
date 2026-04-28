@@ -185,6 +185,17 @@ class MemoryService:
         """Delegate to MemoryWriteService._ensure_parent_records."""
         await self._memory_write_service._ensure_parent_records(parent_uri)
 
+    async def _generate_abstract_overview(
+        self,
+        content: str,
+        file_path: str,
+    ) -> tuple[str, str]:
+        """Delegate to MemoryWriteService._generate_abstract_overview."""
+        return await self._memory_write_service._generate_abstract_overview(
+            content,
+            file_path,
+        )
+
     async def _add_document(
         self,
         content: str,

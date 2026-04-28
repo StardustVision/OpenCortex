@@ -894,6 +894,17 @@ class MemoryWriteService:
             self._document_write_service_instance = cached
         return cached
 
+    async def _generate_abstract_overview(
+        self,
+        content: str,
+        file_path: str,
+    ) -> tuple[str, str]:
+        """Delegate document abstract/overview generation."""
+        return await self._document_write_service._generate_abstract_overview(
+            content,
+            file_path,
+        )
+
     async def _add_document(
         self,
         content: str,

@@ -13,6 +13,9 @@ from uuid import uuid4
 
 from opencortex.core.context import Context
 from opencortex.http.request_context import get_effective_identity
+from opencortex.prompts import build_doc_summarization_prompt
+from opencortex.utils.json_parse import parse_json_from_response
+from opencortex.utils.text import chunked_llm_derive, smart_truncate
 
 if TYPE_CHECKING:
     from opencortex.services.memory_service import MemoryService
@@ -29,6 +32,50 @@ class MemoryDocumentWriteService:
     @property
     def _orch(self) -> Any:
         return self._service._orch
+
+    async def _generate_abstract_overview(
+        self,
+        content: str,
+        file_path: str,
+    ) -> tuple[str, str]:
+        """Use LLM to generate abstract (L0) and overview (L1) from content."""
+        orch = self._orch
+        fallback_overview = smart_truncate(content, 500)
+
+        if not orch._llm_completion:
+            return file_path, fallback_overview
+
+        if len(content) > 3000:
+            try:
+                result = await chunked_llm_derive(
+                    content=content,
+                    prompt_builder=lambda chunk: build_doc_summarization_prompt(
+                        file_path, chunk
+                    ),
+                    llm_fn=orch._llm_completion,
+                    parse_fn=parse_json_from_response,
+                    merge_policy="abstract_overview",
+                    max_chars_per_chunk=3000,
+                )
+                return result.get("abstract", file_path), result.get(
+                    "overview", fallback_overview
+                )
+            except Exception:
+                pass
+            return file_path, fallback_overview
+
+        prompt = build_doc_summarization_prompt(file_path, content)
+        try:
+            response = await orch._llm_completion(prompt)
+            data = parse_json_from_response(response)
+            if isinstance(data, dict):
+                return data.get("abstract", file_path), data.get(
+                    "overview", fallback_overview
+                )
+        except Exception:
+            pass
+
+        return file_path, fallback_overview
 
     async def _add_document(
         self,
