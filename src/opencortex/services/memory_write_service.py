@@ -12,7 +12,6 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from opencortex.cognition.state_types import OwnerType
 from opencortex.core.context import Context, Vectorize
 from opencortex.core.user_id import UserIdentifier
 from opencortex.http.request_context import (
@@ -20,6 +19,7 @@ from opencortex.http.request_context import (
     get_effective_project_id,
 )
 from opencortex.memory import MemoryKind
+from opencortex.services.memory_signals import MemoryStoredSignal
 from opencortex.utils.uri import CortexURI
 
 if TYPE_CHECKING:
@@ -562,13 +562,23 @@ class MemoryWriteService:
                         existing_record.get("project_id", persisted_project_id)
                     )
                 await self._service._merge_into(existing_uri, abstract, content)
-                await orch._initialize_autophagy_owner_state(
-                    owner_type=OwnerType.MEMORY,
-                    owner_id=persisted_owner_id,
-                    tenant_id=tid,
-                    user_id=uid,
-                    project_id=persisted_project_id,
-                )
+                signal_bus = getattr(orch, "_memory_signal_bus", None)
+                if signal_bus is not None:
+                    signal_bus.publish_nowait(
+                        MemoryStoredSignal(
+                            uri=existing_uri,
+                            record_id=persisted_owner_id,
+                            tenant_id=tid,
+                            user_id=uid,
+                            project_id=persisted_project_id,
+                            context_type=str(
+                                (existing_record or {}).get("context_type", "")
+                            ),
+                            category=str((existing_record or {}).get("category", "")),
+                            dedup_action="merged",
+                            record=dict(existing_record or {}),
+                        )
+                    )
                 logger.info(
                     "[MemoryService] add tenant=%s user=%s uri=%s "
                     "dedup_action=merged dedup_target=%s score=%.3f "
@@ -646,13 +656,19 @@ class MemoryWriteService:
             abstract_json=abstract_json,
         )
 
-        if (context_type or ctx.context_type or "memory") == "memory":
-            await orch._initialize_autophagy_owner_state(
-                owner_type=OwnerType.MEMORY,
-                owner_id=str(record["id"]),
-                tenant_id=tid,
-                user_id=uid,
-                project_id=record["project_id"],
+        signal_bus = getattr(orch, "_memory_signal_bus", None)
+        if signal_bus is not None:
+            signal_bus.publish_nowait(
+                MemoryStoredSignal(
+                    uri=uri,
+                    record_id=str(record["id"]),
+                    tenant_id=tid,
+                    user_id=uid,
+                    project_id=str(record["project_id"]),
+                    context_type=str(context_type or ctx.context_type or "memory"),
+                    category=effective_category,
+                    record=dict(record),
+                )
             )
 
         # Sync EntityIndex (if available)

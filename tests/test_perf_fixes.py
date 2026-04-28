@@ -104,15 +104,19 @@ class TestColdStartNonBlocking(unittest.IsolatedAsyncioTestCase):
             patch.object(SubsystemBootstrapper, "_init_alpha", new_callable=AsyncMock),
             patch.object(
                 SubsystemBootstrapper, "_init_skill_engine", new_callable=AsyncMock
-            ),
+            ) as mock_init_skill_engine,
         ):
             # Provide storage directly so the lazy QdrantStorageAdapter import is skipped
-            oc = MemoryOrchestrator(CortexConfig(), storage=AsyncMock())
+            oc = MemoryOrchestrator(
+                CortexConfig(autophagy_plugin_enabled=True),
+                storage=AsyncMock(),
+            )
             t0 = asyncio.get_event_loop().time()
             await oc.init()
             elapsed = asyncio.get_event_loop().time() - t0
 
         assert oc._initialized is True
+        mock_init_skill_engine.assert_not_awaited()
         assert elapsed < 1.0, (
             f"init() took {elapsed:.2f}s — maintenance leaked into init"
         )
@@ -258,7 +262,10 @@ class TestAutophagySweeperLifecycle(unittest.IsolatedAsyncioTestCase):
                 SubsystemBootstrapper, "_init_skill_engine", new_callable=AsyncMock
             ),
         ):
-            oc = MemoryOrchestrator(CortexConfig(), storage=AsyncMock())
+            oc = MemoryOrchestrator(
+                CortexConfig(autophagy_plugin_enabled=True),
+                storage=AsyncMock(),
+            )
             t0 = asyncio.get_event_loop().time()
             await oc.init()
             elapsed = asyncio.get_event_loop().time() - t0
@@ -407,8 +414,8 @@ class TestAutophagySweeperLifecycle(unittest.IsolatedAsyncioTestCase):
 
 
 class TestRecallBookkeepingAsync(unittest.IsolatedAsyncioTestCase):
-    async def test_search_skips_recall_bookkeeping_side_effects(self):
-        """search() should skip recall bookkeeping side effects on the hot path."""
+    async def test_search_skips_autophagy_recall_side_effects(self):
+        """search() should skip autophagy recall side effects on the hot path."""
         from opencortex.config import CortexConfig
         from opencortex.intent import RetrievalDepth, SearchResult
         from opencortex.orchestrator import MemoryOrchestrator
@@ -493,12 +500,11 @@ class TestRecallBookkeepingAsync(unittest.IsolatedAsyncioTestCase):
         self.assertLess(
             elapsed,
             0.5,
-            f"search() blocked on recall bookkeeping for {elapsed:.3f}s",
+            f"search() blocked on autophagy recall work for {elapsed:.3f}s",
         )
         await oc.close()
         oc._resolve_and_update_access_stats.assert_not_awaited()
         oc._autophagy_kernel.apply_recall_outcome.assert_not_awaited()
-        self.assertEqual(len(oc._recall_bookkeeping_tasks_set()), 0)
 
     async def test_search_no_longer_calls_hyde_rewrite(self):
         """search() should not invoke the old retrieval-time HyDE callback."""

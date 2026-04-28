@@ -66,6 +66,7 @@ from opencortex.services.derivation_service import (
     _merge_unique_strings,
     _split_keyword_string,
 )
+from opencortex.services.memory_signals import MemorySignalBus
 from opencortex.storage.cortex_fs import CortexFS
 from opencortex.storage.storage_interface import StorageInterface
 
@@ -198,7 +199,7 @@ class MemoryOrchestrator:
         }
         # Guard to serialize sweep execution across startup/periodic triggers.
         self._autophagy_sweep_guard = asyncio.Lock()
-        self._recall_bookkeeping_tasks: set[asyncio.Task[Any]] = set()
+        self._memory_signal_bus = MemorySignalBus()
 
     # =========================================================================
     # Collection Routing
@@ -1116,26 +1117,6 @@ class MemoryOrchestrator:
         """Delegate to SessionLifecycleService._resolve_memory_owner_ids."""
         return await self._session_lifecycle_service._resolve_memory_owner_ids(matches)
 
-    def _schedule_recall_bookkeeping(
-        self,
-        *,
-        memories: List[Any],
-        query: str,
-        tenant_id: str,
-        user_id: str,
-    ) -> None:
-        """Delegate to BackgroundTaskManager._schedule_recall_bookkeeping."""
-        self._background_task_manager._schedule_recall_bookkeeping(
-            memories=memories,
-            query=query,
-            tenant_id=tenant_id,
-            user_id=user_id,
-        )
-
-    def _recall_bookkeeping_tasks_set(self) -> set[asyncio.Task[Any]]:
-        """Delegate to BackgroundTaskManager._recall_bookkeeping_tasks_set."""
-        return self._background_task_manager._recall_bookkeeping_tasks_set()
-
     async def _get_record_by_uri(self, uri: str) -> Optional[Dict[str, Any]]:
         """Delegate to SessionLifecycleService._get_record_by_uri."""
         return await self._session_lifecycle_service._get_record_by_uri(uri)
@@ -1431,7 +1412,7 @@ class MemoryOrchestrator:
         # rerank_client -> embedder -> storage. Each guarded with
         # try/except so one failed close cannot abort the rest of
         # teardown (matches the existing pattern above for
-        # autophagy/recall task cancellation).
+        # autophagy/signal task cancellation).
         for label, attr in (
             ("llm_completion", "_llm_completion"),
             ("insights_llm_completion", "_insights_llm_completion"),

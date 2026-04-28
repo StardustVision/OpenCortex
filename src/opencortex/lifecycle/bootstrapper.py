@@ -45,6 +45,8 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from opencortex.cognition.state_types import OwnerType
+
 if TYPE_CHECKING:
     from opencortex.orchestrator import MemoryOrchestrator
 
@@ -192,9 +194,14 @@ class SubsystemBootstrapper:
         # 8b. Document derive worker
         orch._start_derive_worker()
 
-        # 9. Autophagy cognition components
-        if getattr(orch._config, "cognition_enabled", True):
+        # 9. Autophagy cognition plugin components
+        if getattr(orch._config, "cognition_enabled", True) and getattr(
+            orch._config,
+            "autophagy_plugin_enabled",
+            False,
+        ):
             await self._init_cognition()
+            self._register_autophagy_signal_handlers()
             orch._start_autophagy_sweeper()
 
         # 9b. Plan 009 / R5 — periodic sweeper that watches the
@@ -206,7 +213,8 @@ class SubsystemBootstrapper:
         await self._init_alpha()
 
         # 11. Skill Engine
-        await self._init_skill_engine()
+        if getattr(orch._config, "skill_engine_enabled", False):
+            await self._init_skill_engine()
 
         orch._initialized = True
         logger.info(
@@ -248,6 +256,37 @@ class SubsystemBootstrapper:
             candidate_store=orch._candidate_store,
             metabolism_controller=(orch._cognitive_metabolism_controller),
         )
+
+    def _register_autophagy_signal_handlers(self) -> None:
+        """Subscribe autophagy plugin handlers to memory lifecycle signals."""
+        orch = self._orch
+        signal_bus = getattr(orch, "_memory_signal_bus", None)
+        if signal_bus is None or orch._autophagy_kernel is None:
+            return
+
+        async def on_memory_stored(signal: Any) -> None:
+            if signal.context_type != "memory":
+                return
+            await orch._initialize_autophagy_owner_state(
+                owner_type=OwnerType.MEMORY,
+                owner_id=signal.record_id,
+                tenant_id=signal.tenant_id,
+                user_id=signal.user_id,
+                project_id=signal.project_id,
+            )
+
+        async def on_recall_completed(signal: Any) -> None:
+            recalled_owner_ids = await orch._resolve_memory_owner_ids(signal.memories)
+            if not recalled_owner_ids or orch._autophagy_kernel is None:
+                return
+            await orch._autophagy_kernel.apply_recall_outcome(
+                owner_ids=recalled_owner_ids,
+                query=signal.query,
+                recall_outcome={"selected_results": recalled_owner_ids},
+            )
+
+        signal_bus.subscribe("memory_stored", on_memory_stored)
+        signal_bus.subscribe("recall_completed", on_recall_completed)
 
     async def _init_alpha(self) -> None:
         """Initialize Cortex Alpha components if enabled."""
