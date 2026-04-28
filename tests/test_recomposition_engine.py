@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import MagicMock
 
 from opencortex.context.recomposition_engine import SessionRecompositionEngine
+from opencortex.context.recomposition_input import RecompositionInputService
 from opencortex.context.recomposition_segmentation import (
     RecompositionSegmentationService,
 )
@@ -20,6 +21,10 @@ class TestRecompositionEngineConstruction(unittest.TestCase):
         mock_mgr = MagicMock()
         engine = SessionRecompositionEngine(mock_mgr)
         self.assertIs(engine._mgr, mock_mgr)
+        self.assertIsInstance(
+            engine._input,
+            RecompositionInputService,
+        )
         self.assertIsInstance(
             engine._segmentation,
             RecompositionSegmentationService,
