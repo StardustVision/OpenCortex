@@ -14,12 +14,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from opencortex.core.context import Context, Vectorize
 from opencortex.core.user_id import UserIdentifier
-from opencortex.http.request_context import (
-    get_effective_identity,
-    get_effective_project_id,
-)
+from opencortex.http.request_context import get_effective_identity
 from opencortex.memory import MemoryKind
-from opencortex.services.memory_signals import MemoryStoredSignal
 from opencortex.utils.uri import CortexURI
 
 if TYPE_CHECKING:
@@ -28,6 +24,7 @@ if TYPE_CHECKING:
     )
     from opencortex.services.memory_service import MemoryService
     from opencortex.services.memory_store_record_service import MemoryStoreRecordService
+    from opencortex.services.memory_write_dedup_service import MemoryWriteDedupService
 
 logger = logging.getLogger(__name__)
 
@@ -541,45 +538,20 @@ class MemoryWriteService:
 
         # --- Write-time semantic dedup ---
         if dedup and ctx.vector and is_leaf and mergeable:
-            dedup_started = asyncio.get_running_loop().time()
-            dup = await self._service._check_duplicate(
+            dedup_result = await self._write_dedup_service.try_merge_duplicate(
+                ctx=ctx,
                 vector=ctx.vector,
                 memory_kind=memory_kind.value,
                 merge_signature=merge_signature,
                 threshold=dedup_threshold,
-                tid=tid,
-                uid=uid,
+                tenant_id=tid,
+                user_id=uid,
+                abstract=abstract,
+                content=content,
+                add_started=add_started,
             )
-            dedup_ms = int((asyncio.get_running_loop().time() - dedup_started) * 1000)
-            if dup:
-                existing_uri, existing_score = dup
-                total_ms = int((asyncio.get_running_loop().time() - add_started) * 1000)
-                existing_record = await orch._get_record_by_uri(existing_uri)
-                persisted_owner_id = ""
-                persisted_project_id = get_effective_project_id()
-                if existing_record:
-                    persisted_owner_id = str(existing_record.get("id", ""))
-                    persisted_project_id = str(
-                        existing_record.get("project_id", persisted_project_id)
-                    )
-                await self._service._merge_into(existing_uri, abstract, content)
-                signal_bus = getattr(orch, "_memory_signal_bus", None)
-                if signal_bus is not None:
-                    signal_bus.publish_nowait(
-                        MemoryStoredSignal(
-                            uri=existing_uri,
-                            record_id=persisted_owner_id,
-                            tenant_id=tid,
-                            user_id=uid,
-                            project_id=persisted_project_id,
-                            context_type=str(
-                                (existing_record or {}).get("context_type", "")
-                            ),
-                            category=str((existing_record or {}).get("category", "")),
-                            dedup_action="merged",
-                            record=dict(existing_record or {}),
-                        )
-                    )
+            dedup_ms = dedup_result.dedup_ms
+            if dedup_result.merged and dedup_result.ctx is not None:
                 logger.info(
                     "[MemoryService] add tenant=%s user=%s uri=%s "
                     "dedup_action=merged dedup_target=%s score=%.3f "
@@ -588,19 +560,16 @@ class MemoryWriteService:
                     tid,
                     uid,
                     uri,
-                    existing_uri,
-                    existing_score,
-                    total_ms,
+                    dedup_result.target_uri,
+                    dedup_result.score,
+                    dedup_result.total_ms_at_match,
                     derive_layers_ms,
                     embed_ms,
                     dedup_ms,
                     upsert_ms,
                     fs_write_ms,
                 )
-                ctx.uri = existing_uri
-                ctx.meta["dedup_action"] = "merged"
-                ctx.meta["dedup_score"] = round(existing_score, 4)
-                return ctx
+                return dedup_result.ctx
 
         # Ensure parent directory records exist in vector DB
         if is_leaf and parent_uri:
@@ -665,6 +634,19 @@ class MemoryWriteService:
             self._store_record_service_instance = cached
         return cached
 
+    @property
+    def _write_dedup_service(self) -> "MemoryWriteDedupService":
+        """Lazy-built service for write-time semantic deduplication."""
+        from opencortex.services.memory_write_dedup_service import (
+            MemoryWriteDedupService,
+        )
+
+        cached = getattr(self, "_write_dedup_service_instance", None)
+        if cached is None:
+            cached = MemoryWriteDedupService(self)
+            self._write_dedup_service_instance = cached
+        return cached
+
     async def _check_duplicate(
         self,
         vector: List[float],
@@ -675,100 +657,24 @@ class MemoryWriteService:
         uid: str,
     ) -> Optional[Tuple[str, float]]:
         """Return duplicate ``(existing_uri, score)`` when one exists."""
-        orch = self._orch
-        try:
-            # Build scope-aware filter: same tenant, same category, leaf only
-            conds: list = [
-                {"op": "must", "field": "source_tenant_id", "conds": [tid]},
-                {"op": "must", "field": "is_leaf", "conds": [True]},
-            ]
-            if memory_kind:
-                conds.append(
-                    {"op": "must", "field": "memory_kind", "conds": [memory_kind]}
-                )
-            if merge_signature:
-                conds.append(
-                    {
-                        "op": "must",
-                        "field": "merge_signature",
-                        "conds": [merge_signature],
-                    }
-                )
-            # Scope: shared OR (private AND own user)
-            conds.append(
-                {
-                    "op": "or",
-                    "conds": [
-                        {"op": "must", "field": "scope", "conds": ["shared"]},
-                        {
-                            "op": "and",
-                            "conds": [
-                                {"op": "must", "field": "scope", "conds": ["private"]},
-                                {
-                                    "op": "must",
-                                    "field": "source_user_id",
-                                    "conds": [uid],
-                                },
-                            ],
-                        },
-                    ],
-                }
-            )
-            # Project isolation: only dedup within same project
-            project_id = get_effective_project_id()
-            if project_id:
-                conds.append(
-                    {"op": "must", "field": "project_id", "conds": [project_id]}
-                )
-
-            dedup_filter = {"op": "and", "conds": conds}
-
-            results = await orch._storage.search(
-                orch._get_collection(),
-                query_vector=vector,
-                filter=dedup_filter,
-                limit=1,
-                output_fields=["uri", "abstract"],
-            )
-            if results:
-                score = results[0].get("_score", results[0].get("score", 0.0))
-                if score >= threshold:
-                    return (results[0]["uri"], score)
-        except Exception as exc:
-            logger.debug("[MemoryService] Dedup check failed: %s", exc)
-        return None
+        return await self._write_dedup_service.check_duplicate(
+            vector=vector,
+            memory_kind=memory_kind,
+            merge_signature=merge_signature,
+            threshold=threshold,
+            tid=tid,
+            uid=uid,
+        )
 
     async def _merge_into(
         self, existing_uri: str, new_abstract: str, new_content: str
     ) -> None:
         """Merge new content into an existing record and reinforce it."""
-        orch = self._orch
-        records = await orch._storage.filter(
-            orch._get_collection(),
-            {"op": "must", "field": "uri", "conds": [existing_uri]},
-            limit=1,
-            output_fields=["abstract", "overview"],
+        await self._write_dedup_service.merge_into(
+            existing_uri=existing_uri,
+            new_abstract=new_abstract,
+            new_content=new_content,
         )
-        existing_content = ""
-        if records:
-            # Read existing L2 content from filesystem
-            try:
-                existing_content = await orch._fs.read_file(existing_uri)
-            except Exception:
-                existing_content = ""
-
-        merged_content = (
-            f"{existing_content}\n---\n{new_content}".strip()
-            if new_content
-            else existing_content
-        )
-        await self._service.update(
-            existing_uri,
-            abstract=new_abstract,
-            content=merged_content,
-        )
-        # Positive reinforcement for the merged record
-        await self._service.feedback(existing_uri, 0.5)
 
     async def _ensure_parent_records(self, parent_uri: str) -> None:
         """Ensure all ancestor directory records exist in the vector store."""
