@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from opencortex.http.request_context import (
@@ -12,11 +10,6 @@ from opencortex.http.request_context import (
     get_effective_project_id,
 )
 from opencortex.intent import RetrievalDepth, RetrievalPlan, SearchResult
-from opencortex.intent.retrieval_support import (
-    build_probe_scope_input,
-    build_scope_filter,
-)
-from opencortex.intent.timing import StageTimingCollector, measure_async, measure_sync
 from opencortex.retrieve.types import (
     ContextType,
     DetailLevel,
@@ -24,12 +17,12 @@ from opencortex.retrieve.types import (
     QueryResult,
     TypedQuery,
 )
-from opencortex.services.memory_signals import RecallCompletedSignal
 
 if TYPE_CHECKING:
+    from opencortex.services.memory_recall_pipeline_service import (
+        MemoryRecallPipelineService,
+    )
     from opencortex.services.memory_service import MemoryService
-
-logger = logging.getLogger(__name__)
 
 
 class MemoryQueryService:
@@ -83,232 +76,32 @@ class MemoryQueryService:
             ``FindResult`` with ``memories``, ``resources``, and
             ``skills`` lists.
         """
-        orch = self._orch
-        orch._ensure_init()
-        search_started = asyncio.get_running_loop().time()
-        tid, uid = get_effective_identity()
-        stage_timings = StageTimingCollector()
-
-        target_doc_id = None
-        if isinstance(meta, dict):
-            target_doc_id = meta.get("target_doc_id")
-
-        detail_level_value = (
-            detail_level.value
-            if isinstance(detail_level, DetailLevel)
-            else detail_level
-        )
-        detail_level_override = (
-            detail_level_value if detail_level_value != DetailLevel.L1.value else None
-        )
-        scope_filter = build_scope_filter(
-            context_type=context_type,
-            target_uri=target_uri,
-            target_doc_id=target_doc_id,
-            session_context=session_context,
-            metadata_filter=metadata_filter,
-        )
-
-        if probe_result is None:
-            probe_result = await measure_async(
-                stage_timings,
-                "probe",
-                orch.probe_memory,
-                query,
-                context_type=context_type,
-                target_uri=target_uri,
-                target_doc_id=target_doc_id,
-                session_context=session_context,
-                metadata_filter=metadata_filter,
-            )
-        else:
-            stage_timings.record_ms("probe", 0)
-        if retrieve_plan is None:
-            scope_input = build_probe_scope_input(
-                context_type=context_type,
-                target_uri=target_uri,
-                target_doc_id=target_doc_id,
-                session_context=session_context,
-            )
-            retrieve_plan = measure_sync(
-                stage_timings,
-                "plan",
-                orch.plan_memory,
-                query=query,
-                probe_result=probe_result,
-                max_items=limit,
-                recall_mode="auto",
-                detail_level_override=detail_level_override,
-                scope_input=scope_input,
-            )
-        else:
-            stage_timings.record_ms("plan", 0)
-        intent_ms = stage_timings.snapshot()["probe"] + stage_timings.snapshot()["plan"]
-
-        if retrieve_plan is None:
-            total_ms = int((asyncio.get_running_loop().time() - search_started) * 1000)
-            logger.debug(
-                "[search] should_recall=False tenant=%s user=%s total_ms=%d",
-                tid,
-                uid,
-                total_ms,
-            )
-            return FindResult(
-                memories=[],
-                resources=[],
-                skills=[],
-                probe_result=probe_result,
-            )
-
-        runtime_bound_plan = measure_sync(
-            stage_timings,
-            "bind",
-            orch.bind_memory_runtime,
-            probe_result=probe_result,
-            retrieve_plan=retrieve_plan,
-            max_items=limit,
-            session_context=session_context,
-            include_knowledge=False,
-        )
-        effective_limit = runtime_bound_plan["memory_limit"]
-        detail_level = runtime_bound_plan["effective_depth"]
-        typed_queries = self._service._build_typed_queries(
+        return await self._recall_pipeline_service.search(
             query=query,
             context_type=context_type,
             target_uri=target_uri,
+            limit=limit,
+            score_threshold=score_threshold,
+            metadata_filter=metadata_filter,
+            detail_level=detail_level,
+            probe_result=probe_result,
             retrieve_plan=retrieve_plan,
-            runtime_bound_plan=runtime_bound_plan,
-        )
-        if target_doc_id:
-            for typed_query in typed_queries:
-                typed_query.target_doc_id = target_doc_id
-
-        # Set target directories on queries if specified
-        if target_uri:
-            for tq in typed_queries:
-                if not tq.target_directories:
-                    tq.target_directories = [target_uri]
-
-        search_filter = orch._build_search_filter(
-            metadata_filter=scope_filter,
+            meta=meta,
+            session_context=session_context,
         )
 
-        # Build retrieval coroutines
-        retrieval_coros = [
-            orch._execute_object_query(
-                typed_query=tq,
-                limit=effective_limit,
-                score_threshold=score_threshold,
-                search_filter=search_filter,
-                retrieve_plan=retrieve_plan,
-                probe_result=probe_result,
-                bound_plan=runtime_bound_plan,
-            )
-            for tq in typed_queries
-        ]
-
-        query_results = await measure_async(
-            stage_timings,
-            "retrieve",
-            asyncio.gather,
-            *retrieval_coros,
-        )
-        query_results = list(query_results)
-        hydration_actions: List[Dict[str, Any]] = []
-
-        aggregate_started = asyncio.get_running_loop().time()
-        result = orch._aggregate_results(query_results, limit=limit)
-        result.probe_result = probe_result
-        result.retrieve_plan = retrieve_plan
-        retrieve_breakdown_ms = self._service._summarize_retrieve_breakdown(
-            query_results
+    @property
+    def _recall_pipeline_service(self) -> "MemoryRecallPipelineService":
+        """Lazy-built service for recall search orchestration."""
+        from opencortex.services.memory_recall_pipeline_service import (
+            MemoryRecallPipelineService,
         )
 
-        # Filter out directory nodes (is_leaf=False) — they exist for
-        # hierarchical traversal but have no abstract/content of their own.
-        result.memories = [m for m in result.memories if m.is_leaf]
-        result.resources = [m for m in result.resources if m.is_leaf]
-        result.skills = [m for m in result.skills if m.is_leaf]
-
-        # Fire-and-forget: resolve URIs → record IDs → update access stats
-        all_matched = result.memories + result.resources + result.skills
-
-        stage_timings.record_elapsed("aggregate", aggregate_started)
-        total_ms = int((asyncio.get_running_loop().time() - search_started) * 1000)
-        stage_timings.record_ms("total", total_ms)
-        timing_snapshot = stage_timings.snapshot()
-        retrieval_latency_ms = max(timing_snapshot["retrieve"], 0) + max(
-            timing_snapshot.get("hydrate", 0), 0
-        )
-        overhead_ms = timing_snapshot["overhead"]
-        if runtime_bound_plan is not None:
-            runtime_items = [
-                {
-                    "uri": mc.uri,
-                    "context_type": mc.context_type.value,
-                    "score": mc.score,
-                }
-                for mc in all_matched
-            ]
-            result.runtime_result = orch._memory_runtime.finalize(
-                bound_plan=runtime_bound_plan,
-                items=runtime_items,
-                latency_ms=retrieval_latency_ms,
-                stage_timing_ms=timing_snapshot,
-                retrieve_breakdown_ms=retrieve_breakdown_ms,
-                hydration_actions=hydration_actions,
-            )
-        logger.info(
-            "[search] tenant=%s user=%s probe_candidates=%d queries=%d results=%d "
-            "timing_ms(total=%d intent=%d retrieval=%d overhead=%d)",
-            tid,
-            uid,
-            probe_result.evidence.candidate_count,
-            len(typed_queries),
-            len(all_matched),
-            total_ms,
-            intent_ms,
-            retrieval_latency_ms,
-            overhead_ms,
-        )
-
-        # v0.6: Build SearchExplainSummary
-        if getattr(orch._config, "explain_enabled", True) and query_results:
-            from opencortex.retrieve.types import SearchExplainSummary
-
-            primary = query_results[0]
-            result.explain_summary = SearchExplainSummary(
-                total_ms=float(total_ms),
-                query_count=len(query_results),
-                primary_query_class=primary.explain.query_class
-                if primary.explain
-                else "",
-                primary_path=primary.explain.path if primary.explain else "",
-                doc_scope_hit=any(
-                    qr.explain and qr.explain.doc_scope_hit for qr in query_results
-                ),
-                time_filter_hit=any(
-                    qr.explain and qr.explain.time_filter_hit for qr in query_results
-                ),
-                rerank_triggered=any(
-                    qr.explain and qr.explain.rerank_ms > 0 for qr in query_results
-                ),
-            )
-
-        result.total = len(result.memories) + len(result.resources) + len(result.skills)
-        signal_bus = getattr(orch, "_memory_signal_bus", None)
-        if signal_bus is not None:
-            signal_bus.publish_nowait(
-                RecallCompletedSignal(
-                    query=query,
-                    tenant_id=tid,
-                    user_id=uid,
-                    memories=list(result.memories),
-                    resources=list(result.resources),
-                    skills=list(result.skills),
-                )
-            )
-        return result
+        cached = getattr(self, "_recall_pipeline_service_instance", None)
+        if cached is None:
+            cached = MemoryRecallPipelineService(self)
+            self._recall_pipeline_service_instance = cached
+        return cached
 
     def _build_typed_queries(
         self,
