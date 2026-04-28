@@ -328,6 +328,8 @@ class ContextManager:
         self._selected_skill_uris: Dict[tuple, Set[str]] = {}
         # Lazy-initialized recomposition engine (survives ``__new__`` bypass).
         self._recomposition_engine_instance: Optional[Any] = None
+        # Lazy-initialized commit service (survives ``__new__`` bypass).
+        self._commit_service_instance: Optional[Any] = None
 
         # Config
         self._prepare_cache_ttl = prepare_cache_ttl
@@ -350,6 +352,22 @@ class ContextManager:
             inst = SessionRecompositionEngine(self)
             self._recomposition_engine_instance = inst
         return inst
+
+    @property
+    def _commit_service(self) -> "ContextCommitService":
+        """Lazy-initialized commit coordinator."""
+        inst = getattr(self, "_commit_service_instance", None)
+        if inst is None:
+            from opencortex.context.commit_service import ContextCommitService
+
+            inst = ContextCommitService(self)
+            self._commit_service_instance = inst
+        return inst
+
+    @staticmethod
+    def _new_conversation_buffer() -> ConversationBuffer:
+        """Create a fresh conversation buffer for commit coordination."""
+        return ConversationBuffer()
 
     # =========================================================================
     # Lifecycle
@@ -1776,195 +1794,15 @@ class ContextManager:
         Returns:
             Dict with commit status and metadata.
         """
-        sk = self._make_session_key(tenant_id, user_id, session_id)
-        self._touch_session(sk)
-        self._remember_session_project(sk)
-        lock = self._session_locks.setdefault(sk, asyncio.Lock())
-
-        async with lock:
-            if turn_id in self._committed_turns.get(sk, set()):
-                logger.debug(
-                    "[ContextManager] commit DUPLICATE sid=%s turn=%s tenant=%s user=%s",
-                    session_id,
-                    turn_id,
-                    tenant_id,
-                    user_id,
-                )
-                return {
-                    "accepted": True,
-                    "write_status": "duplicate",
-                    "turn_id": turn_id,
-                }
-
-            observer_ok = True
-            try:
-                self._observer.record_batch(
-                    self._observer_session_id(
-                        session_id,
-                        tenant_id=tenant_id,
-                        user_id=user_id,
-                    ),
-                    messages,
-                    tenant_id,
-                    user_id,
-                    tool_calls=tool_calls,
-                )
-            except Exception as exc:
-                observer_ok = False
-                logger.warning(
-                    "[ContextManager] Observer record failed sid=%s turn=%s tenant=%s user=%s: %s "
-                    "— writing to fallback",
-                    session_id,
-                    turn_id,
-                    tenant_id,
-                    user_id,
-                    exc,
-                )
-                self._write_fallback(session_id, turn_id, messages, tenant_id, user_id)
-
-            self._committed_turns.setdefault(sk, set()).add(turn_id)
-
-            if cited_uris:
-                valid_uris = [u for u in cited_uris if u.startswith("opencortex://")]
-                if valid_uris:
-                    task = asyncio.create_task(self._apply_cited_rewards(valid_uris))
-                    self._pending_tasks.add(task)
-                    task.add_done_callback(self._pending_tasks.discard)
-
-            if (
-                cited_uris
-                and hasattr(self._orchestrator, "_skill_event_store")
-                and self._orchestrator._skill_event_store
-            ):
-                skill_uris = [u for u in cited_uris if "/skills/" in u]
-                server_selected = self._selected_skill_uris.get((sk, turn_id), set())
-                for uri in skill_uris:
-                    if uri not in server_selected:
-                        logger.debug(
-                            "[ContextManager] Dropped forged skill citation: %s", uri
-                        )
-                        continue
-                    await self._append_skill_event(
-                        session_id,
-                        turn_id,
-                        uri,
-                        tenant_id,
-                        user_id,
-                        "cited",
-                    )
-
-            buffer = self._conversation_buffers.setdefault(sk, ConversationBuffer())
-            write_items = []
-            for i, msg in enumerate(messages):
-                text = msg.get(
-                    "content",
-                    msg.get("assistant_response", msg.get("user_message", "")),
-                )
-                if not text:
-                    continue
-                msg_meta = dict(msg.get("meta") or {})
-                stored_text = self._decorate_message_text(text, msg_meta)
-                role = msg.get("role", "")
-                idx = buffer.start_msg_index + len(buffer.messages) + i
-                tc = tool_calls if role == "assistant" else None
-                write_items.append((stored_text, idx, tc, msg_meta))
-
-            if write_items:
-                tokens_for_identity = set_request_identity(tenant_id, user_id)
-                try:
-                    results = await asyncio.gather(
-                        *[
-                            self._orchestrator._write_immediate(
-                                session_id=session_id,
-                                msg_index=idx,
-                                text=text,
-                                tool_calls=tc,
-                                meta=msg_meta,
-                            )
-                            for text, idx, tc, msg_meta in write_items
-                        ],
-                        return_exceptions=True,
-                    )
-                finally:
-                    reset_request_identity(tokens_for_identity)
-
-                merge_lock = self._session_merge_locks.setdefault(sk, asyncio.Lock())
-                async with merge_lock:
-                    active_buffer = self._conversation_buffers.get(sk)
-                    if active_buffer is None:
-                        active_buffer = buffer
-                        self._conversation_buffers[sk] = active_buffer
-                    elif active_buffer is not buffer:
-                        logger.debug(
-                            "[ContextManager] commit detected buffer rollover "
-                            "sid=%s turn=%s tenant=%s user=%s old_start=%d new_start=%d",
-                            session_id,
-                            turn_id,
-                            tenant_id,
-                            user_id,
-                            buffer.start_msg_index,
-                            active_buffer.start_msg_index,
-                        )
-
-                    for (text, idx, tc, _msg_meta), result in zip(write_items, results):
-                        if isinstance(result, Exception):
-                            logger.warning(
-                                (
-                                    "[ContextManager] Immediate write failed"
-                                    " sid=%s turn=%s msg_index=%d chars=%d"
-                                    " exc_type=%s exc=%r"
-                                ),
-                                session_id,
-                                turn_id,
-                                idx,
-                                len(text),
-                                type(result).__name__,
-                                result,
-                                exc_info=(
-                                    type(result),
-                                    result,
-                                    result.__traceback__,
-                                ),
-                            )
-                            continue
-                        active_buffer.messages.append(text)
-                        active_buffer.immediate_uris.append(result)
-                        active_buffer.token_count += self._estimate_tokens(text)
-
-                    if tool_calls:
-                        active_buffer.tool_calls_per_turn.append(tool_calls)
-
-                    buffer = active_buffer
-
-            if buffer.token_count >= self._merge_trigger_threshold():
-                self._spawn_merge_task(sk, session_id, tenant_id, user_id)
-
-            write_status = "ok" if observer_ok else "fallback"
-            if not observer_ok:
-                logger.warning(
-                    "[ContextManager] commit FALLBACK sid=%s turn=%s tenant=%s user=%s",
-                    session_id,
-                    turn_id,
-                    tenant_id,
-                    user_id,
-                )
-            else:
-                logger.info(
-                    "[ContextManager] commit sid=%s turn=%s tenant=%s user=%s messages=%d cited=%d",
-                    session_id,
-                    turn_id,
-                    tenant_id,
-                    user_id,
-                    len(messages),
-                    len(cited_uris) if cited_uris else 0,
-                )
-
-            return {
-                "accepted": True,
-                "write_status": write_status,
-                "turn_id": turn_id,
-                "session_turns": len(self._committed_turns.get(sk, set())),
-            }
+        return await self._commit_service.commit(
+            session_id=session_id,
+            turn_id=turn_id,
+            messages=messages,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            cited_uris=cited_uris,
+            tool_calls=tool_calls,
+        )
 
     @staticmethod
     def _estimate_tokens(text: str) -> int:
