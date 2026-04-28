@@ -29,6 +29,7 @@ from opencortex.utils.text import chunked_llm_derive, smart_truncate
 
 if TYPE_CHECKING:
     from opencortex.orchestrator import MemoryOrchestrator
+    from opencortex.services.memory_record_service import MemoryRecordService
 
 logger = logging.getLogger(__name__)
 
@@ -110,11 +111,16 @@ class DerivationService:
     def _get_collection(self) -> str:
         return self._orch._get_collection()
 
+    @property
+    def _memory_record_service(self) -> "MemoryRecordService":
+        """Return the orchestrator-owned memory record/projection service."""
+        return self._orch._memory_record_service
+
     def _extract_category_from_uri(self, uri: str) -> str:
-        return self._orch._extract_category_from_uri(uri)
+        return self._memory_record_service._extract_category_from_uri(uri)
 
     def _derive_parent_uri(self, uri: str) -> str:
-        return self._orch._derive_parent_uri(uri)
+        return self._memory_record_service._derive_parent_uri(uri)
 
     async def _get_record_by_uri(self, uri: str) -> Optional[Dict[str, Any]]:
         return await self._orch._get_record_by_uri(uri)
@@ -635,8 +641,8 @@ class DerivationService:
         parent_uri: str,
         session_id: str,
     ) -> Dict[str, Any]:
-        """Delegate to orchestrator memory-record wrapper."""
-        return self._orch._build_abstract_json(
+        """Delegate to MemoryRecordService._build_abstract_json."""
+        return self._memory_record_service._build_abstract_json(
             uri=uri,
             context_type=context_type,
             category=category,
@@ -690,8 +696,8 @@ class DerivationService:
         source_record: Dict[str, Any],
         fact_points_list: List[str],
     ) -> List[Dict[str, Any]]:
-        """Delegate to orchestrator memory-record wrapper."""
-        return self._orch._fact_point_records(
+        """Delegate to MemoryRecordService._fact_point_records."""
+        return self._memory_record_service._fact_point_records(
             source_record=source_record,
             fact_points_list=fact_points_list,
         )
@@ -702,8 +708,8 @@ class DerivationService:
         source_record: Dict[str, Any],
         abstract_json: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
-        """Delegate to orchestrator memory-record wrapper."""
-        return self._orch._anchor_projection_records(
+        """Delegate to MemoryRecordService._anchor_projection_records."""
+        return self._memory_record_service._anchor_projection_records(
             source_record=source_record,
             abstract_json=abstract_json,
         )
@@ -714,8 +720,12 @@ class DerivationService:
         prefix: str,
         keep_uris: set,
     ) -> None:
-        """Delegate to orchestrator memory-record wrapper."""
-        await self._orch._delete_derived_stale(collection, prefix, keep_uris)
+        """Delegate to MemoryRecordService._delete_derived_stale."""
+        await self._memory_record_service._delete_derived_stale(
+            collection,
+            prefix,
+            keep_uris,
+        )
 
     async def _sync_anchor_projection_records(
         self,
@@ -723,8 +733,8 @@ class DerivationService:
         source_record: Dict[str, Any],
         abstract_json: Dict[str, Any],
     ) -> None:
-        """Delegate to orchestrator memory-record wrapper."""
-        await self._orch._sync_anchor_projection_records(
+        """Delegate to MemoryRecordService._sync_anchor_projection_records."""
+        await self._memory_record_service._sync_anchor_projection_records(
             source_record=source_record,
             abstract_json=abstract_json,
         )
