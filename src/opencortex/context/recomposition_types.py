@@ -3,9 +3,9 @@
 
 Defined in its own module so ``ContextManager`` and consumers can import
 the type without pulling each other into a circular import. The shape
-is enforced at construction time across four sites in ``manager.py``:
+is enforced at construction time across four construction paths:
 
-- ``ContextManager._benchmark_recomposition_entries`` (1 site) —
+- ``BenchmarkConversationIngestService._benchmark_recomposition_entries`` —
   message-level entries from the benchmark offline ingest path.
   **Sets** ``source_segment_index`` to the input-segment index the
   entry came from (R3-RC-02 fix); the splitter uses this to force a

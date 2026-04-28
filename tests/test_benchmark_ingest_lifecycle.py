@@ -20,15 +20,14 @@ from __future__ import annotations
 
 import asyncio
 import unittest
-from typing import Any, Callable, Dict, List
+from typing import Any, Dict, List
 
+from opencortex.context.benchmark_ingest_service import BenchmarkRunCleanup
 from opencortex.http.request_context import (
     reset_request_role,
     set_request_role,
 )
-
 from tests.test_http_server import _test_app_context
-
 
 _ADMIN_INGEST_URL = "/api/v1/admin/benchmark/conversation_ingest"
 
@@ -256,31 +255,29 @@ class TestBenchmarkIngestLifecycle(unittest.TestCase):
                     src = src_records[0]
                     src_meta = dict(src.get("meta") or {})
                     src_meta.pop("run_complete", None)
-                    await storage.update(
-                        coll, str(src["id"]), {"meta": src_meta}
-                    )
+                    await storage.update(coll, str(src["id"]), {"meta": src_meta})
 
                     # Replay with the same payload — should NOT short-circuit.
-                    # Track _purge_torn_benchmark_run to confirm it ran.
-                    cm = orch._context_manager
+                    # Track service-owned torn-run purge to confirm it ran.
+                    service = orch._session_lifecycle_service._benchmark_ingest_service
                     purges: list = []
-                    original_purge = cm._purge_torn_benchmark_run
+                    original_purge = service._purge_torn_benchmark_run
 
                     async def _track_purge(**kwargs):
                         purges.append(kwargs.get("source_uri"))
                         await original_purge(**kwargs)
 
-                    cm._purge_torn_benchmark_run = _track_purge
+                    service._purge_torn_benchmark_run = _track_purge
                     try:
                         r2 = await client.post(_ADMIN_INGEST_URL, json=payload)
                     finally:
-                        cm._purge_torn_benchmark_run = original_purge
+                        service._purge_torn_benchmark_run = original_purge
 
                     self.assertEqual(r2.status_code, 200)
                     self.assertEqual(
                         purges,
                         [first["source_uri"]],
-                        "torn-replay must trigger _purge_torn_benchmark_run",
+                        "torn-replay must trigger service torn-run purge",
                     )
                     # Re-ingest should produce a fresh record set with
                     # the marker re-applied.
@@ -347,7 +344,9 @@ class TestBenchmarkIngestLifecycle(unittest.TestCase):
                     # Cleanup tracker must have removed the merged leaf
                     # written before recomposition failed. The source URI
                     # is intentionally preserved (idempotent retry hook).
-                    records = list(_list_session_records(orch, "bench_recompose_fail_01"))
+                    records = list(
+                        _list_session_records(orch, "bench_recompose_fail_01")
+                    )
                     layers = {
                         str((r.get("meta") or {}).get("layer", "")) for r in records
                     }
@@ -363,16 +362,14 @@ class TestBenchmarkIngestLifecycle(unittest.TestCase):
         """asyncio.CancelledError is caught, cleanup runs, then re-raises."""
 
         async def check():
-            from opencortex.context.manager import _BenchmarkRunCleanup
-
             compensated: Dict[str, bool] = {"called": False}
-            original = _BenchmarkRunCleanup.compensate
+            original = BenchmarkRunCleanup.compensate
 
-            async def _track_compensate(self, manager):
+            async def _track_compensate(self, orchestrator):
                 compensated["called"] = True
-                await original(self, manager)
+                await original(self, orchestrator)
 
-            _BenchmarkRunCleanup.compensate = _track_compensate
+            BenchmarkRunCleanup.compensate = _track_compensate
             try:
                 async with _test_app_context() as client:
                     import opencortex.http.server as http_server
@@ -407,7 +404,7 @@ class TestBenchmarkIngestLifecycle(unittest.TestCase):
                         cm._run_full_session_recomposition = saved
                         reset_request_role(role_token)
             finally:
-                _BenchmarkRunCleanup.compensate = original
+                BenchmarkRunCleanup.compensate = original
 
         self._run(check())
 
