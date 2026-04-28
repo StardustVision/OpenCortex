@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 from pydantic import ValidationError
 
-from opencortex.http.models import ContextPrepareResponse, MemorySearchResponse
+from opencortex.http.models import MemorySearchResponse
 
 logger = logging.getLogger(__name__)
 
@@ -293,39 +293,6 @@ class OpenCortexClient:
     async def intent_should_recall(self, query: str) -> Dict[str, Any]:
         """Run the phase-1 recall probe for a query."""
         return await self._post("/api/v1/intent/should_recall", {"query": query})
-
-    async def context_prepare(
-        self,
-        *,
-        session_id: str,
-        turn_id: str,
-        messages: List[Dict[str, Any]],
-        config: Optional[Dict[str, Any]] = None,
-        cited_uris: Optional[List[str]] = None,
-        tool_calls: Optional[List[Dict[str, Any]]] = None,
-    ) -> Dict[str, Any]:
-        """Call `/api/v1/context` in prepare mode with response validation."""
-        payload: Dict[str, Any] = {
-            "session_id": session_id,
-            "turn_id": turn_id,
-            "phase": "prepare",
-            "messages": messages,
-        }
-        if config is not None:
-            payload["config"] = config
-        if cited_uris is not None:
-            payload["cited_uris"] = cited_uris
-        if tool_calls is not None:
-            payload["tool_calls"] = tool_calls
-
-        response = await self._post("/api/v1/context", payload)
-        try:
-            parsed = ContextPrepareResponse.model_validate(response)
-        except ValidationError as exc:
-            raise OpenCortexClientError(
-                f"Invalid context/prepare response payload: {exc}"
-            ) from exc
-        return parsed.model_dump(exclude_none=True)
 
     async def session_begin(self, session_id: str) -> Dict[str, Any]:
         """Start a new session transcript."""

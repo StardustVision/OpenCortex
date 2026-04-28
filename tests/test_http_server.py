@@ -24,7 +24,6 @@ import httpx
 from httpx import ASGITransport
 
 from opencortex.config import CortexConfig, init_config
-from opencortex.http.models import ContextPrepareResponse
 from opencortex.http.models import MemorySearchResponse
 from opencortex.models.embedder.base import DenseEmbedderBase, EmbedResult
 from opencortex.orchestrator import MemoryOrchestrator
@@ -717,18 +716,11 @@ class TestHTTPServer(unittest.TestCase):
 
         self._run(check())
 
-    def test_04b_context_prepare_returns_typed_payload(self):
-        """POST `/api/v1/context` prepare keeps the typed response contract."""
+    def test_04b_context_prepare_is_removed(self):
+        """POST `/api/v1/context` no longer supports prepare."""
 
         async def check():
             async with _test_app_context() as client:
-                await client.post(
-                    "/api/v1/memory/store",
-                    json={
-                        "abstract": "User prefers dark theme in editors",
-                        "category": "general",
-                    },
-                )
                 resp = await client.post(
                     "/api/v1/context",
                     json={
@@ -740,18 +732,42 @@ class TestHTTPServer(unittest.TestCase):
                         ],
                     },
                 )
-                self.assertEqual(resp.status_code, 200)
-                data = resp.json()
-                parsed = ContextPrepareResponse.model_validate(data)
-                self.assertEqual(parsed.session_id, "sess_ctx_01")
-                self.assertEqual(parsed.turn_id, "turn_01")
-                self.assertIn("memory_pipeline", data["intent"])
-                self.assertIn("probe", data["intent"]["memory_pipeline"])
+                self.assertEqual(resp.status_code, 400)
+                self.assertIn("prepare phase has been removed", resp.text)
 
         self._run(check())
 
-    def test_04c_context_prepare_exposes_conversation_traceability_fields(self):
-        """POST `/api/v1/context` prepare includes source_uri and msg_range."""
+    def test_04c_memory_search_returns_typed_pipeline_payload(self):
+        """POST `/api/v1/memory/search` exposes the probe/plan/execute trace."""
+
+        async def check():
+            async with _test_app_context() as client:
+                await client.post(
+                    "/api/v1/memory/store",
+                    json={
+                        "abstract": "User prefers dark theme in editors",
+                        "category": "general",
+                    },
+                )
+                resp = await client.post(
+                    "/api/v1/memory/search",
+                    json={
+                        "query": "What theme do I prefer?",
+                    },
+                )
+                self.assertEqual(resp.status_code, 200)
+                data = resp.json()
+                parsed = MemorySearchResponse.model_validate(data)
+                self.assertGreaterEqual(parsed.total, 1)
+                self.assertIsNotNone(parsed.memory_pipeline)
+                self.assertIn("probe", data["memory_pipeline"])
+                self.assertIn("planner", data["memory_pipeline"])
+                self.assertIn("runtime", data["memory_pipeline"])
+
+        self._run(check())
+
+    def test_04d_memory_search_exposes_conversation_traceability_fields(self):
+        """POST `/api/v1/memory/search` includes source_uri and msg_range."""
 
         async def check():
             async with _test_app_context() as client:
@@ -779,30 +795,28 @@ class TestHTTPServer(unittest.TestCase):
                 )
 
                 resp = await client.post(
-                    "/api/v1/context",
+                    "/api/v1/memory/search",
                     json={
-                        "session_id": "sess_ctx_trace_query_01",
-                        "turn_id": "turn_query_01",
-                        "phase": "prepare",
-                        "messages": [
-                            {"role": "user", "content": "trace-token-hangzhou-001"}
-                        ],
+                        "query": "trace-token-hangzhou-001",
                     },
                 )
                 self.assertEqual(resp.status_code, 200)
                 data = resp.json()
-                parsed = ContextPrepareResponse.model_validate(data)
-                self.assertGreaterEqual(len(parsed.memory), 1)
-                first = parsed.memory[0]
+                parsed = MemorySearchResponse.model_validate(data)
+                self.assertGreaterEqual(len(parsed.results), 1)
+                first = parsed.results[0]
                 self.assertIsNotNone(first.source_uri)
                 self.assertEqual(first.msg_range, [0, 1])
                 self.assertIn(first.recomposition_stage, {"online_tail", "final_full"})
                 self.assertIsInstance(first.cone_used, bool)
-                self.assertIsInstance(first.matched_anchors, list)
+                self.assertTrue(
+                    first.matched_anchors is None
+                    or isinstance(first.matched_anchors, list)
+                )
 
         self._run(check())
 
-    def test_04d_benchmark_conversation_ingest_preserves_traceability_contract(self):
+    def test_04e_benchmark_conversation_ingest_preserves_traceability_contract(self):
         """POST `/api/v1/admin/benchmark/conversation_ingest` writes merged session leaves."""
 
         async def check():
@@ -920,29 +934,26 @@ class TestHTTPServer(unittest.TestCase):
                 self.assertGreaterEqual(len(bench_records), 2)
                 self.assertIn([0, 1], [item.get("msg_range") for item in bench_records])
 
-                prepare_resp = await client.post(
-                    "/api/v1/context",
+                search_resp = await client.post(
+                    "/api/v1/memory/search",
                     json={
-                        "session_id": "bench_query_01",
-                        "turn_id": "turn_01",
-                        "phase": "prepare",
-                        "messages": [{"role": "user", "content": "Hangzhou"}],
+                        "query": "Hangzhou",
                     },
                 )
-                self.assertEqual(prepare_resp.status_code, 200)
-                parsed = ContextPrepareResponse.model_validate(prepare_resp.json())
+                self.assertEqual(search_resp.status_code, 200)
+                parsed = MemorySearchResponse.model_validate(search_resp.json())
                 self.assertTrue(
                     any(
                         item.session_id == "bench_conv_01"
                         and item.source_uri == ingest_data["source_uri"]
                         and item.msg_range in ([0, 1], [2, 2])
-                        for item in parsed.memory
+                        for item in parsed.results
                     )
                 )
 
         self._run(check())
 
-    def test_04e_benchmark_conversation_ingest_direct_evidence_shape(self):
+    def test_04f_benchmark_conversation_ingest_direct_evidence_shape(self):
         """POST `/api/v1/admin/benchmark/conversation_ingest` can store direct evidence."""
 
         async def check():

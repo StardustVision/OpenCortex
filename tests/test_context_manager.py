@@ -16,7 +16,6 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from opencortex.config import CortexConfig, init_config
 from opencortex.context.manager import ConversationBuffer
-from opencortex.http.models import ContextPrepareResponse
 from opencortex.http.request_context import (
     reset_collection_name,
     reset_request_identity,
@@ -57,33 +56,22 @@ class TestContextManager(unittest.TestCase):
             llm_completion=llm_completion,
         )
 
-    def test_prepare_idempotent(self):
+    def test_prepare_phase_removed(self):
         orch = self._make_orchestrator()
         self._run(orch.init())
         cm = orch._context_manager
 
-        args = dict(
-            session_id="sess_002",
-            phase="prepare",
-            tenant_id="testteam",
-            user_id="alice",
-            turn_id="t1",
-            messages=[{"role": "user", "content": "test query"}],
-        )
-
-        r1 = self._run(cm.handle(**args))
-        r2 = self._run(cm.handle(**args))
-        self.assertEqual(r1["session_id"], r2["session_id"])
-        self.assertEqual(r1["turn_id"], r2["turn_id"])
-        self.assertEqual(r1["memory"], r2["memory"])
-        self.assertEqual(r1["knowledge"], r2["knowledge"])
-        self.assertEqual(r1["instructions"], r2["instructions"])
-        self.assertFalse(
-            r1["intent"]["memory_pipeline"]["runtime"]["trace"].get("cache_hit", False)
-        )
-        self.assertTrue(
-            r2["intent"]["memory_pipeline"]["runtime"]["trace"]["cache_hit"]
-        )
+        with self.assertRaisesRegex(ValueError, "prepare phase has been removed"):
+            self._run(
+                cm.handle(
+                    session_id="sess_002",
+                    phase="prepare",
+                    tenant_id="testteam",
+                    user_id="alice",
+                    turn_id="t1",
+                    messages=[{"role": "user", "content": "test query"}],
+                )
+            )
 
         self._run(orch.close())
 
@@ -134,130 +122,6 @@ class TestContextManager(unittest.TestCase):
 
         self._run(orch.close())
 
-    def test_prepare_cache_hit_rewrites_stage_timing(self):
-        orch = self._make_orchestrator()
-        self._run(orch.init())
-        self._run(
-            orch.add(
-                abstract="User prefers dark theme in editors",
-                category="general",
-            )
-        )
-        cm = orch._context_manager
-
-        args = dict(
-            session_id="sess_cache",
-            phase="prepare",
-            tenant_id="testteam",
-            user_id="alice",
-            turn_id="t1",
-            messages=[{"role": "user", "content": "What theme do I prefer?"}],
-        )
-
-        first = self._run(cm.handle(**args))
-        first["intent"]["memory_pipeline"]["runtime"]["trace"]["stage_timing_ms"][
-            "total"
-        ] = 999
-
-        cached = self._run(cm.handle(**args))
-        cache_trace = cached["intent"]["memory_pipeline"]["runtime"]["trace"]
-
-        self.assertNotEqual(
-            cache_trace["stage_timing_ms"]["total"],
-            999,
-        )
-        self.assertEqual(
-            cache_trace["stage_timing_ms"]["overhead"],
-            cache_trace["stage_timing_ms"]["total"],
-        )
-        self.assertTrue(cache_trace["cache_hit"])
-
-        self._run(orch.close())
-
-    def test_prepare_cache_isolated_by_collection(self):
-        orch = self._make_orchestrator()
-        self._run(orch.init())
-        self._run(
-            self.storage.create_collection(
-                "bench_ctx_a", {"vector_dim": MockEmbedder.DIMENSION}
-            )
-        )
-        self._run(
-            self.storage.create_collection(
-                "bench_ctx_b", {"vector_dim": MockEmbedder.DIMENSION}
-            )
-        )
-        cm = orch._context_manager
-
-        collection_token = set_collection_name("bench_ctx_a")
-        try:
-            self._run(
-                orch.add(
-                    abstract="alpha-cache-token-hangzhou",
-                    category="general",
-                )
-            )
-            first = self._run(
-                cm.handle(
-                    session_id="shared-prepare-session",
-                    phase="prepare",
-                    tenant_id="testteam",
-                    user_id="alice",
-                    turn_id="shared-turn",
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": "alpha-cache-token-hangzhou",
-                        }
-                    ],
-                )
-            )
-        finally:
-            reset_collection_name(collection_token)
-
-        collection_token = set_collection_name("bench_ctx_b")
-        try:
-            self._run(
-                orch.add(
-                    abstract="beta-cache-token-beijing",
-                    category="general",
-                )
-            )
-            second = self._run(
-                cm.handle(
-                    session_id="shared-prepare-session",
-                    phase="prepare",
-                    tenant_id="testteam",
-                    user_id="alice",
-                    turn_id="shared-turn",
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": "beta-cache-token-beijing",
-                        }
-                    ],
-                )
-            )
-        finally:
-            reset_collection_name(collection_token)
-
-        self.assertGreaterEqual(len(first["memory"]), 1)
-        self.assertGreaterEqual(len(second["memory"]), 1)
-        self.assertEqual(first["memory"][0]["abstract"], "alpha-cache-token-hangzhou")
-        self.assertEqual(second["memory"][0]["abstract"], "beta-cache-token-beijing")
-        self.assertFalse(
-            first["intent"]["memory_pipeline"]["runtime"]["trace"].get(
-                "cache_hit", False
-            )
-        )
-        self.assertFalse(
-            second["intent"]["memory_pipeline"]["runtime"]["trace"].get(
-                "cache_hit", False
-            )
-        )
-
-        self._run(orch.close())
-
     def test_idle_auto_close_supports_collection_scoped_session_key(self):
         orch = self._make_orchestrator()
         self._run(orch.init())
@@ -293,33 +157,7 @@ class TestContextManager(unittest.TestCase):
 
         self._run(orch.close())
 
-    def test_recall_mode_never_skips_probe_and_planner(self):
-        orch = self._make_orchestrator()
-        self._run(orch.init())
-        cm = orch._context_manager
-        orch.probe_memory = AsyncMock()
-        orch.plan_memory = Mock()
-
-        result = self._run(
-            cm.handle(
-                session_id="sess_004",
-                phase="prepare",
-                tenant_id="testteam",
-                user_id="alice",
-                turn_id="t1",
-                messages=[{"role": "user", "content": "test query"}],
-                config={"recall_mode": "never"},
-            )
-        )
-        self.assertEqual(result["memory"], [])
-        self.assertEqual(result["knowledge"], [])
-        self.assertFalse(result["intent"]["should_recall"])
-        orch.probe_memory.assert_not_awaited()
-        orch.plan_memory.assert_not_called()
-
-        self._run(orch.close())
-
-    def test_prepare_emits_probe_planner_runtime_envelope(self):
+    def test_search_emits_probe_planner_runtime_envelope(self):
         orch = self._make_orchestrator()
         self._run(orch.init())
         self._run(
@@ -328,35 +166,21 @@ class TestContextManager(unittest.TestCase):
                 category="general",
             )
         )
-        cm = orch._context_manager
+        result = self._run(orch.search(query="What theme do I prefer?"))
+        payload = result.to_memory_search_response()
 
-        result = self._run(
-            cm.handle(
-                session_id="sess_100",
-                phase="prepare",
-                tenant_id="testteam",
-                user_id="alice",
-                turn_id="t1",
-                messages=[{"role": "user", "content": "What theme do I prefer?"}],
-            )
-        )
-        parsed = ContextPrepareResponse.model_validate(result)
-
-        self.assertIn("memory_pipeline", result["intent"])
-        self.assertIn("probe", result["intent"]["memory_pipeline"])
-        self.assertIn("planner", result["intent"]["memory_pipeline"])
-        self.assertIn("runtime", result["intent"]["memory_pipeline"])
-        self.assertEqual(parsed.turn_id, "t1")
-        self.assertIn("probe_mode", result["intent"]["memory_pipeline"]["runtime"]["trace"])
-        self.assertIn("probe_trace", result["intent"]["memory_pipeline"]["runtime"]["trace"])
+        self.assertIn("memory_pipeline", payload)
+        self.assertIn("probe", payload["memory_pipeline"])
+        self.assertIn("planner", payload["memory_pipeline"])
+        self.assertIn("runtime", payload["memory_pipeline"])
         self.assertGreaterEqual(
-            result["intent"]["probe_candidate_count"],
+            payload["memory_pipeline"]["probe"]["evidence"]["candidate_count"],
             1,
         )
 
         self._run(orch.close())
 
-    def test_prepare_can_recall_memory_written_under_different_session(self):
+    def test_search_can_recall_memory_written_under_different_session(self):
         orch = self._make_orchestrator()
         self._run(orch.init())
         self._run(
@@ -366,21 +190,9 @@ class TestContextManager(unittest.TestCase):
                 session_id="ingest-session",
             )
         )
-        cm = orch._context_manager
+        result = self._run(orch.search(query="你记得我下周二去哪里出差吗"))
 
-        result = self._run(
-            cm.handle(
-                session_id="query-session",
-                phase="prepare",
-                tenant_id="testteam",
-                user_id="alice",
-                turn_id="t1",
-                messages=[{"role": "user", "content": "你记得我下周二去哪里出差吗"}],
-            )
-        )
-
-        self.assertGreaterEqual(result["intent"]["probe_candidate_count"], 1)
-        self.assertGreaterEqual(len(result["memory"]), 1)
+        self.assertGreaterEqual(len(result.memories), 1)
 
         self._run(orch.close())
 
@@ -3529,24 +3341,15 @@ class TestContextManager(unittest.TestCase):
 
         self.storage.search = tracking_search
 
-        result = self._run(
-            cm.handle(
-                session_id="sess_fast_exit_001",
-                phase="prepare",
-                tenant_id="testteam",
-                user_id="alice",
-                turn_id="t1",
-                messages=[{"role": "user", "content": "what is my preference?"}],
-            )
-        )
+        result = self._run(orch.search(query="what is my preference?"))
 
-        # With empty store: memory should be empty
-        self.assertEqual(result["memory"], [])
+        # With empty store: memory should be empty.
+        self.assertEqual(result.memories, [])
 
         # The search calls for object recall should be minimal
         # (probe may call search; but _execute_object_query fast-exit should fire or return empty)
         # We don't assert zero calls (probe itself calls search) but result is empty
-        self.assertEqual(result["memory"], [])
+        self.assertEqual(result.memories, [])
 
         self._run(orch.close())
 

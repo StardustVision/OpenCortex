@@ -93,6 +93,7 @@ class MemorySearchResultItem(BaseModel):
     overview: Optional[str] = None
     content: Optional[str] = None
     keywords: Optional[str] = None
+    session_id: Optional[str] = None
     source_doc_id: Optional[str] = None
     source_doc_title: Optional[str] = None
     source_section_path: Optional[str] = None
@@ -278,9 +279,6 @@ class ContextMessage(BaseModel):
 class ContextConfig(BaseModel):
     """Runtime knobs for the context lifecycle endpoint."""
 
-    max_items: int = Field(default=5, ge=1, le=20)
-    detail_level: str = "l1"  # l0 | l1 | l2
-    recall_mode: str = "auto"  # auto | always | never
     fail_fast_end: bool = False
 
 
@@ -292,7 +290,7 @@ class ContextRequest(BaseModel):
         default=None,
         pattern=r"^[a-zA-Z0-9_-]{1,128}$",
     )
-    phase: str  # prepare | commit | end
+    phase: str  # commit | end
     messages: Optional[List[ContextMessage]] = None
     tool_calls: Optional[List[ToolCallRecord]] = None
     cited_uris: Optional[List[str]] = None
@@ -450,63 +448,6 @@ class BenchmarkConversationIngestResponse(BaseModel):
             "the default ``merged_recompose`` path."
         ),
     )
-
-
-class ContextPrepareIntent(BaseModel):
-    """Intent envelope returned by `/api/v1/context` prepare."""
-
-    should_recall: bool
-    probe_candidate_count: int
-    probe_top_score: Optional[float] = None
-    depth: str
-    memory_pipeline: Optional[MemorySearchPipeline] = None
-
-
-class ContextPrepareMemoryItem(BaseModel):
-    """One recalled memory item in the context prepare response."""
-
-    uri: str
-    abstract: str
-    score: float
-    context_type: str
-    category: str
-    session_id: Optional[str] = None
-    source_uri: Optional[str] = None
-    msg_range: Optional[List[int]] = None
-    recomposition_stage: Optional[str] = None
-    matched_anchors: Optional[List[str]] = None
-    cone_used: Optional[bool] = None
-    overview: Optional[str] = None
-    content: Optional[str] = None
-
-
-class ContextPrepareKnowledgeItem(BaseModel):
-    """One knowledge item in the context prepare response."""
-
-    knowledge_id: str
-    type: str
-    abstract: str
-    confidence: float
-
-
-class ContextPrepareInstructions(BaseModel):
-    """Agent-facing guidance emitted by prepare."""
-
-    should_cite_memory: bool
-    memory_confidence: float
-    recall_count: int
-    guidance: str
-
-
-class ContextPrepareResponse(BaseModel):
-    """Typed response payload for `/api/v1/context` prepare."""
-
-    session_id: str
-    turn_id: str
-    intent: ContextPrepareIntent
-    memory: List[ContextPrepareMemoryItem]
-    knowledge: List[ContextPrepareKnowledgeItem]
-    instructions: ContextPrepareInstructions
 
 
 # =========================================================================

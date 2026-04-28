@@ -84,13 +84,6 @@ class TestCommitToolCalls(unittest.TestCase):
         self._run(orch.init())
         cm = orch._context_manager
 
-        # Prepare first to register session
-        self._run(cm.handle(
-            session_id="s1", phase="prepare",
-            tenant_id="testteam", user_id="alice", turn_id="t1",
-            messages=[{"role": "user", "content": "fix the bug"}],
-        ))
-
         tool_calls = [
             {"name": "Read", "summary": "Memories.tsx"},
             {"name": "Edit", "summary": "modified useEffect"},
@@ -133,12 +126,6 @@ class TestCommitToolCalls(unittest.TestCase):
         self._run(orch.init())
         cm = orch._context_manager
 
-        self._run(cm.handle(
-            session_id="s2", phase="prepare",
-            tenant_id="testteam", user_id="alice", turn_id="t1",
-            messages=[{"role": "user", "content": "hello"}],
-        ))
-
         result = self._run(cm.handle(
             session_id="s2", phase="commit",
             tenant_id="testteam", user_id="alice", turn_id="t1",
@@ -159,12 +146,6 @@ class TestCommitToolCalls(unittest.TestCase):
         )
         self._run(orch.init())
         cm = orch._context_manager
-
-        self._run(cm.handle(
-            session_id="s3", phase="prepare",
-            tenant_id="testteam", user_id="alice", turn_id="t1",
-            messages=[{"role": "user", "content": "question one"}],
-        ))
 
         result = self._run(cm.handle(
             session_id="s3", phase="commit",
@@ -193,12 +174,6 @@ class TestCommitToolCalls(unittest.TestCase):
         )
         self._run(orch.init())
         cm = orch._context_manager
-
-        self._run(cm.handle(
-            session_id="s4", phase="prepare",
-            tenant_id="testteam", user_id="alice", turn_id="t1",
-            messages=[{"role": "user", "content": "do thing 1"}],
-        ))
 
         tc1 = [{"name": "Read", "summary": "file1.py"}]
         self._run(cm.handle(
@@ -262,12 +237,6 @@ class TestNoiseReductionE2E(unittest.TestCase):
         cm = orch._context_manager
 
         self._run(cm.handle(
-            session_id="e2e", phase="prepare",
-            tenant_id="testteam", user_id="alice", turn_id="t1",
-            messages=[{"role": "user", "content": "fix the right panel bug"}],
-        ))
-
-        self._run(cm.handle(
             session_id="e2e", phase="commit",
             tenant_id="testteam", user_id="alice", turn_id="t1",
             messages=[
@@ -304,12 +273,6 @@ class TestNoiseReductionE2E(unittest.TestCase):
         orch = MemoryOrchestrator(config=self.config, storage=self.storage, embedder=self.embedder)
         self._run(orch.init())
         cm = orch._context_manager
-
-        self._run(cm.handle(
-            session_id="bc", phase="prepare",
-            tenant_id="testteam", user_id="alice", turn_id="t1",
-            messages=[{"role": "user", "content": "hello"}],
-        ))
 
         result = self._run(cm.handle(
             session_id="bc", phase="commit",

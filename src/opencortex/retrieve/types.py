@@ -376,6 +376,8 @@ class MatchedContext:
             item["content"] = self.content
         if self.keywords:
             item["keywords"] = self.keywords
+        if self.session_id:
+            item["session_id"] = self.session_id
         if self.source_doc_id:
             item["source_doc_id"] = self.source_doc_id
         if self.source_doc_title:

@@ -193,54 +193,30 @@ class TestEvalContract(unittest.TestCase):
         self._run(_test())
 
     # -------------------------------------------------------------------------
-    # 3. Context recall (prepare phase) response shape
+    # 3. Probe/plan/execute search response shape
     # -------------------------------------------------------------------------
 
-    def test_context_recall_response_shape(self):
-        """POST /api/v1/context with phase=prepare returns expected fields."""
+    def test_memory_search_pipeline_response_shape(self):
+        """POST /api/v1/memory/search returns probe/plan/execute fields."""
         async def _test():
             async with _test_app_context() as client:
                 resp = await client.post(
-                    "/api/v1/context",
+                    "/api/v1/memory/search",
                     json={
-                        "session_id": "test-session-contract",
-                        "phase": "prepare",
-                        "turn_id": "t0",
-                        "messages": [{"role": "user", "content": "hello world"}],
-                        "config": {"max_items": 5, "detail_level": "l1"},
+                        "query": "hello world",
+                        "limit": 5,
+                        "detail_level": "l1",
                     },
                 )
                 self.assertEqual(resp.status_code, 200)
                 data = resp.json()
-                # Prepare response must include memory list and session_id
-                self.assertIn("memory", data)
-                self.assertIsInstance(data["memory"], list)
-                self.assertIn("session_id", data)
-                self.assertEqual(data["session_id"], "test-session-contract")
-                # Should also have intent info
-                self.assertIn("intent", data)
-                self.assertIn("memory_pipeline", data["intent"])
-                self.assertIn("runtime", data["intent"]["memory_pipeline"])
-                self.assertIn(
-                    "stage_timing_ms",
-                    data["intent"]["memory_pipeline"]["runtime"]["trace"],
-                )
-                self.assertIn(
-                    "latency_ms",
-                    data["intent"]["memory_pipeline"]["runtime"]["trace"],
-                )
-                self.assertIn(
-                    "retrieve",
-                    data["intent"]["memory_pipeline"]["runtime"]["trace"][
-                        "latency_ms"
-                    ],
-                )
-                self.assertIn(
-                    "hydrate",
-                    data["intent"]["memory_pipeline"]["runtime"]["trace"][
-                        "latency_ms"
-                    ]["stages"],
-                )
+                self.assertIn("results", data)
+                self.assertIsInstance(data["results"], list)
+                self.assertIn("total", data)
+                self.assertIn("memory_pipeline", data)
+                self.assertIn("probe", data["memory_pipeline"])
+                if data["memory_pipeline"].get("runtime"):
+                    self.assertIn("trace", data["memory_pipeline"]["runtime"])
 
         self._run(_test())
 
