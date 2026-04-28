@@ -4,9 +4,9 @@ LLM completion callable factory for OpenCortex.
 
 Produces an `LLMCompletion` instance — a small wrapper class exposing
 `async __call__(prompt) -> str` (the existing call shape used by
-IntentAnalyzer + LLM-mode rerank) AND `async aclose()` so the
-orchestrator can release the underlying httpx connection pool on
-shutdown.
+LLM-backed derivation, optional plugins, and LLM-mode rerank) AND
+`async aclose()` so the orchestrator can release the underlying httpx
+connection pool on shutdown.
 
 PRE-PR #15 the closures returned here owned their httpx clients with
 no aclose path. Production servers accumulated CLOSE_WAIT TCP sockets
@@ -142,7 +142,7 @@ def create_llm_completion(config) -> Optional[LLMCompletion]:
     )
     if not openai_api_key:
         logger.debug(
-            "[llm_factory] No LLM backend available; IntentAnalyzer will be disabled"
+            "[llm_factory] No LLM backend available; LLM features will be disabled"
         )
         return None
 

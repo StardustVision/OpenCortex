@@ -10,10 +10,9 @@ from opencortex.intent.types import (
     ExecutionTrace,
     MemoryRuntimeDegrade,
     RetrievalPlan,
-    SearchResult,
     ScopeLevel,
+    SearchResult,
 )
-from opencortex.memory import retrieval_hints_for_kinds
 from opencortex.memory import retrieval_hints_for_kinds
 
 

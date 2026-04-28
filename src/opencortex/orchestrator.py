@@ -8,7 +8,6 @@ internal components:
 - CortexFS: three-layer (L0/L1/L2) filesystem abstraction
 - StorageInterface: vector storage (Qdrant-backed)
 - Object-aware retrieval executor over canonical memory records
-- IntentAnalyzer: LLM-driven session-aware query planning
 - EmbedderBase: pluggable embedding
 
 Typical usage::
@@ -34,12 +33,11 @@ Typical usage::
 import asyncio
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from opencortex.cognition.state_types import OwnerType
 from opencortex.config import CortexConfig, get_config
 from opencortex.core.context import Context
-from opencortex.core.message import Message
 from opencortex.core.user_id import UserIdentifier
 from opencortex.http.request_context import (
     get_effective_identity,
@@ -51,7 +49,6 @@ from opencortex.intent import (
     SearchResult,
 )
 from opencortex.models.embedder.base import EmbedderBase
-from opencortex.retrieve.intent_analyzer import IntentAnalyzer, LLMCompletionCallable
 from opencortex.retrieve.rerank_client import RerankClient
 from opencortex.retrieve.rerank_config import RerankConfig
 from opencortex.retrieve.types import (
@@ -74,6 +71,7 @@ logger = logging.getLogger(__name__)
 
 # Default collection name for all context types
 _CONTEXT_COLLECTION = "context"
+LLMCompletionCallable = Callable[[str], Awaitable[str]]
 
 
 class MemoryOrchestrator:
@@ -87,7 +85,7 @@ class MemoryOrchestrator:
         storage: StorageInterface backend. Must be provided (Qdrant-backed).
         embedder: Embedding model. Required for add/search operations.
         rerank_config: Rerank configuration for retrieval scoring.
-        llm_completion: Async callable for IntentAnalyzer (session-aware search).
+        llm_completion: Async callable for LLM-backed optional services.
     """
 
     def __init__(
@@ -147,7 +145,6 @@ class MemoryOrchestrator:
         self._last_connection_sweep_status: str = "not_started"
 
         self._fs: Optional[CortexFS] = None
-        self._analyzer: Optional[IntentAnalyzer] = None
         self._user: Optional[UserIdentifier] = None
         self._initialized = False
 
@@ -1150,31 +1147,6 @@ class MemoryOrchestrator:
     async def _update_access_stats_batch(self, records: list) -> None:
         """Delegate to SessionLifecycleService._update_access_stats_batch."""
         await self._session_lifecycle_service._update_access_stats_batch(records)
-
-    async def session_search(
-        self,
-        query: str,
-        messages: Optional[List[Message]] = None,
-        session_summary: str = "",
-        context_type: Optional[ContextType] = None,
-        target_uri: str = "",
-        limit: int = 5,
-        score_threshold: Optional[float] = None,
-        metadata_filter: Optional[Dict[str, Any]] = None,
-        llm_completion: Optional[LLMCompletionCallable] = None,
-    ) -> FindResult:
-        """Delegate to RetrievalService.session_search."""
-        return await self._retrieval_service.session_search(
-            query=query,
-            messages=messages,
-            session_summary=session_summary,
-            context_type=context_type,
-            target_uri=target_uri,
-            limit=limit,
-            score_threshold=score_threshold,
-            metadata_filter=metadata_filter,
-            llm_completion=llm_completion,
-        )
 
     # =========================================================================
     # Memory Listing

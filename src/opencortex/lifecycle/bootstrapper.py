@@ -146,15 +146,6 @@ class SubsystemBootstrapper:
                     exc,
                 )
 
-        if orch._llm_completion:
-            from opencortex.retrieve.intent_analyzer import (
-                IntentAnalyzer,
-            )
-
-            orch._analyzer = IntentAnalyzer(
-                llm_completion=orch._llm_completion,
-            )
-
         # Plan 009 — RerankClient is created lazily by
         # ``_get_or_create_rerank_client()`` on first use. Eager
         # construction would trigger ``_init_local_reranker`` (fastembed
