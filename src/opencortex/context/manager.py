@@ -10,7 +10,6 @@ Design doc: docs/memory-context-protocol.md v1.2
 import asyncio
 import hashlib
 import logging
-import re
 import time
 from dataclasses import dataclass
 from dataclasses import field as dc_field
@@ -19,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
 import orjson as json
 
+from opencortex.context import recomposition_segmentation as _segmentation
 from opencortex.context.recomposition_types import RecompositionEntry
 from opencortex.context.session_records import (
     SessionRecordsRepository,
@@ -36,18 +36,19 @@ if TYPE_CHECKING:
     from opencortex.context.end_service import ContextEndService
     from opencortex.context.recomposition_engine import SessionRecompositionEngine
 
-_SEGMENT_MAX_MESSAGES = 16
-_SEGMENT_MAX_TOKENS = 1200
-_SEGMENT_MIN_MESSAGES = 2
+_SEGMENT_MAX_MESSAGES = _segmentation._SEGMENT_MAX_MESSAGES
+_SEGMENT_MAX_TOKENS = _segmentation._SEGMENT_MAX_TOKENS
+_SEGMENT_MIN_MESSAGES = _segmentation._SEGMENT_MIN_MESSAGES
+_RECOMPOSE_CLUSTER_MAX_TOKENS = _segmentation._RECOMPOSE_CLUSTER_MAX_TOKENS
+_RECOMPOSE_CLUSTER_MAX_MESSAGES = _segmentation._RECOMPOSE_CLUSTER_MAX_MESSAGES
+_RECOMPOSE_CLUSTER_JACCARD_THRESHOLD = (
+    _segmentation._RECOMPOSE_CLUSTER_JACCARD_THRESHOLD
+)
+_COARSE_ISO_DATE_RE = _segmentation._COARSE_ISO_DATE_RE
+_COARSE_HUMAN_DATE_RE = _segmentation._COARSE_HUMAN_DATE_RE
+_COARSE_WEEKDAY_RE = _segmentation._COARSE_WEEKDAY_RE
 _RECOMPOSE_TAIL_MAX_MERGED_LEAVES = 6
 _RECOMPOSE_TAIL_MAX_MESSAGES = 24
-# Anchor-clustered recomposition caps. Previous values (1_000_000) were
-# effectively no limit, so anchorless or low-jaccard inputs could grow a
-# single cluster until ``_derive_parent_summary`` blew the LLM context
-# window. Targets here match production conversation-mode budget headroom
-# for the typical ``children_abstracts`` prompt.
-_RECOMPOSE_CLUSTER_MAX_TOKENS = 6_000
-_RECOMPOSE_CLUSTER_MAX_MESSAGES = 60
 
 # Bounded concurrency for ``_derive_parent_summary`` calls inside
 # ``_run_full_session_recomposition``. Production conversation lifecycle
@@ -56,13 +57,6 @@ _RECOMPOSE_CLUSTER_MAX_MESSAGES = 60
 # to roughly ``ceil(N/3) × derive_latency`` without saturating downstream
 # LLM rate limits at the typical benchmark fan-out.
 _DIRECTORY_DERIVE_CONCURRENCY = 3
-_RECOMPOSE_CLUSTER_JACCARD_THRESHOLD = 0.15
-_COARSE_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_COARSE_HUMAN_DATE_RE = re.compile(r"^\d{1,2}\s+[A-Za-z]+,\s+\d{4}$")
-_COARSE_WEEKDAY_RE = re.compile(
-    r"^(?:周[一二三四五六日天]|星期[一二三四五六日天]|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)$",
-    re.IGNORECASE,
-)
 
 # Type aliases — all internal state keyed by these to prevent cross-collection collision
 SessionKey = Tuple[str, str, str, str]  # (collection, tenant_id, user_id, session_id)

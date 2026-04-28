@@ -20,9 +20,18 @@ import asyncio
 import contextlib
 import hashlib
 import logging
-import re
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
+from opencortex.context.manager import (
+    ConversationBuffer,
+    RecompositionError,
+    SessionKey,
+)
+from opencortex.context.recomposition_segmentation import (
+    RecompositionSegmentationService,
+    _merge_unique_strings,
+    _split_topic_values,
+)
 from opencortex.context.recomposition_types import RecompositionEntry
 from opencortex.context.session_records import (
     record_msg_range,
@@ -38,73 +47,12 @@ from opencortex.http.request_context import (
 
 logger = logging.getLogger(__name__)
 
-_SEGMENT_MAX_MESSAGES = 16
-_SEGMENT_MAX_TOKENS = 1200
-_SEGMENT_MIN_MESSAGES = 2
 _RECOMPOSE_TAIL_MAX_MERGED_LEAVES = 6
 _RECOMPOSE_TAIL_MAX_MESSAGES = 24
-_RECOMPOSE_CLUSTER_MAX_TOKENS = 6_000
-_RECOMPOSE_CLUSTER_MAX_MESSAGES = 60
 _DIRECTORY_DERIVE_CONCURRENCY = 3
-_RECOMPOSE_CLUSTER_JACCARD_THRESHOLD = 0.15
-_COARSE_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_COARSE_HUMAN_DATE_RE = re.compile(r"^\d{1,2}\s+[A-Za-z]+,\s+\d{4}$")
-_COARSE_WEEKDAY_RE = re.compile(
-    r"^(?:周[一二三四五六日天]|星期[一二三四五六日天]|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)$",
-    re.IGNORECASE,
-)
-
-# Module-level imports from manager (no circular import risk: manager only
-# imports this module lazily inside a property).
-from opencortex.context.manager import (
-    ConversationBuffer,
-    RecompositionError,
-    SessionKey,
-)
-
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from opencortex.context.manager import ContextManager
-
-
-def _merge_unique_strings(*groups: Any) -> List[str]:
-    """Return a stable ordered union of non-empty string values.
-
-    Mirror of ``ContextManager._merge_unique_strings`` kept as a private
-    helper so the engine avoids ``self._mgr._merge_unique_strings()``
-    boilerplate on every call site. The original static method on
-    ``ContextManager`` delegates here.
-    """
-    merged: List[str] = []
-    for group in groups:
-        if not group:
-            continue
-        if isinstance(group, str):
-            values = [group]
-        else:
-            values = list(group)
-        for value in values:
-            normalized = str(value).strip()
-            if normalized and normalized not in merged:
-                merged.append(normalized)
-    return merged
-
-
-def _split_topic_values(raw_value: Any) -> List[str]:
-    """Normalize topic-like values, splitting comma-separated strings.
-
-    Mirror of ``ContextManager._split_topic_values``.
-    """
-    if not raw_value:
-        return []
-    if isinstance(raw_value, str):
-        return [
-            token.strip()
-            for token in raw_value.split(",")
-            if token and token.strip()
-        ]
-    return _merge_unique_strings(raw_value)
 
 
 class SessionRecompositionEngine:
@@ -118,6 +66,7 @@ class SessionRecompositionEngine:
 
     def __init__(self, manager: ContextManager) -> None:
         self._mgr = manager
+        self._segmentation = RecompositionSegmentationService()
 
     # =========================================================================
     # URI Construction
@@ -258,63 +207,19 @@ class SessionRecompositionEngine:
 
     def _segment_anchor_terms(self, record: Dict[str, Any]) -> Set[str]:
         """Extract coarse anchor terms used for sequential merge boundaries."""
-        meta = dict(record.get("meta") or {})
-        abstract_json = record.get("abstract_json")
-        slots = (
-            abstract_json.get("slots", {}) if isinstance(abstract_json, dict) else {}
-        )
-        return set(
-            _merge_unique_strings(
-                record.get("entities"),
-                meta.get("entities"),
-                slots.get("entities"),
-                _split_topic_values(record.get("keywords")),
-                _split_topic_values(meta.get("topics")),
-                _split_topic_values(slots.get("topics")),
-            )
-        )
+        return self._segmentation.segment_anchor_terms(record)
 
     def _segment_time_refs(self, record: Dict[str, Any]) -> Set[str]:
         """Extract normalized time references used for sequential merge boundaries."""
-        meta = dict(record.get("meta") or {})
-        abstract_json = record.get("abstract_json")
-        slots = (
-            abstract_json.get("slots", {}) if isinstance(abstract_json, dict) else {}
-        )
-        return set(
-            _merge_unique_strings(
-                meta.get("time_refs"),
-                slots.get("time_refs"),
-                record.get("event_date"),
-                meta.get("event_date"),
-            )
-        )
+        return self._segmentation.segment_time_refs(record)
 
     def _is_coarse_time_ref(self, value: str) -> bool:
         """Return whether one time ref is too coarse to force two events together."""
-        normalized = str(value or "").strip()
-        if not normalized:
-            return False
-        return bool(
-            _COARSE_ISO_DATE_RE.fullmatch(normalized)
-            or _COARSE_HUMAN_DATE_RE.fullmatch(normalized)
-            or _COARSE_WEEKDAY_RE.fullmatch(normalized)
-        )
+        return self._segmentation.is_coarse_time_ref(value)
 
     def _time_refs_overlap(self, left: Set[str], right: Set[str]) -> bool:
         """Return whether two time-ref sets meaningfully overlap for segmentation."""
-        shared = set(left).intersection(right)
-        if not shared:
-            return False
-
-        left_specific = {value for value in left if not self._is_coarse_time_ref(value)}
-        right_specific = {
-            value for value in right if not self._is_coarse_time_ref(value)
-        }
-        if not left_specific or not right_specific:
-            return True
-
-        return bool(left_specific.intersection(right_specific))
+        return self._segmentation.time_refs_overlap(left, right)
 
     # =========================================================================
     # Segment Building
@@ -519,198 +424,21 @@ class SessionRecompositionEngine:
         entries: List[RecompositionEntry],
     ) -> List[Dict[str, Any]]:
         """Split ordered recomposition entries into bounded semantic segments."""
-        if not entries:
-            return []
-
-        segments: List[Dict[str, Any]] = []
-        current: List[RecompositionEntry] = []
-        current_tokens = 0
-        current_messages = 0
-
-        for entry in entries:
-            entry_messages = (int(entry["msg_end"]) - int(entry["msg_start"])) + 1
-            should_split = False
-            if current:
-                # REVIEW closure tracker R3-RC-02 / R2-14: hard split
-                # when the new entry crosses an input-segment boundary.
-                # Benchmark entries carry source_segment_index; production
-                # / re-derived entries carry None and skip this check
-                # entirely (no behavior change for non-benchmark paths).
-                prev_segment_index = current[-1]["source_segment_index"]
-                entry_segment_index = entry["source_segment_index"]
-                if (
-                    prev_segment_index is not None
-                    and entry_segment_index is not None
-                    and prev_segment_index != entry_segment_index
-                ):
-                    should_split = True
-                else:
-                    current_time_refs: Set[str] = set()
-                    for item in current:
-                        current_time_refs.update(item["time_refs"])
-                    if (
-                        current_messages >= _SEGMENT_MAX_MESSAGES
-                        or current_tokens + int(entry["token_count"]) > _SEGMENT_MAX_TOKENS
-                        or (
-                            current_messages >= _SEGMENT_MIN_MESSAGES
-                            and current_time_refs
-                            and entry["time_refs"]
-                            and not self._time_refs_overlap(
-                                current_time_refs,
-                                entry["time_refs"],
-                            )
-                        )
-                    ):
-                        should_split = True
-
-            if should_split:
-                segments.append(self._finalize_recomposition_segment(current))
-                current = []
-                current_tokens = 0
-                current_messages = 0
-
-            current.append(entry)
-            current_tokens += int(entry["token_count"])
-            current_messages += max(entry_messages, 1)
-
-        if current:
-            segments.append(self._finalize_recomposition_segment(current))
-
-        return segments
+        return self._segmentation.build_recomposition_segments(entries)
 
     def _build_anchor_clustered_segments(
         self,
         entries: List[RecompositionEntry],
     ) -> List[Dict[str, Any]]:
         """Cluster entries by anchor Jaccard similarity for full_recompose."""
-        if not entries:
-            return []
-
-        segments: List[Dict[str, Any]] = []
-        # Treat the seed entry the same way the cap check treats any
-        # subsequent append (REVIEW ADV-002): the prior implementation
-        # initialized ``current`` from ``entries[0]`` unconditionally, so
-        # a single oversized leaf -- possible under U2's 64 KB content
-        # cap -- could seed a cluster already larger than
-        # ``_RECOMPOSE_CLUSTER_MAX_TOKENS``. The cap then only stopped
-        # APPEND, never SPLIT. Now an oversized seed flushes immediately
-        # as its own single-entry segment and the next entry becomes the
-        # new seed.
-        current: List[RecompositionEntry] = []
-        current_anchors: Set[str] = set()
-        current_tokens = 0
-        current_messages = 0
-
-        def _within_caps_with(entry_tokens: int, entry_messages: int) -> bool:
-            return (
-                current_tokens + entry_tokens <= _RECOMPOSE_CLUSTER_MAX_TOKENS
-                and current_messages + max(entry_messages, 1)
-                <= _RECOMPOSE_CLUSTER_MAX_MESSAGES
-            )
-
-        def _seed_with(entry: RecompositionEntry) -> None:
-            nonlocal current, current_anchors, current_tokens, current_messages
-            entry_msgs = int(entry["msg_end"]) - int(entry["msg_start"]) + 1
-            current = [entry]
-            current_anchors = set(entry["anchor_terms"] | entry["time_refs"])
-            current_tokens = int(entry["token_count"])
-            current_messages = max(entry_msgs, 1)
-
-        for entry in entries:
-            entry_anchors: Set[str] = entry["anchor_terms"] | entry["time_refs"]
-            entry_messages = int(entry["msg_end"]) - int(entry["msg_start"]) + 1
-            entry_tokens = int(entry["token_count"])
-
-            if not current:
-                _seed_with(entry)
-                # An oversized seed is its own single-entry cluster:
-                # downstream ``_run_full_session_recomposition`` skips
-                # clusters with ``len(source_records) < 2``, so emitting
-                # it alone keeps every multi-entry cluster within caps.
-                if (
-                    current_tokens > _RECOMPOSE_CLUSTER_MAX_TOKENS
-                    or current_messages > _RECOMPOSE_CLUSTER_MAX_MESSAGES
-                ):
-                    segments.append(self._finalize_recomposition_segment(current))
-                    current = []
-                    current_anchors = set()
-                    current_tokens = 0
-                    current_messages = 0
-                continue
-
-            within_caps = _within_caps_with(entry_tokens, entry_messages)
-
-            if not entry_anchors:
-                # Anchorless entries used to bypass the caps unconditionally
-                # (R2-13). For inputs without entities/topics -- e.g. some
-                # LongMemEval samples -- that grew a single cluster until
-                # ``_derive_parent_summary`` blew its context window. Now
-                # anchorless entries still cluster greedily but respect the
-                # same token / message caps as anchored entries.
-                if within_caps:
-                    current.append(entry)
-                    current_tokens += entry_tokens
-                    current_messages += max(entry_messages, 1)
-                else:
-                    segments.append(self._finalize_recomposition_segment(current))
-                    current = [entry]
-                    current_anchors = set()
-                    current_tokens = entry_tokens
-                    current_messages = max(entry_messages, 1)
-                continue
-
-            union = current_anchors | entry_anchors
-            jaccard = (
-                len(current_anchors & entry_anchors) / len(union) if union else 0.0
-            )
-
-            if jaccard >= _RECOMPOSE_CLUSTER_JACCARD_THRESHOLD and within_caps:
-                current.append(entry)
-                current_anchors = current_anchors | entry_anchors
-                current_tokens += entry_tokens
-                current_messages += max(entry_messages, 1)
-            else:
-                segments.append(self._finalize_recomposition_segment(current))
-                current = [entry]
-                current_anchors = set(entry_anchors)
-                current_tokens = entry_tokens
-                current_messages = max(entry_messages, 1)
-
-        if current:
-            segments.append(self._finalize_recomposition_segment(current))
-
-        return segments
+        return self._segmentation.build_anchor_clustered_segments(entries)
 
     def _finalize_recomposition_segment(
         self,
         entries: List[RecompositionEntry],
     ) -> Dict[str, Any]:
         """Materialize one recomposition segment payload."""
-        msg_starts = [int(entry["msg_start"]) for entry in entries]
-        msg_ends = [int(entry["msg_end"]) for entry in entries]
-        source_records: List[Dict[str, Any]] = []
-        source_uris: Set[str] = set()
-        for entry in entries:
-            record = entry.get("source_record") or {}
-            uri = str(record.get("uri", "") or "")
-            if uri and uri in source_uris:
-                continue
-            if uri:
-                source_uris.add(uri)
-            source_records.append(record)
-        return {
-            "messages": [
-                str(entry["text"]) for entry in entries if str(entry["text"]).strip()
-            ],
-            "immediate_uris": _merge_unique_strings(
-                *[entry.get("immediate_uris", []) for entry in entries]
-            ),
-            "superseded_merged_uris": _merge_unique_strings(
-                *[entry.get("superseded_merged_uris", []) for entry in entries]
-            ),
-            "msg_range": [min(msg_starts), max(msg_ends)],
-            "source_records": source_records,
-        }
+        return self._segmentation.finalize_recomposition_segment(entries)
 
     # =========================================================================
     # Misc
@@ -1037,9 +765,7 @@ class SessionRecompositionEngine:
                 ]
                 if not children_abstracts:
                     continue
-                eligible.append(
-                    (len(eligible), segment, children_abstracts)
-                )
+                eligible.append((len(eligible), segment, children_abstracts))
 
             if not eligible:
                 logger.info(
@@ -1060,18 +786,16 @@ class SessionRecompositionEngine:
             ) -> Tuple[int, Optional[Dict[str, Any]]]:
                 cluster_title = f"Directory-{directory_index:03d}"
                 async with derive_semaphore:
-                    return directory_index, await (
-                        self._mgr._orchestrator._derive_parent_summary(
+                    return (
+                        directory_index,
+                        await self._mgr._orchestrator._derive_parent_summary(
                             doc_title=cluster_title,
                             children_abstracts=children_abstracts,
-                        )
+                        ),
                     )
 
             derive_results = await asyncio.gather(
-                *[
-                    _derive_one(idx, kids)
-                    for idx, _, kids in eligible
-                ]
+                *[_derive_one(idx, kids) for idx, _, kids in eligible]
             )
             derived_by_index: Dict[int, Optional[Dict[str, Any]]] = dict(derive_results)
 
@@ -1504,7 +1228,9 @@ class SessionRecompositionEngine:
                         **dkw,
                     ):
                         async with sem:
-                            await self._mgr._orchestrator._complete_deferred_derive(**dkw)
+                            await self._mgr._orchestrator._complete_deferred_derive(
+                                **dkw
+                            )
 
                     _defer_task = asyncio.create_task(
                         _bounded_derive(
@@ -1552,7 +1278,9 @@ class SessionRecompositionEngine:
 
                 if snapshot.immediate_uris:
                     try:
-                        await self._purge_records_and_fs_subtree(snapshot.immediate_uris)
+                        await self._purge_records_and_fs_subtree(
+                            snapshot.immediate_uris
+                        )
                     except Exception as exc:
                         self._mgr._session_pending_immediate_cleanup[sk] = True
                         logger.warning(
