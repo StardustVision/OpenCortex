@@ -8,7 +8,6 @@ Design doc: docs/memory-context-protocol.md v1.2
 """
 
 import asyncio
-import contextlib
 import hashlib
 import logging
 import re
@@ -16,13 +15,12 @@ import time
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
 import orjson as json
 
 from opencortex.context.recomposition_types import RecompositionEntry
 from opencortex.context.session_records import (
-    SessionRecordOverflowError,
     SessionRecordsRepository,
 )
 from opencortex.http.request_context import (
@@ -32,6 +30,11 @@ from opencortex.http.request_context import (
 )
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from opencortex.context.commit_service import ContextCommitService
+    from opencortex.context.end_service import ContextEndService
+    from opencortex.context.recomposition_engine import SessionRecompositionEngine
 
 _SEGMENT_MAX_MESSAGES = 16
 _SEGMENT_MAX_TOKENS = 1200
@@ -114,66 +117,6 @@ class SourceConflictError(Exception):
 
 
 @dataclass
-class _BenchmarkRunCleanup:
-    """Tracks URIs created during one benchmark ingest run for compensation.
-
-    Each successful side effect (source persist, merged-leaf write,
-    directory write, summary write) registers its URI here so a single
-    failure or ``CancelledError`` can roll back every prior write —
-    including the directory records the recomposition step creates,
-    which the previous benchmark cleanup path was never told about
-    (REVIEW Finding #6 / R2-09).
-
-    ``compensate`` iterates URIs in reverse-creation order with per-item
-    failure isolation: one bad ``remove`` does not abort the rest of
-    the cleanup, and each failure is logged with the URI for
-    post-mortem.
-    """
-
-    source_uri: Optional[str] = None
-    merged_uris: List[str] = dc_field(default_factory=list)
-    directory_uris: List[str] = dc_field(default_factory=list)
-    summary_uri: Optional[str] = None
-
-    async def compensate(self, manager: "ContextManager") -> None:
-        """Best-effort rollback of every registered URI.
-
-        Order: summary -> directories -> merged -> source. This mirrors
-        the dependency graph: summary points at directories, directories
-        at merged leaves, all of them at the source. Cleaning up in
-        reverse keeps any in-flight reader from briefly seeing a
-        partially-deleted graph.
-        """
-        for uri in [self.summary_uri] if self.summary_uri else []:
-            await self._safe_remove(manager, uri)
-        for uri in reversed(self.directory_uris):
-            await self._safe_remove(manager, uri)
-        for uri in reversed(self.merged_uris):
-            await self._safe_remove(manager, uri)
-        # source_uri is intentionally NOT removed by default. The
-        # source is keyed deterministically on (tenant, user, session)
-        # — leaving it lets a follow-up ingest with the same transcript
-        # be idempotent (U5). On a failed run the next request either
-        # carries the same hash and short-circuits, or carries a
-        # different hash and gets 409.
-
-    @staticmethod
-    async def _safe_remove(manager: "ContextManager", uri: Optional[str]) -> None:
-        """Remove a URI, logging and swallowing exceptions."""
-        if not uri:
-            return
-        try:
-            await manager._orchestrator.remove(uri)
-        except Exception as exc:  # pragma: no cover - defensive log path
-            logger.warning(
-                "benchmark_ingest cleanup failed for %s: %s",
-                uri,
-                exc,
-                exc_info=True,
-            )
-
-
-@dataclass
 class ConversationBuffer:
     """Per-session buffer for conversation mode incremental chunking."""
 
@@ -212,18 +155,6 @@ class ContextManager:
         self._session_records = SessionRecordsRepository(
             storage=orchestrator._storage,
             collection_resolver=orchestrator._get_collection,
-        )
-
-        # Benchmark ingest service (§25 Phase 3 — REVIEW closure
-        # tracker U4). Lazy import avoids the manager <-> service
-        # circular dependency: the service holds a back-ref to the
-        # manager and calls many of its private helpers.
-        from opencortex.context.benchmark_ingest_service import (
-            BenchmarkConversationIngestService,
-        )
-
-        self._benchmark_ingest_service = BenchmarkConversationIngestService(
-            manager=self, repo=self._session_records
         )
 
         # Committed turn_ids: {session_key: set(turn_id)}
@@ -713,388 +644,6 @@ class ContextManager:
         # that doubled the FS I/O for source persistence and could race
         # with the scheduled task on slow filesystems.
         return source_uri
-
-    async def _mark_source_run_complete(self, source_uri: str) -> None:
-        """Set ``meta.run_complete=True`` on a benchmark source record.
-
-        REVIEW F5 / ADV-007: written only after a benchmark ingest run
-        finishes successfully. The idempotent-hit path treats a
-        hash-match WITHOUT this marker as a torn prior run (compensate
-        partially failed, leaving stale leaves) and re-ingests after
-        purging, instead of silently returning the partial set. The
-        marker write goes through the lower-level storage update so we
-        avoid the heavy ``MemoryOrchestrator.update`` re-derive path —
-        this is meta-only.
-        """
-        if not source_uri:
-            return
-        try:
-            records = await self._orchestrator._storage.filter(
-                self._orchestrator._get_collection(),
-                {"op": "must", "field": "uri", "conds": [source_uri]},
-                limit=1,
-            )
-            if not records:
-                return
-            record = records[0]
-            record_id = str(record.get("id", "") or "")
-            if not record_id:
-                return
-            existing_meta = dict(record.get("meta") or {})
-            existing_meta["run_complete"] = True
-            await self._orchestrator._storage.update(
-                self._orchestrator._get_collection(),
-                record_id,
-                {"meta": existing_meta},
-            )
-        except Exception as exc:  # pragma: no cover - defensive log path
-            logger.warning(
-                "benchmark_ingest: failed to mark source %s run_complete: %s",
-                source_uri,
-                exc,
-                exc_info=True,
-            )
-
-    async def _purge_torn_benchmark_run(
-        self,
-        *,
-        session_id: str,
-        tenant_id: str,
-        user_id: str,
-        source_uri: str,
-        merged_records: List[Dict[str, Any]],
-    ) -> None:
-        """Drop stale records left by a prior failed benchmark ingest run.
-
-        Used when the idempotent-hit path detects a hash-match without
-        the ``run_complete`` marker (REVIEW F5). Removes:
-
-        - merged leaves under the source (the records we already loaded)
-        - directory records under the source (re-loaded here)
-        - the deterministic session_summary record if one exists
-
-        The source record itself stays — it is keyed deterministically
-        on (tenant, user, session_id) and the next ingest will rewrite
-        the transcript_hash and ``run_complete`` marker fresh.
-        """
-        merged_uris = [
-            str(rec.get("uri", "") or "").strip()
-            for rec in merged_records
-            if rec.get("uri")
-        ]
-        # REVIEW closure tracker ADV-U-001: every other repo call site
-        # threads (tenant_id, user_id) through so cross-tenant
-        # ``session_id`` collisions cannot bleed across scope. Without
-        # the kwargs the directory query loaded *every* directory record
-        # carrying this ``session_id`` regardless of who owned it, and
-        # the URI list flowed straight into ``_purge_records_and_fs_subtree``
-        # — a hard-delete path that walks URI prefixes without a layer
-        # check. Pin scope here so torn-replay purge can never touch
-        # another tenant's records.
-        #
-        # REVIEW closure tracker REL-01: the outer ``except Exception``
-        # used to also swallow ``SessionRecordOverflowError`` (subclass
-        # of Exception). That meant a directory query exceeding the
-        # repo's safety cap would silently treat the directory list as
-        # empty, leaving every directory-layer record from the failed
-        # prior run as a permanent storage orphan with no operator
-        # signal. Surface overflow explicitly so the admin route maps it
-        # to 507 instead.
-        try:
-            directory_records = await self._session_records.load_directories(
-                session_id=session_id,
-                source_uri=source_uri,
-                tenant_id=tenant_id,
-                user_id=user_id,
-            )
-        except SessionRecordOverflowError:
-            logger.error(
-                "benchmark_ingest: torn-run purge aborted — directory "
-                "query exceeded safety cap sid=%s source=%s. Directory "
-                "records from the failed prior run remain in storage; "
-                "rotate session_id or page manually before re-ingesting.",
-                session_id,
-                source_uri,
-            )
-            raise
-        except Exception:  # pragma: no cover - defensive
-            directory_records = []
-        directory_uris = [
-            str(rec.get("uri", "") or "").strip()
-            for rec in directory_records
-            if rec.get("uri")
-        ]
-        summary_uri = self._session_summary_uri(tenant_id, user_id, session_id)
-
-        all_uris = [u for u in (merged_uris + directory_uris + [summary_uri]) if u]
-        if not all_uris:
-            return
-        logger.info(
-            "benchmark_ingest: purging torn prior run sid=%s source=%s "
-            "merged=%d directories=%d summary=%s",
-            session_id,
-            source_uri,
-            len(merged_uris),
-            len(directory_uris),
-            "present" if summary_uri else "absent",
-        )
-        with contextlib.suppress(Exception):
-            await self._purge_records_and_fs_subtree(all_uris)
-
-    @classmethod
-    def _benchmark_segment_meta(
-        cls,
-        messages: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        """Aggregate segment-level anchors for offline benchmark leaves."""
-        entities: List[str] = []
-        topics: List[str] = []
-        time_refs: List[str] = []
-        event_date = ""
-        tool_calls: List[Dict[str, Any]] = []
-        benchmark_meta: Dict[str, Any] = {}
-
-        for message in messages:
-            meta = dict(message.get("meta") or {})
-            for key, value in meta.items():
-                if key.startswith("lme_") and value not in (None, ""):
-                    if key not in benchmark_meta:
-                        benchmark_meta[key] = value
-                    elif benchmark_meta[key] != value:
-                        benchmark_meta[key] = cls._merge_unique_strings(
-                            benchmark_meta[key],
-                            value,
-                        )
-            entities = cls._merge_unique_strings(
-                entities,
-                meta.get("entities"),
-            )
-            topics = cls._merge_unique_strings(
-                topics,
-                meta.get("topics"),
-            )
-            time_refs = cls._merge_unique_strings(
-                time_refs,
-                meta.get("time_refs"),
-                meta.get("event_date"),
-            )
-            if not event_date:
-                event_date = str(meta.get("event_date") or "").strip()
-            for call in meta.get("tool_calls", []) or []:
-                if isinstance(call, dict):
-                    tool_calls.append(call)
-
-        aggregated: Dict[str, Any] = {}
-        if entities:
-            aggregated["entities"] = entities
-        if topics:
-            aggregated["topics"] = topics
-        if time_refs:
-            aggregated["time_refs"] = time_refs
-        if event_date:
-            aggregated["event_date"] = event_date
-        if tool_calls:
-            aggregated["tool_calls"] = tool_calls
-        aggregated.update(benchmark_meta)
-        return aggregated
-
-    @staticmethod
-    def _export_memory_record(
-        record: Dict[str, Any],
-        *,
-        hydrated_content: str = "",
-    ) -> Dict[str, Any]:
-        """Return one adapter-friendly memory payload from a stored record.
-
-        ``Context.to_dict`` does not include the L2 content (it lives in
-        CortexFS, not on the Qdrant payload). Callers that need raw
-        content for benchmark scoring or recall fallback must pre-hydrate
-        it from the filesystem and pass ``hydrated_content``; otherwise
-        the field falls back to whatever the stored record carries (or
-        empty string).
-        """
-        meta = dict(record.get("meta") or {})
-        content = hydrated_content or str(record.get("content", "") or "")
-        return {
-            "uri": str(record.get("uri", "") or ""),
-            "abstract": str(record.get("abstract", "") or ""),
-            "overview": str(record.get("overview", "") or ""),
-            "content": content,
-            "meta": meta,
-            "abstract_json": record.get("abstract_json", {}),
-            "session_id": str(record.get("session_id", "") or ""),
-            "speaker": str(record.get("speaker", "") or ""),
-            "event_date": record.get("event_date", ""),
-            "msg_range": meta.get("msg_range"),
-            "recomposition_stage": meta.get("recomposition_stage"),
-            "source_uri": meta.get("source_uri"),
-        }
-
-    async def _hydrate_record_contents(
-        self,
-        records: List[Dict[str, Any]],
-        overrides: Optional[Dict[str, str]] = None,
-    ) -> Dict[str, str]:
-        """Return URI -> L2 content for a record set.
-
-        ``overrides`` short-circuits the FS read for URIs already in
-        memory (REVIEW KP-06). The benchmark merged_recompose path
-        passes the in-memory write-time map so the response avoids
-        racing the orchestrator's fire-and-forget CortexFS write; the
-        direct_evidence path passes its own captured map. Records whose
-        URI is not in ``overrides`` go through the existing CortexFS
-        ``read_file(uri/content.md)`` path; missing files map to
-        empty string so a single FS hiccup does not fail the response.
-
-        Returned dict contains every URI extracted from ``records`` so
-        the caller can do a flat ``hydrated.get(uri, "")`` instead of
-        layering 3 fallback dicts at the comprehension site.
-        """
-        overrides = overrides or {}
-        uris = [
-            str(record.get("uri", "") or "").strip()
-            for record in records
-            if record.get("uri")
-        ]
-        if not uris:
-            return {}
-
-        result: Dict[str, str] = {
-            uri: overrides[uri] for uri in uris if uri in overrides
-        }
-        missing = [uri for uri in uris if uri not in overrides]
-        if not missing:
-            return result
-
-        fs = getattr(self._orchestrator, "_fs", None)
-        if fs is None:
-            for uri in missing:
-                result[uri] = ""
-            return result
-
-        async def _read_one(uri: str) -> Tuple[str, str]:
-            """Read L2 content for a single URI, returning (uri, content)."""
-            try:
-                return uri, await fs.read_file(f"{uri}/content.md")
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.warning(
-                    "benchmark_ingest content hydration failed for %s: %s",
-                    uri,
-                    exc,
-                )
-                return uri, ""
-
-        fs_results = await asyncio.gather(*[_read_one(u) for u in missing])
-        result.update(dict(fs_results))
-        return result
-
-    def _benchmark_recomposition_entries(
-        self,
-        normalized_segments: List[List[Dict[str, Any]]],
-    ) -> List[RecompositionEntry]:
-        """Build message-level entries for benchmark offline chunking.
-
-        Each entry is tagged with its source input-segment index so
-        ``_build_recomposition_segments`` can hard-split at input-segment
-        boundaries (REVIEW closure tracker R3-RC-02 / R2-14).
-        """
-        entries: List[RecompositionEntry] = []
-        msg_index = 0
-        for segment_index, segment in enumerate(normalized_segments):
-            segment_meta = self._benchmark_segment_meta(segment)
-            for message in segment:
-                # Segment-level aggregation (entities/topics/time_refs/
-                # event_date/tool_calls/lme_*) MUST win over per-message
-                # meta — the aggregation is the canonical anchor source
-                # for the merged leaf. Inverted from the original order
-                # to fix R2-03: the prior {**segment_meta, **message_meta}
-                # silently let one message's narrow meta overwrite the
-                # whole segment's anchors, leaving _benchmark_segment_meta
-                # as dead code on the hot path.
-                meta = {
-                    **dict(message.get("meta") or {}),
-                    **segment_meta,
-                }
-                rendered = self._decorate_message_text(
-                    str(message.get("content", "") or ""),
-                    meta,
-                )
-                if not rendered:
-                    continue
-                record = {
-                    "uri": "",
-                    "abstract": rendered,
-                    "content": rendered,
-                    "overview": "",
-                    "meta": {
-                        **meta,
-                        "msg_range": [msg_index, msg_index],
-                    },
-                    "keywords": ", ".join(
-                        str(topic)
-                        for topic in self._merge_unique_strings(meta.get("topics"))
-                    ),
-                    "entities": self._merge_unique_strings(meta.get("entities")),
-                }
-                entries.append(
-                    RecompositionEntry(
-                        text=rendered,
-                        uri="",
-                        msg_start=msg_index,
-                        msg_end=msg_index,
-                        token_count=max(self._estimate_tokens(rendered), 1),
-                        anchor_terms=self._segment_anchor_terms(record),
-                        time_refs=self._segment_time_refs(record),
-                        source_record=record,
-                        immediate_uris=[],
-                        superseded_merged_uris=[],
-                        source_segment_index=segment_index,
-                    )
-                )
-                msg_index += 1
-        return entries
-
-    async def benchmark_ingest_conversation(
-        self,
-        *,
-        session_id: str,
-        tenant_id: str,
-        user_id: str,
-        segments: List[List[Dict[str, Any]]],
-        include_session_summary: bool = True,
-        ingest_shape: str = "merged_recompose",
-    ) -> Dict[str, Any]:
-        """Benchmark-only offline conversation ingest.
-
-        §25 Phase 3 — REVIEW closure tracker U4. The orchestration body
-        lives in BenchmarkConversationIngestService. This thin shim
-        preserves the ContextManager-rooted call path so existing
-        callers (admin route, tests) keep working unchanged.
-        """
-        return await self._benchmark_ingest_service.ingest(
-            session_id=session_id,
-            tenant_id=tenant_id,
-            user_id=user_id,
-            segments=segments,
-            include_session_summary=include_session_summary,
-            ingest_shape=ingest_shape,
-        )
-
-    @staticmethod
-    def _benchmark_evidence_uri(
-        tenant_id: str,
-        user_id: str,
-        session_id: str,
-        segment_index: int,
-        msg_range: List[int],
-    ) -> str:
-        """Return a stable benchmark evidence URI for one direct segment."""
-        tenant = tenant_id or "public"
-        user = user_id or "default"
-        return (
-            f"opencortex://{tenant}/{user}/memory/events/{session_id}/"
-            f"benchmark_evidence_{segment_index}_{msg_range[0]}_{msg_range[1]}"
-        )
 
     def _segment_anchor_terms(self, record: Dict[str, Any]) -> Set[str]:
         """Extract coarse anchor terms used for sequential merge boundaries."""

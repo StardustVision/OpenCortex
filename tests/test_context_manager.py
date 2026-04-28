@@ -1,9 +1,7 @@
 """Tests for the probe-first memory ContextManager flow."""
 
 import asyncio
-import httpx
 import os
-import re
 import shutil
 import sys
 import tempfile
@@ -11,10 +9,17 @@ import unittest
 from typing import Any, Dict, List
 from unittest.mock import AsyncMock, Mock
 
+import httpx
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 sys.path.insert(0, os.path.dirname(__file__))
 
+from test_e2e_phase1 import InMemoryStorage, MockEmbedder
+
 from opencortex.config import CortexConfig, init_config
+from opencortex.context.benchmark_ingest_service import (
+    BenchmarkConversationIngestService,
+)
 from opencortex.context.manager import ConversationBuffer
 from opencortex.http.request_context import (
     reset_collection_name,
@@ -24,7 +29,6 @@ from opencortex.http.request_context import (
 )
 from opencortex.intent.types import ScopeLevel as ScopeLevelImport
 from opencortex.orchestrator import MemoryOrchestrator
-from test_e2e_phase1 import InMemoryStorage, MockEmbedder
 
 
 class TestContextManager(unittest.TestCase):
@@ -73,6 +77,14 @@ class TestContextManager(unittest.TestCase):
                 )
             )
 
+        self._run(orch.close())
+
+    def test_context_manager_does_not_expose_benchmark_ingest_wrapper(self):
+        orch = self._make_orchestrator()
+        self._run(orch.init())
+        self.assertFalse(
+            hasattr(orch._context_manager, "benchmark_ingest_conversation")
+        )
         self._run(orch.close())
 
     def test_commit_appends_to_live_buffer_after_merge_rollover(self):
@@ -582,6 +594,7 @@ class TestContextManager(unittest.TestCase):
 
     def test_full_session_recomposition_preserves_leaves_and_creates_directories(self):
         """Full recompose preserves original merged leaves and creates directory records."""
+
         async def mock_llm(prompt, **kwargs):
             return '{"abstract": "test abstract", "overview": "test overview", "keywords": ["test"]}'
 
@@ -657,12 +670,15 @@ class TestContextManager(unittest.TestCase):
             if record.get("meta", {}).get("layer") == "directory"
             and record.get("session_id") == session_id
         ]
-        self.assertTrue(directory_records, "At least one directory record should be created")
+        self.assertTrue(
+            directory_records, "At least one directory record should be created"
+        )
 
         self._run(orch.close())
 
     def test_full_session_recomposition_preserves_leaf_uris_unchanged(self):
         """Leaf URIs and content remain unchanged after full_recompose."""
+
         async def mock_llm(prompt, **kwargs):
             return '{"abstract": "test abstract", "overview": "test overview", "keywords": ["test"]}'
 
@@ -784,7 +800,11 @@ class TestContextManager(unittest.TestCase):
 
         normalized_segments = [_seg(6, "session-A"), _seg(4, "session-B")]
 
-        entries = cm._benchmark_recomposition_entries(normalized_segments)
+        service = BenchmarkConversationIngestService(
+            manager=cm,
+            repo=cm._session_records,
+        )
+        entries = service._benchmark_recomposition_entries(normalized_segments)
         # Sanity-check construction: 10 entries, msg_index 0..9 contiguous.
         self.assertEqual(len(entries), 10)
         self.assertEqual(
@@ -873,8 +893,7 @@ class TestContextManager(unittest.TestCase):
         zero_uri = cm._merged_leaf_uri("testteam", "alice", "sess_R3_RC_09", [0, 0])
         self.assertTrue(
             zero_uri.endswith("-000000-000000"),
-            f"zero-width range must serialize as ...-000000-000000, "
-            f"got: {zero_uri}",
+            f"zero-width range must serialize as ...-000000-000000, got: {zero_uri}",
         )
 
         # Edge case: 6-digit indices fit cleanly in the field.
@@ -890,6 +909,7 @@ class TestContextManager(unittest.TestCase):
 
     def test_full_recompose_creates_directory_records(self):
         """Directory records have correct layer, is_leaf, abstract, overview."""
+
         async def mock_llm(prompt, **kwargs):
             return '{"abstract": "dir abstract", "overview": "dir overview", "keywords": ["k1", "k2"]}'
 
@@ -900,11 +920,13 @@ class TestContextManager(unittest.TestCase):
         source_uri = cm._conversation_source_uri("testteam", "alice", session_id)
 
         # Create 3 merged leaves that should cluster together (shared anchors)
-        for i, (content, entities) in enumerate([
-            ("讨论了关于杭州的生活", ["杭州"]),
-            ("杭州的西湖风景很美", ["杭州", "西湖"]),
-            ("杭州的美食推荐", ["杭州", "美食"]),
-        ]):
+        for i, (content, entities) in enumerate(
+            [
+                ("讨论了关于杭州的生活", ["杭州"]),
+                ("杭州的西湖风景很美", ["杭州", "西湖"]),
+                ("杭州的美食推荐", ["杭州", "美食"]),
+            ]
+        ):
             self._run(
                 orch.add(
                     abstract="",
@@ -941,7 +963,9 @@ class TestContextManager(unittest.TestCase):
         ]
         self.assertTrue(directory_records, "Directory records should be created")
         for rec in directory_records:
-            self.assertFalse(rec.get("is_leaf", True), "Directory must be is_leaf=False")
+            self.assertFalse(
+                rec.get("is_leaf", True), "Directory must be is_leaf=False"
+            )
             self.assertTrue(rec.get("abstract"), "Directory must have abstract")
             self.assertEqual(rec.get("meta", {}).get("session_id"), session_id)
 
@@ -949,6 +973,7 @@ class TestContextManager(unittest.TestCase):
 
     def test_full_recompose_skips_singleton_clusters(self):
         """Clusters of size 1 should not create directory records."""
+
         async def mock_llm(prompt, **kwargs):
             return '{"abstract": "dir abstract", "overview": "dir overview", "keywords": []}'
 
@@ -1027,8 +1052,7 @@ class TestContextManager(unittest.TestCase):
         # _run_full_session_recomposition to keep the test focused on the
         # _generate_session_summary path that R2-21 actually changes.
         leaf_uris = [
-            f"opencortex://testteam/alice/memories/events/leaf-{i}"
-            for i in range(2)
+            f"opencortex://testteam/alice/memories/events/leaf-{i}" for i in range(2)
         ]
         for i, uri in enumerate(leaf_uris):
             self._run(
@@ -1048,9 +1072,7 @@ class TestContextManager(unittest.TestCase):
                 )
             )
 
-        directory_uri = (
-            "opencortex://testteam/alice/memories/events/dir-001"
-        )
+        directory_uri = "opencortex://testteam/alice/memories/events/dir-001"
         self._run(
             orch.add(
                 uri=directory_uri,
@@ -1233,9 +1255,7 @@ class TestContextManager(unittest.TestCase):
         )
         # One directory with EMPTY abstract and child_uris that don't
         # include the ungrouped leaf.
-        directory_uri = (
-            "opencortex://testteam/alice/memories/events/dir-empty-abstract"
-        )
+        directory_uri = "opencortex://testteam/alice/memories/events/dir-empty-abstract"
         self._run(
             orch.add(
                 uri=directory_uri,
@@ -1335,9 +1355,7 @@ class TestContextManager(unittest.TestCase):
                 },
             )
         )
-        directory_uri = (
-            "opencortex://testteam/alice/memories/events/dir-with-one-child"
-        )
+        directory_uri = "opencortex://testteam/alice/memories/events/dir-with-one-child"
         # Directory covers a DIFFERENT leaf (not the ungrouped one above)
         # so the ungrouped count is 1.
         self._run(
@@ -1384,6 +1402,7 @@ class TestContextManager(unittest.TestCase):
     def test_directory_uri_pattern(self):
         """_directory_uri produces correct URI pattern."""
         from opencortex.context.manager import ContextManager
+
         uri = ContextManager._directory_uri("team1", "user1", "session-abc", 2)
         self.assertIn("/dir-002", uri)
         self.assertIn("team1", uri)
@@ -1440,9 +1459,7 @@ class TestContextManager(unittest.TestCase):
             source_records[0].get("meta", {}).get("layer"),
             "conversation_source",
         )
-        rendered_source = self._run(
-            orch._fs.read_file(f"{source_uri}/content.md")
-        )
+        rendered_source = self._run(orch._fs.read_file(f"{source_uri}/content.md"))
         self.assertIn("我搬到了杭州。", rendered_source)
 
         merged_records = [
@@ -1692,7 +1709,12 @@ class TestContextManager(unittest.TestCase):
         ]
         self.assertEqual(len(immediate_records), 2)
         self.assertGreaterEqual(len(anchor_projection_records), 1)
-        self.assertTrue(all(record.get("retrieval_surface") == "l0_object" for record in immediate_records))
+        self.assertTrue(
+            all(
+                record.get("retrieval_surface") == "l0_object"
+                for record in immediate_records
+            )
+        )
         user_record = next(
             record
             for record in immediate_records
@@ -1858,7 +1880,9 @@ class TestContextManager(unittest.TestCase):
 
         orch = self._make_orchestrator(llm_completion=flaky_llm)
         self._run(orch.init())
-        long_content = ("Alice moved to Hangzhou and plans a West Lake visit.\n" * 300).strip()
+        long_content = (
+            "Alice moved to Hangzhou and plans a West Lake visit.\n" * 300
+        ).strip()
 
         layers = self._run(orch._derive_layers("", long_content))
 
@@ -1873,7 +1897,9 @@ class TestContextManager(unittest.TestCase):
         )
         self._run(orch.close())
 
-    def test_end_keeps_merged_record_visible_in_memory_list_when_llm_returns_blank(self):
+    def test_end_keeps_merged_record_visible_in_memory_list_when_llm_returns_blank(
+        self,
+    ):
         async def blank_llm(prompt: str) -> str:
             if "compress" in prompt.lower():
                 return "   "
@@ -1922,7 +1948,10 @@ class TestContextManager(unittest.TestCase):
         ]
         self.assertGreaterEqual(len(session_items), 1)
         self.assertTrue(
-            any(item.get("abstract", "").startswith("我下周二要去杭州出差") for item in session_items)
+            any(
+                item.get("abstract", "").startswith("我下周二要去杭州出差")
+                for item in session_items
+            )
         )
         self._run(orch.close())
 
@@ -2184,7 +2213,6 @@ class TestContextManager(unittest.TestCase):
 
         self._run(_case())
 
-
     # -------------------------------------------------------------------------
     # Unit 2: Anchor embedding fix + phrase upgrade tests
     # -------------------------------------------------------------------------
@@ -2248,7 +2276,11 @@ class TestContextManager(unittest.TestCase):
         abstract_json = {
             "memory_kind": "preference",
             "anchors": [
-                {"anchor_type": "entity", "text": long_anchor_text, "value": long_anchor_text},
+                {
+                    "anchor_type": "entity",
+                    "text": long_anchor_text,
+                    "value": long_anchor_text,
+                },
             ],
             "slots": {},
             "overview": "Alice relocated",
@@ -2281,9 +2313,21 @@ class TestContextManager(unittest.TestCase):
         abstract_json = {
             "memory_kind": "event",
             "anchors": [
-                {"anchor_type": "entity", "text": "Li", "value": "Li"},    # 2 chars → filtered
-                {"anchor_type": "entity", "text": "Bob", "value": "Bob"},  # 3 chars → filtered
-                {"anchor_type": "entity", "text": "Alice", "value": "Alice"},  # 5 chars → kept
+                {
+                    "anchor_type": "entity",
+                    "text": "Li",
+                    "value": "Li",
+                },  # 2 chars → filtered
+                {
+                    "anchor_type": "entity",
+                    "text": "Bob",
+                    "value": "Bob",
+                },  # 3 chars → filtered
+                {
+                    "anchor_type": "entity",
+                    "text": "Alice",
+                    "value": "Alice",
+                },  # 5 chars → kept
             ],
             "slots": {},
             "overview": "Test",
@@ -2329,16 +2373,19 @@ class TestContextManager(unittest.TestCase):
             "overview": "No anchors here",
         }
 
-        self._run(orch._sync_anchor_projection_records(
-            source_record=source_record,
-            abstract_json=abstract_json,
-        ))
+        self._run(
+            orch._sync_anchor_projection_records(
+                source_record=source_record,
+                abstract_json=abstract_json,
+            )
+        )
 
         self.assertEqual(embed_calls, [])
         anchor_records = [
-            r for r in self.storage._records.get("context", {}).values()
+            r
+            for r in self.storage._records.get("context", {}).values()
             if r.get("retrieval_surface") == "anchor_projection"
-               and "noanchor" in r.get("uri", "")
+            and "noanchor" in r.get("uri", "")
         ]
         self.assertEqual(anchor_records, [])
 
@@ -2373,15 +2420,18 @@ class TestContextManager(unittest.TestCase):
             "overview": "Alice moved to Hangzhou",
         }
 
-        self._run(orch._sync_anchor_projection_records(
-            source_record=source_record,
-            abstract_json=abstract_json,
-        ))
+        self._run(
+            orch._sync_anchor_projection_records(
+                source_record=source_record,
+                abstract_json=abstract_json,
+            )
+        )
 
         anchor_records = [
-            r for r in self.storage._records.get("context", {}).values()
+            r
+            for r in self.storage._records.get("context", {}).values()
             if r.get("retrieval_surface") == "anchor_projection"
-               and r.get("uri", "").startswith(source_uri)
+            and r.get("uri", "").startswith(source_uri)
         ]
         self.assertEqual(len(anchor_records), 2)
         for record in anchor_records:
@@ -2428,15 +2478,18 @@ class TestContextManager(unittest.TestCase):
         }
 
         # Should not raise — graceful fallback
-        self._run(orch._sync_anchor_projection_records(
-            source_record=source_record,
-            abstract_json=abstract_json,
-        ))
+        self._run(
+            orch._sync_anchor_projection_records(
+                source_record=source_record,
+                abstract_json=abstract_json,
+            )
+        )
 
         anchor_records = [
-            r for r in self.storage._records.get("context", {}).values()
+            r
+            for r in self.storage._records.get("context", {}).values()
             if r.get("retrieval_surface") == "anchor_projection"
-               and r.get("uri", "").startswith(source_uri)
+            and r.get("uri", "").startswith(source_uri)
         ]
         # Record still written (zero vector fallback)
         self.assertEqual(len(anchor_records), 1)
@@ -2447,6 +2500,7 @@ class TestContextManager(unittest.TestCase):
 
     def test_anchor_projection_vectors_set_after_add(self):
         """Calling orchestrator.add() with LLM anchor handles produces embedded anchor records."""
+
         async def anchor_llm(prompt: str) -> str:
             return (
                 '{"overview":"Alice relocated to Hangzhou on May 1",'
@@ -2467,18 +2521,22 @@ class TestContextManager(unittest.TestCase):
         )
 
         anchor_records = [
-            r for r in self.storage._records.get("context", {}).values()
+            r
+            for r in self.storage._records.get("context", {}).values()
             if r.get("retrieval_surface") == "anchor_projection"
         ]
         self.assertGreaterEqual(len(anchor_records), 1)
         for record in anchor_records:
             vec = record.get("vector")
-            self.assertIsNotNone(vec, f"Anchor record {record.get('uri')} has no vector")
+            self.assertIsNotNone(
+                vec, f"Anchor record {record.get('uri')} has no vector"
+            )
             self.assertIsInstance(vec, list)
-            self.assertGreater(sum(abs(v) for v in vec), 0.0, "Vector should be non-zero")
+            self.assertGreater(
+                sum(abs(v) for v in vec), 0.0, "Vector should be non-zero"
+            )
 
         self._run(orch.close())
-
 
     # -------------------------------------------------------------------------
     # Unit 3: Fact point generation + quality gate + sync tests
@@ -2498,7 +2556,9 @@ class TestContextManager(unittest.TestCase):
         orch = self._make_orchestrator()
         self._run(orch.init())
         self.assertTrue(orch._is_valid_fact_point("Alice moved to Hangzhou on May 1"))
-        self.assertTrue(orch._is_valid_fact_point("Migration uses batch size 500 to avoid downtime"))
+        self.assertTrue(
+            orch._is_valid_fact_point("Migration uses batch size 500 to avoid downtime")
+        )
         self._run(orch.close())
 
     def test_is_valid_fact_point_rejects_short(self):
@@ -2523,7 +2583,11 @@ class TestContextManager(unittest.TestCase):
         """Paragraph-style text with newlines must be rejected."""
         orch = self._make_orchestrator()
         self._run(orch.init())
-        self.assertFalse(orch._is_valid_fact_point("Alice moved to Hangzhou.\nBob stayed in Beijing."))
+        self.assertFalse(
+            orch._is_valid_fact_point(
+                "Alice moved to Hangzhou.\nBob stayed in Beijing."
+            )
+        )
         self.assertFalse(orch._is_valid_fact_point("line1\nline2"))
         self._run(orch.close())
 
@@ -2537,6 +2601,7 @@ class TestContextManager(unittest.TestCase):
 
     def test_fact_point_records_written_after_add(self):
         """After orchestrator.add() with LLM returning fact_points, records appear in storage."""
+
         async def fp_llm(prompt: str) -> str:
             return (
                 '{"overview":"Alice relocated to Hangzhou on May 1",'
@@ -2558,7 +2623,8 @@ class TestContextManager(unittest.TestCase):
         )
 
         fp_records = [
-            r for r in self.storage._records.get("context", {}).values()
+            r
+            for r in self.storage._records.get("context", {}).values()
             if r.get("retrieval_surface") == "fact_point"
         ]
         self.assertGreaterEqual(len(fp_records), 1)
@@ -2571,6 +2637,7 @@ class TestContextManager(unittest.TestCase):
 
     def test_fact_point_inherits_access_control(self):
         """Fact point records must inherit scope/tenant/user from source leaf."""
+
         async def fp_llm(prompt: str) -> str:
             return (
                 '{"overview":"Alice moved to Hangzhou on May 1",'
@@ -2583,7 +2650,7 @@ class TestContextManager(unittest.TestCase):
         orch = self._make_orchestrator(llm_completion=fp_llm)
         self._run(orch.init())
 
-        result = self._run(
+        self._run(
             orch.add(
                 abstract="",
                 content="Alice moved to Hangzhou on May 1.",
@@ -2592,7 +2659,8 @@ class TestContextManager(unittest.TestCase):
         )
 
         fp_records = [
-            r for r in self.storage._records.get("context", {}).values()
+            r
+            for r in self.storage._records.get("context", {}).values()
             if r.get("retrieval_surface") == "fact_point"
         ]
         self.assertGreaterEqual(len(fp_records), 1)
@@ -2605,6 +2673,7 @@ class TestContextManager(unittest.TestCase):
 
     def test_fact_point_projection_target_uri_points_to_leaf(self):
         """fact_point meta.projection_target_uri must equal source leaf URI."""
+
         async def fp_llm(prompt: str) -> str:
             return (
                 '{"overview":"Alice moved to Hangzhou on May 1",'
@@ -2627,12 +2696,15 @@ class TestContextManager(unittest.TestCase):
         leaf_uri = result.uri
 
         fp_records = [
-            r for r in self.storage._records.get("context", {}).values()
+            r
+            for r in self.storage._records.get("context", {}).values()
             if r.get("retrieval_surface") == "fact_point"
         ]
         self.assertGreaterEqual(len(fp_records), 1)
         for record in fp_records:
-            self.assertEqual(record.get("meta", {}).get("projection_target_uri"), leaf_uri)
+            self.assertEqual(
+                record.get("meta", {}).get("projection_target_uri"), leaf_uri
+            )
             self.assertEqual(record.get("projection_target_uri"), leaf_uri)
 
         self._run(orch.close())
@@ -2680,7 +2752,8 @@ class TestContextManager(unittest.TestCase):
         async def tracking_delete(collection, ids):
             # Capture all URIs currently in storage at delete time
             all_uris = {
-                r.get("uri", "") for r in self.storage._records.get(collection, {}).values()
+                r.get("uri", "")
+                for r in self.storage._records.get(collection, {}).values()
             }
             delete_calls.append(frozenset(all_uris))
             return await original_delete(collection, ids)
@@ -2691,32 +2764,38 @@ class TestContextManager(unittest.TestCase):
         self._run(orch.init())
 
         # First sync: creates v1 records
-        self._run(orch._sync_anchor_projection_records(
-            source_record=source_record,
-            abstract_json=abstract_json_v1,
-        ))
+        self._run(
+            orch._sync_anchor_projection_records(
+                source_record=source_record,
+                abstract_json=abstract_json_v1,
+            )
+        )
 
         v1_fp_records = [
-            r for r in self.storage._records.get("context", {}).values()
+            r
+            for r in self.storage._records.get("context", {}).values()
             if r.get("retrieval_surface") == "fact_point"
-               and r.get("uri", "").startswith(source_uri)
+            and r.get("uri", "").startswith(source_uri)
         ]
         self.assertEqual(len(v1_fp_records), 1)
         v1_fp_uri = v1_fp_records[0]["uri"]
 
         # Second sync with different fact_points (v2) — v1 records become stale
-        self._run(orch._sync_anchor_projection_records(
-            source_record=source_record,
-            abstract_json=abstract_json_v2,
-        ))
+        self._run(
+            orch._sync_anchor_projection_records(
+                source_record=source_record,
+                abstract_json=abstract_json_v2,
+            )
+        )
 
         # At the time delete was called, both v1 AND v2 URIs must have been present
         # (write-then-delete: v2 written first, then v1 deleted)
         self.assertGreaterEqual(len(delete_calls), 1)
         v2_fp_records = [
-            r for r in self.storage._records.get("context", {}).values()
+            r
+            for r in self.storage._records.get("context", {}).values()
             if r.get("retrieval_surface") == "fact_point"
-               and r.get("uri", "").startswith(source_uri)
+            and r.get("uri", "").startswith(source_uri)
         ]
         # Only v2 should remain (v1 was stale and got deleted)
         self.assertEqual(len(v2_fp_records), 1)
@@ -2766,23 +2845,27 @@ class TestContextManager(unittest.TestCase):
         orch = self._make_orchestrator()
         self._run(orch.init())
 
-        self._run(orch._sync_anchor_projection_records(
-            source_record=source_record,
-            abstract_json=abstract_json,
-        ))
+        self._run(
+            orch._sync_anchor_projection_records(
+                source_record=source_record,
+                abstract_json=abstract_json,
+            )
+        )
 
         fp_records = [
-            r for r in self.storage._records.get("context", {}).values()
+            r
+            for r in self.storage._records.get("context", {}).values()
             if r.get("retrieval_surface") == "fact_point"
-               and r.get("uri", "").startswith(source_uri)
+            and r.get("uri", "").startswith(source_uri)
         ]
         # All bad → no fact_point records written
         self.assertEqual(fp_records, [])
         # But anchor records should still be written (leaf degrades to anchor-only)
         anchor_records = [
-            r for r in self.storage._records.get("context", {}).values()
+            r
+            for r in self.storage._records.get("context", {}).values()
             if r.get("retrieval_surface") == "anchor_projection"
-               and r.get("uri", "").startswith(source_uri)
+            and r.get("uri", "").startswith(source_uri)
         ]
         self.assertGreaterEqual(len(anchor_records), 1)
 
@@ -2805,9 +2888,7 @@ class TestContextManager(unittest.TestCase):
             "overview": "",
         }
         # Build 10 distinct valid fact_points (all pass quality gate)
-        fact_points = [
-            f"Alice visited city {i} on day {i}" for i in range(1, 11)
-        ]
+        fact_points = [f"Alice visited city {i} on day {i}" for i in range(1, 11)]
         abstract_json = {
             "memory_kind": "event",
             "anchors": [],
@@ -2819,15 +2900,18 @@ class TestContextManager(unittest.TestCase):
         orch = self._make_orchestrator()
         self._run(orch.init())
 
-        self._run(orch._sync_anchor_projection_records(
-            source_record=source_record,
-            abstract_json=abstract_json,
-        ))
+        self._run(
+            orch._sync_anchor_projection_records(
+                source_record=source_record,
+                abstract_json=abstract_json,
+            )
+        )
 
         fp_records = [
-            r for r in self.storage._records.get("context", {}).values()
+            r
+            for r in self.storage._records.get("context", {}).values()
             if r.get("retrieval_surface") == "fact_point"
-               and r.get("uri", "").startswith(source_uri)
+            and r.get("uri", "").startswith(source_uri)
         ]
         self.assertLessEqual(len(fp_records), 8)
 
@@ -2860,15 +2944,18 @@ class TestContextManager(unittest.TestCase):
         orch = self._make_orchestrator()
         self._run(orch.init())
 
-        self._run(orch._sync_anchor_projection_records(
-            source_record=source_record,
-            abstract_json=abstract_json,
-        ))
+        self._run(
+            orch._sync_anchor_projection_records(
+                source_record=source_record,
+                abstract_json=abstract_json,
+            )
+        )
 
         fp_records = [
-            r for r in self.storage._records.get("context", {}).values()
+            r
+            for r in self.storage._records.get("context", {}).values()
             if r.get("retrieval_surface") == "fact_point"
-               and r.get("uri", "").startswith(source_uri)
+            and r.get("uri", "").startswith(source_uri)
         ]
         self.assertEqual(len(fp_records), 1)
         vec = fp_records[0].get("vector")
@@ -2880,6 +2967,7 @@ class TestContextManager(unittest.TestCase):
 
     def test_fact_point_embed_failure_falls_back_gracefully(self):
         """If embed_batch fails, fact_point records are still written (no vector key)."""
+
         def failing_embed_batch(texts):
             raise RuntimeError("embed failure")
 
@@ -2911,15 +2999,18 @@ class TestContextManager(unittest.TestCase):
         self._run(orch.init())
 
         # Should not raise
-        self._run(orch._sync_anchor_projection_records(
-            source_record=source_record,
-            abstract_json=abstract_json,
-        ))
+        self._run(
+            orch._sync_anchor_projection_records(
+                source_record=source_record,
+                abstract_json=abstract_json,
+            )
+        )
 
         fp_records = [
-            r for r in self.storage._records.get("context", {}).values()
+            r
+            for r in self.storage._records.get("context", {}).values()
             if r.get("retrieval_surface") == "fact_point"
-               and r.get("uri", "").startswith(source_uri)
+            and r.get("uri", "").startswith(source_uri)
         ]
         # Record still written (zero vector fallback)
         self.assertEqual(len(fp_records), 1)
@@ -2971,12 +3062,14 @@ class TestContextManager(unittest.TestCase):
         leaf_uri = ctx.uri
 
         fp_before = [
-            r for r in self.storage._records.get("context", {}).values()
+            r
+            for r in self.storage._records.get("context", {}).values()
             if r.get("retrieval_surface") == "fact_point"
             and r.get("parent_uri") == leaf_uri
         ]
         self.assertGreaterEqual(
-            len(fp_before), 1,
+            len(fp_before),
+            1,
             "Setup failed: fact_points should be created on add()",
         )
         before_uris = {r["uri"] for r in fp_before}
@@ -2990,19 +3083,22 @@ class TestContextManager(unittest.TestCase):
         )
 
         fp_after = [
-            r for r in self.storage._records.get("context", {}).values()
+            r
+            for r in self.storage._records.get("context", {}).values()
             if r.get("retrieval_surface") == "fact_point"
             and r.get("parent_uri") == leaf_uri
         ]
         self.assertGreaterEqual(
-            len(fp_after), 1,
+            len(fp_after),
+            1,
             "BUG: update() dropped fact_points; _sync_anchor_projection_records "
             "wiped them via _delete_derived_stale",
         )
         # Content changed → derived URIs (sha1 of text) should differ
         after_uris = {r["uri"] for r in fp_after}
         self.assertNotEqual(
-            before_uris, after_uris,
+            before_uris,
+            after_uris,
             "fact_point URIs should reflect new content digest after update()",
         )
         # Verify payload content matches newly-derived fact_point text
@@ -3020,6 +3116,7 @@ class TestContextManager(unittest.TestCase):
 
         fast path: no abstract and no content → no re-derive → fact_points remain intact.
         """
+
         async def fp_llm(prompt: str) -> str:
             return (
                 '{"overview":"Alice moved to Hangzhou on May 1",'
@@ -3042,7 +3139,8 @@ class TestContextManager(unittest.TestCase):
         leaf_uri = ctx.uri
 
         fp_before = [
-            r for r in self.storage._records.get("context", {}).values()
+            r
+            for r in self.storage._records.get("context", {}).values()
             if r.get("retrieval_surface") == "fact_point"
             and r.get("parent_uri") == leaf_uri
         ]
@@ -3053,13 +3151,15 @@ class TestContextManager(unittest.TestCase):
         self._run(orch.update(leaf_uri, meta={"note": "meta-only update"}))
 
         fp_after = [
-            r for r in self.storage._records.get("context", {}).values()
+            r
+            for r in self.storage._records.get("context", {}).values()
             if r.get("retrieval_surface") == "fact_point"
             and r.get("parent_uri") == leaf_uri
         ]
         after_uris = {r["uri"] for r in fp_after}
         self.assertEqual(
-            before_uris, after_uris,
+            before_uris,
+            after_uris,
             "fast-path update() (meta only) must not delete or change fact_points",
         )
 
@@ -3109,17 +3209,18 @@ class TestContextManager(unittest.TestCase):
         )
 
         fp_after = [
-            r for r in self.storage._records.get("context", {}).values()
+            r
+            for r in self.storage._records.get("context", {}).values()
             if r.get("retrieval_surface") == "fact_point"
             and r.get("parent_uri") == leaf_uri
         ]
         self.assertGreaterEqual(
-            len(fp_after), 1,
+            len(fp_after),
+            1,
             "BUG: _merge_into() dropped fact_points via update() path",
         )
 
         self._run(orch.close())
-
 
     # -------------------------------------------------------------------------
     # Unit 5: Three-layer parallel search + URI path scoring tests
@@ -3166,7 +3267,11 @@ class TestContextManager(unittest.TestCase):
             "session_id": "sess_u5",
             "source_doc_id": "",
             "projection_target_uri": leaf_uri,
-            "meta": {"projection_target_uri": leaf_uri, "derived": True, "derived_kind": "fact_point"},
+            "meta": {
+                "projection_target_uri": leaf_uri,
+                "derived": True,
+                "derived_kind": "fact_point",
+            },
             "vector": vector,
         }
         return self._run(self.storage.upsert("context", record))
@@ -3188,7 +3293,11 @@ class TestContextManager(unittest.TestCase):
             "session_id": "sess_u5",
             "source_doc_id": "",
             "projection_target_uri": leaf_uri,
-            "meta": {"projection_target_uri": leaf_uri, "derived": True, "derived_kind": "anchor_projection"},
+            "meta": {
+                "projection_target_uri": leaf_uri,
+                "derived": True,
+                "derived_kind": "anchor_projection",
+            },
             "vector": vector,
         }
         return self._run(self.storage.upsert("context", record))
@@ -3217,14 +3326,20 @@ class TestContextManager(unittest.TestCase):
 
         # Leaf A: vector identical to query → _score ≈ 1.0, but low by design
         # We want leaf A to have direct score 0.6 — use a different vector
-        leaf_a_vec = self.embedder._text_to_vector("unrelated content about something else")
-        leaf_b_vec = self.embedder._text_to_vector("leaf b content different from query")
+        leaf_a_vec = self.embedder._text_to_vector(
+            "unrelated content about something else"
+        )
+        leaf_b_vec = self.embedder._text_to_vector(
+            "leaf b content different from query"
+        )
         # fp_b has high similarity to query
         fp_b_vec = query_vec  # exact match → _score = 1.0
 
         self._insert_leaf(orch, leaf_a_uri, "Leaf A direct only", leaf_a_vec)
         self._insert_leaf(orch, leaf_b_uri, "Leaf B with fact point", leaf_b_vec)
-        self._insert_fact_point(orch, fp_b_uri, leaf_b_uri, "Alice moved to Hangzhou on May 1", fp_b_vec)
+        self._insert_fact_point(
+            orch, fp_b_uri, leaf_b_uri, "Alice moved to Hangzhou on May 1", fp_b_vec
+        )
 
         result = self._run(orch.search(query_text, limit=5))
         uris = [ctx.uri for ctx in result.memories]
@@ -3255,20 +3370,25 @@ class TestContextManager(unittest.TestCase):
         # Leaf C: orthogonal vector (won't match in leaf search but reachable via anchor)
         leaf_c_vec = [1.0, 0.0, 0.0, 0.0]  # normalize manually
         import math
-        norm = math.sqrt(sum(v*v for v in leaf_c_vec)) or 1.0
-        leaf_c_vec = [v/norm for v in leaf_c_vec]
+
+        norm = math.sqrt(sum(v * v for v in leaf_c_vec)) or 1.0
+        leaf_c_vec = [v / norm for v in leaf_c_vec]
 
         # Anchor points to query text → high cosine similarity
         anchor_c_vec = query_vec
 
         self._insert_leaf(orch, leaf_c_uri, "Leaf C via anchor only", leaf_c_vec)
-        self._insert_anchor(orch, anchor_c_uri, leaf_c_uri, "anchor text for discovery", anchor_c_vec)
+        self._insert_anchor(
+            orch, anchor_c_uri, leaf_c_uri, "anchor text for discovery", anchor_c_vec
+        )
 
         result = self._run(orch.search(query_text, limit=10))
         uris = [ctx.uri for ctx in result.memories]
 
         # Leaf C must appear even though its own vector doesn't match query
-        self.assertIn(leaf_c_uri, uris, "Leaf C should be discovered via anchor projection")
+        self.assertIn(
+            leaf_c_uri, uris, "Leaf C should be discovered via anchor projection"
+        )
 
         self._run(orch.close())
 
@@ -3286,7 +3406,9 @@ class TestContextManager(unittest.TestCase):
 
         result = self._run(orch.search(query_text, limit=5))
         uris = [ctx.uri for ctx in result.memories]
-        self.assertIn(leaf_h_uri, uris, "Historical leaf without fp must still be retrievable")
+        self.assertIn(
+            leaf_h_uri, uris, "Historical leaf without fp must still be retrievable"
+        )
 
         # path_source should be "direct" since there are no fp/anchor hits
         ctx = next(ctx for ctx in result.memories if ctx.uri == leaf_h_uri)
@@ -3308,14 +3430,20 @@ class TestContextManager(unittest.TestCase):
         ghost_leaf_uri = "opencortex://testteam/alice/memory/events/leaf_ghost_deleted"
         fp_orphan_uri = f"{ghost_leaf_uri}/fact_points/orphan001"
 
-        self._insert_fact_point(orch, fp_orphan_uri, ghost_leaf_uri, "Alice moved on May 1", query_vec)
+        self._insert_fact_point(
+            orch, fp_orphan_uri, ghost_leaf_uri, "Alice moved on May 1", query_vec
+        )
 
         # Should not raise; ghost leaf is absent from storage → batch load returns nothing
         result = self._run(orch.search(query_text, limit=5))
 
         # ghost_leaf_uri must NOT appear in results
         uris = [ctx.uri for ctx in result.memories]
-        self.assertNotIn(ghost_leaf_uri, uris, "Ghost leaf must not appear after orphan fp projection")
+        self.assertNotIn(
+            ghost_leaf_uri,
+            uris,
+            "Ghost leaf must not appear after orphan fp projection",
+        )
 
         self._run(orch.close())
 
@@ -3328,7 +3456,6 @@ class TestContextManager(unittest.TestCase):
         """
         orch = self._make_orchestrator()
         self._run(orch.init())
-        cm = orch._context_manager
 
         search_calls = []
         original_search = self.storage.search
@@ -3352,7 +3479,6 @@ class TestContextManager(unittest.TestCase):
         self.assertEqual(result.memories, [])
 
         self._run(orch.close())
-
 
     # -------------------------------------------------------------------------
     # Unit 7: Lifecycle cascade + trace field verification
@@ -3379,32 +3505,43 @@ class TestContextManager(unittest.TestCase):
             "anchors": [],
             "slots": {},
             "overview": "cascade test",
-            "fact_points": ["Alice moved to Hangzhou on May 1", "Batch size is 500 records"],
+            "fact_points": [
+                "Alice moved to Hangzhou on May 1",
+                "Batch size is 500 records",
+            ],
         }
 
         orch = self._make_orchestrator()
         self._run(orch.init())
 
         # Write leaf + fact_point children
-        self._run(self.storage.upsert("context", {
-            "id": source_uri,
-            "uri": source_uri,
-            "is_leaf": True,
-            "abstract": "cascade test",
-            "vector": self.embedder._text_to_vector("cascade test"),
-            "retrieval_surface": "l0_object",
-            "scope": "private",
-            "source_tenant_id": "testteam",
-            "source_user_id": "alice",
-        }))
-        self._run(orch._sync_anchor_projection_records(
-            source_record=source_record,
-            abstract_json=abstract_json,
-        ))
+        self._run(
+            self.storage.upsert(
+                "context",
+                {
+                    "id": source_uri,
+                    "uri": source_uri,
+                    "is_leaf": True,
+                    "abstract": "cascade test",
+                    "vector": self.embedder._text_to_vector("cascade test"),
+                    "retrieval_surface": "l0_object",
+                    "scope": "private",
+                    "source_tenant_id": "testteam",
+                    "source_user_id": "alice",
+                },
+            )
+        )
+        self._run(
+            orch._sync_anchor_projection_records(
+                source_record=source_record,
+                abstract_json=abstract_json,
+            )
+        )
 
         # Verify fact_points were written
         fp_before = [
-            r for r in self.storage._records.get("context", {}).values()
+            r
+            for r in self.storage._records.get("context", {}).values()
             if r.get("retrieval_surface") == "fact_point"
             and r.get("uri", "").startswith(source_uri)
         ]
@@ -3415,11 +3552,13 @@ class TestContextManager(unittest.TestCase):
 
         # All fact_point children must be gone
         fp_after = [
-            r for r in self.storage._records.get("context", {}).values()
+            r
+            for r in self.storage._records.get("context", {}).values()
             if r.get("uri", "").startswith(source_uri)
         ]
         self.assertEqual(
-            fp_after, [],
+            fp_after,
+            [],
             f"Expected all children deleted, but found: {[r.get('uri') for r in fp_after]}",
         )
 
@@ -3456,25 +3595,33 @@ class TestContextManager(unittest.TestCase):
         self._run(orch.init())
 
         # Write leaf record
-        self._run(self.storage.upsert("context", {
-            "id": source_uri,
-            "uri": source_uri,
-            "is_leaf": True,
-            "abstract": "cascade anchor test",
-            "vector": self.embedder._text_to_vector("cascade anchor test"),
-            "retrieval_surface": "l0_object",
-            "scope": "private",
-            "source_tenant_id": "testteam",
-            "source_user_id": "alice",
-        }))
-        self._run(orch._sync_anchor_projection_records(
-            source_record=source_record,
-            abstract_json=abstract_json,
-        ))
+        self._run(
+            self.storage.upsert(
+                "context",
+                {
+                    "id": source_uri,
+                    "uri": source_uri,
+                    "is_leaf": True,
+                    "abstract": "cascade anchor test",
+                    "vector": self.embedder._text_to_vector("cascade anchor test"),
+                    "retrieval_surface": "l0_object",
+                    "scope": "private",
+                    "source_tenant_id": "testteam",
+                    "source_user_id": "alice",
+                },
+            )
+        )
+        self._run(
+            orch._sync_anchor_projection_records(
+                source_record=source_record,
+                abstract_json=abstract_json,
+            )
+        )
 
         # Verify anchor projections were written
         anchors_before = [
-            r for r in self.storage._records.get("context", {}).values()
+            r
+            for r in self.storage._records.get("context", {}).values()
             if r.get("retrieval_surface") == "anchor_projection"
             and r.get("uri", "").startswith(source_uri)
         ]
@@ -3485,11 +3632,13 @@ class TestContextManager(unittest.TestCase):
 
         # All anchor_projection children must be gone
         remaining = [
-            r for r in self.storage._records.get("context", {}).values()
+            r
+            for r in self.storage._records.get("context", {}).values()
             if r.get("uri", "").startswith(source_uri)
         ]
         self.assertEqual(
-            remaining, [],
+            remaining,
+            [],
             f"Expected no children, but found: {[r.get('uri') for r in remaining]}",
         )
 
@@ -3497,6 +3646,7 @@ class TestContextManager(unittest.TestCase):
 
     def test_recomposition_preserves_leaves_and_fact_points(self):
         """Full recompose preserves original leaves — fact_points remain intact."""
+
         async def mock_llm(prompt, **kwargs):
             return '{"abstract": "test abstract", "overview": "test overview", "keywords": ["test"]}'
 
@@ -3537,25 +3687,34 @@ class TestContextManager(unittest.TestCase):
 
         # Manually write fake fact_point children under old leaves
         for old_uri in [old_uri_1, old_uri_2]:
-            self._run(self.storage.upsert("context", {
-                "id": f"{old_uri}/fact_points/fake001",
-                "uri": f"{old_uri}/fact_points/fake001",
-                "retrieval_surface": "fact_point",
-                "is_leaf": False,
-                "projection_target_uri": old_uri,
-                "meta": {"projection_target_uri": old_uri},
-                "abstract": "fake fact",
-                "overview": "fake fact point for cascade test",
-                "scope": "private",
-                "source_tenant_id": "testteam",
-                "source_user_id": "alice",
-            }))
+            self._run(
+                self.storage.upsert(
+                    "context",
+                    {
+                        "id": f"{old_uri}/fact_points/fake001",
+                        "uri": f"{old_uri}/fact_points/fake001",
+                        "retrieval_surface": "fact_point",
+                        "is_leaf": False,
+                        "projection_target_uri": old_uri,
+                        "meta": {"projection_target_uri": old_uri},
+                        "abstract": "fake fact",
+                        "overview": "fake fact point for cascade test",
+                        "scope": "private",
+                        "source_tenant_id": "testteam",
+                        "source_user_id": "alice",
+                    },
+                )
+            )
 
         # Confirm fact_points are present before recomposition
         fp_before = [
-            r for r in self.storage._records.get("context", {}).values()
+            r
+            for r in self.storage._records.get("context", {}).values()
             if r.get("retrieval_surface") == "fact_point"
-            and (r.get("uri", "").startswith(old_uri_1) or r.get("uri", "").startswith(old_uri_2))
+            and (
+                r.get("uri", "").startswith(old_uri_1)
+                or r.get("uri", "").startswith(old_uri_2)
+            )
         ]
         self.assertEqual(len(fp_before), 2)
 
@@ -3579,12 +3738,17 @@ class TestContextManager(unittest.TestCase):
 
         # Fact_points under old leaves must also remain intact
         fp_after = [
-            r for r in self.storage._records.get("context", {}).values()
+            r
+            for r in self.storage._records.get("context", {}).values()
             if r.get("retrieval_surface") == "fact_point"
-            and (r.get("uri", "").startswith(old_uri_1) or r.get("uri", "").startswith(old_uri_2))
+            and (
+                r.get("uri", "").startswith(old_uri_1)
+                or r.get("uri", "").startswith(old_uri_2)
+            )
         ]
         self.assertEqual(
-            len(fp_after), 2,
+            len(fp_after),
+            2,
             f"Fact_points must be preserved when leaves are preserved, "
             f"found: {[r.get('uri') for r in fp_after]}",
         )
@@ -3606,7 +3770,9 @@ class TestContextManager(unittest.TestCase):
         unrelated_vec = self.embedder._text_to_vector("completely unrelated content")
         self._insert_leaf(orch, leaf_uri, "Leaf for trace test", unrelated_vec)
         # Insert fact_point with query-aligned vector
-        self._insert_fact_point(orch, fp_uri, leaf_uri, "Alice moved to Hangzhou on May 1", query_vec)
+        self._insert_fact_point(
+            orch, fp_uri, leaf_uri, "Alice moved to Hangzhou on May 1", query_vec
+        )
 
         result = self._run(orch.search(query_text, limit=5))
 
@@ -3618,7 +3784,9 @@ class TestContextManager(unittest.TestCase):
         ctx = next(c for c in result.memories if c.uri == leaf_uri)
 
         # path_source and path_cost must be populated
-        self.assertIsNotNone(ctx.path_source, "path_source must not be None when fp path used")
+        self.assertIsNotNone(
+            ctx.path_source, "path_source must not be None when fp path used"
+        )
         self.assertIn(
             ctx.path_source,
             ("fact_point", "anchor", "direct"),
@@ -3639,6 +3807,7 @@ class TestContextManager(unittest.TestCase):
         # Verify backward compat: a leaf with no path trace produces no path keys
         plain_leaf_uri = "opencortex://testteam/alice/memory/events/plain_no_trace"
         from opencortex.retrieve.types import ContextType, MatchedContext
+
         plain_ctx = MatchedContext(
             uri=plain_leaf_uri,
             abstract="plain",
@@ -3860,11 +4029,21 @@ class TestScopeFilterAppliesToDerivedSurfaces(unittest.TestCase):
         fp_out = f"{leaf_out}/fact_points/fpout001"
 
         # In-scope leaf: unrelated vector (only leaf search surface)
-        self._insert_leaf(leaf_in, "in scope leaf", unrelated_vec, parent_uri=container_a)
+        self._insert_leaf(
+            leaf_in, "in scope leaf", unrelated_vec, parent_uri=container_a
+        )
         # Out-of-scope leaf: unrelated vector (would only surface via fp projection)
-        self._insert_leaf(leaf_out, "out of scope leaf", unrelated_vec, parent_uri=container_b)
+        self._insert_leaf(
+            leaf_out, "out of scope leaf", unrelated_vec, parent_uri=container_b
+        )
         # Out-of-scope fp: high relevance to query (tempting projection target)
-        self._insert_fact_point(fp_out, leaf_out, "Alice moved to Hangzhou", query_vec, parent_uri=container_b)
+        self._insert_fact_point(
+            fp_out,
+            leaf_out,
+            "Alice moved to Hangzhou",
+            query_vec,
+            parent_uri=container_b,
+        )
 
         plan, probe = self._build_plan_and_probe(
             scope_level=ScopeLevelImport.CONTAINER_SCOPED,
@@ -3883,7 +4062,8 @@ class TestScopeFilterAppliesToDerivedSurfaces(unittest.TestCase):
         )
         uris = [mc.uri for mc in result.matched_contexts]
         self.assertNotIn(
-            leaf_out, uris,
+            leaf_out,
+            uris,
             "Out-of-scope leaf must not leak in via its fact_point projection",
         )
 
@@ -3906,8 +4086,16 @@ class TestScopeFilterAppliesToDerivedSurfaces(unittest.TestCase):
         leaf_out = f"{container_b}/leaf_oa"
         anchor_out = f"{leaf_out}/anchors/aout001"
 
-        self._insert_leaf(leaf_out, "out of scope leaf", unrelated_vec, parent_uri=container_b)
-        self._insert_anchor(anchor_out, leaf_out, "anchor phrase matching query", query_vec, parent_uri=container_b)
+        self._insert_leaf(
+            leaf_out, "out of scope leaf", unrelated_vec, parent_uri=container_b
+        )
+        self._insert_anchor(
+            anchor_out,
+            leaf_out,
+            "anchor phrase matching query",
+            query_vec,
+            parent_uri=container_b,
+        )
 
         plan, probe = self._build_plan_and_probe(
             scope_level=ScopeLevelImport.CONTAINER_SCOPED,
@@ -3926,7 +4114,8 @@ class TestScopeFilterAppliesToDerivedSurfaces(unittest.TestCase):
         )
         uris = [mc.uri for mc in result.matched_contexts]
         self.assertNotIn(
-            leaf_out, uris,
+            leaf_out,
+            uris,
             "Out-of-scope leaf must not leak in via its anchor projection",
         )
 
@@ -3950,7 +4139,9 @@ class TestScopeFilterAppliesToDerivedSurfaces(unittest.TestCase):
         leaf_b = "opencortex://testteam/alice/memory/events/leaf_session_b"
         fp_b = f"{leaf_b}/fact_points/fpsb001"
 
-        self._insert_leaf(leaf_b, "leaf in session B", unrelated_vec, session_id="sess_B")
+        self._insert_leaf(
+            leaf_b, "leaf in session B", unrelated_vec, session_id="sess_B"
+        )
         self._insert_fact_point(
             fp_b, leaf_b, "Alice moved to Hangzhou", query_vec, session_id="sess_B"
         )
@@ -3958,7 +4149,10 @@ class TestScopeFilterAppliesToDerivedSurfaces(unittest.TestCase):
         plan, probe = self._build_plan_and_probe(
             scope_level=ScopeLevelImport.SESSION_ONLY,
             starting_points=[
-                {"uri": "opencortex://testteam/alice/memory/events/sp_a", "session_id": "sess_A"},
+                {
+                    "uri": "opencortex://testteam/alice/memory/events/sp_a",
+                    "session_id": "sess_A",
+                },
             ],
         )
         result = self._run(
@@ -3974,7 +4168,8 @@ class TestScopeFilterAppliesToDerivedSurfaces(unittest.TestCase):
         )
         uris = [mc.uri for mc in result.matched_contexts]
         self.assertNotIn(
-            leaf_b, uris,
+            leaf_b,
+            uris,
             "Session-B leaf must not leak into session-A query via its fp",
         )
 
@@ -4023,7 +4218,8 @@ class TestScopeFilterAppliesToDerivedSurfaces(unittest.TestCase):
         )
         uris = [mc.uri for mc in result.matched_contexts]
         self.assertNotIn(
-            leaf_y, uris,
+            leaf_y,
+            uris,
             "Doc-Y leaf must not leak into doc-X-scoped query via its fp",
         )
 
@@ -4047,7 +4243,11 @@ class TestScopeFilterAppliesToDerivedSurfaces(unittest.TestCase):
 
         self._insert_leaf(leaf_uri, "global leaf", unrelated_vec, session_id="sess_any")
         self._insert_fact_point(
-            fp_uri, leaf_uri, "Alice moved to Hangzhou", query_vec, session_id="sess_any"
+            fp_uri,
+            leaf_uri,
+            "Alice moved to Hangzhou",
+            query_vec,
+            session_id="sess_any",
         )
 
         plan, probe = self._build_plan_and_probe(
@@ -4067,7 +4267,8 @@ class TestScopeFilterAppliesToDerivedSurfaces(unittest.TestCase):
         )
         uris = [mc.uri for mc in result.matched_contexts]
         self.assertIn(
-            leaf_uri, uris,
+            leaf_uri,
+            uris,
             "GLOBAL scope must still allow fp projection to surface its leaf",
         )
 
@@ -4090,7 +4291,9 @@ class TestScopeFilterAppliesToDerivedSurfaces(unittest.TestCase):
         leaf_in = f"{container_a}/leaf_cs_in"
         fp_in = f"{leaf_in}/fact_points/fpin001"
 
-        self._insert_leaf(leaf_in, "in-scope leaf", unrelated_vec, parent_uri=container_a)
+        self._insert_leaf(
+            leaf_in, "in-scope leaf", unrelated_vec, parent_uri=container_a
+        )
         self._insert_fact_point(
             fp_in, leaf_in, "Alice moved to Hangzhou", query_vec, parent_uri=container_a
         )
@@ -4112,7 +4315,8 @@ class TestScopeFilterAppliesToDerivedSurfaces(unittest.TestCase):
         )
         uris = [mc.uri for mc in result.matched_contexts]
         self.assertIn(
-            leaf_in, uris,
+            leaf_in,
+            uris,
             "In-scope fp must still surface its leaf when parent_uri matches",
         )
 

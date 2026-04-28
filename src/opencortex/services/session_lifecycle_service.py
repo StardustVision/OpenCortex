@@ -15,6 +15,10 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from uuid import uuid4
 
 from opencortex.cognition.state_types import OwnerType
+from opencortex.context.benchmark_ingest_service import (
+    BenchmarkConversationIngestService,
+)
+from opencortex.context.session_records import SessionRecordsRepository
 from opencortex.http.request_context import (
     get_effective_identity,
     get_effective_project_id,
@@ -35,6 +39,12 @@ class SessionLifecycleService:
 
     def __init__(self, orchestrator: "MemoryOrchestrator") -> None:
         self._orch = orchestrator
+        self._benchmark_ingest_service_instance: Optional[
+            BenchmarkConversationIngestService
+        ] = None
+        self._benchmark_session_records_instance: Optional[SessionRecordsRepository] = (
+            None
+        )
 
     @property
     def _config(self) -> Any:
@@ -81,6 +91,30 @@ class SessionLifecycleService:
 
     def _get_collection(self) -> str:
         return self._orch._get_collection()
+
+    @property
+    def _benchmark_session_records(self) -> SessionRecordsRepository:
+        inst = self._benchmark_session_records_instance
+        if inst is None:
+            inst = SessionRecordsRepository(
+                storage=self._storage,
+                collection_resolver=self._get_collection,
+            )
+            self._benchmark_session_records_instance = inst
+        return inst
+
+    @property
+    def _benchmark_ingest_service(self) -> BenchmarkConversationIngestService:
+        inst = self._benchmark_ingest_service_instance
+        if inst is None:
+            if not self._orch._context_manager:
+                raise RuntimeError("ContextManager not initialized")
+            inst = BenchmarkConversationIngestService(
+                manager=self._orch._context_manager,
+                repo=self._benchmark_session_records,
+            )
+            self._benchmark_ingest_service_instance = inst
+        return inst
 
     async def _write_immediate(
         self,
@@ -458,8 +492,6 @@ class SessionLifecycleService:
     ) -> Dict[str, Any]:
         """Public facade for benchmark-only offline conversation ingest."""
         self._ensure_init()
-        if not self._orch._context_manager:
-            raise RuntimeError("ContextManager not initialized")
         if enforce_admin:
             from opencortex.http.request_context import is_admin
 
@@ -469,7 +501,7 @@ class SessionLifecycleService:
                     "(set request role contextvar to 'admin' or pass "
                     "enforce_admin=False for trusted in-process callers)"
                 )
-        return await self._orch._context_manager.benchmark_ingest_conversation(
+        return await self._benchmark_ingest_service.ingest(
             session_id=session_id,
             tenant_id=tenant_id,
             user_id=user_id,

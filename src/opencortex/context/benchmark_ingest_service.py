@@ -1,14 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Benchmark conversation ingest service.
 
-REVIEW §25 Phase 3 — extracts the orchestration body of
-``ContextManager.benchmark_ingest_conversation`` (~390 lines, 6
-responsibilities) into a dedicated service so each responsibility lives
-on its own private method. ``ContextManager`` retains the helpers the
-service borrows (source persist, recomposition entries build,
-recompose, summary generate, hydrate, export, evidence URI build,
-session lifecycle dict mutation) — moving those wholesale is a
-follow-up.
+Owns the benchmark-only offline conversation ingest flow. The service is
+constructed by the public session lifecycle facade, not by ``ContextManager``;
+``ContextManager`` remains a collaborator only for shared conversation source
+and recomposition primitives used by both benchmark and production lifecycle
+paths.
 
 The six responsibilities, in order:
 
@@ -31,11 +28,6 @@ The six responsibilities, in order:
    service class because it shares the cleanup pattern + run_complete
    marker logic.
 
-The cleanup tracker (``_BenchmarkRunCleanup``) and
-``RecompositionError`` continue to live in ``context/manager.py`` —
-moving them is a separate cosmetic follow-up. The service imports
-both.
-
 References:
 - §25.1 verification gate: behavior golden test (response byte-equal
   to legacy method for the same input).
@@ -50,24 +42,63 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from dataclasses import dataclass
+from dataclasses import field as dc_field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
+from opencortex.context.recomposition_types import RecompositionEntry
+from opencortex.context.session_records import SessionRecordOverflowError
+from opencortex.parse.base import estimate_tokens
+
 if TYPE_CHECKING:
-    from opencortex.context.manager import ContextManager, _BenchmarkRunCleanup
+    from opencortex.context.manager import ContextManager
     from opencortex.context.session_records import SessionRecordsRepository
 
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class BenchmarkRunCleanup:
+    """Tracks URIs created during one benchmark ingest run for compensation."""
+
+    source_uri: Optional[str] = None
+    merged_uris: List[str] = dc_field(default_factory=list)
+    directory_uris: List[str] = dc_field(default_factory=list)
+    summary_uri: Optional[str] = None
+
+    async def compensate(self, orchestrator: Any) -> None:
+        """Best-effort rollback of every registered URI."""
+        for uri in [self.summary_uri] if self.summary_uri else []:
+            await self._safe_remove(orchestrator, uri)
+        for uri in reversed(self.directory_uris):
+            await self._safe_remove(orchestrator, uri)
+        for uri in reversed(self.merged_uris):
+            await self._safe_remove(orchestrator, uri)
+        # source_uri is intentionally not removed. The deterministic
+        # transcript source lets same-hash retries detect torn runs.
+
+    @staticmethod
+    async def _safe_remove(orchestrator: Any, uri: Optional[str]) -> None:
+        """Remove a URI, logging and swallowing exceptions."""
+        if not uri:
+            return
+        try:
+            await orchestrator.remove(uri)
+        except Exception as exc:  # pragma: no cover - defensive log path
+            logger.warning(
+                "benchmark_ingest cleanup failed for %s: %s",
+                uri,
+                exc,
+                exc_info=True,
+            )
+
+
 class BenchmarkConversationIngestService:
     """Orchestrates the benchmark offline conversation ingest flow.
 
-    Constructed once per ``ContextManager`` (manager owns the
-    instance and the cleanup tracker / shared semaphores the service
-    borrows). The service holds a reference to the manager and to the
-    session records repository — those are the only collaborators it
-    needs to thread together; everything else lives on one of those
-    two and is reached via dot-access.
+    The service owns benchmark-only helper behavior. It still uses the
+    context manager as a collaborator for shared source persistence,
+    recomposition, summary generation, and session locking.
     """
 
     def __init__(
@@ -235,9 +266,7 @@ class BenchmarkConversationIngestService:
         # ingest crashed before marking itself done — treat as cold
         # ingest after purging the stale records.
         source_record = await manager._orchestrator._get_record_by_uri(source_uri)
-        source_meta = (
-            dict(source_record.get("meta") or {}) if source_record else {}
-        )
+        source_meta = dict(source_record.get("meta") or {}) if source_record else {}
         run_complete = bool(source_meta.get("run_complete"))
 
         if not run_complete:
@@ -248,7 +277,7 @@ class BenchmarkConversationIngestService:
                 session_id,
                 source_uri,
             )
-            await manager._purge_torn_benchmark_run(
+            await self._purge_torn_benchmark_run(
                 session_id=session_id,
                 tenant_id=tenant_id,
                 user_id=user_id,
@@ -285,9 +314,7 @@ class BenchmarkConversationIngestService:
                 exc_info=True,
             )
             existing_summary = None
-        summary_uri_for_response = (
-            existing_summary_uri if existing_summary else None
-        )
+        summary_uri_for_response = existing_summary_uri if existing_summary else None
 
         logger.info(
             "benchmark_ingest_conversation: idempotent hit "
@@ -297,14 +324,14 @@ class BenchmarkConversationIngestService:
             len(existing_records),
             "present" if existing_summary else "absent",
         )
-        hydrated = await manager._hydrate_record_contents(existing_records)
+        hydrated = await self._hydrate_record_contents(existing_records)
         return {
             "status": "ok",
             "session_id": session_id,
             "source_uri": source_uri,
             "summary_uri": summary_uri_for_response,
             "records": [
-                manager._export_memory_record(
+                self._export_memory_record(
                     record,
                     hydrated_content=hydrated.get(
                         str(record.get("uri", "") or ""),
@@ -314,6 +341,291 @@ class BenchmarkConversationIngestService:
                 for record in existing_records
             ],
         }
+
+    async def _mark_source_run_complete(self, source_uri: str) -> None:
+        """Set ``meta.run_complete=True`` on a benchmark source record."""
+        if not source_uri:
+            return
+        orchestrator = self._manager._orchestrator
+        try:
+            records = await orchestrator._storage.filter(
+                orchestrator._get_collection(),
+                {"op": "must", "field": "uri", "conds": [source_uri]},
+                limit=1,
+            )
+            if not records:
+                return
+            record = records[0]
+            record_id = str(record.get("id", "") or "")
+            if not record_id:
+                return
+            existing_meta = dict(record.get("meta") or {})
+            existing_meta["run_complete"] = True
+            await orchestrator._storage.update(
+                orchestrator._get_collection(),
+                record_id,
+                {"meta": existing_meta},
+            )
+        except Exception as exc:  # pragma: no cover - defensive log path
+            logger.warning(
+                "benchmark_ingest: failed to mark source %s run_complete: %s",
+                source_uri,
+                exc,
+                exc_info=True,
+            )
+
+    async def _purge_torn_benchmark_run(
+        self,
+        *,
+        session_id: str,
+        tenant_id: str,
+        user_id: str,
+        source_uri: str,
+        merged_records: List[Dict[str, Any]],
+    ) -> None:
+        """Drop stale records left by a prior failed benchmark ingest run."""
+        merged_uris = [
+            str(rec.get("uri", "") or "").strip()
+            for rec in merged_records
+            if rec.get("uri")
+        ]
+        try:
+            directory_records = await self._repo.load_directories(
+                session_id=session_id,
+                source_uri=source_uri,
+                tenant_id=tenant_id,
+                user_id=user_id,
+            )
+        except SessionRecordOverflowError:
+            logger.error(
+                "benchmark_ingest: torn-run purge aborted — directory "
+                "query exceeded safety cap sid=%s source=%s. Directory "
+                "records from the failed prior run remain in storage; "
+                "rotate session_id or page manually before re-ingesting.",
+                session_id,
+                source_uri,
+            )
+            raise
+        except Exception:  # pragma: no cover - defensive
+            directory_records = []
+        directory_uris = [
+            str(rec.get("uri", "") or "").strip()
+            for rec in directory_records
+            if rec.get("uri")
+        ]
+        summary_uri = self._manager._session_summary_uri(tenant_id, user_id, session_id)
+
+        all_uris = [u for u in (merged_uris + directory_uris + [summary_uri]) if u]
+        if not all_uris:
+            return
+        logger.info(
+            "benchmark_ingest: purging torn prior run sid=%s source=%s "
+            "merged=%d directories=%d summary=%s",
+            session_id,
+            source_uri,
+            len(merged_uris),
+            len(directory_uris),
+            "present" if summary_uri else "absent",
+        )
+        with contextlib.suppress(Exception):
+            await self._manager._purge_records_and_fs_subtree(all_uris)
+
+    @classmethod
+    def _benchmark_segment_meta(
+        cls,
+        messages: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Aggregate segment-level anchors for offline benchmark leaves."""
+        entities: List[str] = []
+        topics: List[str] = []
+        time_refs: List[str] = []
+        event_date = ""
+        tool_calls: List[Dict[str, Any]] = []
+        benchmark_meta: Dict[str, Any] = {}
+
+        for message in messages:
+            meta = dict(message.get("meta") or {})
+            for key, value in meta.items():
+                if key.startswith("lme_") and value not in (None, ""):
+                    if key not in benchmark_meta:
+                        benchmark_meta[key] = value
+                    elif benchmark_meta[key] != value:
+                        benchmark_meta[key] = cls._merge_unique_strings(
+                            benchmark_meta[key],
+                            value,
+                        )
+            entities = cls._merge_unique_strings(entities, meta.get("entities"))
+            topics = cls._merge_unique_strings(topics, meta.get("topics"))
+            time_refs = cls._merge_unique_strings(
+                time_refs,
+                meta.get("time_refs"),
+                meta.get("event_date"),
+            )
+            if not event_date:
+                event_date = str(meta.get("event_date") or "").strip()
+            for call in meta.get("tool_calls", []) or []:
+                if isinstance(call, dict):
+                    tool_calls.append(call)
+
+        aggregated: Dict[str, Any] = {}
+        if entities:
+            aggregated["entities"] = entities
+        if topics:
+            aggregated["topics"] = topics
+        if time_refs:
+            aggregated["time_refs"] = time_refs
+        if event_date:
+            aggregated["event_date"] = event_date
+        if tool_calls:
+            aggregated["tool_calls"] = tool_calls
+        aggregated.update(benchmark_meta)
+        return aggregated
+
+    @staticmethod
+    def _merge_unique_strings(*groups: Any) -> List[str]:
+        """Return a stable ordered union of non-empty string values."""
+        from opencortex.context.recomposition_engine import (
+            _merge_unique_strings as _impl,
+        )
+
+        return _impl(*groups)
+
+    @staticmethod
+    def _export_memory_record(
+        record: Dict[str, Any],
+        *,
+        hydrated_content: str = "",
+    ) -> Dict[str, Any]:
+        """Return one adapter-friendly memory payload from a stored record."""
+        meta = dict(record.get("meta") or {})
+        content = hydrated_content or str(record.get("content", "") or "")
+        return {
+            "uri": str(record.get("uri", "") or ""),
+            "abstract": str(record.get("abstract", "") or ""),
+            "overview": str(record.get("overview", "") or ""),
+            "content": content,
+            "meta": meta,
+            "abstract_json": record.get("abstract_json", {}),
+            "session_id": str(record.get("session_id", "") or ""),
+            "speaker": str(record.get("speaker", "") or ""),
+            "event_date": record.get("event_date", ""),
+            "msg_range": meta.get("msg_range"),
+            "recomposition_stage": meta.get("recomposition_stage"),
+            "source_uri": meta.get("source_uri"),
+        }
+
+    async def _hydrate_record_contents(
+        self,
+        records: List[Dict[str, Any]],
+        overrides: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, str]:
+        """Return URI -> L2 content for a record set."""
+        overrides = overrides or {}
+        uris = [
+            str(record.get("uri", "") or "").strip()
+            for record in records
+            if record.get("uri")
+        ]
+        if not uris:
+            return {}
+
+        result: Dict[str, str] = {
+            uri: overrides[uri] for uri in uris if uri in overrides
+        }
+        missing = [uri for uri in uris if uri not in overrides]
+        if not missing:
+            return result
+
+        fs = getattr(self._manager._orchestrator, "_fs", None)
+        if fs is None:
+            for uri in missing:
+                result[uri] = ""
+            return result
+
+        async def _read_one(uri: str) -> Tuple[str, str]:
+            """Read L2 content for a single URI, returning (uri, content)."""
+            try:
+                return uri, await fs.read_file(f"{uri}/content.md")
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "benchmark_ingest content hydration failed for %s: %s",
+                    uri,
+                    exc,
+                )
+                return uri, ""
+
+        fs_results = await asyncio.gather(*[_read_one(u) for u in missing])
+        result.update(dict(fs_results))
+        return result
+
+    def _benchmark_recomposition_entries(
+        self,
+        normalized_segments: List[List[Dict[str, Any]]],
+    ) -> List[RecompositionEntry]:
+        """Build message-level entries for benchmark offline chunking."""
+        entries: List[RecompositionEntry] = []
+        msg_index = 0
+        for segment_index, segment in enumerate(normalized_segments):
+            segment_meta = self._benchmark_segment_meta(segment)
+            for message in segment:
+                meta = {
+                    **dict(message.get("meta") or {}),
+                    **segment_meta,
+                }
+                rendered = self._manager._decorate_message_text(
+                    str(message.get("content", "") or ""),
+                    meta,
+                )
+                if not rendered:
+                    continue
+                record = {
+                    "uri": "",
+                    "abstract": rendered,
+                    "content": rendered,
+                    "overview": "",
+                    "meta": {
+                        **meta,
+                        "msg_range": [msg_index, msg_index],
+                    },
+                    "keywords": ", ".join(
+                        str(topic)
+                        for topic in self._merge_unique_strings(meta.get("topics"))
+                    ),
+                    "entities": self._merge_unique_strings(meta.get("entities")),
+                }
+                entries.append(
+                    RecompositionEntry(
+                        text=rendered,
+                        uri="",
+                        msg_start=msg_index,
+                        msg_end=msg_index,
+                        token_count=max(estimate_tokens(rendered), 1),
+                        anchor_terms=self._manager._segment_anchor_terms(record),
+                        time_refs=self._manager._segment_time_refs(record),
+                        source_record=record,
+                        immediate_uris=[],
+                        superseded_merged_uris=[],
+                        source_segment_index=segment_index,
+                    )
+                )
+                msg_index += 1
+        return entries
+
+    @staticmethod
+    def _benchmark_evidence_uri(
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+        segment_index: int,
+        msg_range: List[int],
+    ) -> str:
+        """Return a stable benchmark evidence URI for one direct segment."""
+        tenant = tenant_id or "public"
+        user = user_id or "default"
+        return (
+            f"opencortex://{tenant}/{user}/memory/events/{session_id}/"
+            f"benchmark_evidence_{segment_index}_{msg_range[0]}_{msg_range[1]}"
+        )
 
     # =========================================================================
     # Step 3 — merged_recompose ingest path
@@ -330,13 +642,8 @@ class BenchmarkConversationIngestService:
         include_session_summary: bool,
     ) -> Dict[str, Any]:
         """Cold-ingest path for ``ingest_shape="merged_recompose"``."""
-        from opencortex.context.manager import (  # avoid circular import
-            RecompositionError,
-            _BenchmarkRunCleanup,
-        )
-
         manager = self._manager
-        cleanup = _BenchmarkRunCleanup(source_uri=source_uri)
+        cleanup = BenchmarkRunCleanup(source_uri=source_uri)
 
         try:
             merged_content_by_uri = await self._write_merged_leaves(
@@ -379,16 +686,15 @@ class BenchmarkConversationIngestService:
                 "sid=%s — running compensation",
                 session_id,
             )
-            await cleanup.compensate(manager)
+            await cleanup.compensate(manager._orchestrator)
             raise
         except Exception:
             logger.warning(
-                "benchmark_ingest_conversation failed sid=%s — "
-                "running compensation",
+                "benchmark_ingest_conversation failed sid=%s — running compensation",
                 session_id,
                 exc_info=True,
             )
-            await cleanup.compensate(manager)
+            await cleanup.compensate(manager._orchestrator)
             raise
 
     # =========================================================================
@@ -403,7 +709,7 @@ class BenchmarkConversationIngestService:
         user_id: str,
         source_uri: str,
         normalized_segments: List[List[Dict[str, Any]]],
-        cleanup: "_BenchmarkRunCleanup",
+        cleanup: BenchmarkRunCleanup,
     ) -> Dict[str, str]:
         """Per-segment merged-leaf writes + bounded-concurrency derive.
 
@@ -422,7 +728,7 @@ class BenchmarkConversationIngestService:
             async with sem:
                 await manager._orchestrator._complete_deferred_derive(**dkw)
 
-        entries = manager._benchmark_recomposition_entries(normalized_segments)
+        entries = self._benchmark_recomposition_entries(normalized_segments)
         offline_segments = manager._build_recomposition_segments(entries)
 
         for segment in offline_segments:
@@ -452,9 +758,7 @@ class BenchmarkConversationIngestService:
                 "tool_calls": all_tool_calls if all_tool_calls else [],
             }
             merged_context = await manager._orchestrator.add(
-                uri=manager._merged_leaf_uri(
-                    tenant_id, user_id, session_id, msg_range
-                ),
+                uri=manager._merged_leaf_uri(tenant_id, user_id, session_id, msg_range),
                 abstract="",
                 content=combined,
                 category="events",
@@ -512,7 +816,7 @@ class BenchmarkConversationIngestService:
         user_id: str,
         source_uri: str,
         include_session_summary: bool,
-        cleanup: "_BenchmarkRunCleanup",
+        cleanup: BenchmarkRunCleanup,
     ) -> None:
         """Run full-session recomposition; optionally generate summary.
 
@@ -560,11 +864,10 @@ class BenchmarkConversationIngestService:
         tenant_id: str,
         user_id: str,
         source_uri: str,
-        cleanup: "_BenchmarkRunCleanup",
+        cleanup: BenchmarkRunCleanup,
         merged_content_by_uri: Dict[str, str],
     ) -> Dict[str, Any]:
         """Load final merged records, hydrate content, mark run_complete."""
-        manager = self._manager
         merged_records = await self._repo.load_merged(
             session_id=session_id,
             source_uri=source_uri,
@@ -574,20 +877,20 @@ class BenchmarkConversationIngestService:
         # Single-call hydration: in-memory map covers our own writes,
         # FS read is the fallback for records that came back from
         # ``load_merged`` outside our write set.
-        hydrated = await manager._hydrate_record_contents(
+        hydrated = await self._hydrate_record_contents(
             merged_records, overrides=merged_content_by_uri
         )
         # Mark the source as run_complete BEFORE returning so an
         # immediate retry sees the marker and short-circuits via the
         # idempotent path (REVIEW F5 / ADV-007).
-        await manager._mark_source_run_complete(source_uri)
+        await self._mark_source_run_complete(source_uri)
         return {
             "status": "ok",
             "session_id": session_id,
             "source_uri": source_uri,
             "summary_uri": cleanup.summary_uri,
             "records": [
-                manager._export_memory_record(
+                self._export_memory_record(
                     record,
                     hydrated_content=hydrated.get(
                         str(record.get("uri", "") or ""),
@@ -636,16 +939,14 @@ class BenchmarkConversationIngestService:
                     if not content:
                         continue
                     rendered = f"{role}: {content}" if role else content
-                    segment_texts.append(
-                        manager._decorate_message_text(rendered, meta)
-                    )
+                    segment_texts.append(manager._decorate_message_text(rendered, meta))
                     next_msg_index += 1
 
                 if not segment_texts:
                     continue
 
                 msg_range = [segment_start, next_msg_index - 1]
-                segment_meta = manager._benchmark_segment_meta(segment)
+                segment_meta = self._benchmark_segment_meta(segment)
                 meta = {
                     **segment_meta,
                     "layer": "benchmark_evidence",
@@ -655,7 +956,7 @@ class BenchmarkConversationIngestService:
                     "session_id": session_id,
                     "recomposition_stage": "benchmark_direct_evidence",
                 }
-                evidence_uri = manager._benchmark_evidence_uri(
+                evidence_uri = self._benchmark_evidence_uri(
                     tenant_id, user_id, session_id, segment_index, msg_range
                 )
                 combined = "\n".join(segment_texts)
@@ -682,20 +983,22 @@ class BenchmarkConversationIngestService:
                 # ``combined``, and abstract/overview are empty until
                 # the deferred derive runs (which this path never
                 # awaits). Construct directly from local state.
-                records.append({
-                    "uri": stored.uri,
-                    "abstract": "",
-                    "overview": "",
-                    "content": combined,
-                    "meta": dict(meta),
-                    "session_id": session_id,
-                    "speaker": "",
-                    "event_date": meta.get("event_date", ""),
-                    "abstract_json": {},
-                })
+                records.append(
+                    {
+                        "uri": stored.uri,
+                        "abstract": "",
+                        "overview": "",
+                        "content": combined,
+                        "meta": dict(meta),
+                        "session_id": session_id,
+                        "speaker": "",
+                        "event_date": meta.get("event_date", ""),
+                        "abstract_json": {},
+                    }
+                )
 
-            await manager._mark_source_run_complete(source_uri or "")
-            hydrated = await manager._hydrate_record_contents(
+            await self._mark_source_run_complete(source_uri or "")
+            hydrated = await self._hydrate_record_contents(
                 records, overrides=evidence_content_by_uri
             )
             return {
@@ -705,7 +1008,7 @@ class BenchmarkConversationIngestService:
                 "summary_uri": None,
                 "ingest_shape": "direct_evidence",
                 "records": [
-                    manager._export_memory_record(
+                    self._export_memory_record(
                         record,
                         hydrated_content=hydrated.get(
                             str(record.get("uri", "") or ""),

@@ -31,13 +31,14 @@ from __future__ import annotations
 
 import asyncio
 import unittest
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from opencortex.context.benchmark_ingest_service import (
     BenchmarkConversationIngestService,
+    BenchmarkRunCleanup,
 )
-from opencortex.context.manager import RecompositionError, _BenchmarkRunCleanup
+from opencortex.context.manager import RecompositionError
 
 
 @dataclass
@@ -120,46 +121,12 @@ class _FakeManager:
             f"{session_id}-{msg_range[0]:06d}-{msg_range[1]:06d}"
         )
 
-    @staticmethod
-    def _benchmark_evidence_uri(
-        tenant_id: str,
-        user_id: str,
-        session_id: str,
-        segment_index: int,
-        msg_range: List[int],
-    ) -> str:
-        return (
-            f"opencortex://{tenant_id}/{user_id}/memory/events/{session_id}/"
-            f"benchmark_evidence_{segment_index}_{msg_range[0]}_{msg_range[1]}"
-        )
-
-    # --- recomposition entry builders ---
-    def _benchmark_recomposition_entries(
-        self,
-        normalized_segments: List[List[Dict[str, Any]]],
-    ) -> List[Dict[str, Any]]:
-        # One entry per segment with deterministic msg_range.
-        next_index = 0
-        entries: List[Dict[str, Any]] = []
-        for segment in normalized_segments:
-            start = next_index
-            for _ in segment:
-                next_index += 1
-            entries.append({
-                "segment": segment,
-                "msg_range": [start, next_index - 1],
-            })
-        return entries
-
-    def _build_recomposition_segments(
-        self,
-        entries: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+    def _build_recomposition_segments(self, entries: List[Any]) -> List[Dict[str, Any]]:
         return [
             {
-                "messages": [str(m.get("content", "")) for m in entry["segment"]],
-                "msg_range": entry["msg_range"],
-                "source_records": [],
+                "messages": [entry["text"]],
+                "msg_range": [entry["msg_start"], entry["msg_end"]],
+                "source_records": [entry["source_record"]],
             }
             for entry in entries
         ]
@@ -173,44 +140,12 @@ class _FakeManager:
     def _decorate_message_text(text: str, _meta: Dict[str, Any]) -> str:
         return text
 
-    @staticmethod
-    def _benchmark_segment_meta(_segment: List[Dict[str, Any]]) -> Dict[str, Any]:
-        return {}
-
     # --- recompose + summary stubs (override per test) ---
     async def _run_full_session_recomposition(self, **_kwargs: Any) -> List[str]:
         return []
 
     async def _generate_session_summary(self, **_kwargs: Any) -> Optional[str]:
         return None
-
-    async def _mark_source_run_complete(self, _source_uri: str) -> None:
-        pass
-
-    # --- response building stubs ---
-    async def _hydrate_record_contents(
-        self,
-        records: List[Dict[str, Any]],
-        overrides: Optional[Dict[str, str]] = None,
-    ) -> Dict[str, str]:
-        merged = dict(overrides or {})
-        for record in records:
-            uri = str(record.get("uri", "") or "")
-            if uri and uri not in merged:
-                merged[uri] = str(record.get("content", "") or "")
-        return merged
-
-    @staticmethod
-    def _export_memory_record(
-        record: Dict[str, Any],
-        *,
-        hydrated_content: str = "",
-    ) -> Dict[str, Any]:
-        return {
-            "uri": record.get("uri", ""),
-            "content": hydrated_content,
-            "meta": dict(record.get("meta") or {}),
-        }
 
     def _session_summary_uri(
         self, tenant_id: str, user_id: str, session_id: str
@@ -219,6 +154,14 @@ class _FakeManager:
 
     async def _purge_records_and_fs_subtree(self, _uris: List[str]) -> None:
         pass
+
+    @staticmethod
+    def _segment_anchor_terms(_record: Dict[str, Any]) -> set:
+        return set()
+
+    @staticmethod
+    def _segment_time_refs(_record: Dict[str, Any]) -> set:
+        return set()
 
 
 class _FakeRepo:
@@ -237,6 +180,9 @@ class _FakeRepo:
             raise self.load_summary_should_raise
         return self.summary_record
 
+    async def load_directories(self, **_kwargs: Any) -> List[Dict[str, Any]]:
+        return []
+
 
 class TestNormalizeSegments(unittest.TestCase):
     """Pure static method — no service construction needed."""
@@ -251,8 +197,8 @@ class TestNormalizeSegments(unittest.TestCase):
                 {"role": "assistant", "content": "ok"},
             ]
         ]
-        normalized, transcript = (
-            BenchmarkConversationIngestService._normalize_segments(segments)
+        normalized, transcript = BenchmarkConversationIngestService._normalize_segments(
+            segments
         )
         # Whitespace-only content is also stripped out.
         self.assertEqual(len(normalized), 1)
@@ -266,8 +212,8 @@ class TestNormalizeSegments(unittest.TestCase):
             [{"role": "", "content": ""}, {"role": "user", "content": ""}],
             [{"role": "user", "content": "kept"}],
         ]
-        normalized, transcript = (
-            BenchmarkConversationIngestService._normalize_segments(segments)
+        normalized, transcript = BenchmarkConversationIngestService._normalize_segments(
+            segments
         )
         self.assertEqual(len(normalized), 1)
         self.assertEqual(normalized[0][0]["content"], "kept")
@@ -276,9 +222,7 @@ class TestNormalizeSegments(unittest.TestCase):
     def test_returns_meta_dict_copy(self):
         meta = {"event_date": "2026-04-25"}
         segments = [[{"role": "user", "content": "hi", "meta": meta}]]
-        normalized, _ = (
-            BenchmarkConversationIngestService._normalize_segments(segments)
-        )
+        normalized, _ = BenchmarkConversationIngestService._normalize_segments(segments)
         self.assertEqual(normalized[0][0]["meta"], meta)
         # Mutating the input meta does not affect the normalized copy.
         meta["event_date"] = "MUTATED"
@@ -349,9 +293,7 @@ class TestIngestDispatch(unittest.TestCase):
         async def check():
             service, manager, repo = self._service()
             # Seed: prior records exist AND source is run_complete.
-            source_uri = (
-                "opencortex://t/u/session/conversations/s/source"
-            )
+            source_uri = "opencortex://t/u/session/conversations/s/source"
             # Prime the orchestrator with the source record marked complete.
             manager._orchestrator._records[source_uri] = {
                 "uri": source_uri,
@@ -407,11 +349,9 @@ class TestRecompositionErrorDrain(unittest.TestCase):
                 )
 
             manager._run_full_session_recomposition = _failing_recompose
-            service = BenchmarkConversationIngestService(
-                manager=manager, repo=repo
-            )
+            service = BenchmarkConversationIngestService(manager=manager, repo=repo)
 
-            cleanup = _BenchmarkRunCleanup(source_uri="opencortex://t/u/src")
+            cleanup = BenchmarkRunCleanup(source_uri="opencortex://t/u/src")
             with self.assertRaises(RuntimeError) as ctx:
                 await service._recompose_and_summarize(
                     session_id="s",
@@ -462,10 +402,8 @@ class TestSiblingCancelOnFirstDeriveFailure(unittest.TestCase):
 
             manager._orchestrator._complete_deferred_derive = _selective_derive
 
-            service = BenchmarkConversationIngestService(
-                manager=manager, repo=repo
-            )
-            cleanup = _BenchmarkRunCleanup(source_uri="opencortex://t/u/src")
+            service = BenchmarkConversationIngestService(manager=manager, repo=repo)
+            cleanup = BenchmarkRunCleanup(source_uri="opencortex://t/u/src")
 
             # Two-segment payload so we get one failing leaf and one sibling.
             normalized = [
@@ -518,9 +456,7 @@ class TestDirectEvidenceNoExtraFetch(unittest.TestCase):
 
             manager._orchestrator._get_record_by_uri = _spy
 
-            service = BenchmarkConversationIngestService(
-                manager=manager, repo=repo
-            )
+            service = BenchmarkConversationIngestService(manager=manager, repo=repo)
             response = await service.ingest(
                 session_id="bench_de",
                 tenant_id="t",
@@ -548,9 +484,7 @@ class TestDirectEvidenceNoExtraFetch(unittest.TestCase):
         async def check():
             manager = _FakeManager()
             repo = _FakeRepo()
-            service = BenchmarkConversationIngestService(
-                manager=manager, repo=repo
-            )
+            service = BenchmarkConversationIngestService(manager=manager, repo=repo)
             response = await service.ingest(
                 session_id="bench_de",
                 tenant_id="t",
@@ -561,13 +495,9 @@ class TestDirectEvidenceNoExtraFetch(unittest.TestCase):
                 ingest_shape="direct_evidence",
             )
             record = response["records"][0]
-            # _FakeManager._export_memory_record forwards (uri, content,
-            # meta) only; the real export_memory_record adds session_id /
-            # speaker / event_date as top-level fields too. The fields
-            # we care about for direct_evidence (msg_range,
-            # recomposition_stage, session_id, source_uri) all live in
-            # meta on the assembled record dict — that's what the real
-            # _export_memory_record reads from. Assert via meta.
+            # The fields we care about for direct_evidence (msg_range,
+            # recomposition_stage, session_id, source_uri) live in meta
+            # on the assembled record dict.
             self.assertEqual(record["meta"]["session_id"], "bench_de")
             self.assertEqual(record["meta"]["msg_range"], [0, 0])
             self.assertEqual(
