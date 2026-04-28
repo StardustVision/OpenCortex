@@ -301,6 +301,11 @@ class TestAutophagySweeperLifecycle(unittest.IsolatedAsyncioTestCase):
                 "_create_default_embedder",
                 return_value=None,
             ),
+            patch(
+                "opencortex.lifecycle.bootstrapper.SubsystemBootstrapper."
+                "_create_default_embedder",
+                return_value=None,
+            ),
             patch.object(
                 MemoryOrchestrator,
                 "_init_alpha",

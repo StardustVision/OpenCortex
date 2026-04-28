@@ -38,15 +38,33 @@ from opencortex.utils.uri import CortexURI
 from tests._helpers import resolve_field
 
 
+def _drain_loop_tasks(loop: asyncio.AbstractEventLoop) -> None:
+    """Drain background tasks scheduled by fire-and-forget test paths."""
+    pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
+    if not pending:
+        return
+    done, still_pending = loop.run_until_complete(asyncio.wait(pending, timeout=1.0))
+    for task in done:
+        if task.cancelled():
+            continue
+        task.exception()
+    for task in still_pending:
+        task.cancel()
+    if still_pending:
+        loop.run_until_complete(asyncio.gather(*still_pending, return_exceptions=True))
+
+
 class TestContextTypeEnum(unittest.TestCase):
     def test_new_context_types_exist(self):
         from opencortex.retrieve.types import ContextType
+
         self.assertEqual(ContextType.CASE.value, "case")
         self.assertEqual(ContextType.PATTERN.value, "pattern")
         self.assertEqual(ContextType.STAGING.value, "staging")
 
     def test_legacy_context_types_unchanged(self):
         from opencortex.retrieve.types import ContextType
+
         self.assertEqual(ContextType.MEMORY.value, "memory")
         self.assertEqual(ContextType.RESOURCE.value, "resource")
         self.assertEqual(ContextType.SKILL.value, "skill")
@@ -189,10 +207,14 @@ class InMemoryStorage(StorageInterface):
 
     # ---- Batch CRUD ----
 
-    async def batch_insert(self, collection: str, data: List[Dict[str, Any]]) -> List[str]:
+    async def batch_insert(
+        self, collection: str, data: List[Dict[str, Any]]
+    ) -> List[str]:
         return [await self.insert(collection, d) for d in data]
 
-    async def batch_upsert(self, collection: str, data: List[Dict[str, Any]]) -> List[str]:
+    async def batch_upsert(
+        self, collection: str, data: List[Dict[str, Any]]
+    ) -> List[str]:
         return [await self.upsert(collection, d) for d in data]
 
     async def batch_delete(self, collection: str, filter: Dict[str, Any]) -> int:
@@ -254,7 +276,7 @@ class InMemoryStorage(StorageInterface):
         if not query_vector and text_query:
             query_lower = text_query.lower()
             scored = []
-            for r in (candidates if isinstance(candidates, list) else list(candidates)):
+            for r in candidates if isinstance(candidates, list) else list(candidates):
                 r = dict(r)
                 abstract = (r.get("abstract") or "").lower()
                 overview = (r.get("overview") or "").lower()
@@ -299,14 +321,18 @@ class InMemoryStorage(StorageInterface):
         output_fields: Optional[List[str]] = None,
     ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
         offset = int(cursor) if cursor else 0
-        records = await self.filter(collection, filter or {}, limit=limit + 1, offset=offset)
+        records = await self.filter(
+            collection, filter or {}, limit=limit + 1, offset=offset
+        )
         if len(records) > limit:
             return records[:limit], str(offset + limit)
         return records, None
 
     # ---- Aggregation ----
 
-    async def count(self, collection: str, filter: Optional[Dict[str, Any]] = None) -> int:
+    async def count(
+        self, collection: str, filter: Optional[Dict[str, Any]] = None
+    ) -> int:
         self._ensure(collection)
         if filter:
             return len(await self.filter(collection, filter, limit=100_000))
@@ -314,7 +340,9 @@ class InMemoryStorage(StorageInterface):
 
     # ---- Index (no-op) ----
 
-    async def create_index(self, collection: str, field: str, index_type: str, **kw) -> bool:
+    async def create_index(
+        self, collection: str, field: str, index_type: str, **kw
+    ) -> bool:
         return True
 
     async def drop_index(self, collection: str, field: str) -> bool:
@@ -427,7 +455,9 @@ class InMemoryStorage(StorageInterface):
 
         return _R()
 
-    async def set_protected(self, collection: str, id: str, protected: bool = True) -> None:
+    async def set_protected(
+        self, collection: str, id: str, protected: bool = True
+    ) -> None:
         self._ensure(collection)
         record = self._records[collection].get(id)
         if record is not None:
@@ -647,12 +677,18 @@ class TestE2EPhase1(unittest.TestCase):
         # Verify filesystem (L0 abstract written)
         abstract_path = os.path.join(
             self.temp_dir,
-            "testteam", "alice", "memories", "preferences",
+            "testteam",
+            "alice",
+            "memories",
+            "preferences",
             ctx.uri.split("/")[-1],
             ".abstract.md",
         )
         self._run(asyncio.sleep(0.05))
-        self.assertTrue(os.path.exists(abstract_path), f"Abstract file should exist at {abstract_path}")
+        self.assertTrue(
+            os.path.exists(abstract_path),
+            f"Abstract file should exist at {abstract_path}",
+        )
         with open(abstract_path, "r") as f:
             self.assertIn("User prefers dark theme in all editors", f.read())
 
@@ -685,7 +721,9 @@ class TestE2EPhase1(unittest.TestCase):
 
         # Add multiple contexts
         self._run(orch.add(abstract="User prefers dark theme", category="preferences"))
-        self._run(orch.add(abstract="User likes Python over Java", category="preferences"))
+        self._run(
+            orch.add(abstract="User likes Python over Java", category="preferences")
+        )
         self._run(orch.add(abstract="Project deadline is March 15", category="events"))
         self._run(
             orch.add(
@@ -736,7 +774,9 @@ class TestE2EPhase1(unittest.TestCase):
         """Feedback sends reward signal and updates activity count."""
         orch = self._init_orch()
 
-        ctx = self._run(orch.add(abstract="Important design decision: use microservices"))
+        ctx = self._run(
+            orch.add(abstract="Important design decision: use microservices")
+        )
 
         # Send positive feedback
         self._run(orch.feedback(ctx.uri, reward=1.0))
@@ -870,7 +910,11 @@ class TestE2EPhase1(unittest.TestCase):
         """Update returns False for non-existent URI."""
         orch = self._init_orch()
 
-        success = self._run(orch.update("opencortex://testteam/alice/memories/nonexistent", abstract="x"))
+        success = self._run(
+            orch.update(
+                "opencortex://testteam/alice/memories/nonexistent", abstract="x"
+            )
+        )
         self.assertFalse(success)
 
     # -----------------------------------------------------------------
@@ -1055,7 +1099,9 @@ class TestE2EPhase1(unittest.TestCase):
             "Team uses PostgreSQL for production",
             "Deploy process: CI/CD via GitHub Actions",
         ]:
-            ctx = self._run(orch.add(abstract=text, category="preferences", dedup=False))
+            ctx = self._run(
+                orch.add(abstract=text, category="preferences", dedup=False)
+            )
             memories.append(ctx)
 
         # Step 2: Add a resource
@@ -1096,7 +1142,9 @@ class TestE2EPhase1(unittest.TestCase):
             self.assertGreaterEqual(decay_result["records_processed"], 0)
 
         # Step 7: Update a memory
-        self._run(orch.update(memories[0].uri, abstract="User STRONGLY prefers dark theme"))
+        self._run(
+            orch.update(memories[0].uri, abstract="User STRONGLY prefers dark theme")
+        )
         records = self._run(
             self.storage.filter(
                 "context",
@@ -1156,7 +1204,9 @@ class TestE2EPhase1(unittest.TestCase):
 
         self._run(orch.add(abstract="User prefers dark theme", category="preferences"))
         self._run(orch.add(abstract="API docs at example.com", context_type="resource"))
-        self._run(orch.add(abstract="Retry pattern for flaky tests", context_type="pattern"))
+        self._run(
+            orch.add(abstract="Retry pattern for flaky tests", context_type="pattern")
+        )
 
         result = self._run(orch.memory_index())
         self.assertIn("index", result)
@@ -1187,6 +1237,7 @@ class TestE2EPhase1(unittest.TestCase):
     def test_26_store_warnings_short_abstract(self):
         """Store with short abstract returns warning."""
         from opencortex.http.server import _check_store_warnings
+
         warnings = _check_store_warnings("hi")
         self.assertEqual(len(warnings), 1)
         self.assertEqual(warnings[0]["key"], "abstract_too_short")
@@ -1194,6 +1245,7 @@ class TestE2EPhase1(unittest.TestCase):
     def test_27_store_warnings_code_snippet(self):
         """Store with code-heavy abstract returns warning."""
         from opencortex.http.server import _check_store_warnings
+
         code_text = (
             "def foo():\n"
             "    return 42\n"
@@ -1209,7 +1261,10 @@ class TestE2EPhase1(unittest.TestCase):
     def test_28_store_warnings_clean(self):
         """Normal abstract returns no warnings."""
         from opencortex.http.server import _check_store_warnings
-        warnings = _check_store_warnings("User prefers dark theme in all editors and IDEs")
+
+        warnings = _check_store_warnings(
+            "User prefers dark theme in all editors and IDEs"
+        )
         self.assertEqual(len(warnings), 0)
 
     # -----------------------------------------------------------------
@@ -1232,14 +1287,17 @@ class TestAutoUri(unittest.TestCase):
 
     def setUp(self):
         from opencortex.http.request_context import set_request_identity
+
         self._token = set_request_identity("testteam", "alice")
 
     def tearDown(self):
         from opencortex.http.request_context import reset_request_identity
+
         reset_request_identity(self._token)
 
     def _auto_uri(self, context_type, category):
         from opencortex.orchestrator import MemoryOrchestrator
+
         o = MemoryOrchestrator.__new__(MemoryOrchestrator)
         return o._auto_uri(context_type, category)
 
@@ -1291,21 +1349,31 @@ class TestAddScopeFields(unittest.TestCase):
         asyncio.set_event_loop(self.loop)
 
     def tearDown(self):
+        _drain_loop_tasks(self.loop)
         self.loop.close()
 
     def test_add_memory_sets_private_scope(self):
-        from opencortex.http.request_context import set_request_identity, reset_request_identity
+        from opencortex.http.request_context import (
+            set_request_identity,
+            reset_request_identity,
+        )
+
         token = set_request_identity("t1", "u1")
         try:
             storage = InMemoryStorage()
             orch = self._build_orch(storage)
             ctx = self.loop.run_until_complete(
-                orch.add(abstract="test pref", category="preferences", context_type="memory")
+                orch.add(
+                    abstract="test pref", category="preferences", context_type="memory"
+                )
             )
             # Check Qdrant record has scope fields
             records = self.loop.run_until_complete(
-                storage.filter("context",
-                    {"op": "must", "field": "uri", "conds": [ctx.uri]}, limit=1)
+                storage.filter(
+                    "context",
+                    {"op": "must", "field": "uri", "conds": [ctx.uri]},
+                    limit=1,
+                )
             )
             self.assertEqual(records[0].get("scope"), "private")
             self.assertEqual(records[0].get("category"), "preferences")
@@ -1315,7 +1383,11 @@ class TestAddScopeFields(unittest.TestCase):
             reset_request_identity(token)
 
     def test_add_case_sets_shared_scope(self):
-        from opencortex.http.request_context import set_request_identity, reset_request_identity
+        from opencortex.http.request_context import (
+            set_request_identity,
+            reset_request_identity,
+        )
+
         token = set_request_identity("t1", "u1")
         try:
             storage = InMemoryStorage()
@@ -1324,8 +1396,11 @@ class TestAddScopeFields(unittest.TestCase):
                 orch.add(abstract="bug fix", context_type="case")
             )
             records = self.loop.run_until_complete(
-                storage.filter("context",
-                    {"op": "must", "field": "uri", "conds": [ctx.uri]}, limit=1)
+                storage.filter(
+                    "context",
+                    {"op": "must", "field": "uri", "conds": [ctx.uri]},
+                    limit=1,
+                )
             )
             self.assertEqual(records[0].get("scope"), "shared")
             self.assertFalse(records[0].get("mergeable"))
@@ -1336,6 +1411,7 @@ class TestAddScopeFields(unittest.TestCase):
         """Create a minimal orchestrator with the given storage."""
         from opencortex.orchestrator import MemoryOrchestrator
         from opencortex.config import CortexConfig
+
         cfg = CortexConfig(embedding_provider="none")
         orch = MemoryOrchestrator(config=cfg)
         orch._storage = storage
@@ -1348,6 +1424,7 @@ class TestAddScopeFields(unittest.TestCase):
         # Initialize CortexFS for write_context
         from opencortex.storage.cortex_fs import CortexFS
         import tempfile
+
         orch._fs = CortexFS(data_root=tempfile.mkdtemp())
         return orch
 
@@ -1360,11 +1437,16 @@ class TestStagingLifecycle(unittest.TestCase):
         asyncio.set_event_loop(self.loop)
 
     def tearDown(self):
+        _drain_loop_tasks(self.loop)
         self.loop.close()
 
     def test_staging_record_has_ttl(self):
         """Staging records must have ttl_expires_at set."""
-        from opencortex.http.request_context import set_request_identity, reset_request_identity
+        from opencortex.http.request_context import (
+            set_request_identity,
+            reset_request_identity,
+        )
+
         token = set_request_identity("t1", "u1")
         try:
             storage = InMemoryStorage()
@@ -1373,8 +1455,11 @@ class TestStagingLifecycle(unittest.TestCase):
                 orch.add(abstract="temp note", context_type="staging")
             )
             records = self.loop.run_until_complete(
-                storage.filter("context",
-                    {"op": "must", "field": "uri", "conds": [ctx.uri]}, limit=1)
+                storage.filter(
+                    "context",
+                    {"op": "must", "field": "uri", "conds": [ctx.uri]},
+                    limit=1,
+                )
             )
             self.assertTrue(records[0].get("ttl_expires_at"))
             self.assertEqual(records[0].get("context_type"), "staging")
@@ -1383,7 +1468,11 @@ class TestStagingLifecycle(unittest.TestCase):
 
     def test_cleanup_expired_staging(self):
         """cleanup_expired_staging() removes records past their TTL."""
-        from opencortex.http.request_context import set_request_identity, reset_request_identity
+        from opencortex.http.request_context import (
+            set_request_identity,
+            reset_request_identity,
+        )
+
         token = set_request_identity("t1", "u1")
         try:
             storage = InMemoryStorage()
@@ -1394,20 +1483,28 @@ class TestStagingLifecycle(unittest.TestCase):
             )
             # Manually backdate ttl_expires_at to the past
             records = self.loop.run_until_complete(
-                storage.filter("context",
-                    {"op": "must", "field": "uri", "conds": [ctx.uri]}, limit=1)
+                storage.filter(
+                    "context",
+                    {"op": "must", "field": "uri", "conds": [ctx.uri]},
+                    limit=1,
+                )
             )
             rid = records[0]["id"]
             self.loop.run_until_complete(
-                storage.update("context", rid, {"ttl_expires_at": "2020-01-01T00:00:00Z"})
+                storage.update(
+                    "context", rid, {"ttl_expires_at": "2020-01-01T00:00:00Z"}
+                )
             )
             # Run cleanup
             cleaned = self.loop.run_until_complete(orch.cleanup_expired_staging())
             self.assertEqual(cleaned, 1)
             # Verify record is gone
             remaining = self.loop.run_until_complete(
-                storage.filter("context",
-                    {"op": "must", "field": "uri", "conds": [ctx.uri]}, limit=1)
+                storage.filter(
+                    "context",
+                    {"op": "must", "field": "uri", "conds": [ctx.uri]},
+                    limit=1,
+                )
             )
             self.assertEqual(len(remaining), 0)
         finally:
@@ -1415,7 +1512,11 @@ class TestStagingLifecycle(unittest.TestCase):
 
     def test_cleanup_skips_unexpired_staging(self):
         """cleanup_expired_staging() leaves unexpired staging records alone."""
-        from opencortex.http.request_context import set_request_identity, reset_request_identity
+        from opencortex.http.request_context import (
+            set_request_identity,
+            reset_request_identity,
+        )
+
         token = set_request_identity("t1", "u1")
         try:
             storage = InMemoryStorage()
@@ -1428,8 +1529,11 @@ class TestStagingLifecycle(unittest.TestCase):
             self.assertEqual(cleaned, 0)
             # Record should still exist
             records = self.loop.run_until_complete(
-                storage.filter("context",
-                    {"op": "must", "field": "uri", "conds": [ctx.uri]}, limit=1)
+                storage.filter(
+                    "context",
+                    {"op": "must", "field": "uri", "conds": [ctx.uri]},
+                    limit=1,
+                )
             )
             self.assertEqual(len(records), 1)
         finally:
@@ -1440,6 +1544,7 @@ class TestStagingLifecycle(unittest.TestCase):
         from opencortex.config import CortexConfig
         import tempfile
         from opencortex.storage.cortex_fs import CortexFS
+
         cfg = CortexConfig(embedding_provider="none")
         orch = MemoryOrchestrator(config=cfg)
         orch._storage = storage
@@ -1460,45 +1565,60 @@ class TestScopeAwareSearch(unittest.TestCase):
         asyncio.set_event_loop(self.loop)
 
     def tearDown(self):
+        _drain_loop_tasks(self.loop)
         self.loop.close()
 
     def test_search_excludes_staging(self):
         """Staging records should not appear in search results even if they
         would otherwise match the query and live in the same collection."""
-        from opencortex.http.request_context import set_request_identity, reset_request_identity
+        from opencortex.http.request_context import (
+            set_request_identity,
+            reset_request_identity,
+        )
+
         token = set_request_identity("t1", "u1")
         try:
             storage = InMemoryStorage()
             orch = self._build_orch(storage)
             # Add a normal memory
             self.loop.run_until_complete(
-                orch.add(abstract="permanent pref", category="preferences", context_type="memory")
+                orch.add(
+                    abstract="permanent pref",
+                    category="preferences",
+                    context_type="memory",
+                )
             )
             # Inject a staging record directly into storage with context_type=memory URI
             # so it would match the memory search, but with context_type="staging"
             # This simulates a staging record that would slip through without the filter
-            self.loop.run_until_complete(storage.insert("context", {
-                "uri": "opencortex://t1/u1/memories/preferences/fake_staging",
-                "context_type": "staging",
-                "abstract": "staging note that looks like memory",
-                "vector": [0.1] * MockEmbedder.DIMENSION,
-            }))
-            result = self.loop.run_until_complete(
-                orch.search(query="note pref")
+            self.loop.run_until_complete(
+                storage.insert(
+                    "context",
+                    {
+                        "uri": "opencortex://t1/u1/memories/preferences/fake_staging",
+                        "context_type": "staging",
+                        "abstract": "staging note that looks like memory",
+                        "vector": [0.1] * MockEmbedder.DIMENSION,
+                    },
+                )
             )
+            result = self.loop.run_until_complete(orch.search(query="note pref"))
             # Collect all URIs from results
             all_results = []
-            if hasattr(result, 'memories'):
+            if hasattr(result, "memories"):
                 all_results.extend(result.memories)
-            if hasattr(result, 'resources'):
+            if hasattr(result, "resources"):
                 all_results.extend(result.resources)
-            if hasattr(result, 'skills'):
+            if hasattr(result, "skills"):
                 all_results.extend(result.skills)
             # The staging-typed record should be excluded by the must_not filter
             uris = [m.uri for m in all_results]
             for uri in uris:
-                self.assertNotIn("fake_staging", uri,
-                    "Staging records must not appear in search results")
+                self.assertNotIn(
+                    "fake_staging",
+                    uri,
+                    "Staging records must not appear in search results",
+                )
         finally:
             reset_request_identity(token)
 
@@ -1506,6 +1626,7 @@ class TestScopeAwareSearch(unittest.TestCase):
         from opencortex.orchestrator import MemoryOrchestrator
         from opencortex.config import CortexConfig
         from opencortex.intent import MemoryBootstrapProbe
+
         cfg = CortexConfig(embedding_provider="none")
         orch = MemoryOrchestrator(config=cfg)
         orch._storage = storage
@@ -1518,6 +1639,7 @@ class TestScopeAwareSearch(unittest.TestCase):
         # Initialize CortexFS for write_context
         from opencortex.storage.cortex_fs import CortexFS
         import tempfile
+
         orch._fs = CortexFS(data_root=tempfile.mkdtemp())
         orch._memory_probe = MemoryBootstrapProbe(
             storage=storage,
@@ -1545,18 +1667,28 @@ class TestMigrationBackfill(unittest.TestCase):
 
     def test_backfill_infers_scope_from_uri(self):
         from opencortex.migration.v030_path_redesign import infer_scope
+
         self.assertEqual(infer_scope("opencortex://t1/u1/memories/pref/abc"), "private")
         self.assertEqual(infer_scope("opencortex://t1/shared/skills/err/abc"), "shared")
         self.assertEqual(infer_scope("opencortex://t1/resources/docs/abc"), "shared")
 
     def test_backfill_infers_category_from_uri(self):
         from opencortex.migration.v030_path_redesign import infer_category
-        self.assertEqual(infer_category("opencortex://t1/u1/memories/preferences/abc"), "preferences")
-        self.assertEqual(infer_category("opencortex://t1/shared/skills/error_fixes/abc"), "error_fixes")
-        self.assertEqual(infer_category("opencortex://t1/resources/documents/abc"), "documents")
+
+        self.assertEqual(
+            infer_category("opencortex://t1/u1/memories/preferences/abc"), "preferences"
+        )
+        self.assertEqual(
+            infer_category("opencortex://t1/shared/skills/error_fixes/abc"),
+            "error_fixes",
+        )
+        self.assertEqual(
+            infer_category("opencortex://t1/resources/documents/abc"), "documents"
+        )
 
     def test_backfill_infers_mergeable(self):
         from opencortex.migration.v030_path_redesign import infer_mergeable
+
         self.assertTrue(infer_mergeable("preferences"))
         self.assertTrue(infer_mergeable("profile"))
         self.assertFalse(infer_mergeable("events"))

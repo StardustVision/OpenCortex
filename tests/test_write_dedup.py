@@ -98,7 +98,12 @@ class InMemoryStorage(StorageInterface):
     async def get_collection_info(self, name):
         if name not in self._collections:
             return None
-        return {"name": name, "vector_dim": 32, "count": len(self._records.get(name, {})), "status": "ready"}
+        return {
+            "name": name,
+            "vector_dim": 32,
+            "count": len(self._records.get(name, {})),
+            "status": "ready",
+        }
 
     async def insert(self, collection, data):
         self._ensure(collection)
@@ -132,7 +137,11 @@ class InMemoryStorage(StorageInterface):
 
     async def get(self, collection, ids):
         self._ensure(collection)
-        return [dict(self._records[collection][rid]) for rid in ids if rid in self._records[collection]]
+        return [
+            dict(self._records[collection][rid])
+            for rid in ids
+            if rid in self._records[collection]
+        ]
 
     async def exists(self, collection, id):
         self._ensure(collection)
@@ -151,14 +160,27 @@ class InMemoryStorage(StorageInterface):
 
     async def remove_by_uri(self, collection, uri):
         self._ensure(collection)
-        to_remove = [rid for rid, rec in self._records[collection].items() if rec.get("uri", "").startswith(uri)]
+        to_remove = [
+            rid
+            for rid, rec in self._records[collection].items()
+            if rec.get("uri", "").startswith(uri)
+        ]
         for rid in to_remove:
             del self._records[collection][rid]
         return len(to_remove)
 
-    async def search(self, collection, query_vector=None, sparse_query_vector=None,
-                     filter=None, limit=10, offset=0, output_fields=None,
-                     with_vector=False, text_query=""):
+    async def search(
+        self,
+        collection,
+        query_vector=None,
+        sparse_query_vector=None,
+        filter=None,
+        limit=10,
+        offset=0,
+        output_fields=None,
+        with_vector=False,
+        text_query="",
+    ):
         self._ensure(collection)
         candidates = list(self._records[collection].values())
         if filter:
@@ -173,19 +195,35 @@ class InMemoryStorage(StorageInterface):
                 scored.append(rec)
             scored.sort(key=lambda x: x["_score"], reverse=True)
             candidates = scored
-        return candidates[offset:offset + limit]
+        return candidates[offset : offset + limit]
 
-    async def filter(self, collection, filter, limit=10, offset=0,
-                     output_fields=None, order_by=None, order_desc=False):
+    async def filter(
+        self,
+        collection,
+        filter,
+        limit=10,
+        offset=0,
+        output_fields=None,
+        order_by=None,
+        order_desc=False,
+    ):
         self._ensure(collection)
-        candidates = [dict(r) for r in self._records[collection].values() if self._eval_filter(r, filter)]
+        candidates = [
+            dict(r)
+            for r in self._records[collection].values()
+            if self._eval_filter(r, filter)
+        ]
         if order_by:
             candidates.sort(key=lambda r: r.get(order_by, ""), reverse=order_desc)
-        return candidates[offset:offset + limit]
+        return candidates[offset : offset + limit]
 
-    async def scroll(self, collection, filter=None, limit=100, cursor=None, output_fields=None):
+    async def scroll(
+        self, collection, filter=None, limit=100, cursor=None, output_fields=None
+    ):
         offset = int(cursor) if cursor else 0
-        records = await self.filter(collection, filter or {}, limit=limit + 1, offset=offset)
+        records = await self.filter(
+            collection, filter or {}, limit=limit + 1, offset=offset
+        )
         if len(records) > limit:
             return records[:limit], str(offset + limit)
         return records, None
@@ -218,7 +256,12 @@ class InMemoryStorage(StorageInterface):
 
     async def get_stats(self):
         total = sum(len(recs) for recs in self._records.values())
-        return {"collections": len(self._collections), "total_records": total, "storage_size": 0, "backend": "in-memory"}
+        return {
+            "collections": len(self._collections),
+            "total_records": total,
+            "storage_size": 0,
+            "backend": "in-memory",
+        }
 
     # RL methods
     async def update_reward(self, collection, id, reward):
@@ -236,6 +279,7 @@ class InMemoryStorage(StorageInterface):
             records_decayed = 0
             records_below_threshold = 0
             records_archived = 0
+
         return _R()
 
     async def set_protected(self, collection, id, protected=True):
@@ -269,7 +313,9 @@ class InMemoryStorage(StorageInterface):
                 return True
             return val in conds
         elif op == "prefix":
-            return str(record.get(filt.get("field", ""), "")).startswith(filt.get("prefix", ""))
+            return str(record.get(filt.get("field", ""), "")).startswith(
+                filt.get("prefix", "")
+            )
         elif op == "range":
             field_name = filt.get("field", "")
             val = record.get(field_name, 0)
@@ -327,10 +373,13 @@ class TestWriteDedup(unittest.TestCase):
 
     def _record_count(self):
         """Count leaf records in the context collection."""
-        return len([
-            r for r in self.storage._records.get("context", {}).values()
-            if r.get("is_leaf", False)
-        ])
+        return len(
+            [
+                r
+                for r in self.storage._records.get("context", {}).values()
+                if r.get("is_leaf", False)
+            ]
+        )
 
     # -----------------------------------------------------------------
     # 1. Same abstract twice → non-mergeable kind still appends
@@ -341,18 +390,22 @@ class TestWriteDedup(unittest.TestCase):
         orch = self._make_orch()
 
         # No content to avoid enrichment changing the abstract vector
-        ctx1 = self._run(orch.add(
-            abstract="Server crashed at 3am due to OOM",
-            category="events",
-            dedup=True,
-        ))
+        ctx1 = self._run(
+            orch.add(
+                abstract="Server crashed at 3am due to OOM",
+                category="events",
+                dedup=True,
+            )
+        )
         self.assertEqual(ctx1.meta.get("dedup_action"), "created")
 
-        ctx2 = self._run(orch.add(
-            abstract="Server crashed at 3am due to OOM",
-            category="events",
-            dedup=True,
-        ))
+        ctx2 = self._run(
+            orch.add(
+                abstract="Server crashed at 3am due to OOM",
+                category="events",
+                dedup=True,
+            )
+        )
         self.assertEqual(ctx2.meta.get("dedup_action"), "created")
         self.assertNotEqual(ctx2.uri, ctx1.uri)
         self.assertEqual(self._record_count(), 2)
@@ -365,24 +418,29 @@ class TestWriteDedup(unittest.TestCase):
         """Identical abstract in 'preferences' → second add() merged."""
         orch = self._make_orch()
 
-        ctx1 = self._run(orch.add(
-            abstract="User prefers dark theme in all editors",
-            category="preferences",
-            dedup=True,
-        ))
+        ctx1 = self._run(
+            orch.add(
+                abstract="User prefers dark theme in all editors",
+                category="preferences",
+                dedup=True,
+            )
+        )
         self.assertEqual(ctx1.meta.get("dedup_action"), "created")
 
         # Same abstract, no content → identical vector → dedup triggers
-        ctx2 = self._run(orch.add(
-            abstract="User prefers dark theme in all editors",
-            category="preferences",
-            dedup=True,
-        ))
+        ctx2 = self._run(
+            orch.add(
+                abstract="User prefers dark theme in all editors",
+                category="preferences",
+                dedup=True,
+            )
+        )
         self.assertEqual(ctx2.meta.get("dedup_action"), "merged")
         self.assertEqual(ctx2.uri, ctx1.uri)
         self.assertEqual(self._record_count(), 1)
         records = [
-            r for r in self.storage._records.get("context", {}).values()
+            r
+            for r in self.storage._records.get("context", {}).values()
             if r.get("uri") == ctx1.uri
         ]
         self.assertEqual(records[0].get("memory_kind"), "preference")
@@ -397,16 +455,20 @@ class TestWriteDedup(unittest.TestCase):
         """Different abstracts → both created."""
         orch = self._make_orch()
 
-        ctx1 = self._run(orch.add(
-            abstract="User prefers dark theme",
-            category="preferences",
-            dedup=True,
-        ))
-        ctx2 = self._run(orch.add(
-            abstract="Database connection pool uses 20 connections",
-            category="preferences",
-            dedup=True,
-        ))
+        ctx1 = self._run(
+            orch.add(
+                abstract="User prefers dark theme",
+                category="preferences",
+                dedup=True,
+            )
+        )
+        ctx2 = self._run(
+            orch.add(
+                abstract="Database connection pool uses 20 connections",
+                category="preferences",
+                dedup=True,
+            )
+        )
         self.assertEqual(ctx1.meta.get("dedup_action"), "created")
         self.assertEqual(ctx2.meta.get("dedup_action"), "created")
         self.assertNotEqual(ctx1.uri, ctx2.uri)
@@ -420,15 +482,19 @@ class TestWriteDedup(unittest.TestCase):
         """dedup=False bypasses dedup check."""
         orch = self._make_orch()
 
-        ctx1 = self._run(orch.add(
-            abstract="Same content here",
-            category="events",
-        ))
-        ctx2 = self._run(orch.add(
-            abstract="Same content here",
-            category="events",
-            dedup=False,
-        ))
+        ctx1 = self._run(
+            orch.add(
+                abstract="Same content here",
+                category="events",
+            )
+        )
+        ctx2 = self._run(
+            orch.add(
+                abstract="Same content here",
+                category="events",
+                dedup=False,
+            )
+        )
         self.assertEqual(ctx1.meta.get("dedup_action"), "created")
         self.assertEqual(ctx2.meta.get("dedup_action"), "created")
         self.assertNotEqual(ctx1.uri, ctx2.uri)
@@ -443,22 +509,26 @@ class TestWriteDedup(unittest.TestCase):
         orch = self._make_orch()
 
         # Add as testteam/alice
-        ctx1 = self._run(orch.add(
-            abstract="Shared knowledge item",
-            category="patterns",
-            dedup=True,
-        ))
+        ctx1 = self._run(
+            orch.add(
+                abstract="Shared knowledge item",
+                category="patterns",
+                dedup=True,
+            )
+        )
         self.assertEqual(ctx1.meta.get("dedup_action"), "created")
 
         # Switch to different tenant
         reset_request_identity(self._identity_tokens)
         self._identity_tokens = set_request_identity("otherteam", "bob")
 
-        ctx2 = self._run(orch.add(
-            abstract="Shared knowledge item",
-            category="patterns",
-            dedup=True,
-        ))
+        ctx2 = self._run(
+            orch.add(
+                abstract="Shared knowledge item",
+                category="patterns",
+                dedup=True,
+            )
+        )
         self.assertEqual(ctx2.meta.get("dedup_action"), "created")
         self.assertNotEqual(ctx1.uri, ctx2.uri)
 
@@ -470,16 +540,20 @@ class TestWriteDedup(unittest.TestCase):
         """Same abstract but different category → both created."""
         orch = self._make_orch()
 
-        ctx1 = self._run(orch.add(
-            abstract="Important finding about performance",
-            category="events",
-            dedup=True,
-        ))
-        ctx2 = self._run(orch.add(
-            abstract="Important finding about performance",
-            category="patterns",
-            dedup=True,
-        ))
+        ctx1 = self._run(
+            orch.add(
+                abstract="Important finding about performance",
+                category="events",
+                dedup=True,
+            )
+        )
+        ctx2 = self._run(
+            orch.add(
+                abstract="Important finding about performance",
+                category="patterns",
+                dedup=True,
+            )
+        )
         self.assertEqual(ctx1.meta.get("dedup_action"), "created")
         self.assertEqual(ctx2.meta.get("dedup_action"), "created")
 
@@ -487,11 +561,13 @@ class TestWriteDedup(unittest.TestCase):
         """Canonical store payload includes abstract_json-derived fields."""
         orch = self._make_orch()
 
-        ctx = self._run(orch.add(
-            abstract="User prefers dark theme in all editors",
-            category="preferences",
-            dedup=True,
-        ))
+        ctx = self._run(
+            orch.add(
+                abstract="User prefers dark theme in all editors",
+                category="preferences",
+                dedup=True,
+            )
+        )
         records = self._run(
             self.storage.filter(
                 "context",
@@ -519,16 +595,20 @@ class TestWriteDedup(unittest.TestCase):
         """Directory nodes (is_leaf=False) should not be deduped."""
         orch = self._make_orch()
 
-        ctx1 = self._run(orch.add(
-            abstract="Directory abstract",
-            is_leaf=False,
-            dedup=True,
-        ))
-        ctx2 = self._run(orch.add(
-            abstract="Directory abstract",
-            is_leaf=False,
-            dedup=True,
-        ))
+        ctx1 = self._run(
+            orch.add(
+                abstract="Directory abstract",
+                is_leaf=False,
+                dedup=True,
+            )
+        )
+        ctx2 = self._run(
+            orch.add(
+                abstract="Directory abstract",
+                is_leaf=False,
+                dedup=True,
+            )
+        )
         # Both created because dedup skips non-leaf
         self.assertEqual(ctx1.meta.get("dedup_action"), "created")
         self.assertEqual(ctx2.meta.get("dedup_action"), "created")
@@ -542,22 +622,30 @@ class TestWriteDedup(unittest.TestCase):
         orch = self._make_orch()
 
         # First add without content → vector = pure abstract
-        self._run(orch.add(
-            abstract="User prefers vim keybindings",
-            category="preferences",
-            dedup=True,
-        ))
+        self._run(
+            orch.add(
+                abstract="User prefers vim keybindings",
+                category="preferences",
+                dedup=True,
+            )
+        )
         # Second add same abstract → triggers dedup merge
-        ctx2 = self._run(orch.add(
-            abstract="User prefers vim keybindings",
-            category="preferences",
-            dedup=True,
-        ))
+        ctx2 = self._run(
+            orch.add(
+                abstract="User prefers vim keybindings",
+                category="preferences",
+                dedup=True,
+            )
+        )
         self.assertEqual(ctx2.meta.get("dedup_action"), "merged")
 
         # Verify only 1 leaf record
         records = list(self.storage._records.get("context", {}).values())
-        leaf_records = [r for r in records if r.get("is_leaf", False) and r.get("category") == "preferences"]
+        leaf_records = [
+            r
+            for r in records
+            if r.get("is_leaf", False) and r.get("category") == "preferences"
+        ]
         self.assertEqual(len(leaf_records), 1)
 
     # -----------------------------------------------------------------
@@ -566,8 +654,13 @@ class TestWriteDedup(unittest.TestCase):
 
     def test_no_embedder_skips_dedup(self):
         """Without an embedder, dedup is skipped (no vector)."""
+        config = CortexConfig(
+            data_root=self.temp_dir,
+            embedding_dimension=MockEmbedder.DIMENSION,
+            embedding_provider="none",
+        )
         orch = MemoryOrchestrator(
-            config=self.config,
+            config=config,
             storage=self.storage,
             embedder=None,
         )

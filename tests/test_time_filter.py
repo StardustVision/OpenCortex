@@ -1,11 +1,12 @@
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 
 class TestTimeFilter(unittest.TestCase):
     def test_time_filter_builds_range_condition(self):
         from opencortex.storage.qdrant.filter_translator import translate_filter
-        now = datetime.utcnow()
+
+        now = datetime.now(timezone.utc)
         week_ago = (now - timedelta(days=7)).isoformat() + "Z"
         dsl = {"op": "range", "field": "created_at", "gte": week_ago}
         f = translate_filter(dsl)
@@ -15,6 +16,7 @@ class TestTimeFilter(unittest.TestCase):
 
     def test_session_filter_builds_match(self):
         from opencortex.storage.qdrant.filter_translator import translate_filter
+
         dsl = {"op": "match", "field": "session_id", "value": "sess_123"}
         f = translate_filter(dsl)
         self.assertIsNotNone(f)
