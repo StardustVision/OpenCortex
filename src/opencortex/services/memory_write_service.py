@@ -13,12 +13,13 @@ import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from opencortex.core.context import Context
-from opencortex.core.user_id import UserIdentifier
 from opencortex.http.request_context import get_effective_identity
 from opencortex.memory import MemoryKind
-from opencortex.utils.uri import CortexURI
 
 if TYPE_CHECKING:
+    from opencortex.services.memory_directory_record_service import (
+        MemoryDirectoryRecordService,
+    )
     from opencortex.services.memory_document_write_service import (
         MemoryDocumentWriteService,
     )
@@ -631,73 +632,20 @@ class MemoryWriteService:
 
     async def _ensure_parent_records(self, parent_uri: str) -> None:
         """Ensure all ancestor directory records exist in the vector store."""
-        orch = self._orch
-        uri = parent_uri
-        to_create = []
+        await self._directory_record_service.ensure_parent_records(parent_uri)
 
-        # Walk up the URI tree, collecting missing directories
-        while uri:
-            try:
-                parsed = CortexURI(uri)
-            except ValueError:
-                break
+    @property
+    def _directory_record_service(self) -> "MemoryDirectoryRecordService":
+        """Lazy-built service for parent directory records."""
+        from opencortex.services.memory_directory_record_service import (
+            MemoryDirectoryRecordService,
+        )
 
-            # Check if this directory record already exists
-            existing = await orch._storage.filter(
-                orch._get_collection(),
-                {"op": "must", "field": "uri", "conds": [uri]},
-                limit=1,
-            )
-            if existing:
-                break  # This level and all above already exist
-
-            to_create.append(uri)
-
-            parent = parsed.parent
-            if parent is None:
-                break
-            uri = str(parent)
-
-        # Build effective user identity (per-request or config default)
-        tid, uid = get_effective_identity()
-        effective_user = UserIdentifier(tid, uid)
-
-        # Create directory records from top down (so parent_uri links are valid)
-        for dir_uri in reversed(to_create):
-            dir_parent = orch._derive_parent_uri(dir_uri)
-            dir_ctx = Context(
-                uri=dir_uri,
-                parent_uri=dir_parent,
-                is_leaf=False,
-                abstract="",
-                user=effective_user,
-            )
-
-            # Embed the directory name as a minimal vector
-            dir_name = dir_uri.rstrip("/").rsplit("/", 1)[-1]
-            embed_result = None
-            if orch._embedder and dir_name:
-                loop = asyncio.get_event_loop()
-                embed_result = await loop.run_in_executor(
-                    None, orch._embedder.embed, dir_name
-                )
-                dir_ctx.vector = embed_result.dense_vector
-
-            record = dir_ctx.to_dict()
-            if dir_ctx.vector:
-                record["vector"] = dir_ctx.vector
-            if embed_result and embed_result.sparse_vector:
-                record["sparse_vector"] = embed_result.sparse_vector
-            # Populate scope fields so directory records pass scope filters
-            record["scope"] = "private" if CortexURI(dir_uri).is_private else "shared"
-            record["source_user_id"] = uid
-            record["source_tenant_id"] = tid
-            record["category"] = ""
-            record["mergeable"] = False
-            record["session_id"] = ""
-            record["ttl_expires_at"] = ""
-            await orch._storage.upsert(orch._get_collection(), record)
-            logger.debug("[MemoryService] Created directory record: %s", dir_uri)
+        cached = getattr(self, "_directory_record_service_instance", None)
+        if cached is None:
+            cached = MemoryDirectoryRecordService(self)
+            self._directory_record_service_instance = cached
+        return cached
 
     @property
     def _document_write_service(self) -> "MemoryDocumentWriteService":
