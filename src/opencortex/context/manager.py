@@ -48,8 +48,6 @@ _RECOMPOSE_CLUSTER_JACCARD_THRESHOLD = (
 _COARSE_ISO_DATE_RE = _segmentation._COARSE_ISO_DATE_RE
 _COARSE_HUMAN_DATE_RE = _segmentation._COARSE_HUMAN_DATE_RE
 _COARSE_WEEKDAY_RE = _segmentation._COARSE_WEEKDAY_RE
-_RECOMPOSE_TAIL_MAX_MERGED_LEAVES = 6
-_RECOMPOSE_TAIL_MAX_MESSAGES = 24
 
 # Bounded concurrency for ``_derive_parent_summary`` calls inside
 # ``_run_full_session_recomposition``. Production conversation lifecycle
