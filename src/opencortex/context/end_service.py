@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import time
 from dataclasses import dataclass
@@ -302,7 +301,7 @@ class ContextEndService:
         user_id: str,
     ) -> None:
         manager = self._manager
-        manager._spawn_full_recompose_task(
+        recompose_task = manager._spawn_full_recompose_task(
             sk,
             session_id=session_id,
             tenant_id=tenant_id,
@@ -310,18 +309,13 @@ class ContextEndService:
             source_uri=state.source_uri,
             raise_on_error=state.fail_fast,
         )
-        recompose_task = manager._session_full_recompose_tasks.get(sk)
-        if recompose_task is None:
-            return
         try:
-            await asyncio.wait_for(
-                asyncio.shield(recompose_task),
+            await manager._recomposition_tasks.wait_for_full_recompose_task(
+                sk,
+                recompose_task,
                 timeout=120.0,
             )
         except asyncio.TimeoutError as exc:
-            recompose_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await recompose_task
             self._handle_failure(
                 state,
                 "Full-session recomposition timed out "

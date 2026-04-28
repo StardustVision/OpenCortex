@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from opencortex.context.commit_service import ContextCommitService
     from opencortex.context.end_service import ContextEndService
     from opencortex.context.recomposition_engine import SessionRecompositionEngine
+    from opencortex.context.recomposition_tasks import ContextRecompositionTaskService
 
 _SEGMENT_MAX_MESSAGES = _segmentation._SEGMENT_MAX_MESSAGES
 _SEGMENT_MAX_TOKENS = _segmentation._SEGMENT_MAX_TOKENS
@@ -157,22 +158,8 @@ class ContextManager:
         self._session_activity: Dict[SessionKey, float] = {}
         # Session-level locks: prevent concurrent begin_session
         self._session_locks: Dict[SessionKey, asyncio.Lock] = {}
-        # Session-scoped merge locks: protect conversation buffer snapshots.
-        self._session_merge_locks: Dict[SessionKey, asyncio.Lock] = {}
-        # At most one background merge worker per session.
-        self._session_merge_tasks: Dict[SessionKey, asyncio.Task] = {}
-        self._session_merge_task_failures: Dict[SessionKey, List[BaseException]] = {}
-        # Deferred follow-up tasks spawned by session merge workers.
-        self._session_merge_followup_tasks: Dict[SessionKey, Set[asyncio.Task]] = {}
-        self._session_merge_followup_failures: Dict[
-            SessionKey, List[BaseException]
-        ] = {}
-        # At most one background full-session recomposition worker per session.
-        self._session_full_recompose_tasks: Dict[SessionKey, asyncio.Task] = {}
         # Session project id snapshot for explicit/idle/background end flows.
         self._session_project_ids: Dict[SessionKey, str] = {}
-        # Pending async tasks (cited_uris reward, etc.)
-        self._pending_tasks: Set[asyncio.Task] = set()
         # Session-scoped flag for rare full immediate cleanup retries.
         self._session_pending_immediate_cleanup: Dict[SessionKey, bool] = {}
         # Conversation buffers: per-session incremental chunking
@@ -194,6 +181,8 @@ class ContextManager:
         self._commit_service_instance: Optional[Any] = None
         # Lazy-initialized end service (survives ``__new__`` bypass).
         self._end_service_instance: Optional[Any] = None
+        # Lazy-initialized task service (survives ``__new__`` bypass).
+        self._recomposition_task_service_instance: Optional[Any] = None
 
         # Config
         self._session_idle_ttl = session_idle_ttl
@@ -237,6 +226,19 @@ class ContextManager:
             self._end_service_instance = inst
         return inst
 
+    @property
+    def _recomposition_tasks(self) -> "ContextRecompositionTaskService":
+        """Lazy-initialized recomposition task lifecycle service."""
+        inst = getattr(self, "_recomposition_task_service_instance", None)
+        if inst is None:
+            from opencortex.context.recomposition_tasks import (
+                ContextRecompositionTaskService,
+            )
+
+            inst = ContextRecompositionTaskService(self)
+            self._recomposition_task_service_instance = inst
+        return inst
+
     @staticmethod
     def _new_conversation_buffer() -> ConversationBuffer:
         """Create a fresh conversation buffer for commit coordination."""
@@ -258,9 +260,7 @@ class ContextManager:
                 await self._idle_checker
             except asyncio.CancelledError:
                 pass
-        if self._pending_tasks:
-            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
-            self._pending_tasks.clear()
+        await self._recomposition_tasks.close()
 
     # =========================================================================
     # Unified entry point
@@ -693,7 +693,7 @@ class ContextManager:
         session_id: str,
         tenant_id: str,
         user_id: str,
-    ) -> None:
+    ) -> Optional[asyncio.Task]:
         """Start one background merge worker for the session if needed."""
         return self._recomposition_engine._spawn_merge_task(
             sk,
@@ -711,7 +711,7 @@ class ContextManager:
         user_id: str,
         source_uri: Optional[str],
         raise_on_error: bool = False,
-    ) -> None:
+    ) -> Optional[asyncio.Task]:
         """Start one async full-session recomposition worker per session."""
         return self._recomposition_engine._spawn_full_recompose_task(
             sk,
@@ -858,11 +858,7 @@ class ContextManager:
         self._committed_turns.pop(sk, None)
         self._session_activity.pop(sk, None)
         self._session_locks.pop(sk, None)
-        self._session_merge_locks.pop(sk, None)
-        self._session_merge_tasks.pop(sk, None)
-        self._session_merge_task_failures.pop(sk, None)
-        self._session_merge_followup_tasks.pop(sk, None)
-        self._session_merge_followup_failures.pop(sk, None)
+        self._recomposition_tasks.cleanup_session(sk)
         self._conversation_buffers.pop(sk, None)
         self._session_project_ids.pop(sk, None)
         self._session_pending_immediate_cleanup.pop(sk, None)

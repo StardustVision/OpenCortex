@@ -38,7 +38,6 @@ from opencortex.context.session_records import (
     record_text,
 )
 from opencortex.http.request_context import (
-    get_collection_name,
     reset_collection_name,
     reset_request_identity,
     set_collection_name,
@@ -451,11 +450,6 @@ class SessionRecompositionEngine:
             return 6144
         return max(1, int(getattr(cfg, "conversation_merge_token_budget", 6144)))
 
-    @staticmethod
-    def _task_failures(results: List[Any]) -> List[BaseException]:
-        """Extract task failures from ``asyncio.gather(..., return_exceptions=True)``."""
-        return [result for result in results if isinstance(result, BaseException)]
-
     # =========================================================================
     # Snapshot / Restore
     # =========================================================================
@@ -467,7 +461,7 @@ class SessionRecompositionEngine:
         flush_all: bool,
     ) -> Optional[ConversationBuffer]:
         """Detach the current buffer snapshot for merge processing."""
-        merge_lock = self._mgr._session_merge_locks.setdefault(sk, asyncio.Lock())
+        merge_lock = self._mgr._recomposition_tasks.merge_lock(sk)
         async with merge_lock:
             buffer = self._mgr._conversation_buffers.get(sk)
             if not buffer or not buffer.messages:
@@ -494,7 +488,7 @@ class SessionRecompositionEngine:
         snapshot: ConversationBuffer,
     ) -> None:
         """Restore a detached buffer snapshot after merge failure."""
-        merge_lock = self._mgr._session_merge_locks.setdefault(sk, asyncio.Lock())
+        merge_lock = self._mgr._recomposition_tasks.merge_lock(sk)
         async with merge_lock:
             current = self._mgr._conversation_buffers.get(sk)
             if current is None:
@@ -522,15 +516,11 @@ class SessionRecompositionEngine:
         session_id: str,
         tenant_id: str,
         user_id: str,
-    ) -> None:
+    ) -> Optional[asyncio.Task]:
         """Start one background merge worker for the session if needed."""
-        existing_task = self._mgr._session_merge_tasks.get(sk)
-        if existing_task and not existing_task.done():
-            return
-
-        collection_name = get_collection_name()
-        task = asyncio.create_task(
-            self._merge_buffer(
+        return self._mgr._recomposition_tasks.spawn_merge_task(
+            sk,
+            lambda collection_name: self._merge_buffer(
                 sk,
                 session_id,
                 tenant_id,
@@ -538,24 +528,8 @@ class SessionRecompositionEngine:
                 flush_all=False,
                 collection_name=collection_name,
                 raise_on_error=True,
-            )
+            ),
         )
-        self._mgr._session_merge_tasks[sk] = task
-        self._mgr._pending_tasks.add(task)
-
-        mgr = self._mgr
-
-        def _cleanup(done_task: asyncio.Task) -> None:
-            mgr._pending_tasks.discard(done_task)
-            with contextlib.suppress(asyncio.CancelledError):
-                exc = done_task.exception()
-                if exc is not None:
-                    failures = mgr._session_merge_task_failures.setdefault(sk, [])
-                    failures.append(exc)
-            if mgr._session_merge_tasks.get(sk) is done_task:
-                mgr._session_merge_tasks.pop(sk, None)
-
-        task.add_done_callback(_cleanup)
 
     def _spawn_full_recompose_task(
         self,
@@ -566,51 +540,23 @@ class SessionRecompositionEngine:
         user_id: str,
         source_uri: Optional[str],
         raise_on_error: bool = False,
-    ) -> None:
+    ) -> Optional[asyncio.Task]:
         """Start one async full-session recomposition worker per session."""
-        existing_task = self._mgr._session_full_recompose_tasks.get(sk)
-        if existing_task and not existing_task.done():
-            return
-
-        collection_name = get_collection_name()
-        task = asyncio.create_task(
-            self._run_full_session_recomposition(
+        return self._mgr._recomposition_tasks.spawn_full_recompose_task(
+            sk,
+            lambda collection_name: self._run_full_session_recomposition(
                 session_id=session_id,
                 tenant_id=tenant_id,
                 user_id=user_id,
                 source_uri=source_uri,
                 collection_name=collection_name,
                 raise_on_error=raise_on_error,
-            )
+            ),
         )
-        self._mgr._session_full_recompose_tasks[sk] = task
-        self._mgr._pending_tasks.add(task)
-
-        mgr = self._mgr
-
-        def _cleanup(done_task: asyncio.Task) -> None:
-            mgr._pending_tasks.discard(done_task)
-            if mgr._session_full_recompose_tasks.get(sk) is done_task:
-                mgr._session_full_recompose_tasks.pop(sk, None)
-
-        task.add_done_callback(_cleanup)
 
     async def _wait_for_merge_task(self, sk: SessionKey) -> List[BaseException]:
         """Wait until any in-flight background merge for the session finishes."""
-        failures = list(self._mgr._session_merge_task_failures.pop(sk, []))
-        task = self._mgr._session_merge_tasks.get(sk)
-        if not task:
-            return failures
-        results = await asyncio.gather(task, return_exceptions=True)
-        failures.extend(self._task_failures(results))
-        deduped: List[BaseException] = []
-        seen_ids: Set[int] = set()
-        for failure in failures:
-            if id(failure) in seen_ids:
-                continue
-            seen_ids.add(id(failure))
-            deduped.append(failure)
-        return deduped
+        return await self._mgr._recomposition_tasks.wait_for_merge_task(sk)
 
     def _track_session_merge_followup_task(
         self,
@@ -618,53 +564,13 @@ class SessionRecompositionEngine:
         task: asyncio.Task,
     ) -> None:
         """Track deferred tasks spawned from a session merge worker."""
-        session_tasks = self._mgr._session_merge_followup_tasks.setdefault(sk, set())
-        session_tasks.add(task)
-        self._mgr._pending_tasks.add(task)
-
-        mgr = self._mgr
-
-        def _cleanup(done_task: asyncio.Task) -> None:
-            mgr._pending_tasks.discard(done_task)
-            with contextlib.suppress(asyncio.CancelledError):
-                exc = done_task.exception()
-                if exc is not None:
-                    failures = mgr._session_merge_followup_failures.setdefault(sk, [])
-                    failures.append(exc)
-            active_tasks = mgr._session_merge_followup_tasks.get(sk)
-            if active_tasks is None:
-                return
-            active_tasks.discard(done_task)
-            if not active_tasks:
-                mgr._session_merge_followup_tasks.pop(sk, None)
-
-        task.add_done_callback(_cleanup)
+        self._mgr._recomposition_tasks.track_session_merge_followup_task(sk, task)
 
     async def _wait_for_merge_followup_tasks(
         self, sk: SessionKey
     ) -> List[BaseException]:
         """Wait until deferred follow-up tasks for the session merge finish."""
-        failures: List[BaseException] = list(
-            self._mgr._session_merge_followup_failures.pop(sk, []),
-        )
-        while True:
-            tasks = tuple(self._mgr._session_merge_followup_tasks.get(sk, set()))
-            if not tasks:
-                deduped: List[BaseException] = []
-                seen_ids: Set[int] = set()
-                for failure in failures:
-                    if id(failure) in seen_ids:
-                        continue
-                    seen_ids.add(id(failure))
-                    deduped.append(failure)
-                return deduped
-            logger.info(
-                "[ContextManager] Waiting for merge follow-up tasks sk=%s pending=%d",
-                sk,
-                len(tasks),
-            )
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            failures.extend(self._task_failures(results))
+        return await self._mgr._recomposition_tasks.wait_for_merge_followup_tasks(sk)
 
     # =========================================================================
     # Core Orchestration
