@@ -32,8 +32,15 @@ Typical usage::
 
 import asyncio
 import logging
-import re
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    List,
+    Optional,
+)
 
 from opencortex.cognition.state_types import OwnerType
 from opencortex.config import CortexConfig, get_config
@@ -60,12 +67,32 @@ from opencortex.retrieve.types import (
     TypedQuery,
 )
 from opencortex.services.derivation_service import (
-    _merge_unique_strings,
-    _split_keyword_string,
+    _merge_unique_strings as _merge_unique_strings,
+    _split_keyword_string as _split_keyword_string,
 )
 from opencortex.services.memory_signals import MemorySignalBus
 from opencortex.storage.cortex_fs import CortexFS
 from opencortex.storage.storage_interface import StorageInterface
+
+if TYPE_CHECKING:
+    from opencortex.alpha.types import Trace
+    from opencortex.lifecycle.background_tasks import BackgroundTaskManager
+    from opencortex.lifecycle.bootstrapper import SubsystemBootstrapper
+    from opencortex.services.derivation_service import DerivationService
+    from opencortex.services.knowledge_service import KnowledgeService
+    from opencortex.services.memory_admin_stats_service import (
+        MemoryAdminStatsService,
+    )
+    from opencortex.services.memory_record_service import MemoryRecordService
+    from opencortex.services.memory_service import MemoryService
+    from opencortex.services.memory_sharing_service import MemorySharingService
+    from opencortex.services.model_runtime_service import ModelRuntimeService
+    from opencortex.services.orchestrator_services import MemoryOrchestratorServices
+    from opencortex.services.retrieval_service import RetrievalService
+    from opencortex.services.session_lifecycle_service import (
+        SessionLifecycleService,
+    )
+    from opencortex.services.system_status_service import SystemStatusService
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +122,7 @@ class MemoryOrchestrator:
         embedder: Optional[EmbedderBase] = None,
         rerank_config: Optional[RerankConfig] = None,
         llm_completion: Optional[LLMCompletionCallable] = None,
-    ):
+    ) -> None:
         self._config = config or get_config()
         self._storage = storage
         self._embedder = embedder
@@ -108,27 +135,7 @@ class MemoryOrchestrator:
         # admin call. Lifted here so ``MemoryOrchestrator.close()`` can
         # call ``aclose()`` exactly once on shutdown.
         self._rerank_client: Optional["RerankClient"] = None
-        # Plan 010 / Phase 1 — MemoryService extracted from God-Object
-        # orchestrator. Lazy-built via ``_memory_service`` property
-        # below so existing tests that bypass ``__init__`` via
-        # ``MemoryOrchestrator.__new__(MemoryOrchestrator)`` and then
-        # call delegated methods (e.g. ``oc.search`` once U3 lands)
-        # don't crash on a missing attribute. Construction is sync and
-        # cheap, so the property's first-access cost is negligible.
-        # ADV-PHASE2-BYPASS-LANDMINE in plan 010 review identified this
-        # — defused proactively before it bites Phase 2/3.
-        self._memory_service_instance: Optional[Any] = None
-        self._knowledge_service_instance: Optional[Any] = None
-        self._system_status_service_instance: Optional[Any] = None
-        self._background_task_manager_instance: Optional[Any] = None
-        self._bootstrapper_instance: Optional[Any] = None
-        self._derivation_service_instance: Optional[Any] = None
-        self._retrieval_service_instance: Optional[Any] = None
-        self._session_lifecycle_service_instance: Optional[Any] = None
-        self._memory_record_service_instance: Optional[Any] = None
-        self._model_runtime_service_instance: Optional[Any] = None
-        self._memory_sharing_service_instance: Optional[Any] = None
-        self._memory_admin_stats_service_instance: Optional[Any] = None
+        self._services_instance: Optional[Any] = None
         # Plan 009 / RELY-01 — InsightsAgent (when enabled in
         # ``server.py`` lifespan) holds a second LLMCompletion wrapper
         # whose pool would otherwise leak on shutdown. The lifespan
@@ -309,7 +316,7 @@ class MemoryOrchestrator:
         return self._model_runtime_service._get_or_create_rerank_client()
 
     def _build_rerank_config(self) -> RerankConfig:
-        """Build RerankConfig by merging explicit rerank_config with CortexConfig fields.
+        """Build RerankConfig from explicit and configured rerank fields.
 
         Priority: explicit rerank_config > CortexConfig rerank_* fields > defaults.
         """
@@ -634,172 +641,77 @@ class MemoryOrchestrator:
         return self._user
 
     @property
-    def _memory_service(self) -> "MemoryService":
-        """Lazy-built MemoryService for delegated CRUD/query/scoring methods.
+    def _services(self) -> "MemoryOrchestratorServices":
+        """Lazy service registry for orchestrator-owned collaborators."""
+        from opencortex.services.orchestrator_services import (
+            MemoryOrchestratorServices,
+        )
 
-        Phase 1 of plan 010 introduced this back-reference pattern. Lazy
-        construction (instead of eager-init in ``__init__``) means tests
-        that bypass ``__init__`` via ``MemoryOrchestrator.__new__`` and
-        then call a delegated method (the typical perf-test fixture
-        pattern in ``tests/test_perf_fixes.py``) get a working service
-        instance instead of an ``AttributeError``. Construction is sync
-        and cheap (back-reference store only); first-access cost is
-        negligible. Uses ``getattr`` with default so the attribute is
-        not required to exist on the instance — defends against the
-        ``__new__`` bypass which skips ``__init__`` entirely.
-        """
-        cached = getattr(self, "_memory_service_instance", None)
+        cached = getattr(self, "_services_instance", None)
         if cached is None:
-            from opencortex.services.memory_service import MemoryService
-
-            cached = MemoryService(self)
-            self._memory_service_instance = cached
+            cached = MemoryOrchestratorServices(self)
+            self._services_instance = cached
         return cached
+
+    @property
+    def _memory_service(self) -> "MemoryService":
+        """Lazy-built MemoryService for delegated CRUD/query/scoring methods."""
+        return self._services.memory_service
 
     @property
     def _derivation_service(self) -> "DerivationService":
         """Lazy-built DerivationService for derive-domain methods."""
-        from opencortex.services.derivation_service import DerivationService
-
-        cached = getattr(self, "_derivation_service_instance", None)
-        if cached is None:
-            cached = DerivationService(self)
-            self._derivation_service_instance = cached
-        return cached
+        return self._services.derivation_service
 
     @property
     def _retrieval_service(self) -> "RetrievalService":
         """Lazy-built RetrievalService for search/retrieve-domain methods."""
-        from opencortex.services.retrieval_service import RetrievalService
-
-        cached = getattr(self, "_retrieval_service_instance", None)
-        if cached is None:
-            cached = RetrievalService(self)
-            self._retrieval_service_instance = cached
-        return cached
+        return self._services.retrieval_service
 
     @property
     def _session_lifecycle_service(self) -> "SessionLifecycleService":
         """Lazy-built SessionLifecycleService for session/trace lifecycle methods."""
-        from opencortex.services.session_lifecycle_service import (
-            SessionLifecycleService,
-        )
-
-        cached = getattr(self, "_session_lifecycle_service_instance", None)
-        if cached is None:
-            cached = SessionLifecycleService(self)
-            self._session_lifecycle_service_instance = cached
-        return cached
+        return self._services.session_lifecycle_service
 
     @property
     def _memory_record_service(self) -> "MemoryRecordService":
         """Lazy-built MemoryRecordService for record/projection/URI helpers."""
-        from opencortex.services.memory_record_service import MemoryRecordService
-
-        cached = getattr(self, "_memory_record_service_instance", None)
-        if cached is None:
-            cached = MemoryRecordService(self)
-            self._memory_record_service_instance = cached
-        return cached
+        return self._services.memory_record_service
 
     @property
     def _model_runtime_service(self) -> "ModelRuntimeService":
         """Lazy-built ModelRuntimeService for embedder/rerank runtime helpers."""
-        from opencortex.services.model_runtime_service import ModelRuntimeService
-
-        cached = getattr(self, "_model_runtime_service_instance", None)
-        if cached is None:
-            cached = ModelRuntimeService(self)
-            self._model_runtime_service_instance = cached
-        return cached
+        return self._services.model_runtime_service
 
     @property
     def _memory_sharing_service(self) -> "MemorySharingService":
         """Lazy-built MemorySharingService for sharing/admin mutations."""
-        from opencortex.services.memory_sharing_service import MemorySharingService
-
-        cached = getattr(self, "_memory_sharing_service_instance", None)
-        if cached is None:
-            cached = MemorySharingService(self)
-            self._memory_sharing_service_instance = cached
-        return cached
+        return self._services.memory_sharing_service
 
     @property
     def _memory_admin_stats_service(self) -> "MemoryAdminStatsService":
         """Lazy-built MemoryAdminStatsService for admin memory statistics."""
-        from opencortex.services.memory_admin_stats_service import (
-            MemoryAdminStatsService,
-        )
-
-        cached = getattr(self, "_memory_admin_stats_service_instance", None)
-        if cached is None:
-            cached = MemoryAdminStatsService(self)
-            self._memory_admin_stats_service_instance = cached
-        return cached
+        return self._services.memory_admin_stats_service
 
     @property
     def _knowledge_service(self) -> "KnowledgeService":
-        """Lazy-built KnowledgeService for delegated knowledge methods.
-
-        Phase 2 of plan 012 mirrors the ``_memory_service`` lazy-property
-        pattern. Uses ``getattr`` with default so ``__new__`` bypass
-        tests don't crash on missing attribute.
-        """
-        from opencortex.services.knowledge_service import KnowledgeService
-
-        cached = getattr(self, "_knowledge_service_instance", None)
-        if cached is None:
-            cached = KnowledgeService(self)
-            self._knowledge_service_instance = cached
-        return cached
+        """Lazy-built KnowledgeService for delegated knowledge methods."""
+        return self._services.knowledge_service
 
     @property
     def _system_status_service(self) -> "SystemStatusService":
-        """Lazy-built SystemStatusService for delegated status methods.
-
-        Phase 4 of plan 013 mirrors the ``_knowledge_service`` lazy-property
-        pattern. Uses ``getattr`` with default so ``__new__`` bypass
-        tests don't crash on missing attribute.
-        """
-        from opencortex.services.system_status_service import SystemStatusService
-
-        cached = getattr(self, "_system_status_service_instance", None)
-        if cached is None:
-            cached = SystemStatusService(self)
-            self._system_status_service_instance = cached
-        return cached
+        """Lazy-built SystemStatusService for delegated status methods."""
+        return self._services.system_status_service
 
     @property
     def _background_task_manager(self) -> "BackgroundTaskManager":
-        """Lazy-built BackgroundTaskManager for delegated lifecycle methods.
-
-        Phase 3 of plan 014 mirrors the ``_system_status_service`` lazy-property
-        pattern. Uses ``getattr`` with default so ``__new__`` bypass
-        tests don't crash on missing attribute.
-        """
-        from opencortex.lifecycle.background_tasks import BackgroundTaskManager
-
-        cached = getattr(self, "_background_task_manager_instance", None)
-        if cached is None:
-            cached = BackgroundTaskManager(self)
-            self._background_task_manager_instance = cached
-        return cached
+        """Lazy-built BackgroundTaskManager for delegated lifecycle methods."""
+        return self._services.background_task_manager
 
     @property
     def _bootstrapper(self) -> "SubsystemBootstrapper":
-        """Lazy-built SubsystemBootstrapper for subsystem creation and wiring.
-
-        Phase 5 of plan 015 mirrors the ``_background_task_manager``
-        lazy-property pattern. Uses ``getattr`` with default so
-        ``__new__`` bypass tests don't crash on missing attribute.
-        """
-        from opencortex.lifecycle.bootstrapper import SubsystemBootstrapper
-
-        cached = getattr(self, "_bootstrapper_instance", None)
-        if cached is None:
-            cached = SubsystemBootstrapper(self)
-            self._bootstrapper_instance = cached
-        return cached
+        """Lazy-built SubsystemBootstrapper for subsystem creation and wiring."""
+        return self._services.bootstrapper
 
     # =========================================================================
     # Memory write/mutation facade

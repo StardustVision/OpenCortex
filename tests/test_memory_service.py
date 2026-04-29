@@ -21,10 +21,9 @@ subsystems.
 Note for ``__new__``-bypass test fixtures elsewhere in the suite: if
 a future test constructs ``MemoryOrchestrator`` via
 ``MemoryOrchestrator.__new__(MemoryOrchestrator)`` and then calls a
-delegated method (``add``, ``search``, ``feedback``, ...), it must
-also set ``orch._memory_service = MemoryService(orch)`` to avoid an
-``AttributeError``. The eager-init pattern in ``__init__`` covers all
-normal construction paths.
+delegated method (``add``, ``search``, ``feedback``, ...), the
+orchestrator service registry should lazily create ``MemoryService``
+without an ``AttributeError``.
 """
 
 from __future__ import annotations

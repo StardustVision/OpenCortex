@@ -32,9 +32,9 @@ call time. This mirrors the precedent set by
 ``BenchmarkConversationIngestService``.
 
 Construction is sync and cheap — no I/O, no model loading. The
-orchestrator builds a single ``MemoryService`` instance in
-``__init__`` so that delegate methods can blindly call
-``self._memory_service.X`` without ``if None`` guards.
+orchestrator service registry lazily builds one ``MemoryService`` instance
+so delegate methods can call ``self._memory_service.X`` without
+``if None`` guards.
 """
 
 from __future__ import annotations
@@ -64,8 +64,9 @@ _BATCH_ADD_TASK_CHUNK_SIZE = _BATCH_ADD_CONCURRENCY * 4
 class MemoryService:
     """Compatibility facade plus memory search/listing surface.
 
-    The service is constructed eagerly by the orchestrator and delegates to
-    narrower services or orchestrator-owned subsystems via ``self._orch``.
+    The service is lazily constructed by the orchestrator service registry and
+    delegates to narrower services or orchestrator-owned subsystems via
+    ``self._orch``.
     """
 
     def __init__(self, orchestrator: "MemoryOrchestrator") -> None:
