@@ -9,6 +9,10 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from opencortex.core.context import Context, Vectorize
 from opencortex.core.user_id import UserIdentifier
 from opencortex.http.request_context import get_effective_identity
+from opencortex.services.derivation_service import (
+    _merge_unique_strings,
+    _split_keyword_string,
+)
 
 if TYPE_CHECKING:
     from opencortex.services.memory_write_service import MemoryWriteService
@@ -66,8 +70,6 @@ class MemoryWriteContextBuilder:
         uri: Optional[str],
     ) -> ResolvedWriteTarget:
         """Resolve URI, parent URI, existing record, and explicit metadata."""
-        from opencortex.orchestrator import _merge_unique_strings
-
         orch = self._orch
         resolved_meta = dict(meta or {})
         explicit_entities = _merge_unique_strings(resolved_meta.get("entities"))
@@ -111,11 +113,6 @@ class MemoryWriteContextBuilder:
         layers: Dict[str, Any],
     ) -> AssembledWriteContext:
         """Assemble the post-derive Context, metadata, and object payload."""
-        from opencortex.orchestrator import (
-            _merge_unique_strings,
-            _split_keyword_string,
-        )
-
         orch = self._orch
         meta = target.meta
         derived_entities = layers.get("entities", []) if content and is_leaf else []
