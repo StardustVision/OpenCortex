@@ -66,10 +66,6 @@ from opencortex.retrieve.types import (
     QueryResult,
     TypedQuery,
 )
-from opencortex.services.derivation_service import (
-    _merge_unique_strings as _merge_unique_strings,
-    _split_keyword_string as _split_keyword_string,
-)
 from opencortex.services.memory_signals import MemorySignalBus
 from opencortex.storage.cortex_fs import CortexFS
 from opencortex.storage.storage_interface import StorageInterface
