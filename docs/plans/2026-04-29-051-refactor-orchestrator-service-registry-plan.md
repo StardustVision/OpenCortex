@@ -1,7 +1,7 @@
 ---
 title: refactor: Extract Orchestrator Service Registry
 type: refactor
-status: active
+status: completed
 date: 2026-04-29
 ---
 
