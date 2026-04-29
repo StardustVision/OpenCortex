@@ -1,7 +1,7 @@
 ---
 title: refactor: Remove Orchestrator Helper Re-exports
 type: refactor
-status: active
+status: completed
 date: 2026-04-29
 ---
 
