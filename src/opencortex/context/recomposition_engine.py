@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
@@ -34,6 +33,7 @@ from opencortex.context.recomposition_segmentation import (
 )
 from opencortex.context.recomposition_state import RecompositionStateService
 from opencortex.context.recomposition_types import RecompositionEntry
+from opencortex.context.recomposition_write import RecompositionWriteService
 from opencortex.context.session_records import (
     record_msg_range,
     record_text,
@@ -67,6 +67,7 @@ class SessionRecompositionEngine:
         self._input = RecompositionInputService(manager)
         self._segmentation = RecompositionSegmentationService()
         self._state = RecompositionStateService(manager, self._input)
+        self._write = RecompositionWriteService(manager)
 
     # =========================================================================
     # URI Construction
@@ -80,18 +81,11 @@ class SessionRecompositionEngine:
         msg_range: List[int],
     ) -> str:
         """Return one stable merged-leaf URI for a session message span."""
-        from opencortex.utils.uri import CortexURI
-
-        start = int(msg_range[0])
-        end = int(msg_range[1])
-        session_hash = hashlib.md5(session_id.encode("utf-8")).hexdigest()[:12]
-        node_name = f"conversation-{session_hash}-{start:06d}-{end:06d}"
-        return CortexURI.build_private(
+        return RecompositionWriteService.merged_leaf_uri(
             tenant_id,
             user_id,
-            "memories",
-            "events",
-            node_name,
+            session_id,
+            msg_range,
         )
 
     @staticmethod
@@ -102,16 +96,11 @@ class SessionRecompositionEngine:
         index: int,
     ) -> str:
         """Return URI for a directory parent record."""
-        from opencortex.utils.uri import CortexURI
-
-        session_hash = hashlib.md5(session_id.encode("utf-8")).hexdigest()[:12]
-        node_name = f"conversation-{session_hash}/dir-{index:03d}"
-        return CortexURI.build_private(
+        return RecompositionWriteService.directory_uri(
             tenant_id,
             user_id,
-            "memories",
-            "events",
-            node_name,
+            session_id,
+            index,
         )
 
     # =========================================================================
@@ -478,22 +467,6 @@ class SessionRecompositionEngine:
                 if not derived:
                     continue
 
-                llm_abstract = derived.get("abstract", "")
-                llm_overview = derived.get("overview", "")
-                keywords_list = derived.get("keywords", [])
-                keywords_str = (
-                    ", ".join(str(k) for k in keywords_list if k)
-                    if isinstance(keywords_list, list)
-                    else ""
-                )
-
-                dir_uri = self._directory_uri(
-                    tenant_id,
-                    user_id,
-                    session_id,
-                    directory_index,
-                )
-
                 aggregated_meta = await self._aggregate_records_metadata(source_records)
                 all_tool_calls: List[Dict[str, Any]] = []
                 for rec in source_records:
@@ -502,63 +475,19 @@ class SessionRecompositionEngine:
                         if isinstance(call, dict):
                             all_tool_calls.append(call)
 
-                content = "\n\n".join(children_abstracts)
-
-                await self._mgr._orchestrator.add(
-                    uri=dir_uri,
-                    abstract=llm_abstract,
-                    content=content,
-                    category="events",
-                    context_type="memory",
-                    is_leaf=False,
+                dir_uri = await self._write.write_directory_record(
                     session_id=session_id,
-                    meta={
-                        **aggregated_meta,
-                        "layer": "directory",
-                        "ingest_mode": "memory",
-                        "msg_range": list(segment["msg_range"]),
-                        "source_uri": source_uri or "",
-                        "session_id": session_id,
-                        "child_count": len(source_records),
-                        "child_uris": [str(r.get("uri", "")) for r in source_records],
-                        "tool_calls": all_tool_calls if all_tool_calls else [],
-                    },
-                    overview=llm_overview,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    source_uri=source_uri or "",
+                    directory_index=directory_index,
+                    segment=segment,
+                    children_abstracts=children_abstracts,
+                    derived=derived,
+                    aggregated_meta=aggregated_meta,
+                    all_tool_calls=all_tool_calls,
                 )
-
                 created_directory_uris.append(dir_uri)
-
-                if keywords_str:
-                    try:
-                        records = await self._mgr._orchestrator._storage.filter(
-                            self._mgr._orchestrator._get_collection(),
-                            {"op": "must", "field": "uri", "conds": [dir_uri]},
-                            limit=1,
-                        )
-                        if records:
-                            await self._mgr._orchestrator._storage.update(
-                                self._mgr._orchestrator._get_collection(),
-                                str(records[0].get("id", "")),
-                                {"keywords": keywords_str},
-                            )
-                    except Exception:
-                        logger.warning(
-                            "[ContextManager] Failed to patch keywords for %s", dir_uri
-                        )
-
-                fs = getattr(self._mgr._orchestrator, "_fs", None)
-                if fs is not None:
-                    await fs.write_context(
-                        uri=dir_uri,
-                        content=content,
-                        abstract=llm_abstract,
-                        abstract_json={
-                            "keywords": keywords_list,
-                            "child_count": len(source_records),
-                        },
-                        overview=llm_overview,
-                        is_leaf=False,
-                    )
 
             logger.info(
                 "[ContextManager] Full recompose completed sid=%s directories=%d "
@@ -694,7 +623,6 @@ class SessionRecompositionEngine:
             if len(directory_records) == 1
             else ""
         )
-        summary_uri = self._mgr._session_summary_uri(tenant_id, user_id, session_id)
         if (
             len(directory_records) == 1
             and only_dir_abstract
@@ -717,64 +645,16 @@ class SessionRecompositionEngine:
             llm_abstract = derived.get("abstract", "")
             llm_overview = derived.get("overview", "")
             keywords_list = derived.get("keywords", [])
-        keywords_str = (
-            ", ".join(str(k) for k in keywords_list if k)
-            if isinstance(keywords_list, list)
-            else ""
-        )
-
-        content = "\n\n".join(abstracts)
-
-        await self._mgr._orchestrator.add(
-            uri=summary_uri,
-            abstract=llm_abstract,
-            content=content,
-            category="events",
-            context_type="memory",
-            is_leaf=False,
+        summary_uri = await self._write.write_session_summary(
             session_id=session_id,
-            meta={
-                "layer": "session_summary",
-                "session_id": session_id,
-                "source_uri": source_uri or "",
-                "child_count": len(abstracts),
-                "topics": keywords_list,
-            },
-            overview=llm_overview,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            source_uri=source_uri or "",
+            abstracts=abstracts,
+            llm_abstract=llm_abstract,
+            llm_overview=llm_overview,
+            keywords_list=keywords_list,
         )
-
-        # Patch keywords into the Qdrant record (add() fast-path skips them).
-        if keywords_str:
-            try:
-                records = await self._mgr._orchestrator._storage.filter(
-                    self._mgr._orchestrator._get_collection(),
-                    {"op": "must", "field": "uri", "conds": [summary_uri]},
-                    limit=1,
-                )
-                if records:
-                    await self._mgr._orchestrator._storage.update(
-                        self._mgr._orchestrator._get_collection(),
-                        str(records[0].get("id", "")),
-                        {"keywords": keywords_str},
-                    )
-            except Exception:
-                logger.warning(
-                    "[ContextManager] Failed to patch keywords for %s", summary_uri
-                )
-
-        fs = getattr(self._mgr._orchestrator, "_fs", None)
-        if fs is not None:
-            await fs.write_context(
-                uri=summary_uri,
-                content=content,
-                abstract=llm_abstract,
-                abstract_json={
-                    "keywords": keywords_list,
-                    "child_count": len(abstracts),
-                },
-                overview=llm_overview,
-                is_leaf=False,
-            )
 
         logger.info(
             "[ContextManager] Session summary generated sid=%s uri=%s children=%d",
@@ -863,67 +743,18 @@ class SessionRecompositionEngine:
                     aggregated_meta = await self._aggregate_records_metadata(
                         segment["source_records"]
                     )
-                    merged_context = await self._mgr._orchestrator.add(
-                        uri=self._merged_leaf_uri(
-                            tenant_id,
-                            user_id,
-                            session_id,
-                            segment["msg_range"],
-                        ),
-                        abstract="",
-                        content=combined,
-                        category="events",
-                        context_type="memory",
-                        meta={
-                            **aggregated_meta,
-                            "layer": "merged",
-                            "ingest_mode": "memory",
-                            "msg_range": list(segment["msg_range"]),
-                            "source_uri": source_uri,
-                            "session_id": session_id,
-                            "recomposition_stage": "online_tail",
-                            "tool_calls": all_tool_calls if all_tool_calls else [],
-                        },
+                    merged_uri = await self._write.write_merged_leaf(
+                        sk=sk,
                         session_id=session_id,
-                        defer_derive=True,
+                        tenant_id=tenant_id,
+                        user_id=user_id,
+                        source_uri=source_uri,
+                        msg_range=list(segment["msg_range"]),
+                        content=combined,
+                        aggregated_meta=aggregated_meta,
+                        all_tool_calls=all_tool_calls,
                     )
-                    created_merged_uris.append(merged_context.uri)
-
-                    async def _bounded_derive(
-                        sem: asyncio.Semaphore = self._mgr._derive_semaphore,
-                        **dkw: Any,
-                    ) -> None:
-                        async with sem:
-                            await self._mgr._orchestrator._complete_deferred_derive(
-                                **dkw
-                            )
-
-                    _defer_task = asyncio.create_task(
-                        _bounded_derive(
-                            uri=merged_context.uri,
-                            content=combined,
-                            abstract="",
-                            overview="",
-                            session_id=session_id,
-                            meta=aggregated_meta,
-                            raise_on_error=True,
-                        )
-                    )
-                    self._track_session_merge_followup_task(sk, _defer_task)
-                    _defer_task.add_done_callback(
-                        lambda t: (
-                            None
-                            if t.cancelled()
-                            else (
-                                logger.warning(
-                                    "[ContextManager] deferred derive failed: %s",
-                                    t.exception(),
-                                )
-                                if t.exception()
-                                else None
-                            )
-                        )
-                    )
+                    created_merged_uris.append(merged_uri)
 
                 superseded_merged_uris = _merge_unique_strings(
                     *[segment.get("superseded_merged_uris", []) for segment in segments]
