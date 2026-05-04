@@ -97,10 +97,59 @@ class TestMemoryWriteDedupService(unittest.IsolatedAsyncioTestCase):
                 "conds": [
                     {
                         "op": "must",
-                        "field": "source_tenant_id",
-                        "conds": ["tenant-1"],
+                        "field": "is_leaf",
+                        "conds": [True],
                     },
-                    {"op": "must", "field": "is_leaf", "conds": [True]},
+                    {
+                        "op": "and",
+                        "conds": [
+                            {
+                                "op": "must_not",
+                                "field": "context_type",
+                                "conds": ["staging"],
+                            },
+                            {
+                                "op": "or",
+                                "conds": [
+                                    {
+                                        "op": "must",
+                                        "field": "scope",
+                                        "conds": ["shared", ""],
+                                    },
+                                    {
+                                        "op": "and",
+                                        "conds": [
+                                            {
+                                                "op": "must",
+                                                "field": "scope",
+                                                "conds": ["private"],
+                                            },
+                                            {
+                                                "op": "must",
+                                                "field": "source_user_id",
+                                                "conds": ["user-1"],
+                                            },
+                                        ],
+                                    },
+                                ],
+                            },
+                            {
+                                "op": "must",
+                                "field": "source_tenant_id",
+                                "conds": ["tenant-1", ""],
+                            },
+                            {
+                                "op": "must",
+                                "field": "project_id",
+                                "conds": ["project-9", "public", ""],
+                            },
+                            {
+                                "op": "must_not",
+                                "field": "meta.superseded",
+                                "conds": [True],
+                            },
+                        ],
+                    },
                     {
                         "op": "must",
                         "field": "memory_kind",
@@ -110,32 +159,6 @@ class TestMemoryWriteDedupService(unittest.IsolatedAsyncioTestCase):
                         "op": "must",
                         "field": "merge_signature",
                         "conds": ["sig-1"],
-                    },
-                    {
-                        "op": "or",
-                        "conds": [
-                            {"op": "must", "field": "scope", "conds": ["shared"]},
-                            {
-                                "op": "and",
-                                "conds": [
-                                    {
-                                        "op": "must",
-                                        "field": "scope",
-                                        "conds": ["private"],
-                                    },
-                                    {
-                                        "op": "must",
-                                        "field": "source_user_id",
-                                        "conds": ["user-1"],
-                                    },
-                                ],
-                            },
-                        ],
-                    },
-                    {
-                        "op": "must",
-                        "field": "project_id",
-                        "conds": ["project-9"],
                     },
                 ],
             },

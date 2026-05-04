@@ -131,16 +131,7 @@ class TestMemoryRecallPipelineService(unittest.IsolatedAsyncioTestCase):
             score=0.1,
         )
         runtime_result = MagicMock()
-        orch = SimpleNamespace(
-            _ensure_init=MagicMock(),
-            _config=SimpleNamespace(explain_enabled=True),
-            _memory_signal_bus=signal_bus,
-            _memory_runtime=SimpleNamespace(
-                finalize=MagicMock(return_value=runtime_result)
-            ),
-            bind_memory_runtime=MagicMock(
-                return_value={"memory_limit": 4, "effective_depth": "l0"}
-            ),
+        retrieval_service = SimpleNamespace(
             _build_search_filter=MagicMock(return_value={"op": "and", "conds": []}),
             _execute_object_query=AsyncMock(return_value=query_result),
             _aggregate_results=MagicMock(
@@ -151,20 +142,32 @@ class TestMemoryRecallPipelineService(unittest.IsolatedAsyncioTestCase):
                 )
             ),
         )
-        memory_service = SimpleNamespace(
-            _orch=orch,
-            _build_typed_queries=MagicMock(return_value=[typed_query]),
-            _summarize_retrieve_breakdown=MagicMock(
-                return_value={
-                    "embed": 1.0,
-                    "search": 2.0,
-                    "rerank": 0.0,
-                    "assemble": 0.5,
-                    "total": 3.5,
-                }
+        orch = SimpleNamespace(
+            _ensure_init=MagicMock(),
+            _config=SimpleNamespace(explain_enabled=True),
+            _memory_signal_bus=signal_bus,
+            _memory_runtime=SimpleNamespace(
+                finalize=MagicMock(return_value=runtime_result)
+            ),
+            _retrieval_service=retrieval_service,
+            bind_memory_runtime=MagicMock(
+                return_value={"memory_limit": 4, "effective_depth": "l0"}
             ),
         )
+        memory_service = SimpleNamespace(
+            _orch=orch,
+        )
         query_service = MemoryQueryService(memory_service)
+        query_service._build_typed_queries = MagicMock(return_value=[typed_query])
+        query_service._summarize_retrieve_breakdown = MagicMock(
+            return_value={
+                "embed": 1.0,
+                "search": 2.0,
+                "rerank": 0.0,
+                "assemble": 0.5,
+                "total": 3.5,
+            }
+        )
         pipeline = MemoryRecallPipelineService(query_service)
         probe_result = SearchResult(should_recall=True)
         retrieve_plan = MagicMock(retrieval_depth=RetrievalDepth.L0)
@@ -179,11 +182,11 @@ class TestMemoryRecallPipelineService(unittest.IsolatedAsyncioTestCase):
         finally:
             reset_request_identity(tokens)
 
-        memory_service._build_typed_queries.assert_called_once()
-        memory_service._summarize_retrieve_breakdown.assert_called_once_with(
-            [query_result]
-        )
-        orch._execute_object_query.assert_awaited_once()
+        query_service._build_typed_queries.assert_called_once()
+        query_service._summarize_retrieve_breakdown.assert_called_once_with([query_result])
+        retrieval_service._build_search_filter.assert_called_once()
+        retrieval_service._execute_object_query.assert_awaited_once()
+        retrieval_service._aggregate_results.assert_called_once()
         orch._memory_runtime.finalize.assert_called_once()
         self.assertEqual(result.memories, [memory])
         self.assertEqual(result.total, 1)

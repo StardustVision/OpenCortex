@@ -385,19 +385,8 @@ class _SimpleDecayResult:
 # =============================================================================
 
 
-@asynccontextmanager
-async def _test_app_context():
-    """Create a FastAPI app wired to in-memory test backends.
-
-    Yields an httpx.AsyncClient bound to the ASGI app.
-    Manually manages the orchestrator lifecycle since httpx ASGITransport
-    does not trigger ASGI lifespan events.
-
-    Includes both business and admin routers so admin-gated endpoints
-    (e.g. ``/api/v1/admin/benchmark/conversation_ingest``) are reachable;
-    tests that need admin privilege call :func:`set_request_role("admin")`
-    before issuing the request.
-    """
+async def _build_test_app():
+    """Create the shared HTTP test app, orchestrator, and temp dir."""
     from fastapi import FastAPI
     import opencortex.http.server as http_server
     from opencortex.http.admin_routes import (
@@ -426,13 +415,49 @@ async def _test_app_context():
     app = FastAPI()
     app.include_router(admin_router)
     http_server._register_routes(app)
+    return app, orch, temp_dir
 
+
+@asynccontextmanager
+async def _test_app_context():
+    """Create a FastAPI app wired to in-memory test backends.
+
+    Yields an httpx.AsyncClient bound to the ASGI app.
+    Manually manages the orchestrator lifecycle since httpx ASGITransport
+    does not trigger ASGI lifespan events.
+
+    Includes both business and admin routers so admin-gated endpoints
+    (e.g. ``/api/v1/admin/benchmark/conversation_ingest``) are reachable;
+    tests that need admin privilege call :func:`set_request_role("admin")`
+    before issuing the request.
+    """
+    import opencortex.http.server as http_server
+
+    app, orch, temp_dir = await _build_test_app()
     transport = ASGITransport(app=app)
     async with httpx.AsyncClient(
         transport=transport, base_url="http://testserver"
     ) as client:
         try:
             yield client
+        finally:
+            await orch.close()
+            http_server._orchestrator = None
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+@asynccontextmanager
+async def _test_app_context_with_orchestrator():
+    """Create a test app and yield both client and orchestrator."""
+    import opencortex.http.server as http_server
+
+    app, orch, temp_dir = await _build_test_app()
+    transport = ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        try:
+            yield client, orch
         finally:
             await orch.close()
             http_server._orchestrator = None
@@ -681,6 +706,61 @@ class TestHTTPServer(unittest.TestCase):
                 self.assertEqual(
                     data["memory_pipeline"]["planner"]["query_plan"]["rewrite_mode"],
                     "none",
+                )
+
+        self._run(check())
+
+    def test_03d_memory_search_forwards_extended_scope_fields(self):
+        """POST /api/v1/memory/search forwards service-supported scope fields."""
+
+        async def check():
+            async with _test_app_context_with_orchestrator() as (client, orch):
+                captured: Dict[str, Any] = {}
+                original_search = orch.search
+
+                async def tracking_search(*args, **kwargs):
+                    captured.update(kwargs)
+                    return await original_search(*args, **kwargs)
+
+                orch.search = tracking_search
+                await client.post(
+                    "/api/v1/memory/store",
+                    json={
+                        "abstract": "Launch plan notes for the active project",
+                        "category": "events",
+                    },
+                )
+                resp = await client.post(
+                    "/api/v1/memory/search",
+                    json={
+                        "query": "launch notes",
+                        "limit": 5,
+                        "target_uri": "opencortex://tenant/user/memories/events",
+                        "score_threshold": 0.12,
+                        "target_doc_id": "doc-1",
+                        "session_context": {"session_id": "session-1"},
+                        "metadata_filter": {
+                            "op": "must",
+                            "field": "category",
+                            "conds": ["events"],
+                        },
+                    },
+                )
+                self.assertEqual(resp.status_code, 200)
+                self.assertEqual(
+                    captured["target_uri"],
+                    "opencortex://tenant/user/memories/events",
+                )
+                self.assertEqual(captured["score_threshold"], 0.12)
+                self.assertEqual(captured["meta"], {"target_doc_id": "doc-1"})
+                self.assertEqual(captured["session_context"], {"session_id": "session-1"})
+                self.assertEqual(
+                    captured["metadata_filter"],
+                    {
+                        "op": "must",
+                        "field": "category",
+                        "conds": ["events"],
+                    },
                 )
 
         self._run(check())

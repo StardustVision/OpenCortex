@@ -32,6 +32,7 @@ from opencortex.retrieve.types import (
     QueryResult,
     TypedQuery,
 )
+from opencortex.services.memory_filters import FilterExpr, memory_visibility_filter
 
 if TYPE_CHECKING:
     from opencortex.orchestrator import MemoryOrchestrator
@@ -212,58 +213,22 @@ class RetrievalService:
         """Build the shared search filter used by probe and retrieval."""
         tid, uid = get_effective_identity()
 
-        staging_exclude = {
-            "op": "must_not",
-            "field": "context_type",
-            "conds": ["staging"],
-        }
-        scope_filter = {
-            "op": "or",
-            "conds": [
-                {"op": "must", "field": "scope", "conds": ["shared", ""]},
-                {
-                    "op": "and",
-                    "conds": [
-                        {"op": "must", "field": "scope", "conds": ["private"]},
-                        {"op": "must", "field": "source_user_id", "conds": [uid]},
-                    ],
-                },
-            ],
-        }
-
-        combined_conds = [staging_exclude, scope_filter]
-        if tid:
-            combined_conds.append(
-                {
-                    "op": "must",
-                    "field": "source_tenant_id",
-                    "conds": [tid, ""],
-                }
-            )
-
-        project_id = get_effective_project_id()
-        if project_id and project_id != "public":
-            combined_conds.append(
-                {
-                    "op": "or",
-                    "conds": [
-                        {
-                            "op": "must",
-                            "field": "project_id",
-                            "conds": [project_id, "public"],
-                        },
-                    ],
-                }
-            )
+        combined_conds = [
+            memory_visibility_filter(
+                tenant_id=tid,
+                user_id=uid,
+                project_id=get_effective_project_id(),
+                exclude_staging=True,
+                exclude_superseded=False,
+            ).to_dict()
+        ]
 
         if category_filter:
             combined_conds.append(
-                {"op": "must", "field": "category", "conds": list(category_filter)}
+                FilterExpr.eq("category", *category_filter).to_dict()
             )
 
-        combined_conds.append(
-            {"op": "must_not", "field": "meta.superseded", "conds": [True]}
-        )
+        combined_conds.append(FilterExpr.neq("meta.superseded", True).to_dict())
 
         if metadata_filter:
             return {"op": "and", "conds": [metadata_filter] + combined_conds}

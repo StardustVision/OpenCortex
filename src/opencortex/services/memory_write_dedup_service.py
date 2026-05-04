@@ -10,6 +10,11 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from opencortex.core.context import Context
 from opencortex.http.request_context import get_effective_project_id
+from opencortex.services.memory_filters import (
+    FilterExpr,
+    and_filter,
+    memory_visibility_filter,
+)
 from opencortex.services.memory_signals import MemoryStoredSignal
 
 if TYPE_CHECKING:
@@ -29,37 +34,6 @@ class DedupMergeResult:
     existing_record: Dict[str, Any] = field(default_factory=dict)
     dedup_ms: int = 0
     total_ms_at_match: int = 0
-
-
-@dataclass(frozen=True)
-class FilterExpr:
-    """Small typed builder for the storage filter DSL."""
-
-    op: str
-    field: str = ""
-    values: Tuple[Any, ...] = ()
-    children: Tuple["FilterExpr", ...] = ()
-
-    @classmethod
-    def eq(cls, field: str, *values: Any) -> "FilterExpr":
-        """Build an equality/membership filter."""
-        return cls(op="must", field=field, values=tuple(values))
-
-    @classmethod
-    def all(cls, *children: "FilterExpr") -> "FilterExpr":
-        """Build an AND expression."""
-        return cls(op="and", children=tuple(child for child in children if child))
-
-    @classmethod
-    def any(cls, *children: "FilterExpr") -> "FilterExpr":
-        """Build an OR expression."""
-        return cls(op="or", children=tuple(child for child in children if child))
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Serialize to the storage filter DSL."""
-        if self.op == "must":
-            return {"op": "must", "field": self.field, "conds": list(self.values)}
-        return {"op": self.op, "conds": [child.to_dict() for child in self.children]}
 
 
 class MemoryWriteDedupService:
@@ -214,26 +188,20 @@ class MemoryWriteDedupService:
     ) -> Dict[str, Any]:
         """Build the tenant/scope/project filter for duplicate search."""
         clauses = [
-            FilterExpr.eq("source_tenant_id", tid),
             FilterExpr.eq("is_leaf", True),
+            memory_visibility_filter(
+                tenant_id=tid,
+                user_id=uid,
+                project_id=get_effective_project_id(),
+                exclude_staging=True,
+                exclude_superseded=True,
+            ),
         ]
         if memory_kind:
             clauses.append(FilterExpr.eq("memory_kind", memory_kind))
         if merge_signature:
             clauses.append(FilterExpr.eq("merge_signature", merge_signature))
-        clauses.append(
-            FilterExpr.any(
-                FilterExpr.eq("scope", "shared"),
-                FilterExpr.all(
-                    FilterExpr.eq("scope", "private"),
-                    FilterExpr.eq("source_user_id", uid),
-                ),
-            )
-        )
-        project_id = get_effective_project_id()
-        if project_id:
-            clauses.append(FilterExpr.eq("project_id", project_id))
-        return FilterExpr.all(*clauses).to_dict()
+        return and_filter(*clauses)
 
     def _publish_merge_signal(
         self,

@@ -229,6 +229,11 @@ class OpenCortexClient:
         context_type: Optional[str] = None,
         category: Optional[str] = None,
         detail_level: str = "l1",
+        target_uri: str = "",
+        score_threshold: Optional[float] = None,
+        target_doc_id: Optional[str] = None,
+        session_context: Optional[Dict[str, Any]] = None,
+        metadata_filter: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Search memories and validate the typed transport payload."""
         payload: Dict[str, Any] = {
@@ -240,6 +245,16 @@ class OpenCortexClient:
             payload["context_type"] = context_type
         if category is not None:
             payload["category"] = category
+        if target_uri:
+            payload["target_uri"] = target_uri
+        if score_threshold is not None:
+            payload["score_threshold"] = score_threshold
+        if target_doc_id is not None:
+            payload["target_doc_id"] = target_doc_id
+        if session_context is not None:
+            payload["session_context"] = session_context
+        if metadata_filter is not None:
+            payload["metadata_filter"] = metadata_filter
         response = await self._post("/api/v1/memory/search", payload)
         try:
             parsed = MemorySearchResponse.model_validate(response)

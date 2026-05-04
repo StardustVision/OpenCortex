@@ -77,6 +77,22 @@ class MemorySearchRequest(BaseModel):
         ),
     )
     detail_level: str = "l1"
+    target_uri: str = Field(
+        default="",
+        description="Optional URI subtree scope for targeted recall.",
+    )
+    score_threshold: Optional[float] = Field(
+        default=None,
+        description="Optional minimum retrieval score threshold.",
+    )
+    target_doc_id: Optional[str] = Field(
+        default=None,
+        description="Optional source document id scope for document recall.",
+    )
+    session_context: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optional session context, e.g. {'session_id': '...'}.",
+    )
     metadata_filter: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Optional structured metadata filter for benchmark-scoped search.",

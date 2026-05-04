@@ -7,6 +7,7 @@ import asyncio
 import shutil
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 from opencortex.config import CortexConfig, init_config
@@ -132,15 +133,18 @@ class TestRecallSignals(unittest.IsolatedAsyncioTestCase):
                 matched_contexts=[],
             )
 
-        oc._execute_object_query = AsyncMock(side_effect=fake_query)
         memory = MatchedContext(
             uri="opencortex://tenant/user/memories/test",
             context_type=ContextType.MEMORY,
             is_leaf=True,
             abstract="test memory",
         )
-        oc._aggregate_results = MagicMock(
-            return_value=FindResult(memories=[memory], resources=[], skills=[])
+        oc._retrieval_service_instance = SimpleNamespace(
+            _build_search_filter=MagicMock(return_value={"op": "and", "conds": []}),
+            _execute_object_query=AsyncMock(side_effect=fake_query),
+            _aggregate_results=MagicMock(
+                return_value=FindResult(memories=[memory], resources=[], skills=[])
+            ),
         )
 
         received: list[RecallCompletedSignal] = []

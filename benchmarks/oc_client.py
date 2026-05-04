@@ -148,6 +148,10 @@ class OCClient:
         category: str = "",
         detail_level: str = "l2",
         context_type: Optional[str] = None,
+        target_uri: str = "",
+        score_threshold: Optional[float] = None,
+        target_doc_id: Optional[str] = None,
+        session_context: Optional[Dict[str, Any]] = None,
         metadata_filter: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Search memories and return the raw response payload."""
@@ -160,6 +164,14 @@ class OCClient:
             payload["category"] = category
         if context_type:
             payload["context_type"] = context_type
+        if target_uri:
+            payload["target_uri"] = target_uri
+        if score_threshold is not None:
+            payload["score_threshold"] = score_threshold
+        if target_doc_id is not None:
+            payload["target_doc_id"] = target_doc_id
+        if session_context is not None:
+            payload["session_context"] = session_context
         if metadata_filter:
             payload["metadata_filter"] = metadata_filter
         return await self._post("/api/v1/memory/search", payload)
