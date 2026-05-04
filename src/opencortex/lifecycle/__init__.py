@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Lifecycle-tier modules extracted from ``MemoryOrchestrator``.
+"""Lifecycle-tier modules extracted from ``CortexMemory``.
 
 This namespace holds services responsible for the runtime lifecycle
 of background tasks and subsystem boot sequencing. Each service takes
-a back-reference to the orchestrator at construction (sync, no I/O)
+a back-reference to the memory facade at construction (sync, no I/O)
 and manages a focused lifecycle concern.
 
 This is part of the multi-PR decomposition documented in

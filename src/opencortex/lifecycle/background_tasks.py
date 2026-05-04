@@ -4,7 +4,7 @@
 All background sweeper and worker methods have been
 extracted from ``CortexMemory`` as part of plan 014 (Phase 3 of
 the God Object decomposition). This module owns the startup and teardown
-of every async background loop that runs inside the orchestrator process.
+of every async background loop that runs inside the CortexMemory process.
 
 Boundary
 --------
@@ -24,21 +24,21 @@ It is explicitly NOT responsible for:
 - Knowledge lifecycle — owned by ``KnowledgeService``
 - System status reporting — owned by ``SystemStatusService``
 - Deferred derive completion — owned by ``DerivationService`` and exposed
-  through orchestrator compatibility wrappers
+  through memory facade compatibility wrappers
 - Subsystem boot sequencing — Phase 5 (``SubsystemBootstrapper``)
 
 Design
 ------
-The service holds a back-reference to the orchestrator (``self._orch``)
-and reaches into orchestrator-owned subsystems at call time. All task
+The service holds a back-reference to CortexMemory (``self._orch``)
+and reaches into CortexMemory-owned subsystems at call time. All task
 handles (``_connection_sweep_task``, ``_autophagy_sweep_task``, etc.)
 and status attributes (``_last_connection_sweep_at``,
-``_last_connection_sweep_status``) remain on the orchestrator so that
+``_last_connection_sweep_status``) remain on CortexMemory so that
 the admin health endpoint at ``/admin/health/connections`` can read
 them via ``getattr(_orchestrator, ...)`` without route changes.
 
 Construction is sync and cheap — no I/O, no model loading. The
-orchestrator lazily builds a single ``BackgroundTaskManager`` instance
+CortexMemory service registry lazily builds a single ``BackgroundTaskManager`` instance
 via the ``_background_task_manager`` property.
 """
 
@@ -62,12 +62,12 @@ class BackgroundTaskManager:
 
     All methods have been extracted from ``CortexMemory`` as
     part of plan 014 (Phase 3). The manager is lazily constructed by
-    the orchestrator and reaches into orchestrator-owned subsystems
+    CortexMemory and reaches into CortexMemory-owned subsystems
     via ``self._orch``.
     """
 
     def __init__(self, orchestrator: "CortexMemory") -> None:
-        """Bind the manager to its parent orchestrator.
+        """Bind the manager to its parent memory facade.
 
         Args:
             orchestrator: The ``CortexMemory`` instance whose
@@ -686,7 +686,7 @@ class BackgroundTaskManager:
         3. Memory signal handler tasks
         4. Derive worker (graceful drain via sentinel, then forced cancel on timeout)
 
-        Resets each task handle attribute on the orchestrator to ``None``
+        Resets each task handle attribute on CortexMemory to ``None``
         after cancellation, mirroring the original ``close()`` behavior.
         """
         orch = self._orch

@@ -25,14 +25,14 @@ It is explicitly NOT responsible for:
 
 Design
 ------
-The service holds a back-reference to the orchestrator
-(``self._orch``) and reaches into orchestrator-owned subsystems
+The service holds a back-reference to CortexMemory
+(``self._orch``) and reaches into CortexMemory-owned subsystems
 (``_storage``, ``_embedder``, ``_fs``, ``_recall_planner``, etc.) at
 call time. This mirrors the precedent set by
 ``BenchmarkConversationIngestService``.
 
 Construction is sync and cheap — no I/O, no model loading. The
-orchestrator service registry lazily builds one ``MemoryService`` instance
+CortexMemory service registry lazily builds one ``MemoryService`` instance
 so delegate methods can call ``self._memory_service.X`` without
 ``if None`` guards.
 """
@@ -64,13 +64,13 @@ _BATCH_ADD_TASK_CHUNK_SIZE = _BATCH_ADD_CONCURRENCY * 4
 class MemoryService:
     """Compatibility facade plus memory search/listing surface.
 
-    The service is lazily constructed by the orchestrator service registry and
-    delegates to narrower services or orchestrator-owned subsystems via
+    The service is lazily constructed by the CortexMemory service registry and
+    delegates to narrower services or CortexMemory-owned subsystems via
     ``self._orch``.
     """
 
     def __init__(self, orchestrator: "CortexMemory") -> None:
-        """Bind the service to its parent orchestrator.
+        """Bind the service to its parent memory facade.
 
         Args:
             orchestrator: The ``CortexMemory`` instance whose

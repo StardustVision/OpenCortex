@@ -24,8 +24,8 @@ It is explicitly NOT responsible for:
 
 Design
 ------
-The service holds a back-reference to the orchestrator
-(``self._orch``) and reaches into orchestrator-owned subsystems
+The service holds a back-reference to CortexMemory
+(``self._orch``) and reaches into CortexMemory-owned subsystems
 (``_knowledge_store``, ``_archivist``, ``_trace_store``,
 ``_llm_completion``, ``_config``) at call time. This mirrors the
 pattern established by ``MemoryService`` in plans 010/011.
@@ -55,12 +55,12 @@ class KnowledgeService:
 
     All 7 public methods have been extracted from
     ``CortexMemory`` as part of plan 012. The service is
-    lazily constructed by the orchestrator and delegates to
-    orchestrator-owned subsystems via ``self._orch``.
+    lazily constructed by the CortexMemory service registry and delegates to
+    CortexMemory-owned subsystems via ``self._orch``.
     """
 
     def __init__(self, orchestrator: "CortexMemory") -> None:
-        """Bind the service to its parent orchestrator.
+        """Bind the service to its parent memory facade.
 
         Args:
             orchestrator: The ``CortexMemory`` instance whose

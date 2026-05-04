@@ -24,7 +24,7 @@ _IMMEDIATE_LOCAL_FALLBACK_MODEL = "BAAI/bge-m3"
 
 
 class ModelRuntimeService:
-    """Own embedder and rerank runtime helpers for the orchestrator."""
+    """Own embedder and rerank runtime helpers for CortexMemory."""
 
     def __init__(self, orchestrator: "CortexMemory") -> None:
         self._orch = orchestrator

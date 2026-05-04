@@ -404,7 +404,7 @@ class BenchmarkConversationIngestRecord(BaseModel):
             "Raw conversation text for this record. Hydrated by the "
             "ingest service from the in-memory write-time map (REVIEW "
             "R3-RC-06 / U10) so adapters receive the actual segment "
-            "text rather than what the orchestrator's fire-and-forget "
+            "text rather than what CortexMemory's fire-and-forget "
             "CortexFS write may not have flushed yet. Falls back to a "
             "CortexFS read for records the in-memory map does not "
             "cover (e.g. directory records appended during recompose)."
