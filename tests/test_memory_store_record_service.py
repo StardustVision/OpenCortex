@@ -40,7 +40,7 @@ class TestMemoryStoreRecordService(unittest.IsolatedAsyncioTestCase):
         fs.write_context = AsyncMock()
         signal_bus = _SignalBus()
         entity_index = MagicMock()
-        orch = SimpleNamespace(
+        write_service = SimpleNamespace(
             _storage=storage,
             _fs=fs,
             _memory_signal_bus=signal_bus,
@@ -53,8 +53,7 @@ class TestMemoryStoreRecordService(unittest.IsolatedAsyncioTestCase):
             _sync_anchor_projection_records=AsyncMock(),
             _ttl_from_hours=MagicMock(side_effect=lambda hours: f"ttl:{hours}"),
         )
-        write_service = SimpleNamespace(_orch=orch)
-        return MemoryStoreRecordService(write_service), orch
+        return MemoryStoreRecordService(write_service), write_service
 
     async def test_persist_context_record_assembles_and_persists_record(self) -> None:
         """The service owns normal store record payload construction."""

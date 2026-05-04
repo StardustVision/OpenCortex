@@ -40,7 +40,7 @@ class TestMemoryDirectoryRecordService(unittest.IsolatedAsyncioTestCase):
             filter=AsyncMock(side_effect=filter_results),
             upsert=AsyncMock(),
         )
-        orch = SimpleNamespace(
+        write_service = SimpleNamespace(
             _storage=storage,
             _embedder=embedder,
             _get_collection=MagicMock(return_value="context"),
@@ -48,8 +48,7 @@ class TestMemoryDirectoryRecordService(unittest.IsolatedAsyncioTestCase):
                 side_effect=lambda uri: uri.rsplit("/", 1)[0] if "/" in uri else None
             ),
         )
-        write_service = SimpleNamespace(_orch=orch)
-        return MemoryDirectoryRecordService(write_service), orch
+        return MemoryDirectoryRecordService(write_service), write_service
 
     async def test_missing_ancestors_are_created_top_down(self) -> None:
         """Missing directory ancestors are upserted from root to leaf."""

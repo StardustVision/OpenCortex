@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from opencortex.core.context import Context
@@ -35,15 +36,193 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class MemoryWriteDependencies:
+    """Explicit subsystem bundle used by the normal store write path."""
+
+    config: Any
+    storage: Any
+    fs: Any
+    embedder: Any
+    memory_signal_bus: Any
+    entity_index: Any
+    memory_record_service: Any
+    derivation_service: Any
+    session_lifecycle_service: Any
+    ensure_init: Any
+    get_collection: Any
+    feedback: Any
+
+
 class MemoryWriteService:
     """Own memory write/mutation logic behind the MemoryService facade."""
 
-    def __init__(self, memory_service: "MemoryService") -> None:
+    def __init__(
+        self,
+        memory_service: "MemoryService",
+        dependencies: MemoryWriteDependencies,
+    ) -> None:
         self._service = memory_service
+        self._deps = dependencies
 
     @property
-    def _orch(self) -> Any:
-        return self._service._orch
+    def _config(self) -> Any:
+        """Cortex configuration for write-path helpers."""
+        return self._deps.config
+
+    @property
+    def _storage(self) -> Any:
+        """Vector storage owned by the memory facade."""
+        return self._deps.storage
+
+    @property
+    def _fs(self) -> Any:
+        """CortexFS instance owned by the memory facade."""
+        return self._deps.fs
+
+    @property
+    def _embedder(self) -> Any:
+        """Embedder used by normal write-path helpers."""
+        return self._deps.embedder
+
+    @property
+    def _memory_signal_bus(self) -> Any:
+        """Optional lifecycle signal bus for write-path notifications."""
+        return self._deps.memory_signal_bus
+
+    @property
+    def _entity_index(self) -> Any:
+        """Optional entity index for write-path synchronization."""
+        return self._deps.entity_index
+
+    def _ensure_init(self) -> None:
+        """Require the parent memory facade to be initialized."""
+        self._deps.ensure_init()
+
+    def _get_collection(self) -> str:
+        """Return the active vector-store collection."""
+        return self._deps.get_collection()
+
+    def _auto_uri(self, context_type: str, category: str, abstract: str = "") -> str:
+        """Generate a memory URI through the record service boundary."""
+        return self._deps.memory_record_service._auto_uri(
+            context_type=context_type,
+            category=category,
+            abstract=abstract,
+        )
+
+    async def _resolve_unique_uri(self, uri: str) -> str:
+        """Resolve one URI to a unique value."""
+        return await self._deps.memory_record_service._resolve_unique_uri(uri)
+
+    async def _get_record_by_uri(self, uri: str) -> Optional[Dict[str, Any]]:
+        """Load one record by URI through the session/record boundary."""
+        return await self._deps.session_lifecycle_service._get_record_by_uri(uri)
+
+    def _derive_parent_uri(self, uri: str) -> str:
+        """Derive the parent URI for a memory URI."""
+        return self._deps.memory_record_service._derive_parent_uri(uri)
+
+    def _extract_category_from_uri(self, uri: str) -> str:
+        """Extract the memory category from a URI."""
+        return self._deps.memory_record_service._extract_category_from_uri(uri)
+
+    def _build_abstract_json(
+        self,
+        *,
+        uri: str,
+        context_type: str,
+        category: str,
+        abstract: str,
+        overview: str,
+        content: str,
+        entities: List[str],
+        meta: Optional[Dict[str, Any]],
+        keywords: Optional[List[str]] = None,
+        parent_uri: str,
+        session_id: Optional[str],
+    ) -> Dict[str, Any]:
+        """Build the canonical abstract payload for a write record."""
+        return self._deps.memory_record_service._build_abstract_json(
+            uri=uri,
+            context_type=context_type,
+            category=category,
+            abstract=abstract,
+            overview=overview,
+            content=content,
+            entities=entities,
+            meta=meta,
+            keywords=keywords,
+            parent_uri=parent_uri,
+            session_id=session_id or "",
+        )
+
+    def _memory_object_payload(
+        self,
+        abstract_json: Dict[str, Any],
+        *,
+        is_leaf: bool,
+    ) -> Dict[str, Any]:
+        """Project abstract payload into flat memory object fields."""
+        return self._deps.memory_record_service._memory_object_payload(
+            abstract_json, is_leaf=is_leaf
+        )
+
+    async def _derive_layers(
+        self,
+        *,
+        user_abstract: str,
+        content: str,
+        user_overview: str,
+    ) -> Dict[str, Any]:
+        """Derive memory layers for write-path content."""
+        return await self._deps.derivation_service._derive_layers(
+            user_abstract=user_abstract,
+            content=content,
+            user_overview=user_overview,
+        )
+
+    def _fallback_overview_from_content(
+        self,
+        *,
+        user_overview: str,
+        content: str,
+    ) -> str:
+        """Build a deterministic fallback overview for deferred derive."""
+        return self._deps.derivation_service._fallback_overview_from_content(
+            user_overview=user_overview,
+            content=content,
+        )
+
+    def _derive_abstract_from_overview(
+        self,
+        *,
+        user_abstract: str,
+        overview: str,
+        content: str,
+    ) -> str:
+        """Build a deterministic fallback abstract for deferred derive."""
+        return self._deps.derivation_service._derive_abstract_from_overview(
+            user_abstract=user_abstract,
+            overview=overview,
+            content=content,
+        )
+
+    def _ttl_from_hours(self, hours: int) -> str:
+        """Return the TTL string for a write-path record."""
+        return self._deps.memory_record_service._ttl_from_hours(hours)
+
+    async def _sync_anchor_projection_records(
+        self,
+        *,
+        source_record: Dict[str, Any],
+        abstract_json: Dict[str, Any],
+    ) -> None:
+        """Synchronize derived anchor/fact projection records."""
+        await self._deps.memory_record_service._sync_anchor_projection_records(
+            source_record=source_record,
+            abstract_json=abstract_json,
+        )
 
     # =========================================================================
     # CRUD (U2 of plan 010)
@@ -141,8 +320,7 @@ class MemoryWriteService:
             The created ``Context`` with ``meta["dedup_action"]`` set
             to ``"created"`` or ``"merged"``.
         """
-        orch = self._orch
-        orch._ensure_init()
+        self._ensure_init()
 
         # Determine ingestion mode
         from opencortex.ingest.resolver import IngestModeResolver
@@ -156,7 +334,7 @@ class MemoryWriteService:
 
         # Document mode: parse -> chunks -> write each with hierarchy
         if ingest_mode == "document" and content and is_leaf:
-            return await self._service._add_document(
+            return await self._document_write_service._add_document(
                 content=content,
                 abstract=abstract,
                 overview=overview,
@@ -265,7 +443,7 @@ class MemoryWriteService:
 
         # Ensure parent directory records exist in vector DB
         if is_leaf and parent_uri:
-            await self._service._ensure_parent_records(parent_uri)
+            await self._ensure_parent_records(parent_uri)
 
         store_result = await self._store_record_service.persist_context_record(
             ctx=ctx,
@@ -412,6 +590,10 @@ class MemoryWriteService:
             new_abstract=new_abstract,
             new_content=new_content,
         )
+
+    async def feedback(self, uri: str, reward: float) -> None:
+        """Apply scoring feedback for write-time merge reinforcement."""
+        await self._deps.feedback(uri, reward)
 
     async def _ensure_parent_records(self, parent_uri: str) -> None:
         """Ensure all ancestor directory records exist in the vector store."""

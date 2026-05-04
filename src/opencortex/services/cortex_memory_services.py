@@ -6,9 +6,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Callable, TypeVar
 
 if TYPE_CHECKING:
+    from opencortex.cortex_memory import CortexMemory
     from opencortex.lifecycle.background_tasks import BackgroundTaskManager
     from opencortex.lifecycle.bootstrapper import SubsystemBootstrapper
-    from opencortex.cortex_memory import CortexMemory
     from opencortex.services.derivation_service import DerivationService
     from opencortex.services.knowledge_service import KnowledgeService
     from opencortex.services.memory_admin_stats_service import (
@@ -45,11 +45,42 @@ class CortexMemoryServices:
     def memory_service(self) -> "MemoryService":
         """Lazy-built MemoryService for delegated CRUD/query/scoring methods."""
         from opencortex.services.memory_service import MemoryService
+        from opencortex.services.memory_write_service import MemoryWriteDependencies
 
         return self._cached(
             "_memory_service_instance",
-            lambda: MemoryService(self._orch),
+            lambda: self._build_memory_service(
+                MemoryService,
+                MemoryWriteDependencies,
+            ),
         )
+
+    def _build_memory_service(
+        self,
+        memory_service_type: type["MemoryService"],
+        dependencies_type: type,
+    ) -> "MemoryService":
+        """Construct MemoryService and bind explicit write-path dependencies."""
+        service = memory_service_type(self._orch)
+        if not hasattr(self._orch, "_config"):
+            return service
+        service.configure_write_dependencies(
+            dependencies_type(
+                config=self._orch._config,
+                storage=self._orch._storage,
+                fs=self._orch._fs,
+                embedder=self._orch._embedder,
+                memory_signal_bus=getattr(self._orch, "_memory_signal_bus", None),
+                entity_index=getattr(self._orch, "_entity_index", None),
+                memory_record_service=self._orch._memory_record_service,
+                derivation_service=self._orch._derivation_service,
+                session_lifecycle_service=self._orch._session_lifecycle_service,
+                ensure_init=self._orch._ensure_init,
+                get_collection=self._orch._get_collection,
+                feedback=service.feedback,
+            )
+        )
+        return service
 
     @property
     def derivation_service(self) -> "DerivationService":

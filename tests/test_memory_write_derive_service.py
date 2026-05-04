@@ -14,7 +14,7 @@ class TestMemoryWriteDeriveService(unittest.IsolatedAsyncioTestCase):
     """Verify derive/fallback behavior extracted from MemoryWriteService.add."""
 
     def _build_service(self) -> tuple[MemoryWriteDeriveService, SimpleNamespace]:
-        orch = SimpleNamespace(
+        write_service = SimpleNamespace(
             _derive_layers=AsyncMock(
                 return_value={
                     "abstract": "derived abstract",
@@ -26,8 +26,7 @@ class TestMemoryWriteDeriveService(unittest.IsolatedAsyncioTestCase):
             _fallback_overview_from_content=MagicMock(return_value="fallback overview"),
             _derive_abstract_from_overview=MagicMock(return_value="fallback abstract"),
         )
-        write_service = SimpleNamespace(_orch=orch)
-        return MemoryWriteDeriveService(write_service), orch
+        return MemoryWriteDeriveService(write_service), write_service
 
     async def test_content_leaf_derives_missing_abstract_and_overview(self) -> None:
         """Non-deferred content leaf writes call _derive_layers and fill blanks."""

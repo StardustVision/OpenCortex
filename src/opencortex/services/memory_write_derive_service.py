@@ -28,10 +28,6 @@ class MemoryWriteDeriveService:
         """Bind the derive service to a write service facade."""
         self._write_service = write_service
 
-    @property
-    def _orch(self) -> Any:
-        return self._write_service._orch
-
     async def derive_for_write(
         self,
         *,
@@ -42,10 +38,9 @@ class MemoryWriteDeriveService:
         defer_derive: bool,
     ) -> MemoryWriteDeriveResult:
         """Derive or fallback-fill write summary fields for normal add()."""
-        orch = self._orch
         if content and is_leaf and not defer_derive:
             derive_started = asyncio.get_running_loop().time()
-            layers = await orch._derive_layers(
+            layers = await self._write_service._derive_layers(
                 user_abstract=abstract,
                 content=content,
                 user_overview=overview,
@@ -63,13 +58,13 @@ class MemoryWriteDeriveService:
         if content and is_leaf and defer_derive:
             resolved_overview = overview
             if not resolved_overview:
-                resolved_overview = orch._fallback_overview_from_content(
+                resolved_overview = self._write_service._fallback_overview_from_content(
                     user_overview=overview,
                     content=content,
                 )
             resolved_abstract = abstract
             if not resolved_abstract:
-                resolved_abstract = orch._derive_abstract_from_overview(
+                resolved_abstract = self._write_service._derive_abstract_from_overview(
                     user_abstract=abstract,
                     overview=resolved_overview,
                     content=content,

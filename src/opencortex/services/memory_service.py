@@ -55,7 +55,10 @@ if TYPE_CHECKING:
     from opencortex.cortex_memory import CortexMemory
     from opencortex.services.memory_query_service import MemoryQueryService
     from opencortex.services.memory_scoring_service import MemoryScoringService
-    from opencortex.services.memory_write_service import MemoryWriteService
+    from opencortex.services.memory_write_service import (
+        MemoryWriteDependencies,
+        MemoryWriteService,
+    )
 
 _BATCH_ADD_CONCURRENCY = 8
 _BATCH_ADD_TASK_CHUNK_SIZE = _BATCH_ADD_CONCURRENCY * 4
@@ -79,6 +82,14 @@ class MemoryService:
                 at call time. Stored as ``self._orch``; not validated.
         """
         self._orch = orchestrator
+        self._write_dependencies: "MemoryWriteDependencies | None" = None
+
+    def configure_write_dependencies(
+        self,
+        dependencies: "MemoryWriteDependencies",
+    ) -> None:
+        """Bind explicit write-path dependencies from the service registry."""
+        self._write_dependencies = dependencies
 
     @property
     def _memory_write_service(self) -> "MemoryWriteService":
@@ -87,7 +98,9 @@ class MemoryService:
 
         cached = getattr(self, "_memory_write_service_instance", None)
         if cached is None:
-            cached = MemoryWriteService(self)
+            if self._write_dependencies is None:
+                raise RuntimeError("Memory write dependencies are not configured")
+            cached = MemoryWriteService(self, self._write_dependencies)
             self._memory_write_service_instance = cached
         return cached
 
