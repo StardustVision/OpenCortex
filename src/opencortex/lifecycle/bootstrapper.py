@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Subsystem boot sequencing service extracted from MemoryOrchestrator.
+"""Subsystem boot sequencing service extracted from CortexMemory.
 
 The 11-step ``init()`` boot sequence and its helper methods have been
-extracted from ``MemoryOrchestrator`` as part of plan 015 (Phase 5 of
+extracted from ``CortexMemory`` as part of plan 015 (Phase 5 of
 the God Object decomposition). This module owns the creation and wiring
 of every subsystem that the orchestrator depends on.
 
@@ -48,13 +48,13 @@ from typing import TYPE_CHECKING, Any
 from opencortex.cognition.state_types import OwnerType
 
 if TYPE_CHECKING:
-    from opencortex.orchestrator import MemoryOrchestrator
+    from opencortex.cortex_memory import CortexMemory
 
 logger = logging.getLogger(__name__)
 
 
 class SubsystemBootstrapper:
-    """Subsystem creation and wiring for MemoryOrchestrator.
+    """Subsystem creation and wiring for CortexMemory.
 
     Owns the 11-step boot sequence that creates storage, embedder,
     CortexFS, intent analyzer, cognition components, alpha pipeline,
@@ -62,14 +62,14 @@ class SubsystemBootstrapper:
     ``init()`` delegates to ``SubsystemBootstrapper.init()``.
 
     Args:
-        orchestrator: The parent MemoryOrchestrator instance.
+        orchestrator: The parent CortexMemory instance.
             Subsystems are assigned as attributes on this object.
     """
 
-    def __init__(self, orchestrator: MemoryOrchestrator) -> None:
+    def __init__(self, orchestrator: CortexMemory) -> None:
         self._orch = orchestrator
 
-    async def init(self) -> "MemoryOrchestrator":
+    async def init(self) -> "CortexMemory":
         """Run the full 11-step subsystem boot sequence.
 
         Creates storage, embedder, CortexFS, intent analyzer, cognition
@@ -77,7 +77,7 @@ class SubsystemBootstrapper:
         subsystems. Assigns them as attributes on the orchestrator.
 
         Returns:
-            The parent orchestrator instance (for chaining).
+            The parent memory facade instance (for chaining).
         """
         orch = self._orch
         if orch._initialized:
@@ -152,7 +152,7 @@ class SubsystemBootstrapper:
         # model download) for every orchestrator init, including in
         # tests that never need it. Lazy keeps the singleton invariant
         # (one instance per process across all admin requests) without
-        # imposing the cold-start cost. ``MemoryOrchestrator.close()``
+        # imposing the cold-start cost. ``CortexMemory.close()``
         # checks for ``None`` before invoking ``aclose`` (U3).
 
         # 6. Cone Retrieval: entity index + scorer

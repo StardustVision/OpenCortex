@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Background task lifecycle service extracted from MemoryOrchestrator.
+"""Background task lifecycle service extracted from CortexMemory.
 
 All background sweeper and worker methods have been
-extracted from ``MemoryOrchestrator`` as part of plan 014 (Phase 3 of
+extracted from ``CortexMemory`` as part of plan 014 (Phase 3 of
 the God Object decomposition). This module owns the startup and teardown
 of every async background loop that runs inside the orchestrator process.
 
@@ -51,7 +51,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 if TYPE_CHECKING:
-    from opencortex.orchestrator import MemoryOrchestrator
+    from opencortex.cortex_memory import CortexMemory
     from opencortex.services.derivation_service import DeriveTask
 
 logger = logging.getLogger(__name__)
@@ -60,17 +60,17 @@ logger = logging.getLogger(__name__)
 class BackgroundTaskManager:
     """Owns all background sweepers, workers, and their teardown.
 
-    All methods have been extracted from ``MemoryOrchestrator`` as
+    All methods have been extracted from ``CortexMemory`` as
     part of plan 014 (Phase 3). The manager is lazily constructed by
     the orchestrator and reaches into orchestrator-owned subsystems
     via ``self._orch``.
     """
 
-    def __init__(self, orchestrator: "MemoryOrchestrator") -> None:
+    def __init__(self, orchestrator: "CortexMemory") -> None:
         """Bind the manager to its parent orchestrator.
 
         Args:
-            orchestrator: The ``MemoryOrchestrator`` instance whose
+            orchestrator: The ``CortexMemory`` instance whose
                 subsystems and task handles this manager reads and
                 writes at call time. Stored as ``self._orch``; not
                 validated.

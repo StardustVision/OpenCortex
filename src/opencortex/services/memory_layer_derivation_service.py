@@ -22,7 +22,7 @@ from opencortex.utils.json_parse import parse_json_from_response
 from opencortex.utils.text import chunked_llm_derive, smart_truncate
 
 if TYPE_CHECKING:
-    from opencortex.orchestrator import MemoryOrchestrator
+    from opencortex.cortex_memory import CortexMemory
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 class MemoryLayerDerivationService:
     """Derive memory layer fields from content without persistence side effects."""
 
-    def __init__(self, orchestrator: MemoryOrchestrator) -> None:
+    def __init__(self, orchestrator: CortexMemory) -> None:
         self._orch = orchestrator
 
     @property

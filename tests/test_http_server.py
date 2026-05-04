@@ -24,9 +24,9 @@ import httpx
 from httpx import ASGITransport
 
 from opencortex.config import CortexConfig, init_config
+from opencortex.cortex_memory import CortexMemory
 from opencortex.http.models import MemorySearchResponse
 from opencortex.models.embedder.base import DenseEmbedderBase, EmbedResult
-from opencortex.orchestrator import MemoryOrchestrator
 from opencortex.storage.storage_interface import (
     CollectionNotFoundError,
     StorageInterface,
@@ -407,7 +407,7 @@ async def _build_test_app():
     storage = InMemoryStorage()
     embedder = MockEmbedder()
 
-    orch = MemoryOrchestrator(config=config, storage=storage, embedder=embedder)
+    orch = CortexMemory(config=config, storage=storage, embedder=embedder)
     await orch.init()
     http_server._orchestrator = orch
     register_admin_routes(orch, jwt_secret="test-secret")

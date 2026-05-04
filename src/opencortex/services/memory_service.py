@@ -2,7 +2,7 @@
 """Memory record facade plus search/listing service.
 
 ``MemoryService`` preserves the public method surface that
-``MemoryOrchestrator`` delegates to, while write/mutation and scoring
+``CortexMemory`` delegates to, while write/mutation and scoring
 domain logic live in narrower services.
 
 Boundary
@@ -52,7 +52,7 @@ from opencortex.retrieve.types import (
 )
 
 if TYPE_CHECKING:
-    from opencortex.orchestrator import MemoryOrchestrator
+    from opencortex.cortex_memory import CortexMemory
     from opencortex.services.memory_query_service import MemoryQueryService
     from opencortex.services.memory_scoring_service import MemoryScoringService
     from opencortex.services.memory_write_service import MemoryWriteService
@@ -69,11 +69,11 @@ class MemoryService:
     ``self._orch``.
     """
 
-    def __init__(self, orchestrator: "MemoryOrchestrator") -> None:
+    def __init__(self, orchestrator: "CortexMemory") -> None:
         """Bind the service to its parent orchestrator.
 
         Args:
-            orchestrator: The ``MemoryOrchestrator`` instance whose
+            orchestrator: The ``CortexMemory`` instance whose
                 subsystems (``_storage``, ``_embedder``, ``_fs``,
                 ``_recall_planner``, etc.) this service reaches into
                 at call time. Stored as ``self._orch``; not validated.

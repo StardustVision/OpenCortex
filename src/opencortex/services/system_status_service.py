@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""System status and derive-pipeline service extracted from MemoryOrchestrator.
+"""System status and derive-pipeline service extracted from CortexMemory.
 
-All 6 public methods have been extracted from ``MemoryOrchestrator`` as
+All 6 public methods have been extracted from ``CortexMemory`` as
 part of plan 013 (Phase 4 of the God Object decomposition). This module
 owns system health reporting, derive-pipeline state queries, and
 re-embedding.
@@ -41,7 +41,7 @@ from opencortex.http.request_context import get_effective_identity
 from opencortex.services.memory_filters import FilterExpr
 
 if TYPE_CHECKING:
-    from opencortex.orchestrator import MemoryOrchestrator
+    from opencortex.cortex_memory import CortexMemory
 
 logger = logging.getLogger(__name__)
 
@@ -49,17 +49,17 @@ logger = logging.getLogger(__name__)
 class SystemStatusService:
     """System status, derive-pipeline state, and re-embedding surface.
 
-    All 6 public methods have been extracted from ``MemoryOrchestrator``
+    All 6 public methods have been extracted from ``CortexMemory``
     as part of plan 013. The service is lazily constructed by the
     orchestrator and delegates to orchestrator-owned subsystems via
     ``self._orch``.
     """
 
-    def __init__(self, orchestrator: "MemoryOrchestrator") -> None:
+    def __init__(self, orchestrator: "CortexMemory") -> None:
         """Bind the service to its parent orchestrator.
 
         Args:
-            orchestrator: The ``MemoryOrchestrator`` instance whose
+            orchestrator: The ``CortexMemory`` instance whose
                 subsystems this service reaches into at call time.
                 Stored as ``self._orch``; not validated.
         """

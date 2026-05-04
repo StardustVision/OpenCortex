@@ -35,7 +35,7 @@ from opencortex.retrieve.types import (
 from opencortex.services.memory_filters import FilterExpr, memory_visibility_filter
 
 if TYPE_CHECKING:
-    from opencortex.orchestrator import MemoryOrchestrator
+    from opencortex.cortex_memory import CortexMemory
     from opencortex.services.retrieval_candidate_service import (
         RetrievalCandidateService,
     )
@@ -44,9 +44,9 @@ if TYPE_CHECKING:
     )
 
 class RetrievalService:
-    """Own search/retrieve logic while using orchestrator-owned subsystems."""
+    """Own search/retrieve logic while using CortexMemory-owned subsystems."""
 
-    def __init__(self, orchestrator: MemoryOrchestrator) -> None:
+    def __init__(self, orchestrator: CortexMemory) -> None:
         self._orch = orchestrator
 
     @property

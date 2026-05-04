@@ -18,7 +18,7 @@ from opencortex.services.memory_layer_derivation_service import (
 )
 
 if TYPE_CHECKING:
-    from opencortex.orchestrator import MemoryOrchestrator
+    from opencortex.cortex_memory import CortexMemory
     from opencortex.services.memory_record_service import MemoryRecordService
 
 logger = logging.getLogger(__name__)
@@ -71,7 +71,7 @@ class DeriveTask:
 class DerivationService:
     """Coordinate deferred derive persistence using orchestrator-owned subsystems."""
 
-    def __init__(self, orchestrator: MemoryOrchestrator) -> None:
+    def __init__(self, orchestrator: CortexMemory) -> None:
         self._orch = orchestrator
 
     @property
