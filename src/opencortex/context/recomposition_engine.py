@@ -32,6 +32,7 @@ from opencortex.context.recomposition_segmentation import (
     RecompositionSegmentationService,
     _merge_unique_strings,
 )
+from opencortex.context.recomposition_state import RecompositionStateService
 from opencortex.context.recomposition_types import RecompositionEntry
 from opencortex.context.session_records import (
     record_msg_range,
@@ -65,6 +66,7 @@ class SessionRecompositionEngine:
         self._mgr = manager
         self._input = RecompositionInputService(manager)
         self._segmentation = RecompositionSegmentationService()
+        self._state = RecompositionStateService(manager, self._input)
 
     # =========================================================================
     # URI Construction
@@ -136,51 +138,18 @@ class SessionRecompositionEngine:
         that no longer exists). This function deletes records + FS
         subtrees regardless of layer; the new name reflects that.
         """
-        unique_uris: list[str] = []
-        for uri in uris:
-            normalized = str(uri or "").strip()
-            if normalized and normalized not in unique_uris:
-                unique_uris.append(normalized)
-
-        fs = getattr(self._mgr._orchestrator, "_fs", None)
-        for uri in unique_uris:
-            await self._mgr._orchestrator._storage.remove_by_uri(
-                self._mgr._orchestrator._get_collection(),
-                uri,
-            )
-            if fs:
-                try:
-                    await fs.rm(uri, recursive=True)
-                except Exception as exc:
-                    logger.warning(
-                        "[ContextManager] CortexFS cleanup failed for %s: %s",
-                        uri,
-                        exc,
-                    )
+        await self._state.purge_records_and_fs_subtree(uris)
 
     async def _list_immediate_uris(self, session_id: str) -> List[str]:
         """Return current session immediate source URIs for fallback cleanup."""
-        records = await self._mgr._orchestrator._storage.filter(
-            self._mgr._orchestrator._get_collection(),
-            {"op": "must", "field": "session_id", "conds": [session_id]},
-            limit=10000,
-        )
-        return [
-            str(record.get("uri", "")).strip()
-            for record in records
-            if (
-                str(record.get("uri", "")).strip()
-                and str((record.get("meta") or {}).get("layer", "") or "")
-                == "immediate"
-            )
-        ]
+        return await self._state.list_immediate_uris(session_id)
 
     async def _load_immediate_records(
         self,
         immediate_uris: List[str],
     ) -> List[Dict[str, Any]]:
         """Load immediate records and return them ordered by message index."""
-        return await self._input.load_immediate_records(immediate_uris)
+        return await self._state.load_immediate_records(immediate_uris)
 
     # =========================================================================
     # Segmentation Helpers
@@ -266,10 +235,7 @@ class SessionRecompositionEngine:
 
     def _merge_trigger_threshold(self) -> int:
         """Return the token threshold that triggers a background merge."""
-        cfg = getattr(self._mgr._orchestrator, "_config", None)
-        if cfg is None:
-            return 6144
-        return max(1, int(getattr(cfg, "conversation_merge_token_budget", 6144)))
+        return self._state.merge_trigger_threshold()
 
     # =========================================================================
     # Snapshot / Restore
@@ -282,26 +248,7 @@ class SessionRecompositionEngine:
         flush_all: bool,
     ) -> Optional[ConversationBuffer]:
         """Detach the current buffer snapshot for merge processing."""
-        merge_lock = self._mgr._recomposition_tasks.merge_lock(sk)
-        async with merge_lock:
-            buffer = self._mgr._conversation_buffers.get(sk)
-            if not buffer or not buffer.messages:
-                return None
-            if not flush_all and buffer.token_count < self._merge_trigger_threshold():
-                return None
-
-            snapshot = ConversationBuffer(
-                messages=list(buffer.messages),
-                token_count=buffer.token_count,
-                start_msg_index=buffer.start_msg_index,
-                immediate_uris=list(buffer.immediate_uris),
-                tool_calls_per_turn=[list(item) for item in buffer.tool_calls_per_turn],
-            )
-            next_start = buffer.start_msg_index + len(buffer.messages)
-            self._mgr._conversation_buffers[sk] = ConversationBuffer(
-                start_msg_index=next_start
-            )
-            return snapshot
+        return await self._state.take_merge_snapshot(sk, flush_all=flush_all)
 
     async def _restore_merge_snapshot(
         self,
@@ -309,23 +256,7 @@ class SessionRecompositionEngine:
         snapshot: ConversationBuffer,
     ) -> None:
         """Restore a detached buffer snapshot after merge failure."""
-        merge_lock = self._mgr._recomposition_tasks.merge_lock(sk)
-        async with merge_lock:
-            current = self._mgr._conversation_buffers.get(sk)
-            if current is None:
-                self._mgr._conversation_buffers[sk] = snapshot
-                return
-
-            merged = ConversationBuffer(
-                messages=list(snapshot.messages) + list(current.messages),
-                token_count=snapshot.token_count + current.token_count,
-                start_msg_index=snapshot.start_msg_index,
-                immediate_uris=list(snapshot.immediate_uris)
-                + list(current.immediate_uris),
-                tool_calls_per_turn=list(snapshot.tool_calls_per_turn)
-                + list(current.tool_calls_per_turn),
-            )
-            self._mgr._conversation_buffers[sk] = merged
+        await self._state.restore_merge_snapshot(sk, snapshot)
 
     # =========================================================================
     # Task Coordination
@@ -430,7 +361,8 @@ class SessionRecompositionEngine:
                 source_uri=source_uri,
             )
             logger.info(
-                "[ContextManager] Full recompose start sid=%s tenant=%s user=%s collection=%s source_uri=%s merged=%d",
+                "[ContextManager] Full recompose start sid=%s tenant=%s user=%s "
+                "collection=%s source_uri=%s merged=%d",
                 session_id,
                 tenant_id,
                 user_id,
@@ -468,7 +400,8 @@ class SessionRecompositionEngine:
 
             segments = self._build_anchor_clustered_segments(entries)
             logger.info(
-                "[ContextManager] Full recompose planned sid=%s entries=%d segments=%d ranges=%s",
+                "[ContextManager] Full recompose planned sid=%s entries=%d "
+                "segments=%d ranges=%s",
                 session_id,
                 len(entries),
                 len(segments),
@@ -533,7 +466,8 @@ class SessionRecompositionEngine:
             for directory_index, segment, children_abstracts in eligible:
                 source_records = segment.get("source_records", [])
                 logger.info(
-                    "[ContextManager] Full recompose segment sid=%s dir_index=%d msg_range=%s children=%d",
+                    "[ContextManager] Full recompose segment sid=%s dir_index=%d "
+                    "msg_range=%s children=%d",
                     session_id,
                     directory_index,
                     segment.get("msg_range"),
@@ -627,7 +561,8 @@ class SessionRecompositionEngine:
                     )
 
             logger.info(
-                "[ContextManager] Full recompose completed sid=%s directories=%d leaves_preserved=%d",
+                "[ContextManager] Full recompose completed sid=%s directories=%d "
+                "leaves_preserved=%d",
                 session_id,
                 len(created_directory_uris),
                 len(merged_records),
@@ -637,7 +572,8 @@ class SessionRecompositionEngine:
             return None
         except Exception as exc:
             logger.warning(
-                "[ContextManager] Full-session recomposition failed sid=%s tenant=%s user=%s collection=%s source_uri=%s created_dirs=%d: %s",
+                "[ContextManager] Full-session recomposition failed sid=%s "
+                "tenant=%s user=%s collection=%s source_uri=%s created_dirs=%d: %s",
                 session_id,
                 tenant_id,
                 user_id,
@@ -682,7 +618,7 @@ class SessionRecompositionEngine:
         user_id: str,
         source_uri: Optional[str],
     ) -> Optional[str]:
-        """Generate a session-level summary from directory abstracts (or leaf abstracts as fallback).
+        """Generate a session summary from directory or leaf abstracts.
 
         Uses ``load_layers({"merged", "directory"})`` (REVIEW closure
         tracker PERF-01): a single storage scroll returns both layers.
@@ -872,7 +808,9 @@ class SessionRecompositionEngine:
                 if snapshot is None:
                     return
                 logger.info(
-                    "[ContextManager] Merge start sid=%s tenant=%s user=%s collection=%s flush_all=%s snapshot_messages=%d snapshot_tokens=%d snapshot_immediates=%d start_msg_index=%d",
+                    "[ContextManager] Merge start sid=%s tenant=%s user=%s "
+                    "collection=%s flush_all=%s snapshot_messages=%d "
+                    "snapshot_tokens=%d snapshot_immediates=%d start_msg_index=%d",
                     session_id,
                     tenant_id,
                     user_id,
@@ -901,7 +839,8 @@ class SessionRecompositionEngine:
                 )
                 segments = self._build_recomposition_segments(entries)
                 logger.info(
-                    "[ContextManager] Merge planned sid=%s immediate_records=%d tail_records=%d entries=%d segments=%d segment_ranges=%s",
+                    "[ContextManager] Merge planned sid=%s immediate_records=%d "
+                    "tail_records=%d entries=%d segments=%d segment_ranges=%s",
                     session_id,
                     len(records),
                     len(tail_records),
@@ -951,9 +890,9 @@ class SessionRecompositionEngine:
                     created_merged_uris.append(merged_context.uri)
 
                     async def _bounded_derive(
-                        sem=self._mgr._derive_semaphore,
-                        **dkw,
-                    ):
+                        sem: asyncio.Semaphore = self._mgr._derive_semaphore,
+                        **dkw: Any,
+                    ) -> None:
                         async with sem:
                             await self._mgr._orchestrator._complete_deferred_derive(
                                 **dkw
@@ -999,7 +938,8 @@ class SessionRecompositionEngine:
                         await self._purge_records_and_fs_subtree(superseded_merged_uris)
                     except Exception as exc:
                         logger.warning(
-                            "[ContextManager] Superseded merged cleanup after merge: %s",
+                            "[ContextManager] Superseded merged cleanup after "
+                            "merge: %s",
                             exc,
                         )
 
@@ -1015,7 +955,10 @@ class SessionRecompositionEngine:
                         )
         except Exception as exc:
             logger.error(
-                "[ContextManager] Merge failed sid=%s tenant=%s user=%s collection=%s flush_all=%s source_uri=%s snapshot_messages=%s immediate_records=%s tail_records=%s segments=%s created_merged=%s: %s",
+                "[ContextManager] Merge failed sid=%s tenant=%s user=%s "
+                "collection=%s flush_all=%s source_uri=%s snapshot_messages=%s "
+                "immediate_records=%s tail_records=%s segments=%s "
+                "created_merged=%s: %s",
                 session_id,
                 tenant_id,
                 user_id,

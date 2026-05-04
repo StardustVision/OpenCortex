@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict
+
+from opencortex.services.memory_filters import FilterExpr
 
 if TYPE_CHECKING:
     from opencortex.orchestrator import MemoryOrchestrator
@@ -24,12 +26,11 @@ class MemoryAdminStatsService:
         orch = self._orch
         orch._ensure_init()
 
-        conds: List[Dict[str, Any]] = [
-            {"op": "must_not", "field": "context_type", "conds": ["staging"]},
-            {"op": "must", "field": "source_tenant_id", "conds": [tenant_id]},
-            {"op": "must", "field": "source_user_id", "conds": [user_id]},
-        ]
-        filter_expr: Dict[str, Any] = {"op": "and", "conds": conds}
+        filter_expr = FilterExpr.all(
+            FilterExpr.neq("context_type", "staging"),
+            FilterExpr.eq("source_tenant_id", tenant_id),
+            FilterExpr.eq("source_user_id", user_id),
+        ).to_dict()
 
         memories = await orch._storage.filter(
             orch._get_collection(),
