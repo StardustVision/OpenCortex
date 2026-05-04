@@ -24,6 +24,7 @@ from opencortex.http.request_context import (
     get_effective_project_id,
 )
 from opencortex.services.derivation_service import _merge_unique_strings
+from opencortex.services.memory_filters import FilterExpr
 from opencortex.utils.uri import CortexURI
 
 if TYPE_CHECKING:
@@ -293,7 +294,7 @@ class SessionLifecycleService:
         try:
             records = await self._storage.filter(
                 self._get_collection(),
-                {"op": "must", "field": "uri", "conds": list(dict.fromkeys(uris))},
+                FilterExpr.eq("uri", *dict.fromkeys(uris)).to_dict(),
                 limit=max(len(uris), 1) * 4,
             )
         except Exception as exc:
@@ -322,7 +323,7 @@ class SessionLifecycleService:
         try:
             records = await self._storage.filter(
                 self._get_collection(),
-                {"op": "must", "field": "uri", "conds": [uri]},
+                FilterExpr.eq("uri", uri).to_dict(),
                 limit=1,
             )
         except Exception as exc:
@@ -383,7 +384,7 @@ class SessionLifecycleService:
         try:
             recs = await self._storage.filter(
                 self._get_collection(),
-                {"op": "must", "field": "uri", "conds": uris},
+                FilterExpr.eq("uri", *uris).to_dict(),
                 limit=len(uris),
             )
         except Exception:

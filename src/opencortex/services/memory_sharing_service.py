@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Dict, List
 
 from opencortex.http.request_context import get_effective_identity
+from opencortex.services.memory_filters import FilterExpr
 from opencortex.utils.uri import CortexURI
 
 if TYPE_CHECKING:
@@ -34,7 +35,7 @@ class MemorySharingService:
             try:
                 results = await orch._storage.filter(
                     orch._get_collection(),
-                    filter={"op": "must", "field": "uri", "conds": [uri]},
+                    filter=FilterExpr.eq("uri", uri).to_dict(),
                     limit=1,
                 )
                 if not results:

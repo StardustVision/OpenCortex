@@ -28,6 +28,7 @@ from opencortex.memory import (
     memory_merge_signature_from_abstract,
 )
 from opencortex.services.derivation_service import _merge_unique_strings
+from opencortex.services.memory_filters import FilterExpr
 from opencortex.utils.uri import CortexURI
 
 if TYPE_CHECKING:
@@ -304,7 +305,7 @@ class MemoryRecordService:
         try:
             old_records = await self._storage.filter(
                 collection,
-                {"op": "prefix", "field": "uri", "prefix": prefix},
+                FilterExpr.prefix("uri", prefix).to_dict(),
                 limit=50,
             )
         except Exception as exc:
@@ -439,7 +440,7 @@ class MemoryRecordService:
         try:
             results = await self._storage.filter(
                 self._get_collection(),
-                {"op": "must", "field": "uri", "conds": [uri]},
+                FilterExpr.eq("uri", uri).to_dict(),
                 limit=1,
             )
             return len(results) > 0

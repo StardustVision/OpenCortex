@@ -8,6 +8,8 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from opencortex.services.memory_filters import FilterExpr
+
 if TYPE_CHECKING:
     from opencortex.services.memory_write_service import MemoryWriteService
 
@@ -44,7 +46,7 @@ class MemoryMutationService:
 
         records = await orch._storage.filter(
             orch._get_collection(),
-            {"op": "must", "field": "uri", "conds": [uri]},
+            FilterExpr.eq("uri", uri).to_dict(),
             limit=1,
         )
         if not records:
@@ -226,7 +228,7 @@ class MemoryMutationService:
                 collection = orch._get_collection()
                 affected = await orch._storage.filter(
                     collection,
-                    {"op": "prefix", "field": "uri", "prefix": uri},
+                    FilterExpr.prefix("uri", uri).to_dict(),
                     limit=10000,
                 )
                 affected_ids_for_entity = [str(r["id"]) for r in affected]

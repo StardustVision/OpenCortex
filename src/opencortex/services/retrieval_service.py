@@ -234,10 +234,6 @@ class RetrievalService:
             return {"op": "and", "conds": [metadata_filter] + combined_conds}
         return {"op": "and", "conds": combined_conds}
 
-    def _build_probe_filter(self) -> Dict[str, Any]:
-        """Return the bounded Phase 1 probe filter."""
-        return self._orch._build_search_filter()
-
     def _cone_query_entities(
         self,
         *,

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, List
 from opencortex.core.context import Context
 from opencortex.core.user_id import UserIdentifier
 from opencortex.http.request_context import get_effective_identity
+from opencortex.services.memory_filters import FilterExpr
 from opencortex.utils.uri import CortexURI
 
 if TYPE_CHECKING:
@@ -60,7 +61,7 @@ class MemoryDirectoryRecordService:
 
             existing = await orch._storage.filter(
                 orch._get_collection(),
-                {"op": "must", "field": "uri", "conds": [uri]},
+                FilterExpr.eq("uri", uri).to_dict(),
                 limit=1,
             )
             if existing:

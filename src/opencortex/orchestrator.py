@@ -866,8 +866,8 @@ class MemoryOrchestrator:
         )
 
     def _build_probe_filter(self) -> Dict[str, Any]:
-        """Delegate to RetrievalService._build_probe_filter."""
-        return self._retrieval_service._build_probe_filter()
+        """Return the bounded Phase 1 probe filter."""
+        return self._retrieval_service._build_search_filter()
 
     def _cone_query_entities(
         self,
