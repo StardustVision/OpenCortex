@@ -372,23 +372,19 @@ class MemoryQueryService:
         orch = self._orch
         orch._ensure_init()
 
-        conds: List[Dict[str, Any]] = [
-            {"op": "must_not", "field": "context_type", "conds": ["staging"]},
+        conds: List[FilterExpr] = [
+            FilterExpr.neq("context_type", "staging"),
         ]
         if tenant_id:
-            conds.append(
-                {"op": "must", "field": "source_tenant_id", "conds": [tenant_id]}
-            )
+            conds.append(FilterExpr.eq("source_tenant_id", tenant_id))
         if user_id:
-            conds.append({"op": "must", "field": "source_user_id", "conds": [user_id]})
+            conds.append(FilterExpr.eq("source_user_id", user_id))
         if category:
-            conds.append({"op": "must", "field": "category", "conds": [category]})
+            conds.append(FilterExpr.eq("category", category))
         if context_type:
-            conds.append(
-                {"op": "must", "field": "context_type", "conds": [context_type]}
-            )
+            conds.append(FilterExpr.eq("context_type", context_type))
 
-        combined: Dict[str, Any] = {"op": "and", "conds": conds}
+        combined = FilterExpr.all(*conds).to_dict()
 
         records = await orch._storage.filter(
             orch._get_collection(),
