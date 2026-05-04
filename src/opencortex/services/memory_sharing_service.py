@@ -10,13 +10,13 @@ from opencortex.services.memory_filters import FilterExpr
 from opencortex.utils.uri import CortexURI
 
 if TYPE_CHECKING:
-    from opencortex.orchestrator import MemoryOrchestrator
+    from opencortex.cortex_memory import CortexMemory
 
 
 class MemorySharingService:
     """Own sharing/admin mutations while preserving orchestrator wrappers."""
 
-    def __init__(self, orchestrator: "MemoryOrchestrator") -> None:
+    def __init__(self, orchestrator: "CortexMemory") -> None:
         self._orch = orchestrator
 
     async def promote_to_shared(

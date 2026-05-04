@@ -65,7 +65,7 @@ Core memory, optional knowledge extraction, insights reporting, and the skill en
 AI client
   -> HTTP API
   -> FastAPI server
-  -> MemoryOrchestrator
+  -> CortexMemory
      -> ingest pipelines for memory / document / conversation
      -> recall planning and retrieval
      -> CortexFS + embedded Qdrant storage

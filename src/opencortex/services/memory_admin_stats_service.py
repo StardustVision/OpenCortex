@@ -8,13 +8,13 @@ from typing import TYPE_CHECKING, Any, Dict
 from opencortex.services.memory_filters import FilterExpr
 
 if TYPE_CHECKING:
-    from opencortex.orchestrator import MemoryOrchestrator
+    from opencortex.cortex_memory import CortexMemory
 
 
 class MemoryAdminStatsService:
     """Own admin/insights memory statistics queries."""
 
-    def __init__(self, orchestrator: "MemoryOrchestrator") -> None:
+    def __init__(self, orchestrator: "CortexMemory") -> None:
         self._orch = orchestrator
 
     async def get_user_memory_stats(

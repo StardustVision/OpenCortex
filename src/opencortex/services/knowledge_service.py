@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Knowledge management service extracted from MemoryOrchestrator.
+"""Knowledge management service extracted from CortexMemory.
 
 All 6 public knowledge methods plus the ``run_archivist`` helper have
-been extracted from ``MemoryOrchestrator`` as part of plan 012 (Phase 2
+been extracted from ``CortexMemory`` as part of plan 012 (Phase 2
 of the God Object decomposition). This module owns the knowledge
 lifecycle: search, approval/rejection, candidate listing, and
 archivist triggering/status.
@@ -45,7 +45,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from opencortex.http.request_context import get_effective_identity
 
 if TYPE_CHECKING:
-    from opencortex.orchestrator import MemoryOrchestrator
+    from opencortex.cortex_memory import CortexMemory
 
 logger = logging.getLogger(__name__)
 
@@ -54,16 +54,16 @@ class KnowledgeService:
     """Knowledge management + archivist control surface.
 
     All 7 public methods have been extracted from
-    ``MemoryOrchestrator`` as part of plan 012. The service is
+    ``CortexMemory`` as part of plan 012. The service is
     lazily constructed by the orchestrator and delegates to
     orchestrator-owned subsystems via ``self._orch``.
     """
 
-    def __init__(self, orchestrator: "MemoryOrchestrator") -> None:
+    def __init__(self, orchestrator: "CortexMemory") -> None:
         """Bind the service to its parent orchestrator.
 
         Args:
-            orchestrator: The ``MemoryOrchestrator`` instance whose
+            orchestrator: The ``CortexMemory`` instance whose
                 subsystems (``_knowledge_store``, ``_archivist``,
                 ``_trace_store``, ``_llm_completion``, ``_config``)
                 this service reaches into at call time. Stored as

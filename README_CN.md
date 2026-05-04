@@ -65,7 +65,7 @@ OpenCortex 不把所有查询都当成普通向量检索。查询会先分类、
 AI 客户端
   -> HTTP API
   -> FastAPI 服务
-  -> MemoryOrchestrator
+  -> CortexMemory
      -> 记忆 / 文档 / 对话写入管线
      -> 召回规划与检索
      -> CortexFS + 嵌入式 Qdrant 存储

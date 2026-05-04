@@ -28,7 +28,7 @@ from opencortex.services.memory_filters import FilterExpr
 from opencortex.utils.uri import CortexURI
 
 if TYPE_CHECKING:
-    from opencortex.orchestrator import MemoryOrchestrator
+    from opencortex.cortex_memory import CortexMemory
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ _IMMEDIATE_EMBED_TIMEOUT_SECONDS = 8.0
 class SessionLifecycleService:
     """Own session/trace lifecycle behavior using orchestrator subsystems."""
 
-    def __init__(self, orchestrator: "MemoryOrchestrator") -> None:
+    def __init__(self, orchestrator: "CortexMemory") -> None:
         self._orch = orchestrator
         self._benchmark_ingest_service_instance: Optional[
             BenchmarkConversationIngestService

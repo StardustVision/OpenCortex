@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """FastAPI HTTP server for OpenCortex.
 
-Hosts the MemoryOrchestrator and exposes memory, context, retrieval, and
+Hosts CortexMemory and exposes memory, context, retrieval, and
 administrative capabilities as REST endpoints.
 
 Usage::
@@ -26,6 +26,7 @@ from opencortex.auth.token import (
     save_token_record,
 )
 from opencortex.config import get_config
+from opencortex.cortex_memory import CortexMemory
 from opencortex.http.models import (
     # Context Protocol
     ContextRequest,
@@ -55,13 +56,12 @@ from opencortex.http.request_context import (
     set_request_project_id,
     set_request_role,
 )
-from opencortex.orchestrator import MemoryOrchestrator
 from opencortex.retrieve.types import ContextType
 
 logger = logging.getLogger(__name__)
 
-# Module-level orchestrator, initialized in lifespan
-_orchestrator: Optional[MemoryOrchestrator] = None
+# Module-level memory facade, initialized in lifespan
+_orchestrator: Optional[CortexMemory] = None
 
 # Module-level JWT secret, loaded once at startup
 _jwt_secret: Optional[str] = None
@@ -189,13 +189,13 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Initialize and teardown the MemoryOrchestrator."""
+    """Initialize and teardown CortexMemory."""
     global _orchestrator, _jwt_secret
     config = get_config()
     _jwt_secret = ensure_secret(config.data_root)
-    _orchestrator = MemoryOrchestrator(config=config)
+    _orchestrator = CortexMemory(config=config)
     await _orchestrator.init()
-    logger.info("[HTTP] Orchestrator initialized (data_root=%s)", config.data_root)
+    logger.info("[HTTP] CortexMemory initialized (data_root=%s)", config.data_root)
 
     # Auto-generate admin token on first startup
     records = load_token_records(config.data_root)
@@ -232,7 +232,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         # built a SECOND one here that was never closed — partially
         # regressing the very TCP CLOSE_WAIT leak this PR ships to
         # fix. We now hold the second wrapper on the orchestrator so
-        # ``MemoryOrchestrator.close()`` releases it on shutdown.
+        # ``CortexMemory.close()`` releases it on shutdown.
         # Pre-existing concern (RELY-02): ``LLMWrapper.generate``
         # spawns a fresh event loop per call, which prevents httpx
         # connection-pool reuse across calls. That's out of scope for

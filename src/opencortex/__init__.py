@@ -14,12 +14,17 @@ __all__ = [
     "CortexConfig",
     "get_config",
     "init_config",
+    "CortexMemory",
     "MemoryOrchestrator",
 ]
 
 
 def __getattr__(name: str):
     """Lazy-load heavy exports to avoid optional dependency import at package import time."""
+    if name == "CortexMemory":
+        from opencortex.cortex_memory import CortexMemory
+
+        return CortexMemory
     if name == "MemoryOrchestrator":
         from opencortex.orchestrator import MemoryOrchestrator
 

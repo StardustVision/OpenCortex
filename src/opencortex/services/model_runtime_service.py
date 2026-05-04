@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Model runtime helper service for MemoryOrchestrator.
+"""Model runtime helper service for CortexMemory.
 
 This service owns embedder fallback/wrapping and rerank runtime helpers. The
 orchestrator keeps compatibility wrappers because tests and bootstrap code patch
@@ -16,7 +16,7 @@ from opencortex.retrieve.rerank_client import RerankClient
 from opencortex.retrieve.rerank_config import RerankConfig
 
 if TYPE_CHECKING:
-    from opencortex.orchestrator import MemoryOrchestrator
+    from opencortex.cortex_memory import CortexMemory
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ _IMMEDIATE_LOCAL_FALLBACK_MODEL = "BAAI/bge-m3"
 class ModelRuntimeService:
     """Own embedder and rerank runtime helpers for the orchestrator."""
 
-    def __init__(self, orchestrator: "MemoryOrchestrator") -> None:
+    def __init__(self, orchestrator: "CortexMemory") -> None:
         self._orch = orchestrator
 
     def _is_retryable_immediate_embed_exception(self, exc: Exception) -> bool:
