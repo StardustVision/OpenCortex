@@ -35,6 +35,7 @@ from opencortex.retrieve.uri_path_scorer import (
     URI_HOP_COST,
     compute_uri_path_scores,
 )
+from opencortex.services.memory_filters import FilterExpr
 
 if TYPE_CHECKING:
     from opencortex.services.retrieval_service import RetrievalService
@@ -70,11 +71,10 @@ class RetrievalObjectQueryService:
         """Build memory-kind narrowing for one object query."""
         if retrieve_plan is None or not retrieve_plan.target_memory_kinds:
             return None
-        return {
-            "op": "must",
-            "field": "memory_kind",
-            "conds": [kind.value for kind in retrieve_plan.target_memory_kinds],
-        }
+        return FilterExpr.eq(
+            "memory_kind",
+            *(kind.value for kind in retrieve_plan.target_memory_kinds),
+        ).to_dict()
 
     @staticmethod
     def _object_query_scope_filter(
@@ -94,13 +94,13 @@ class RetrievalObjectQueryService:
         if retrieve_plan.scope_level == ScopeLevel.CONTAINER_SCOPED:
             parent_uris = [sp.uri for sp in probe_result.starting_points if sp.uri]
             if parent_uris:
-                return {"op": "must", "field": "parent_uri", "conds": parent_uris}
+                return FilterExpr.eq("parent_uri", *parent_uris).to_dict()
         elif retrieve_plan.scope_level == ScopeLevel.SESSION_ONLY:
             session_ids = sorted(
                 {sp.session_id for sp in probe_result.starting_points if sp.session_id}
             )
             if session_ids:
-                return {"op": "must", "field": "session_id", "conds": session_ids}
+                return FilterExpr.eq("session_id", *session_ids).to_dict()
         elif retrieve_plan.scope_level == ScopeLevel.DOCUMENT_ONLY:
             doc_ids = sorted(
                 {
@@ -110,7 +110,7 @@ class RetrievalObjectQueryService:
                 }
             )
             if doc_ids:
-                return {"op": "must", "field": "source_doc_id", "conds": doc_ids}
+                return FilterExpr.eq("source_doc_id", *doc_ids).to_dict()
         return None
 
     @staticmethod
@@ -148,6 +148,68 @@ class RetrievalObjectQueryService:
             or ""
         )
 
+    @staticmethod
+    def _leaf_search_filter(
+        *,
+        search_filter: Optional[Dict[str, Any]],
+        kind_filter: Optional[Dict[str, Any]],
+        scope_only_filter: Optional[Dict[str, Any]],
+        start_point_filter: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Build the leaf-record search filter for object recall."""
+        return merge_filter_clauses(
+            search_filter,
+            kind_filter,
+            scope_only_filter,
+            FilterExpr.eq("is_leaf", True).to_dict(),
+            start_point_filter,
+        )
+
+    @staticmethod
+    def _anchor_projection_search_filter(
+        *,
+        search_filter: Optional[Dict[str, Any]],
+        scope_only_filter: Optional[Dict[str, Any]],
+        start_point_filter: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Build the anchor-projection search filter for object recall."""
+        return merge_filter_clauses(
+            search_filter,
+            start_point_filter,
+            scope_only_filter,
+            FilterExpr.eq("retrieval_surface", "anchor_projection").to_dict(),
+        )
+
+    @staticmethod
+    def _fact_point_search_filter(
+        *,
+        search_filter: Optional[Dict[str, Any]],
+        scope_only_filter: Optional[Dict[str, Any]],
+        start_point_filter: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Build the fact-point search filter for object recall."""
+        return merge_filter_clauses(
+            search_filter,
+            start_point_filter,
+            scope_only_filter,
+            FilterExpr.eq("retrieval_surface", "fact_point").to_dict(),
+        )
+
+    @staticmethod
+    def _missing_projected_leaf_filter(
+        *,
+        search_filter: Optional[Dict[str, Any]],
+        scope_only_filter: Optional[Dict[str, Any]],
+        missing_uris: List[str],
+    ) -> Dict[str, Any]:
+        """Build the leaf hydration filter for projection-only matches."""
+        return merge_filter_clauses(
+            search_filter,
+            scope_only_filter,
+            FilterExpr.eq("is_leaf", True).to_dict(),
+            FilterExpr.eq("uri", *missing_uris).to_dict(),
+        )
+
     def _object_query_filters(
         self,
         *,
@@ -172,29 +234,21 @@ class RetrievalObjectQueryService:
             retrieve_plan,
             probe_result,
         )
-        is_leaf_filter = {"op": "must", "field": "is_leaf", "conds": [True]}
-        leaf_filter = merge_filter_clauses(
-            search_filter,
-            kind_filter,
-            scope_only_filter,
-            is_leaf_filter,
-            start_point_filter,
+        leaf_filter = self._leaf_search_filter(
+            search_filter=search_filter,
+            kind_filter=kind_filter,
+            scope_only_filter=scope_only_filter,
+            start_point_filter=start_point_filter,
         )
-        anchor_filter = merge_filter_clauses(
-            search_filter,
-            start_point_filter,
-            scope_only_filter,
-            {
-                "op": "must",
-                "field": "retrieval_surface",
-                "conds": ["anchor_projection"],
-            },
+        anchor_filter = self._anchor_projection_search_filter(
+            search_filter=search_filter,
+            scope_only_filter=scope_only_filter,
+            start_point_filter=start_point_filter,
         )
-        fact_point_filter = merge_filter_clauses(
-            search_filter,
-            start_point_filter,
-            scope_only_filter,
-            {"op": "must", "field": "retrieval_surface", "conds": ["fact_point"]},
+        fact_point_filter = self._fact_point_search_filter(
+            search_filter=search_filter,
+            scope_only_filter=scope_only_filter,
+            start_point_filter=start_point_filter,
         )
         return leaf_filter, anchor_filter, fact_point_filter, scope_only_filter
 
@@ -278,11 +332,10 @@ class RetrievalObjectQueryService:
         try:
             tid, uid = get_effective_identity()
             project_id = get_effective_project_id()
-            missing_filter = merge_filter_clauses(
-                search_filter,
-                scope_only_filter,
-                {"op": "must", "field": "is_leaf", "conds": [True]},
-                {"op": "must", "field": "uri", "conds": missing_uris},
+            missing_filter = self._missing_projected_leaf_filter(
+                search_filter=search_filter,
+                scope_only_filter=scope_only_filter,
+                missing_uris=missing_uris,
             )
             loaded = await self._storage.search(
                 self._get_collection(),
