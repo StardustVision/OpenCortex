@@ -50,10 +50,6 @@ class RetrievalObjectQueryService:
         self._service = retrieval_service
 
     @property
-    def _orch(self) -> Any:
-        return self._service._orch
-
-    @property
     def _config(self) -> Any:
         return self._service._config
 
@@ -344,7 +340,7 @@ class RetrievalObjectQueryService:
                 limit=len(missing_uris) + 5,
             )
             for record in loaded:
-                if self._orch._record_passes_acl(record, tid, uid, project_id):
+                if self._service._record_passes_acl(record, tid, uid, project_id):
                     leaf_hits.append(record)
                     known_leaf_uris.add(str(record.get("uri", "") or ""))
         except Exception as exc:
@@ -376,10 +372,7 @@ class RetrievalObjectQueryService:
                 else URI_HOP_COST
             )
             fact_point_cost = distance + hop
-            if (
-                best_fact_point_cost is None
-                or fact_point_cost < best_fact_point_cost
-            ):
+            if best_fact_point_cost is None or fact_point_cost < best_fact_point_cost:
                 best_fact_point_cost = fact_point_cost
         if best_fact_point_cost is not None and abs(best_fact_point_cost - cost) < 1e-9:
             return "fact_point", cost
@@ -412,7 +405,7 @@ class RetrievalObjectQueryService:
         """Apply cone rerank, score fusion, and path metadata."""
         frontier_waves = 0
         probe_candidate_ranks = build_probe_candidate_ranks(probe_result)
-        records, cone_used = await self._orch._apply_cone_rerank(
+        records, cone_used = await self._service._apply_cone_rerank(
             typed_query=typed_query,
             retrieve_plan=retrieve_plan,
             query_anchor_groups=query_anchor_groups,
@@ -432,7 +425,7 @@ class RetrievalObjectQueryService:
         rescored: List[Dict[str, Any]] = []
         for record in records:
             leaf_uri = str(record.get("uri", "") or "")
-            final_score, match_reason = self._orch._score_object_record(
+            final_score, match_reason = self._service._score_object_record(
                 record=record,
                 typed_query=typed_query,
                 retrieve_plan=retrieve_plan,
@@ -452,7 +445,7 @@ class RetrievalObjectQueryService:
             rescored_record = dict(record)
             rescored_record["_final_score"] = final_score
             rescored_record["_match_reason"] = match_reason
-            rescored_record["_matched_anchors"] = self._orch._matched_record_anchors(
+            rescored_record["_matched_anchors"] = self._service._matched_record_anchors(
                 record=record,
                 query_anchor_groups=query_anchor_groups,
             )
@@ -528,7 +521,7 @@ class RetrievalObjectQueryService:
         """Execute one object-aware retrieval query with three-layer parallel search."""
         started = time.perf_counter()
         embed_started = started
-        query_vector = await self._orch._embed_retrieval_query(typed_query.query)
+        query_vector = await self._service._embed_retrieval_query(typed_query.query)
         embed_finished = time.perf_counter()
 
         query_anchor_groups = build_query_anchor_groups(retrieve_plan, probe_result)
@@ -576,22 +569,24 @@ class RetrievalObjectQueryService:
         )
 
         rerank_started = search_finished
-        rescored, frontier_waves, candidates_before_rerank = (
-            await self._rescore_object_records(
-                typed_query=typed_query,
-                retrieve_plan=retrieve_plan,
-                probe_result=probe_result,
-                query_anchor_groups=query_anchor_groups,
-                leaf_hits=leaf_hits,
-                uri_path_costs=uri_path_costs,
-                anchor_hits=anchor_hits,
-                fact_point_hits=fact_point_hits,
-                score_threshold=score_threshold,
-            )
+        (
+            rescored,
+            frontier_waves,
+            candidates_before_rerank,
+        ) = await self._rescore_object_records(
+            typed_query=typed_query,
+            retrieve_plan=retrieve_plan,
+            probe_result=probe_result,
+            query_anchor_groups=query_anchor_groups,
+            leaf_hits=leaf_hits,
+            uri_path_costs=uri_path_costs,
+            anchor_hits=anchor_hits,
+            fact_point_hits=fact_point_hits,
+            score_threshold=score_threshold,
         )
         rerank_finished = time.perf_counter()
 
-        matched_contexts = await self._orch._records_to_matched_contexts(
+        matched_contexts = await self._service._records_to_matched_contexts(
             candidates=rescored[:limit],
             context_type=typed_query.context_type,
             detail_level=typed_query.detail_level,
