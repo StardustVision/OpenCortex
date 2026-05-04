@@ -28,13 +28,9 @@ class MemoryWriteEmbedService:
         """Bind the embed service to a write service facade."""
         self._write_service = write_service
 
-    @property
-    def _orch(self) -> Any:
-        return self._write_service._orch
-
     async def embed_for_write(self, ctx: Context) -> MemoryWriteEmbedResult:
         """Embed a normal write context and attach its dense vector."""
-        embedder = self._orch._embedder
+        embedder = self._write_service._embedder
         if not embedder:
             return MemoryWriteEmbedResult()
 

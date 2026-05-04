@@ -55,10 +55,6 @@ class MemoryWriteContextBuilder:
         """Bind the builder to a write service facade."""
         self._write_service = write_service
 
-    @property
-    def _orch(self) -> Any:
-        return self._write_service._orch
-
     async def resolve_target(
         self,
         *,
@@ -70,24 +66,25 @@ class MemoryWriteContextBuilder:
         uri: Optional[str],
     ) -> ResolvedWriteTarget:
         """Resolve URI, parent URI, existing record, and explicit metadata."""
-        orch = self._orch
         resolved_meta = dict(meta or {})
         explicit_entities = _merge_unique_strings(resolved_meta.get("entities"))
         explicit_topics = _merge_unique_strings(resolved_meta.get("topics"))
 
         if not uri:
-            resolved_uri = orch._auto_uri(
+            resolved_uri = self._write_service._auto_uri(
                 context_type or "memory",
                 category,
                 abstract=abstract,
             )
-            resolved_uri = await orch._resolve_unique_uri(resolved_uri)
+            resolved_uri = await self._write_service._resolve_unique_uri(resolved_uri)
             existing_record = None
         else:
             resolved_uri = uri
-            existing_record = await orch._get_record_by_uri(resolved_uri)
+            existing_record = await self._write_service._get_record_by_uri(resolved_uri)
 
-        resolved_parent_uri = parent_uri or orch._derive_parent_uri(resolved_uri)
+        resolved_parent_uri = parent_uri or self._write_service._derive_parent_uri(
+            resolved_uri
+        )
         return ResolvedWriteTarget(
             uri=resolved_uri,
             parent_uri=resolved_parent_uri,
@@ -113,7 +110,6 @@ class MemoryWriteContextBuilder:
         layers: Dict[str, Any],
     ) -> AssembledWriteContext:
         """Assemble the post-derive Context, metadata, and object payload."""
-        orch = self._orch
         meta = target.meta
         derived_entities = layers.get("entities", []) if content and is_leaf else []
         entities = _merge_unique_strings(derived_entities, target.explicit_entities)
@@ -159,8 +155,10 @@ class MemoryWriteContextBuilder:
         elif embed_text:
             ctx.vectorize = Vectorize(embed_text)
 
-        effective_category = category or orch._extract_category_from_uri(target.uri)
-        abstract_json = orch._build_abstract_json(
+        effective_category = category or self._write_service._extract_category_from_uri(
+            target.uri
+        )
+        abstract_json = self._write_service._build_abstract_json(
             uri=target.uri,
             context_type=context_type or "",
             category=effective_category,
@@ -175,7 +173,9 @@ class MemoryWriteContextBuilder:
         )
         if content and is_leaf:
             abstract_json["fact_points"] = layers.get("fact_points", [])
-        object_payload = orch._memory_object_payload(abstract_json, is_leaf=is_leaf)
+        object_payload = self._write_service._memory_object_payload(
+            abstract_json, is_leaf=is_leaf
+        )
         return AssembledWriteContext(
             ctx=ctx,
             abstract=abstract,

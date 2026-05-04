@@ -4,12 +4,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from opencortex.core.context import Context
 from opencortex.http.request_context import get_effective_project_id
+from opencortex.services.derivation_service import (
+    _merge_unique_strings,
+    _split_keyword_string,
+)
 from opencortex.services.memory_filters import (
     FilterExpr,
     and_filter,
@@ -43,14 +48,6 @@ class MemoryWriteDedupService:
         """Bind the dedup service to a write service facade."""
         self._write_service = write_service
 
-    @property
-    def _orch(self) -> Any:
-        return self._write_service._orch
-
-    @property
-    def _service(self) -> Any:
-        return self._write_service._service
-
     async def try_merge_duplicate(
         self,
         *,
@@ -83,7 +80,7 @@ class MemoryWriteDedupService:
         total_ms_at_match = int(
             (asyncio.get_running_loop().time() - add_started) * 1000
         )
-        existing_record = await self._orch._get_record_by_uri(existing_uri)
+        existing_record = await self._write_service._get_record_by_uri(existing_uri)
         persisted_owner_id = ""
         persisted_project_id = get_effective_project_id()
         if existing_record:
@@ -125,7 +122,6 @@ class MemoryWriteDedupService:
         uid: str,
     ) -> Optional[Tuple[str, float]]:
         """Return duplicate ``(existing_uri, score)`` when one exists."""
-        orch = self._orch
         try:
             dedup_filter = self._build_duplicate_filter(
                 memory_kind=memory_kind,
@@ -133,8 +129,8 @@ class MemoryWriteDedupService:
                 tid=tid,
                 uid=uid,
             )
-            results = await orch._storage.search(
-                orch._get_collection(),
+            results = await self._write_service._storage.search(
+                self._write_service._get_collection(),
                 query_vector=vector,
                 filter=dedup_filter,
                 limit=1,
@@ -152,9 +148,8 @@ class MemoryWriteDedupService:
         self, existing_uri: str, new_abstract: str, new_content: str
     ) -> None:
         """Merge new content into an existing record and reinforce it."""
-        orch = self._orch
-        records = await orch._storage.filter(
-            orch._get_collection(),
+        records = await self._write_service._storage.filter(
+            self._write_service._get_collection(),
             FilterExpr.eq("uri", existing_uri).to_dict(),
             limit=1,
             output_fields=["abstract", "overview"],
@@ -162,7 +157,7 @@ class MemoryWriteDedupService:
         existing_content = ""
         if records:
             try:
-                existing_content = await orch._fs.read_file(existing_uri)
+                existing_content = await self._write_service._fs.read_file(existing_uri)
             except Exception:
                 existing_content = ""
 
@@ -171,12 +166,147 @@ class MemoryWriteDedupService:
             if new_content
             else existing_content
         )
-        await self._service.update(
-            existing_uri,
-            abstract=new_abstract,
-            content=merged_content,
+        if records:
+            await self._update_merged_record(
+                existing_uri=existing_uri,
+                record=records[0],
+                abstract=new_abstract,
+                content=merged_content,
+            )
+        await self._write_service.feedback(existing_uri, 0.5)
+
+    async def _update_merged_record(
+        self,
+        *,
+        existing_uri: str,
+        record: Dict[str, Any],
+        abstract: str,
+        content: str,
+    ) -> None:
+        """Apply the minimal record update needed by dedup merge."""
+        record_id = record.get("id", "")
+        if not record_id:
+            return
+
+        next_meta = self._coerce_meta(record.get("meta", {}))
+        next_overview = str(record.get("overview", "") or "")
+        next_entities = _merge_unique_strings(
+            record.get("entities") or [],
+            next_meta.get("entities"),
         )
-        await self._service.feedback(existing_uri, 0.5)
+        next_keywords_list = _merge_unique_strings(
+            next_meta.get("topics"),
+            _split_keyword_string(record.get("keywords", "")),
+        )
+        derived_fact_points: Optional[List[str]] = None
+        if content:
+            derive_result = await self._write_service._derive_layers(
+                user_abstract=abstract,
+                content=content,
+                user_overview="",
+            )
+            next_entities = _merge_unique_strings(
+                derive_result.get("entities", []),
+                next_entities,
+            )
+            next_keywords_list = _merge_unique_strings(
+                next_keywords_list,
+                _split_keyword_string(derive_result.get("keywords", "")),
+            )
+            next_anchor_handles = _merge_unique_strings(
+                next_meta.get("anchor_handles"),
+                derive_result.get("anchor_handles", []),
+            )
+            if next_anchor_handles:
+                next_meta["anchor_handles"] = next_anchor_handles
+            raw_fps = derive_result.get("fact_points", [])
+            derived_fact_points = (
+                [str(fp) for fp in raw_fps] if isinstance(raw_fps, list) else []
+            )
+
+        update_data: Dict[str, Any] = {"abstract": abstract}
+        if next_keywords_list:
+            next_meta["topics"] = _merge_unique_strings(
+                next_meta.get("topics"),
+                next_keywords_list,
+            )
+            update_data["keywords"] = ", ".join(next_keywords_list)
+        if next_entities:
+            update_data["entities"] = next_entities
+        if next_meta:
+            update_data["meta"] = next_meta
+
+        embedder = self._write_service._embedder
+        if embedder:
+            loop = asyncio.get_running_loop()
+            embed_input = abstract
+            if next_keywords_list:
+                embed_input = f"{embed_input} {', '.join(next_keywords_list)}".strip()
+            result = await loop.run_in_executor(None, embedder.embed, embed_input)
+            update_data["vector"] = result.dense_vector
+            if result.sparse_vector:
+                update_data["sparse_vector"] = result.sparse_vector
+
+        abstract_json = self._write_service._build_abstract_json(
+            uri=existing_uri,
+            context_type=str(record.get("context_type", "") or ""),
+            category=str(record.get("category", "") or ""),
+            abstract=abstract,
+            overview=next_overview,
+            content=content,
+            entities=next_entities,
+            meta=next_meta,
+            keywords=next_keywords_list,
+            parent_uri=str(record.get("parent_uri", "") or ""),
+            session_id=str(record.get("session_id", "") or ""),
+        )
+        if derived_fact_points is not None:
+            abstract_json["fact_points"] = derived_fact_points
+        else:
+            prior_abstract_json = record.get("abstract_json")
+            if isinstance(prior_abstract_json, dict):
+                prior_fps = prior_abstract_json.get("fact_points") or []
+                if isinstance(prior_fps, list):
+                    abstract_json["fact_points"] = [str(fp) for fp in prior_fps]
+        update_data.update(
+            self._write_service._memory_object_payload(
+                abstract_json,
+                is_leaf=bool(record.get("is_leaf", False)),
+            )
+        )
+        update_data["abstract_json"] = abstract_json
+
+        await self._write_service._storage.update(
+            self._write_service._get_collection(),
+            record_id,
+            update_data,
+        )
+        updated_record = dict(record)
+        updated_record.update(update_data)
+        await self._write_service._sync_anchor_projection_records(
+            source_record=updated_record,
+            abstract_json=abstract_json,
+        )
+        await self._write_service._fs.write_context(
+            uri=existing_uri,
+            content=content,
+            abstract=abstract,
+            overview=next_overview,
+            abstract_json=abstract_json,
+        )
+
+    @staticmethod
+    def _coerce_meta(raw_meta: Any) -> Dict[str, Any]:
+        """Return metadata as a dict, tolerating legacy encoded payloads."""
+        if isinstance(raw_meta, str):
+            try:
+                decoded = json.loads(raw_meta)
+            except (json.JSONDecodeError, TypeError):
+                return {}
+            return decoded if isinstance(decoded, dict) else {}
+        if isinstance(raw_meta, dict):
+            return dict(raw_meta)
+        return {}
 
     @staticmethod
     def _build_duplicate_filter(
@@ -214,7 +344,7 @@ class MemoryWriteDedupService:
         existing_record: Dict[str, Any],
     ) -> None:
         """Publish the dedup merge lifecycle signal when a bus exists."""
-        signal_bus = getattr(self._orch, "_memory_signal_bus", None)
+        signal_bus = self._write_service._memory_signal_bus
         if signal_bus is None:
             return
         signal_bus.publish_nowait(

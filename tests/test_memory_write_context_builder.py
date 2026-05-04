@@ -30,7 +30,7 @@ class TestMemoryWriteContextBuilder(unittest.IsolatedAsyncioTestCase):
                 "mergeable": is_leaf,
             }
 
-        orch = SimpleNamespace(
+        write_service = SimpleNamespace(
             _auto_uri=MagicMock(
                 return_value="opencortex://tenant/user/memories/preferences/generated"
             ),
@@ -45,8 +45,7 @@ class TestMemoryWriteContextBuilder(unittest.IsolatedAsyncioTestCase):
             _build_abstract_json=MagicMock(side_effect=build_abstract_json),
             _memory_object_payload=MagicMock(side_effect=memory_object_payload),
         )
-        write_service = SimpleNamespace(_orch=orch)
-        return MemoryWriteContextBuilder(write_service), orch
+        return MemoryWriteContextBuilder(write_service), write_service
 
     async def test_resolve_target_auto_uri_and_explicit_metadata(self) -> None:
         """Auto URI resolution copies meta and extracts explicit fields."""

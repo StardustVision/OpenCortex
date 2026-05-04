@@ -5,8 +5,8 @@ import unittest
 
 from opencortex.cortex_memory import CortexMemory
 from opencortex.orchestrator import MemoryOrchestrator
-from opencortex.services.memory_service import MemoryService
 from opencortex.services.cortex_memory_services import CortexMemoryServices
+from opencortex.services.memory_service import MemoryService
 from opencortex.services.orchestrator_services import MemoryOrchestratorServices
 
 

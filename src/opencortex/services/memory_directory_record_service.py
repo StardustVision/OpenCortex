@@ -26,10 +26,6 @@ class MemoryDirectoryRecordService:
         """Bind the directory service to a write service facade."""
         self._write_service = write_service
 
-    @property
-    def _orch(self) -> Any:
-        return self._write_service._orch
-
     async def ensure_parent_records(self, parent_uri: str) -> None:
         """Ensure all ancestor directory records exist in the vector store."""
         to_create = await self._collect_missing_ancestors(parent_uri)
@@ -49,7 +45,6 @@ class MemoryDirectoryRecordService:
 
     async def _collect_missing_ancestors(self, parent_uri: str) -> List[str]:
         """Walk upward and return directory URIs missing from storage."""
-        orch = self._orch
         uri = parent_uri
         to_create: List[str] = []
 
@@ -59,8 +54,8 @@ class MemoryDirectoryRecordService:
             except ValueError:
                 break
 
-            existing = await orch._storage.filter(
-                orch._get_collection(),
+            existing = await self._write_service._storage.filter(
+                self._write_service._get_collection(),
                 FilterExpr.eq("uri", uri).to_dict(),
                 limit=1,
             )
@@ -84,10 +79,9 @@ class MemoryDirectoryRecordService:
         effective_user: UserIdentifier,
     ) -> None:
         """Build and upsert one directory record."""
-        orch = self._orch
         dir_ctx = Context(
             uri=dir_uri,
-            parent_uri=orch._derive_parent_uri(dir_uri),
+            parent_uri=self._write_service._derive_parent_uri(dir_uri),
             is_leaf=False,
             abstract="",
             user=effective_user,
@@ -106,12 +100,14 @@ class MemoryDirectoryRecordService:
         record["mergeable"] = False
         record["session_id"] = ""
         record["ttl_expires_at"] = ""
-        await orch._storage.upsert(orch._get_collection(), record)
+        await self._write_service._storage.upsert(
+            self._write_service._get_collection(), record
+        )
         logger.debug("[MemoryService] Created directory record: %s", dir_uri)
 
     async def _embed_directory_name(self, *, dir_ctx: Context, uri: str) -> Any:
         """Embed the directory basename and attach its dense vector."""
-        embedder = self._orch._embedder
+        embedder = self._write_service._embedder
         dir_name = uri.rstrip("/").rsplit("/", 1)[-1]
         if not embedder or not dir_name:
             return None

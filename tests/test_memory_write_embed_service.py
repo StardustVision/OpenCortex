@@ -31,8 +31,7 @@ class TestMemoryWriteEmbedService(unittest.IsolatedAsyncioTestCase):
         self,
         embedder: _SpyEmbedder | None,
     ) -> MemoryWriteEmbedService:
-        orch = SimpleNamespace(_embedder=embedder)
-        write_service = SimpleNamespace(_orch=orch)
+        write_service = SimpleNamespace(_embedder=embedder)
         return MemoryWriteEmbedService(write_service)
 
     async def test_no_embedder_returns_empty_result(self) -> None:

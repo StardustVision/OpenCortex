@@ -39,12 +39,33 @@ class TestMemoryWriteDedupService(unittest.IsolatedAsyncioTestCase):
     ) -> tuple[MemoryWriteDedupService, Any, Any]:
         storage = MagicMock()
         storage.search = AsyncMock(return_value=search_results or [])
-        storage.filter = AsyncMock(return_value=[{"uri": "target-uri"}])
+        storage.filter = AsyncMock(
+            return_value=[
+                {
+                    "id": "target-id",
+                    "uri": "target-uri",
+                    "abstract": "old abstract",
+                    "overview": "old overview",
+                    "content": "old content",
+                    "context_type": "memory",
+                    "category": "preferences",
+                    "is_leaf": True,
+                    "parent_uri": "parent-uri",
+                    "session_id": "session-1",
+                    "entities": ["Alice"],
+                    "keywords": "auth",
+                    "abstract_json": {"fact_points": ["old fact"]},
+                }
+            ]
+        )
+        storage.update = AsyncMock()
         fs = MagicMock()
         fs.read_file = AsyncMock(return_value="old content")
-        orch = SimpleNamespace(
+        fs.write_context = AsyncMock()
+        write_service = SimpleNamespace(
             _storage=storage,
             _fs=fs,
+            _embedder=None,
             _memory_signal_bus=_SignalBus(),
             _get_collection=MagicMock(return_value="context"),
             _get_record_by_uri=AsyncMock(
@@ -58,13 +79,36 @@ class TestMemoryWriteDedupService(unittest.IsolatedAsyncioTestCase):
                     "category": "preferences",
                 }
             ),
+            _build_abstract_json=MagicMock(
+                side_effect=lambda **kwargs: {
+                    **kwargs,
+                    "memory_kind": "preference",
+                }
+            ),
+            _memory_object_payload=MagicMock(
+                return_value={
+                    "memory_kind": "preference",
+                    "merge_signature": "sig",
+                    "mergeable": True,
+                }
+            ),
+            _derive_layers=AsyncMock(
+                return_value={
+                    "entities": ["Bob"],
+                    "keywords": "merged",
+                    "fact_points": ["new fact"],
+                    "anchor_handles": ["Bob"],
+                }
+            ),
+            _sync_anchor_projection_records=AsyncMock(),
+            feedback=AsyncMock(),
         )
         memory_service = SimpleNamespace(
             update=AsyncMock(),
             feedback=AsyncMock(),
         )
-        write_service = SimpleNamespace(_orch=orch, _service=memory_service)
-        return MemoryWriteDedupService(write_service), orch, memory_service
+        write_service._service = memory_service
+        return MemoryWriteDedupService(write_service), write_service, memory_service
 
     async def test_check_duplicate_builds_scope_and_project_filter(self) -> None:
         """Duplicate search applies tenant, scope, kind, signature, and project."""
@@ -222,12 +266,15 @@ class TestMemoryWriteDedupService(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.uri, "target-uri")
         self.assertEqual(ctx.meta["dedup_action"], "merged")
         self.assertEqual(ctx.meta["dedup_score"], 0.93)
-        memory_service.update.assert_awaited_once_with(
-            "target-uri",
-            abstract="new abstract",
-            content="old content\n---\nnew content",
-        )
-        memory_service.feedback.assert_awaited_once_with("target-uri", 0.5)
+        memory_service.update.assert_not_awaited()
+        orch.feedback.assert_awaited_once_with("target-uri", 0.5)
+        orch._storage.update.assert_awaited_once()
+        update_data = orch._storage.update.await_args.args[2]
+        self.assertEqual(update_data["abstract"], "new abstract")
+        self.assertEqual(update_data["abstract_json"]["fact_points"], ["new fact"])
+        orch._derive_layers.assert_awaited_once()
+        orch._sync_anchor_projection_records.assert_awaited_once()
+        orch._fs.write_context.assert_awaited_once()
 
         self.assertEqual(len(orch._memory_signal_bus.signals), 1)
         signal = orch._memory_signal_bus.signals[0]
@@ -246,7 +293,7 @@ class TestMemoryWriteDedupService(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         """Empty incoming content keeps the existing filesystem content."""
-        service, _orch, memory_service = self._build_service()
+        service, orch, memory_service = self._build_service()
 
         await service.merge_into(
             "target-uri",
@@ -254,9 +301,9 @@ class TestMemoryWriteDedupService(unittest.IsolatedAsyncioTestCase):
             new_content="",
         )
 
-        memory_service.update.assert_awaited_once_with(
-            "target-uri",
-            abstract="new abstract",
-            content="old content",
+        memory_service.update.assert_not_awaited()
+        orch.feedback.assert_awaited_once_with("target-uri", 0.5)
+        orch._fs.write_context.assert_awaited_once()
+        self.assertEqual(
+            orch._fs.write_context.await_args.kwargs["content"], "old content"
         )
-        memory_service.feedback.assert_awaited_once_with("target-uri", 0.5)

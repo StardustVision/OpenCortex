@@ -34,10 +34,6 @@ class MemoryStoreRecordService:
         """Bind the persistence service to a write service facade."""
         self._write_service = write_service
 
-    @property
-    def _orch(self) -> Any:
-        return self._write_service._orch
-
     async def persist_context_record(
         self,
         *,
@@ -57,7 +53,6 @@ class MemoryStoreRecordService:
         is_leaf: bool,
     ) -> StoredRecordResult:
         """Assemble and persist a normal store record."""
-        orch = self._orch
         record = ctx.to_dict()
         if ctx.vector:
             record["vector"] = ctx.vector
@@ -85,9 +80,11 @@ class MemoryStoreRecordService:
         self._populate_flattened_source_fields(record, meta)
 
         upsert_started = asyncio.get_running_loop().time()
-        await orch._storage.upsert(orch._get_collection(), record)
+        await self._write_service._storage.upsert(
+            self._write_service._get_collection(), record
+        )
         upsert_ms = int((asyncio.get_running_loop().time() - upsert_started) * 1000)
-        await orch._sync_anchor_projection_records(
+        await self._write_service._sync_anchor_projection_records(
             source_record=record,
             abstract_json=abstract_json,
         )
@@ -120,15 +117,18 @@ class MemoryStoreRecordService:
         meta: Dict[str, Any],
     ) -> str:
         """Return the TTL string for short-lived record kinds."""
-        orch = self._orch
         if context_type == "staging":
-            return orch._ttl_from_hours(orch._config.immediate_event_ttl_hours)
+            return self._write_service._ttl_from_hours(
+                self._write_service._config.immediate_event_ttl_hours
+            )
         if (
             (context_type or "memory") == "memory"
             and effective_category == "events"
             and meta.get("layer") == "merged"
         ):
-            return orch._ttl_from_hours(orch._config.merged_event_ttl_hours)
+            return self._write_service._ttl_from_hours(
+                self._write_service._config.merged_event_ttl_hours
+            )
         return ""
 
     @staticmethod
@@ -156,7 +156,7 @@ class MemoryStoreRecordService:
         effective_category: str,
     ) -> None:
         """Publish the post-store lifecycle signal when a bus exists."""
-        signal_bus = getattr(self._orch, "_memory_signal_bus", None)
+        signal_bus = self._write_service._memory_signal_bus
         if signal_bus is None:
             return
         signal_bus.publish_nowait(
@@ -179,9 +179,11 @@ class MemoryStoreRecordService:
         entities: List[str],
     ) -> None:
         """Sync the entity index for entity-bearing records."""
-        entity_index = getattr(self._orch, "_entity_index", None)
+        entity_index = self._write_service._entity_index
         if entity_index and entities:
-            entity_index.add(self._orch._get_collection(), str(record["id"]), entities)
+            entity_index.add(
+                self._write_service._get_collection(), str(record["id"]), entities
+            )
 
     def _schedule_cortexfs_write(
         self,
@@ -207,7 +209,7 @@ class MemoryStoreRecordService:
                 )
 
         fs_task = asyncio.create_task(
-            self._orch._fs.write_context(
+            self._write_service._fs.write_context(
                 uri=uri,
                 content=content,
                 abstract=abstract,
