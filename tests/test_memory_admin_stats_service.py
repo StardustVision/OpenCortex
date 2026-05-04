@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from typing import Any, Coroutine, List
 from unittest.mock import AsyncMock, MagicMock
 
 from opencortex.services.memory_admin_stats_service import MemoryAdminStatsService
@@ -13,10 +14,10 @@ from opencortex.services.memory_admin_stats_service import MemoryAdminStatsServi
 class TestMemoryAdminStatsService(unittest.TestCase):
     """Verify admin memory statistics behavior."""
 
-    def _run(self, coro):
+    def _run(self, coro: Coroutine[Any, Any, Any]) -> Any:
         return asyncio.run(coro)
 
-    def _make_orchestrator(self, memories):
+    def _make_orchestrator(self, memories: List[dict[str, Any]]) -> MagicMock:
         mock_orch = MagicMock()
         mock_orch._ensure_init.return_value = None
         mock_orch._get_collection.return_value = "context"
