@@ -13,6 +13,7 @@ from opencortex.context.recomposition_segmentation import (
 )
 from opencortex.context.recomposition_types import RecompositionEntry
 from opencortex.context.session_records import record_msg_range, record_text
+from opencortex.services.memory_filters import FilterExpr
 
 if TYPE_CHECKING:
     from opencortex.context.manager import ContextManager, ConversationBuffer
@@ -72,7 +73,7 @@ class RecompositionInputService:
         manager = self._manager
         records = await manager._orchestrator._storage.filter(
             manager._orchestrator._get_collection(),
-            {"op": "must", "field": "uri", "conds": immediate_uris},
+            FilterExpr.eq("uri", *immediate_uris).to_dict(),
             limit=max(len(immediate_uris), 1),
         )
         by_uri = {

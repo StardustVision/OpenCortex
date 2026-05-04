@@ -8,6 +8,8 @@ import hashlib
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List
 
+from opencortex.services.memory_filters import FilterExpr
+
 if TYPE_CHECKING:
     from opencortex.context.manager import ContextManager, SessionKey
 
@@ -243,7 +245,7 @@ class RecompositionWriteService:
         try:
             records = await orchestrator._storage.filter(
                 orchestrator._get_collection(),
-                {"op": "must", "field": "uri", "conds": [uri]},
+                FilterExpr.eq("uri", uri).to_dict(),
                 limit=1,
             )
             if records:

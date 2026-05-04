@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict
 
 from opencortex.http.request_context import get_effective_identity
+from opencortex.services.memory_filters import FilterExpr
 
 if TYPE_CHECKING:
     from opencortex.orchestrator import MemoryOrchestrator
@@ -180,7 +181,7 @@ class SystemStatusService:
 
         records = await orch._storage.filter(
             orch._get_collection(),
-            {"op": "must", "field": "uri", "conds": [uri]},
+            FilterExpr.eq("uri", uri).to_dict(),
             limit=1,
         )
         if records:

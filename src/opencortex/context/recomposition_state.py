@@ -7,6 +7,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from opencortex.context.recomposition_input import RecompositionInputService
+from opencortex.services.memory_filters import FilterExpr
 
 if TYPE_CHECKING:
     from opencortex.context.manager import (
@@ -67,7 +68,7 @@ class RecompositionStateService:
         orchestrator = self._manager._orchestrator
         records = await orchestrator._storage.filter(
             orchestrator._get_collection(),
-            {"op": "must", "field": "session_id", "conds": [session_id]},
+            FilterExpr.eq("session_id", session_id).to_dict(),
             limit=10000,
         )
         return [

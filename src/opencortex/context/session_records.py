@@ -33,6 +33,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
+from opencortex.services.memory_filters import FilterExpr
+
 if TYPE_CHECKING:
     from opencortex.storage.storage_interface import StorageInterface
 
@@ -178,22 +180,14 @@ class SessionRecordsRepository:
         empty string to preserve the unscoped behavior — the filter
         simply omits the corresponding conds.
         """
-        conds: List[Dict[str, Any]] = [
-            {"op": "must", "field": "session_id", "conds": [session_id]},
-        ]
+        conds: List[FilterExpr] = [FilterExpr.eq("session_id", session_id)]
         if tenant_id:
-            conds.append(
-                {"op": "must", "field": "source_tenant_id", "conds": [tenant_id]}
-            )
+            conds.append(FilterExpr.eq("source_tenant_id", tenant_id))
         if user_id:
-            conds.append(
-                {"op": "must", "field": "source_user_id", "conds": [user_id]}
-            )
+            conds.append(FilterExpr.eq("source_user_id", user_id))
         if source_uri:
-            conds.append(
-                {"op": "must", "field": "meta.source_uri", "conds": [source_uri]}
-            )
-        return {"op": "and", "conds": conds}
+            conds.append(FilterExpr.eq("meta.source_uri", source_uri))
+        return FilterExpr.all(*conds).to_dict()
 
     async def _scroll_all(
         self,
@@ -430,7 +424,7 @@ class SessionRecordsRepository:
         """
         records = await self._storage.filter(
             self._collection(),
-            {"op": "must", "field": "uri", "conds": [summary_uri]},
+            FilterExpr.eq("uri", summary_uri).to_dict(),
             limit=1,
         )
         if not records:

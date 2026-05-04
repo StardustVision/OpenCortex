@@ -8,6 +8,8 @@ from contextlib import suppress
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from opencortex.services.memory_filters import FilterExpr
+
 if TYPE_CHECKING:
     from opencortex.services.memory_service import MemoryService
 
@@ -45,7 +47,7 @@ class MemoryScoringService:
         # Find the record ID for this URI in context collection
         records = await orch._storage.filter(
             orch._get_collection(),
-            {"op": "must", "field": "uri", "conds": [uri]},
+            FilterExpr.eq("uri", uri).to_dict(),
             limit=1,
         )
         if not records:
@@ -141,7 +143,7 @@ class MemoryScoringService:
         # Scan all records with non-empty ttl_expires_at
         expired = await orch._storage.filter(
             orch._get_collection(),
-            {"op": "must_not", "field": "ttl_expires_at", "conds": [""]},
+            FilterExpr.neq("ttl_expires_at", "").to_dict(),
             limit=1000,
         )
         cleaned = 0
@@ -178,7 +180,7 @@ class MemoryScoringService:
 
         records = await orch._storage.filter(
             orch._get_collection(),
-            {"op": "must", "field": "uri", "conds": [uri]},
+            FilterExpr.eq("uri", uri).to_dict(),
             limit=1,
         )
         if not records:
@@ -209,7 +211,7 @@ class MemoryScoringService:
 
         records = await orch._storage.filter(
             orch._get_collection(),
-            {"op": "must", "field": "uri", "conds": [uri]},
+            FilterExpr.eq("uri", uri).to_dict(),
             limit=1,
         )
         if not records:
