@@ -115,7 +115,7 @@ def create_insights_router(
     Args:
         agent: InsightsAgent instance
         report_manager: ReportManager instance
-        orchestrator: MemoryOrchestrator instance
+        orchestrator: CortexMemory instance
 
     Returns:
         FastAPI APIRouter with all insights endpoints

@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Service-tier modules extracted from ``MemoryOrchestrator``.
+"""Service-tier modules extracted from ``CortexMemory``.
 
 This namespace holds single-responsibility service classes that were
-previously methods on the God-Object orchestrator. Each service takes
-a back-reference to the orchestrator at construction (sync, no I/O)
+previously methods on the memory facade. Each service takes
+a back-reference to CortexMemory at construction (sync, no I/O)
 and exposes a focused method surface.
 
 This is Phase 1-4 of the multi-PR decomposition documented in

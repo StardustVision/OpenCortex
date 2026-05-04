@@ -715,7 +715,7 @@ class BenchmarkConversationIngestService:
 
         Returns the in-memory map of leaf URI -> raw conversation text
         so the response builder can hydrate ``content`` without racing
-        the orchestrator's fire-and-forget CortexFS write.
+        CortexMemory's fire-and-forget CortexFS write.
         """
         manager = self._manager
         merged_content_by_uri: Dict[str, str] = {}

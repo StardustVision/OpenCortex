@@ -163,7 +163,7 @@ async def admin_search_debug(req: MemorySearchRequest) -> Dict[str, Any]:
     )
 
     rerank_scores = None
-    # Plan 009 — use the orchestrator's RerankClient singleton instead
+    # Plan 009 — use the CortexMemory RerankClient singleton instead
     # of constructing a fresh client per request. The previous shape
     # leaked one TCP socket per admin_search_debug call (no aclose path
     # on RerankClient before this PR). Lazy-built so non-admin code
@@ -347,9 +347,9 @@ async def migration_overview_first(
 
 # Pool stat helpers and the status threshold live in
 # ``opencortex.observability.pool_stats`` — same module the
-# orchestrator's connection sweeper uses. REVIEW closure tracker
+# CortexMemory connection sweeper uses. REVIEW closure tracker
 # MAINT-001 / kieran-py-001: previously the helpers were
-# underscore-private here and the orchestrator imported them via a
+# underscore-private here and CortexMemory imported them via a
 # layering inversion; now both consumers depend on the neutral module.
 from opencortex.observability.pool_stats import (
     classify_pool_status,

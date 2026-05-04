@@ -231,7 +231,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         # InsightsAgent needs an LLMCompletion wrapper and previously
         # built a SECOND one here that was never closed — partially
         # regressing the very TCP CLOSE_WAIT leak this PR ships to
-        # fix. We now hold the second wrapper on the orchestrator so
+        # fix. We now hold the second wrapper on CortexMemory so
         # ``CortexMemory.close()`` releases it on shutdown.
         # Pre-existing concern (RELY-02): ``LLMWrapper.generate``
         # spawns a fresh event loop per call, which prevents httpx

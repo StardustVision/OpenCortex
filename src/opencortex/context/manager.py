@@ -124,7 +124,7 @@ class ContextManager:
     """Manages commit/end lifecycle for the context protocol.
 
     Args:
-        orchestrator: MemoryOrchestrator instance.
+        orchestrator: CortexMemory instance.
         observer: Observer instance for transcript recording.
         session_idle_ttl: Session idle auto-close TTL in seconds (default 30min).
         idle_check_interval: Idle sweep interval in seconds (default 60s).
@@ -132,7 +132,7 @@ class ContextManager:
 
     def __init__(
         self,
-        orchestrator,  # MemoryOrchestrator (avoid circular import)
+        orchestrator,  # CortexMemory (avoid circular import)
         observer,  # Observer
         *,
         session_idle_ttl: float = 1800.0,

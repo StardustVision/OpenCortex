@@ -22,9 +22,9 @@ It is explicitly NOT responsible for:
 
 Design
 ------
-The service holds a back-reference to the orchestrator (``self._orch``)
-and reaches into orchestrator-owned subsystems at call time. Construction
-is sync and cheap — no I/O, no model loading. The orchestrator lazily
+The service holds a back-reference to CortexMemory (``self._orch``)
+and reaches into CortexMemory-owned subsystems at call time. Construction
+is sync and cheap — no I/O, no model loading. The CortexMemory service registry lazily
 builds a single ``SystemStatusService`` instance via the
 ``_system_status_service`` property so that delegate methods can call
 ``self._system_status_service.X`` without ``if None`` guards.
@@ -51,12 +51,12 @@ class SystemStatusService:
 
     All 6 public methods have been extracted from ``CortexMemory``
     as part of plan 013. The service is lazily constructed by the
-    orchestrator and delegates to orchestrator-owned subsystems via
+    CortexMemory service registry and delegates to CortexMemory-owned subsystems via
     ``self._orch``.
     """
 
     def __init__(self, orchestrator: "CortexMemory") -> None:
-        """Bind the service to its parent orchestrator.
+        """Bind the service to its parent memory facade.
 
         Args:
             orchestrator: The ``CortexMemory`` instance whose
@@ -88,7 +88,7 @@ class SystemStatusService:
         return result
 
     async def stats(self) -> Dict[str, Any]:
-        """Get orchestrator statistics.
+        """Get memory facade statistics.
 
         Returns:
             Dict with ``tenant_id``, ``user_id``, ``storage``, ``embedder``,

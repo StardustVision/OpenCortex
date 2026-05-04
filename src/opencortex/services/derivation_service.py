@@ -69,7 +69,7 @@ class DeriveTask:
 
 
 class DerivationService:
-    """Coordinate deferred derive persistence using orchestrator-owned subsystems."""
+    """Coordinate deferred derive persistence using CortexMemory-owned subsystems."""
 
     def __init__(self, orchestrator: CortexMemory) -> None:
         self._orch = orchestrator
@@ -108,7 +108,7 @@ class DerivationService:
 
     @property
     def _memory_record_service(self) -> "MemoryRecordService":
-        """Return the orchestrator-owned memory record/projection service."""
+        """Return the CortexMemory-owned memory record/projection service."""
         return self._orch._memory_record_service
 
     def _extract_category_from_uri(self, uri: str) -> str:

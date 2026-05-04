@@ -4,7 +4,7 @@
 The 11-step ``init()`` boot sequence and its helper methods have been
 extracted from ``CortexMemory`` as part of plan 015 (Phase 5 of
 the God Object decomposition). This module owns the creation and wiring
-of every subsystem that the orchestrator depends on.
+of every subsystem that CortexMemory depends on.
 
 Boundary
 --------
@@ -23,18 +23,18 @@ It is explicitly NOT responsible for:
 - Background task lifecycle — owned by ``BackgroundTaskManager``
 - System status reporting — owned by ``SystemStatusService``
 - Embedder wrapping and rerank runtime helpers — owned by
-  ``ModelRuntimeService`` and exposed through orchestrator compatibility
+  ``ModelRuntimeService`` and exposed through memory facade compatibility
   wrappers such as ``self._orch._wrap_with_*()``.
 - Retrieval-time helpers (``_build_probe_filter``, etc.) — stay on
-  the orchestrator
+  CortexMemory
 
 Design
 ------
-The service holds a back-reference to the orchestrator (``self._orch``)
+The service holds a back-reference to CortexMemory (``self._orch``)
 and creates/wires subsystems by assigning to ``self._orch._X`` attributes
-at boot time. All subsystem attributes remain on the orchestrator for
+at boot time. All subsystem attributes remain on CortexMemory for
 admin route compatibility. Construction is sync and cheap — no I/O, no
-model loading. The orchestrator lazily builds a single
+model loading. The CortexMemory service registry lazily builds a single
 ``SubsystemBootstrapper`` instance via the ``_bootstrapper`` property.
 """
 
@@ -58,7 +58,7 @@ class SubsystemBootstrapper:
 
     Owns the 11-step boot sequence that creates storage, embedder,
     CortexFS, intent analyzer, cognition components, alpha pipeline,
-    skill engine, and all supporting subsystems. The orchestrator's
+    skill engine, and all supporting subsystems. CortexMemory's
     ``init()`` delegates to ``SubsystemBootstrapper.init()``.
 
     Args:
@@ -74,7 +74,7 @@ class SubsystemBootstrapper:
 
         Creates storage, embedder, CortexFS, intent analyzer, cognition
         components, alpha pipeline, skill engine, and all supporting
-        subsystems. Assigns them as attributes on the orchestrator.
+        subsystems. Assigns them as attributes on CortexMemory.
 
         Returns:
             The parent memory facade instance (for chaining).
