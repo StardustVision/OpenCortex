@@ -280,7 +280,7 @@ class RetrievalService:
         if not self._entity_index.is_ready(collection):
             return records, False
 
-        query_entities = self._orch._cone_query_entities(
+        query_entities = self._cone_query_entities(
             typed_query=typed_query,
             query_anchor_groups=query_anchor_groups,
             records=records,
