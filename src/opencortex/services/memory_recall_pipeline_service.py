@@ -108,7 +108,7 @@ class MemoryRecallPipelineService:
             include_knowledge=False,
         )
         effective_limit = runtime_bound_plan["memory_limit"]
-        typed_queries = self._query_service._service._build_typed_queries(
+        typed_queries = self._query_service._build_typed_queries(
             query=query,
             context_type=context_type,
             target_uri=target_uri,
@@ -120,9 +120,13 @@ class MemoryRecallPipelineService:
             target_doc_id=target_doc_id,
             target_uri=target_uri,
         )
-        search_filter = orch._build_search_filter(metadata_filter=scope_filter)
+        retrieval_service = orch._retrieval_service
+        search_filter = retrieval_service._build_search_filter(
+            metadata_filter=scope_filter
+        )
         query_results = await self._retrieve(
             stage_timings=stage_timings,
+            retrieval_service=retrieval_service,
             typed_queries=typed_queries,
             effective_limit=effective_limit,
             score_threshold=score_threshold,
@@ -134,11 +138,11 @@ class MemoryRecallPipelineService:
         hydration_actions: List[Dict[str, Any]] = []
 
         aggregate_started = asyncio.get_running_loop().time()
-        result = orch._aggregate_results(query_results, limit=limit)
+        result = retrieval_service._aggregate_results(query_results, limit=limit)
         result.probe_result = probe_result
         result.retrieve_plan = retrieve_plan
-        retrieve_breakdown_ms = (
-            self._query_service._service._summarize_retrieve_breakdown(query_results)
+        retrieve_breakdown_ms = self._query_service._summarize_retrieve_breakdown(
+            query_results
         )
         self._filter_leaf_results(result)
         all_matched = result.memories + result.resources + result.skills
@@ -283,6 +287,7 @@ class MemoryRecallPipelineService:
         self,
         *,
         stage_timings: StageTimingCollector,
+        retrieval_service: Any,
         typed_queries: List[Any],
         effective_limit: int,
         score_threshold: Optional[float],
@@ -293,7 +298,7 @@ class MemoryRecallPipelineService:
     ) -> List[Any]:
         """Run object-query retrieval for all typed queries."""
         retrieval_coros = [
-            self._orch._execute_object_query(
+            retrieval_service._execute_object_query(
                 typed_query=typed_query,
                 limit=effective_limit,
                 score_threshold=score_threshold,

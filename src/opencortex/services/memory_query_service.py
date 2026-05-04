@@ -17,6 +17,10 @@ from opencortex.retrieve.types import (
     QueryResult,
     TypedQuery,
 )
+from opencortex.services.memory_filters import (
+    FilterExpr,
+    memory_visibility_filter,
+)
 
 if TYPE_CHECKING:
     from opencortex.services.memory_recall_pipeline_service import (
@@ -218,51 +222,18 @@ class MemoryQueryService:
         orch._ensure_init()
         tid, uid = get_effective_identity()
 
-        # Same scope filter as search(): private own + shared
-        scope_filter = {
-            "op": "or",
-            "conds": [
-                {"op": "must", "field": "scope", "conds": ["shared", ""]},
-                {
-                    "op": "and",
-                    "conds": [
-                        {"op": "must", "field": "scope", "conds": ["private"]},
-                        {"op": "must", "field": "source_user_id", "conds": [uid]},
-                    ],
-                },
-            ],
-        }
-
         conds: List[Dict[str, Any]] = [
-            {"op": "must_not", "field": "context_type", "conds": ["staging"]},
-            scope_filter,
+            memory_visibility_filter(
+                tenant_id=tid,
+                user_id=uid,
+                project_id=get_effective_project_id(),
+                exclude_staging=True,
+            ).to_dict()
         ]
-        if tid:
-            conds.append(
-                {"op": "must", "field": "source_tenant_id", "conds": [tid, ""]}
-            )
         if category:
-            conds.append({"op": "must", "field": "category", "conds": [category]})
+            conds.append(FilterExpr.eq("category", category).to_dict())
         if context_type:
-            conds.append(
-                {"op": "must", "field": "context_type", "conds": [context_type]}
-            )
-
-        # Project filter: strict isolation
-        project_id = get_effective_project_id()
-        if project_id and project_id != "public":
-            conds.append(
-                {
-                    "op": "or",
-                    "conds": [
-                        {
-                            "op": "must",
-                            "field": "project_id",
-                            "conds": [project_id, "public"],
-                        },
-                    ],
-                }
-            )
+            conds.append(FilterExpr.eq("context_type", context_type).to_dict())
 
         combined: Dict[str, Any] = {"op": "and", "conds": conds}
 
@@ -330,48 +301,19 @@ class MemoryQueryService:
         orch._ensure_init()
         tid, uid = get_effective_identity()
 
-        scope_filter = {
-            "op": "or",
-            "conds": [
-                {"op": "must", "field": "scope", "conds": ["shared", ""]},
-                {
-                    "op": "and",
-                    "conds": [
-                        {"op": "must", "field": "scope", "conds": ["private"]},
-                        {"op": "must", "field": "source_user_id", "conds": [uid]},
-                    ],
-                },
-            ],
-        }
-
         conds: List[Dict[str, Any]] = [
-            {"op": "must_not", "field": "context_type", "conds": ["staging"]},
-            {"op": "must", "field": "is_leaf", "conds": [True]},
-            scope_filter,
+            memory_visibility_filter(
+                tenant_id=tid,
+                user_id=uid,
+                project_id=get_effective_project_id(),
+                exclude_staging=True,
+            ).to_dict(),
+            FilterExpr.eq("is_leaf", True).to_dict(),
         ]
-        if tid:
-            conds.append(
-                {"op": "must", "field": "source_tenant_id", "conds": [tid, ""]}
-            )
 
         if context_type:
             types = [t.strip() for t in context_type.split(",") if t.strip()]
-            conds.append({"op": "must", "field": "context_type", "conds": types})
-
-        project_id = get_effective_project_id()
-        if project_id and project_id != "public":
-            conds.append(
-                {
-                    "op": "or",
-                    "conds": [
-                        {
-                            "op": "must",
-                            "field": "project_id",
-                            "conds": [project_id, "public"],
-                        },
-                    ],
-                }
-            )
+            conds.append(FilterExpr.eq("context_type", *types).to_dict())
 
         records = await orch._storage.filter(
             orch._get_collection(),

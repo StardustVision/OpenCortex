@@ -3,6 +3,7 @@ import asyncio
 import sys
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
@@ -471,7 +472,6 @@ class TestRecallBookkeepingAsync(unittest.IsolatedAsyncioTestCase):
                 matched_contexts=[],
             )
 
-        oc._execute_object_query = AsyncMock(side_effect=fake_query)
         oc._resolve_and_update_access_stats = AsyncMock()
         memory = MatchedContext(
             uri="opencortex://tenant/user/memories/test",
@@ -479,8 +479,12 @@ class TestRecallBookkeepingAsync(unittest.IsolatedAsyncioTestCase):
             is_leaf=True,
             abstract="test memory",
         )
-        oc._aggregate_results = MagicMock(
-            return_value=FindResult(memories=[memory], resources=[], skills=[])
+        oc._retrieval_service_instance = SimpleNamespace(
+            _build_search_filter=MagicMock(return_value={"op": "and", "conds": []}),
+            _execute_object_query=AsyncMock(side_effect=fake_query),
+            _aggregate_results=MagicMock(
+                return_value=FindResult(memories=[memory], resources=[], skills=[])
+            ),
         )
         oc._autophagy_kernel = MagicMock()
         oc._autophagy_kernel.apply_recall_outcome = AsyncMock()
@@ -560,7 +564,7 @@ class TestRecallBookkeepingAsync(unittest.IsolatedAsyncioTestCase):
                 "effective_depth": "l0",
             }
         )
-        oc._execute_object_query = AsyncMock(
+        object_query = AsyncMock(
             return_value=MagicMock(
                 timing_ms={
                     "embed": 1.0,
@@ -580,8 +584,12 @@ class TestRecallBookkeepingAsync(unittest.IsolatedAsyncioTestCase):
             is_leaf=True,
             abstract="test memory",
         )
-        oc._aggregate_results = MagicMock(
-            return_value=FindResult(memories=[memory], resources=[], skills=[])
+        oc._retrieval_service_instance = SimpleNamespace(
+            _build_search_filter=MagicMock(return_value={"op": "and", "conds": []}),
+            _execute_object_query=object_query,
+            _aggregate_results=MagicMock(
+                return_value=FindResult(memories=[memory], resources=[], skills=[])
+            ),
         )
 
         result = await oc.search(

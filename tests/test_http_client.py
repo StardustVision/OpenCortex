@@ -20,6 +20,17 @@ class TestOpenCortexClient(unittest.IsolatedAsyncioTestCase):
 
         async def handler(request: httpx.Request) -> httpx.Response:
             self.assertEqual(request.url.path, "/api/v1/memory/search")
+            self.assertEqual(
+                request.read(),
+                (
+                    b'{"query":"theme","limit":5,"detail_level":"l1",'
+                    b'"target_uri":"opencortex://tenant/user/memories",'
+                    b'"score_threshold":0.2,"target_doc_id":"doc-1",'
+                    b'"session_context":{"session_id":"session-1"},'
+                    b'"metadata_filter":{"op":"must","field":"category",'
+                    b'"conds":["events"]}}'
+                ),
+            )
             return httpx.Response(
                 200,
                 json={
@@ -50,7 +61,18 @@ class TestOpenCortexClient(unittest.IsolatedAsyncioTestCase):
             base_url="http://testserver",
         )
 
-        result = await self.client.memory_search("theme")
+        result = await self.client.memory_search(
+            "theme",
+            target_uri="opencortex://tenant/user/memories",
+            score_threshold=0.2,
+            target_doc_id="doc-1",
+            session_context={"session_id": "session-1"},
+            metadata_filter={
+                "op": "must",
+                "field": "category",
+                "conds": ["events"],
+            },
+        )
 
         self.assertEqual(result["total"], 1)
         self.assertEqual(result["results"][0]["uri"], "/memories/preferences/theme")

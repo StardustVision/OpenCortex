@@ -444,8 +444,12 @@ def _register_routes(app: FastAPI) -> None:
             query=req.query,
             limit=req.limit,
             context_type=ct,
+            target_uri=req.target_uri,
+            score_threshold=req.score_threshold,
             metadata_filter=metadata_filter,
             detail_level=req.detail_level,
+            meta={"target_doc_id": req.target_doc_id} if req.target_doc_id else None,
+            session_context=req.session_context,
         )
         response_payload = result.to_memory_search_response()
         # v0.6: explain query param support
