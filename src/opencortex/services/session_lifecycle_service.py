@@ -12,7 +12,6 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
-from uuid import uuid4
 
 from opencortex.cognition.state_types import OwnerType
 from opencortex.context.benchmark_ingest_service import (
@@ -23,16 +22,12 @@ from opencortex.http.request_context import (
     get_effective_identity,
     get_effective_project_id,
 )
-from opencortex.services.derivation_service import _merge_unique_strings
 from opencortex.services.memory_filters import FilterExpr
-from opencortex.utils.uri import CortexURI
 
 if TYPE_CHECKING:
     from opencortex.cortex_memory import CortexMemory
 
 logger = logging.getLogger(__name__)
-
-_IMMEDIATE_EMBED_TIMEOUT_SECONDS = 8.0
 
 
 class SessionLifecycleService:
@@ -126,157 +121,19 @@ class SessionLifecycleService:
         meta: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Write a single message for immediate searchability."""
-        orch = self._orch
         tid, uid = get_effective_identity()
-        nid = uuid4().hex
-        uri = CortexURI.build_private(tid, uid, "memories", "events", nid)
-        meta = dict(meta or {})
-        explicit_entities = _merge_unique_strings(meta.get("entities"))
-        explicit_topics = _merge_unique_strings(meta.get("topics"))
-        record_meta = dict(meta)
-        if explicit_topics:
-            record_meta["topics"] = _merge_unique_strings(
-                record_meta.get("topics"),
-                explicit_topics,
-            )
-        record_meta.update(
-            {
-                "layer": "immediate",
-                "msg_index": msg_index,
-                "session_id": session_id,
-                "tool_calls": tool_calls or [],
-            }
-        )
-
-        embed_input = text
-        if self._config.context_flattening_enabled:
-            speaker = ""
-            for prefix in ("user:", "assistant:", "system:"):
-                if text.lower().startswith(prefix):
-                    speaker = prefix.rstrip(":")
-                    break
-            if speaker:
-                embed_input = f"[{speaker}] {text}"
-
-        vector = None
-        sparse_vector = None
-        if self._embedder:
-            loop = asyncio.get_running_loop()
-            try:
-                result = await asyncio.wait_for(
-                    loop.run_in_executor(None, self._embedder.embed, embed_input),
-                    timeout=_IMMEDIATE_EMBED_TIMEOUT_SECONDS,
-                )
-            except Exception as exc:
-                fallback_embedder = None
-                if (
-                    (self._config.embedding_provider or "").strip().lower() == "openai"
-                    and orch._is_retryable_immediate_embed_exception(exc)
-                ):
-                    fallback_embedder = orch._get_immediate_fallback_embedder()
-                if fallback_embedder is None:
-                    raise
-                logger.warning(
-                    "[SessionLifecycleService] Immediate remote embedding failed; "
-                    "retrying local fallback model=%s exc_type=%s exc=%r",
-                    getattr(fallback_embedder, "model_name", "local-fallback"),
-                    type(exc).__name__,
-                    exc,
-                )
-                try:
-                    result = await loop.run_in_executor(
-                        None,
-                        fallback_embedder.embed,
-                        embed_input,
-                    )
-                except Exception as fallback_exc:
-                    logger.warning(
-                        "[SessionLifecycleService] Immediate local fallback embedding "
-                        "failed model=%s exc_type=%s exc=%r",
-                        getattr(fallback_embedder, "model_name", "local-fallback"),
-                        type(fallback_exc).__name__,
-                        fallback_exc,
-                    )
-                    raise exc from fallback_exc
-            vector = result.dense_vector
-            sparse_vector = result.sparse_vector
-
-        record = {
-            "uri": uri,
-            "parent_uri": CortexURI.build_private(
-                tid, uid, "memories", "events", session_id
-            ),
-            "is_leaf": True,
-            "abstract": text,
-            "overview": "",
-            "context_type": "memory",
-            "category": "events",
-            "scope": "private",
-            "source_user_id": uid,
-            "source_tenant_id": tid,
-            "keywords": ", ".join(explicit_topics),
-            "entities": explicit_entities,
-            "meta": {
-                **record_meta,
-            },
-            "session_id": session_id,
-            "project_id": get_effective_project_id(),
-            "ttl_expires_at": orch._ttl_from_hours(
-                self._config.immediate_event_ttl_hours
-            ),
-            "speaker": str(record_meta.get("speaker", "") or ""),
-            "event_date": record_meta.get("event_date"),
-        }
-
-        if vector:
-            record["vector"] = vector
-        if sparse_vector:
-            record["sparse_vector"] = sparse_vector
-
-        abstract_json = orch._build_abstract_json(
-            uri=uri,
-            context_type="memory",
-            category="events",
-            abstract=text,
-            overview="",
-            content=text,
-            entities=explicit_entities,
-            meta=record_meta,
-            keywords=explicit_topics,
-            parent_uri=record["parent_uri"],
+        context_manager = self._orch._context_manager
+        if context_manager is None:
+            raise RuntimeError("ContextManager not initialized")
+        return await context_manager._session_record_writer.write_immediate_message(
             session_id=session_id,
+            msg_index=msg_index,
+            text=text,
+            tenant_id=tid,
+            user_id=uid,
+            tool_calls=tool_calls,
+            meta=meta,
         )
-        record.update(orch._memory_object_payload(abstract_json, is_leaf=True))
-        record["abstract_json"] = abstract_json
-
-        record_id = await self._storage.upsert(self._get_collection(), record)
-        record["id"] = record_id
-        await orch._sync_anchor_projection_records(
-            source_record=record,
-            abstract_json=abstract_json,
-        )
-        if orch._entity_index and explicit_entities:
-            orch._entity_index.add(
-                self._get_collection(),
-                str(record.get("id") or record_id),
-                explicit_entities,
-            )
-        try:
-            await self._fs.write_context(
-                uri=uri,
-                content=text,
-                abstract=text,
-                abstract_json=abstract_json,
-                overview="",
-                is_leaf=True,
-            )
-        except Exception as exc:
-            logger.warning(
-                "[SessionLifecycleService] Immediate CortexFS write failed for %s: %s",
-                uri,
-                exc,
-            )
-        return uri
 
     async def _resolve_memory_owner_ids(self, matches: List[Any]) -> List[str]:
         """Resolve memory owner ids from matched contexts using persisted ids."""

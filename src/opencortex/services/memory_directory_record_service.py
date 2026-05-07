@@ -14,7 +14,7 @@ from opencortex.services.memory_filters import FilterExpr
 from opencortex.utils.uri import CortexURI
 
 if TYPE_CHECKING:
-    from opencortex.services.memory_write_service import MemoryWriteService
+    from opencortex.services.memory_writer import MemoryWriter
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +22,9 @@ logger = logging.getLogger(__name__)
 class MemoryDirectoryRecordService:
     """Owns vector-store parent directory records for memory writes."""
 
-    def __init__(self, write_service: "MemoryWriteService") -> None:
+    def __init__(self, write_engine: "MemoryWriter") -> None:
         """Bind the directory service to a write service facade."""
-        self._write_service = write_service
+        self._write_engine = write_engine
 
     async def ensure_parent_records(self, parent_uri: str) -> None:
         """Ensure all ancestor directory records exist in the vector store."""
@@ -54,8 +54,8 @@ class MemoryDirectoryRecordService:
             except ValueError:
                 break
 
-            existing = await self._write_service._storage.filter(
-                self._write_service._get_collection(),
+            existing = await self._write_engine._storage.filter(
+                self._write_engine._get_collection(),
                 FilterExpr.eq("uri", uri).to_dict(),
                 limit=1,
             )
@@ -81,7 +81,7 @@ class MemoryDirectoryRecordService:
         """Build and upsert one directory record."""
         dir_ctx = Context(
             uri=dir_uri,
-            parent_uri=self._write_service._derive_parent_uri(dir_uri),
+            parent_uri=self._write_engine._derive_parent_uri(dir_uri),
             is_leaf=False,
             abstract="",
             user=effective_user,
@@ -100,14 +100,14 @@ class MemoryDirectoryRecordService:
         record["mergeable"] = False
         record["session_id"] = ""
         record["ttl_expires_at"] = ""
-        await self._write_service._storage.upsert(
-            self._write_service._get_collection(), record
+        await self._write_engine._storage.upsert(
+            self._write_engine._get_collection(), record
         )
         logger.debug("[MemoryService] Created directory record: %s", dir_uri)
 
     async def _embed_directory_name(self, *, dir_ctx: Context, uri: str) -> Any:
         """Embed the directory basename and attach its dense vector."""
-        embedder = self._write_service._embedder
+        embedder = self._write_engine._embedder
         dir_name = uri.rstrip("/").rsplit("/", 1)[-1]
         if not embedder or not dir_name:
             return None

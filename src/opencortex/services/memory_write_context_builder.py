@@ -15,7 +15,7 @@ from opencortex.services.derivation_service import (
 )
 
 if TYPE_CHECKING:
-    from opencortex.services.memory_write_service import MemoryWriteService
+    from opencortex.services.memory_writer import MemoryWriter
 
 
 @dataclass(frozen=True)
@@ -51,9 +51,9 @@ class AssembledWriteContext:
 class MemoryWriteContextBuilder:
     """Builds transient write Context objects and related payloads."""
 
-    def __init__(self, write_service: "MemoryWriteService") -> None:
+    def __init__(self, write_engine: "MemoryWriter") -> None:
         """Bind the builder to a write service facade."""
-        self._write_service = write_service
+        self._write_engine = write_engine
 
     async def resolve_target(
         self,
@@ -71,18 +71,18 @@ class MemoryWriteContextBuilder:
         explicit_topics = _merge_unique_strings(resolved_meta.get("topics"))
 
         if not uri:
-            resolved_uri = self._write_service._auto_uri(
+            resolved_uri = self._write_engine._auto_uri(
                 context_type or "memory",
                 category,
                 abstract=abstract,
             )
-            resolved_uri = await self._write_service._resolve_unique_uri(resolved_uri)
+            resolved_uri = await self._write_engine._resolve_unique_uri(resolved_uri)
             existing_record = None
         else:
             resolved_uri = uri
-            existing_record = await self._write_service._get_record_by_uri(resolved_uri)
+            existing_record = await self._write_engine._get_record_by_uri(resolved_uri)
 
-        resolved_parent_uri = parent_uri or self._write_service._derive_parent_uri(
+        resolved_parent_uri = parent_uri or self._write_engine._derive_parent_uri(
             resolved_uri
         )
         return ResolvedWriteTarget(
@@ -155,10 +155,10 @@ class MemoryWriteContextBuilder:
         elif embed_text:
             ctx.vectorize = Vectorize(embed_text)
 
-        effective_category = category or self._write_service._extract_category_from_uri(
+        effective_category = category or self._write_engine._extract_category_from_uri(
             target.uri
         )
-        abstract_json = self._write_service._build_abstract_json(
+        abstract_json = self._write_engine._build_abstract_json(
             uri=target.uri,
             context_type=context_type or "",
             category=effective_category,
@@ -173,7 +173,7 @@ class MemoryWriteContextBuilder:
         )
         if content and is_leaf:
             abstract_json["fact_points"] = layers.get("fact_points", [])
-        object_payload = self._write_service._memory_object_payload(
+        object_payload = self._write_engine._memory_object_payload(
             abstract_json, is_leaf=is_leaf
         )
         return AssembledWriteContext(

@@ -178,7 +178,7 @@ class RecallPlanner:
         probe_result: SearchResult,
         scope_input: Optional[Any],
     ) -> tuple[ScopeLevel, ProbeScopeSource, Optional[Dict[str, Any]], List[str]]:
-        """Infer scope from probe signals and caller scope context."""
+        """Infer scope from probe events and caller scope context."""
         if scope_input is None:
             return ScopeLevel.GLOBAL, ProbeScopeSource.GLOBAL_ROOT, None, []
 

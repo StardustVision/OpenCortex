@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict
 
 if TYPE_CHECKING:
-    from opencortex.services.memory_write_service import MemoryWriteService
+    from opencortex.services.memory_writer import MemoryWriter
 
 
 @dataclass(frozen=True)
@@ -24,9 +24,9 @@ class MemoryWriteDeriveResult:
 class MemoryWriteDeriveService:
     """Owns derive/fallback derive decisions for memory writes."""
 
-    def __init__(self, write_service: "MemoryWriteService") -> None:
+    def __init__(self, write_engine: "MemoryWriter") -> None:
         """Bind the derive service to a write service facade."""
-        self._write_service = write_service
+        self._write_engine = write_engine
 
     async def derive_for_write(
         self,
@@ -40,7 +40,7 @@ class MemoryWriteDeriveService:
         """Derive or fallback-fill write summary fields for normal add()."""
         if content and is_leaf and not defer_derive:
             derive_started = asyncio.get_running_loop().time()
-            layers = await self._write_service._derive_layers(
+            layers = await self._write_engine._derive_layers(
                 user_abstract=abstract,
                 content=content,
                 user_overview=overview,
@@ -58,13 +58,13 @@ class MemoryWriteDeriveService:
         if content and is_leaf and defer_derive:
             resolved_overview = overview
             if not resolved_overview:
-                resolved_overview = self._write_service._fallback_overview_from_content(
+                resolved_overview = self._write_engine._fallback_overview_from_content(
                     user_overview=overview,
                     content=content,
                 )
             resolved_abstract = abstract
             if not resolved_abstract:
-                resolved_abstract = self._write_service._derive_abstract_from_overview(
+                resolved_abstract = self._write_engine._derive_abstract_from_overview(
                     user_abstract=abstract,
                     overview=resolved_overview,
                     content=content,

@@ -519,7 +519,7 @@ class SessionRecompositionEngine:
                 # inline ``contextlib.suppress`` cleanup was a silent
                 # black box on the raise_on_error=True path: any URI
                 # that failed to delete inside the suppressed block
-                # became an orphan with no signal upstream.
+                # became an orphan with no event upstream.
                 raise RecompositionError(exc, created_directory_uris) from exc
             # raise_on_error=False (production lifecycle) keeps the
             # legacy best-effort inline cleanup. Production callers do

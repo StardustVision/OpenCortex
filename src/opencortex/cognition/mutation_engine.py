@@ -49,9 +49,9 @@ class RecallMutationEngine:
         recalled_state_keys.update(
             self._extract_state_keys(outcome.get("rejected_results"), default_owner_type="memory")
         )
-        conflict_signals = list(outcome.get("conflict_signals") or [])
+        conflict_events = list(outcome.get("conflict_events") or [])
         conflict_state_keys = self._extract_state_keys(
-            conflict_signals, default_owner_type="memory"
+            conflict_events, default_owner_type="memory"
         )
         touched_state_keys = used_state_keys | recalled_state_keys | conflict_state_keys
 
@@ -113,7 +113,7 @@ class RecallMutationEngine:
                 fields["exposure_state"] = ExposureState.CONTESTED.value
                 mutation_reason = "contest"
                 reason = self._extract_conflict_reason(
-                    conflict_signals, owner_type=state.owner_type.value, owner_id=state.owner_id
+                    conflict_events, owner_type=state.owner_type.value, owner_id=state.owner_id
                 )
                 contestation_events.append(
                     {
@@ -198,16 +198,16 @@ class RecallMutationEngine:
 
     @staticmethod
     def _extract_conflict_reason(
-        conflict_signals: List[Any], *, owner_type: str, owner_id: str
+        conflict_events: List[Any], *, owner_type: str, owner_id: str
     ) -> str:
-        for signal in conflict_signals:
-            if not isinstance(signal, Mapping):
+        for event in conflict_events:
+            if not isinstance(event, Mapping):
                 continue
-            signal_keys = RecallMutationEngine._extract_state_keys(
-                [signal], default_owner_type="memory"
+            event_keys = RecallMutationEngine._extract_state_keys(
+                [event], default_owner_type="memory"
             )
-            if (owner_type, owner_id) in signal_keys:
-                reason = signal.get("reason")
+            if (owner_type, owner_id) in event_keys:
+                reason = event.get("reason")
                 if isinstance(reason, str) and reason:
                     return reason
-        return "conflict_signaled"
+        return "conflict_evented"

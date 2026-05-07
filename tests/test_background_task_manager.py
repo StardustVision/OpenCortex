@@ -88,7 +88,7 @@ class TestCloseLifecycle(unittest.IsolatedAsyncioTestCase):
         mock_orch._connection_sweep_task = None
         mock_orch._autophagy_startup_sweep_task = None
         mock_orch._autophagy_sweep_task = None
-        mock_orch._memory_signal_bus = None
+        mock_orch._memory_events = None
         mock_orch._derive_worker_task = None
         mgr = BackgroundTaskManager(mock_orch)
         # Should complete without error
@@ -104,7 +104,7 @@ class TestCloseLifecycle(unittest.IsolatedAsyncioTestCase):
         mock_orch._connection_sweep_task = task
         mock_orch._autophagy_startup_sweep_task = None
         mock_orch._autophagy_sweep_task = None
-        mock_orch._memory_signal_bus = None
+        mock_orch._memory_events = None
         mock_orch._derive_worker_task = None
 
         mgr = BackgroundTaskManager(mock_orch)
@@ -117,7 +117,7 @@ class TestCloseLifecycle(unittest.IsolatedAsyncioTestCase):
         mock_orch._connection_sweep_task = None
         mock_orch._autophagy_startup_sweep_task = None
         mock_orch._autophagy_sweep_task = None
-        mock_orch._memory_signal_bus = None
+        mock_orch._memory_events = None
         mock_orch._derive_worker_task = None
 
         mgr = BackgroundTaskManager(mock_orch)

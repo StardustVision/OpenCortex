@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Document and batch memory write service for OpenCortex."""
+"""Document and batch memory write helper for ``MemoryWriter``."""
 
 from __future__ import annotations
 
@@ -14,24 +14,27 @@ from uuid import uuid4
 from opencortex.core.context import Context
 from opencortex.http.request_context import get_effective_identity
 from opencortex.prompts import build_doc_summarization_prompt
+from opencortex.retrieve.types import ContextType
 from opencortex.utils.json_parse import parse_json_from_response
 from opencortex.utils.text import chunked_llm_derive, smart_truncate
 
 if TYPE_CHECKING:
-    from opencortex.services.memory_service import MemoryService
+    from opencortex.services.memory_writer import MemoryWriter
 
 logger = logging.getLogger(__name__)
+_BATCH_ADD_CONCURRENCY = 8
+_BATCH_ADD_TASK_CHUNK_SIZE = _BATCH_ADD_CONCURRENCY * 4
 
 
 class MemoryDocumentWriteService:
-    """Own document ingest and batch write logic behind MemoryService."""
+    """Own document ingest and batch write logic for a ``MemoryWriter``."""
 
-    def __init__(self, memory_service: "MemoryService") -> None:
-        self._service = memory_service
+    def __init__(self, writer: "MemoryWriter") -> None:
+        self._writer = writer
 
     @property
-    def _orch(self) -> Any:
-        return self._service._orch
+    def _runtime(self) -> "MemoryWriter":
+        return self._writer
 
     async def _generate_abstract_overview(
         self,
@@ -39,10 +42,10 @@ class MemoryDocumentWriteService:
         file_path: str,
     ) -> tuple[str, str]:
         """Use LLM to generate abstract (L0) and overview (L1) from content."""
-        orch = self._orch
+        runtime = self._runtime
         fallback_overview = smart_truncate(content, 500)
 
-        if not orch._llm_completion:
+        if not runtime._llm_completion:
             return file_path, fallback_overview
 
         if len(content) > 3000:
@@ -52,7 +55,7 @@ class MemoryDocumentWriteService:
                     prompt_builder=lambda chunk: build_doc_summarization_prompt(
                         file_path, chunk
                     ),
-                    llm_fn=orch._llm_completion,
+                    llm_fn=runtime._llm_completion,
                     parse_fn=parse_json_from_response,
                     merge_policy="abstract_overview",
                     max_chars_per_chunk=3000,
@@ -66,7 +69,7 @@ class MemoryDocumentWriteService:
 
         prompt = build_doc_summarization_prompt(file_path, content)
         try:
-            response = await orch._llm_completion(prompt)
+            response = await runtime._llm_completion(prompt)
             data = parse_json_from_response(response)
             if isinstance(data, dict):
                 return data.get("abstract", file_path), data.get(
@@ -90,12 +93,12 @@ class MemoryDocumentWriteService:
         source_path: str,
     ) -> Context:
         """Parse document content and enqueue or write derived chunks."""
-        orch = self._orch
-        if orch._parser_registry is None:
+        runtime = self._runtime
+        if runtime._parser_registry is None:
             from opencortex.parse.registry import ParserRegistry
 
-            orch._parser_registry = ParserRegistry()
-        registry = orch._parser_registry
+            runtime.set_parser_registry(ParserRegistry())
+        registry = runtime._parser_registry
         parser = registry.get_parser_for_file(source_path) if source_path else None
 
         if parser:
@@ -123,7 +126,7 @@ class MemoryDocumentWriteService:
         if len(chunks) <= 1:
             single_content = chunks[0].content if chunks else content
             embed_text = ""
-            if orch._config.context_flattening_enabled:
+            if runtime._config.context_flattening_enabled:
                 parts = []
                 if source_doc_title:
                     parts.append(f"[{source_doc_title}]")
@@ -132,7 +135,7 @@ class MemoryDocumentWriteService:
                     parts.append(f"[{sp}]")
                 parts.append(abstract)
                 embed_text = " ".join(parts)
-            return await self._service.add(
+            return await self._writer.add(
                 abstract=abstract,
                 content=single_content,
                 category=category,
@@ -150,6 +153,7 @@ class MemoryDocumentWriteService:
                 },
                 session_id=session_id,
                 embed_text=embed_text,
+                force_primary=True,
             )
 
         # Multi-chunk: async derive -- return immediately, process in background
@@ -164,24 +168,25 @@ class MemoryDocumentWriteService:
         # Phase A: generate URI, write CortexFS, enqueue, return
         import json as _json
 
-        parent_uri_candidate = orch._auto_uri(
-            context_type or "resource", category, abstract=doc_title
+        resource_type = ContextType.RESOURCE
+        parent_uri_candidate = runtime._auto_uri(
+            context_type or resource_type, category, abstract=doc_title
         )
-        parent_uri_candidate = await orch._resolve_unique_uri(parent_uri_candidate)
-        while parent_uri_candidate in orch._inflight_derive_uris:
-            parent_uri_candidate = await orch._resolve_unique_uri(
+        parent_uri_candidate = await runtime._resolve_unique_uri(parent_uri_candidate)
+        while parent_uri_candidate in runtime._inflight_derive_uris:
+            parent_uri_candidate = await runtime._resolve_unique_uri(
                 parent_uri_candidate + "_"
             )
-        orch._inflight_derive_uris.add(parent_uri_candidate)
+        runtime._inflight_derive_uris.add(parent_uri_candidate)
 
         tid, uid = get_effective_identity()
 
-        # Write .derive_pending marker first (recovery signal)
+        # Write .derive_pending marker first (recovery event)
         marker_data = _json.dumps(
             {
                 "parent_uri": parent_uri_candidate,
                 "category": category,
-                "context_type": context_type or "resource",
+                "context_type": context_type or resource_type,
                 "source_path": source_path or "",
                 "source_doc_id": source_doc_id,
                 "source_doc_title": source_doc_title,
@@ -190,18 +195,18 @@ class MemoryDocumentWriteService:
                 "user_id": uid,
             }
         ).encode("utf-8")
-        fs_path = orch._fs._uri_to_path(parent_uri_candidate)
+        fs_path = runtime._fs._uri_to_path(parent_uri_candidate)
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             None,
             lambda: (
-                orch._fs.agfs.mkdir(fs_path),
-                orch._fs.agfs.write(f"{fs_path}/.derive_pending", marker_data),
+                runtime._fs.agfs.mkdir(fs_path),
+                runtime._fs.agfs.write(f"{fs_path}/.derive_pending", marker_data),
             ),
         )
 
         # Write L2 content to CortexFS
-        await orch._fs.write_context(uri=parent_uri_candidate, content=content)
+        await runtime._fs.write_context(uri=parent_uri_candidate, content=content)
 
         # Enqueue derive task
         from opencortex.services.derivation_service import DeriveTask
@@ -212,7 +217,7 @@ class MemoryDocumentWriteService:
             abstract=doc_title,
             chunks=chunks,
             category=category,
-            context_type=context_type or "resource",
+            context_type=context_type or resource_type,
             meta=meta or {},
             session_id=session_id,
             source_path=source_path or "",
@@ -221,7 +226,7 @@ class MemoryDocumentWriteService:
             tenant_id=tid,
             user_id=uid,
         )
-        await orch._derive_queue.put(task)
+        await runtime._derive_queue.put(task)
 
         logger.info(
             "[MemoryService] Document enqueued for async derive: %s (%d chunks)",
@@ -232,7 +237,7 @@ class MemoryDocumentWriteService:
         return Context(
             uri=parent_uri_candidate,
             abstract=doc_title,
-            context_type=context_type or "resource",
+            context_type=context_type or resource_type,
             category=category,
             is_leaf=False,
             meta={**(meta or {}), "dedup_action": "created", "derive_pending": True},
@@ -264,8 +269,8 @@ class MemoryDocumentWriteService:
             Dict with keys ``status``, ``total``, ``imported``,
             ``errors``, ``uris``, ``has_git_project``, ``project_id``.
         """
-        orch = self._orch
-        orch._ensure_init()
+        runtime = self._runtime
+        runtime._ensure_init()
 
         imported = 0
         errors: List[Dict[str, Any]] = []
@@ -290,13 +295,13 @@ class MemoryDocumentWriteService:
                 parent_dir = str(PurePosixPath(d).parent)
                 parent_uri = dir_uris.get(parent_dir) if parent_dir != "." else None
                 try:
-                    dir_ctx = await orch.add(
+                    dir_ctx = await runtime.add(
                         abstract=PurePosixPath(d).name,
                         content="",
                         category="documents",
                         parent_uri=parent_uri,
                         is_leaf=False,
-                        context_type="resource",
+                        context_type=ContextType.RESOURCE,
                         meta={
                             "source": "batch:scan",
                             "dir_path": d,
@@ -309,9 +314,7 @@ class MemoryDocumentWriteService:
                 except Exception as exc:
                     logger.warning("[batch_add] Dir node failed for %s: %s", d, exc)
 
-        from opencortex.services import memory_service as memory_service_module
-
-        sem = asyncio.Semaphore(memory_service_module._BATCH_ADD_CONCURRENCY)
+        sem = asyncio.Semaphore(_BATCH_ADD_CONCURRENCY)
 
         async def _process_one(i: int, item: dict) -> dict:
             """Process a single batch item: derive metadata and persist via add.
@@ -327,7 +330,7 @@ class MemoryDocumentWriteService:
             async with sem:
                 content = item.get("content", "")
                 file_path = (item.get("meta") or {}).get("file_path", f"item_{i}")
-                abstract, overview = await orch._generate_abstract_overview(
+                abstract, overview = await runtime._generate_abstract_overview(
                     content, file_path
                 )
 
@@ -343,19 +346,19 @@ class MemoryDocumentWriteService:
                     parent_uri = dir_uris.get(parent_dir)
 
                 embed_text = ""
-                if orch._config.context_flattening_enabled:
+                if runtime._config.context_flattening_enabled:
                     fp = item_meta.get("file_path", "")
                     if fp:
                         embed_text = f"[{fp}] {abstract}"
 
                 try:
-                    result = await orch.add(
+                    result = await runtime.add(
                         abstract=abstract,
                         content=content,
                         overview=overview,
                         category=item.get("category", "documents"),
                         parent_uri=parent_uri,
-                        context_type=item.get("context_type", "resource"),
+                        context_type=item.get("context_type", ContextType.RESOURCE),
                         meta=item_meta,
                         dedup=False,
                         embed_text=embed_text,
@@ -365,7 +368,7 @@ class MemoryDocumentWriteService:
                     return {"error": str(exc), "index": i}
 
         outcomes: List[Any] = []
-        task_chunk_size = memory_service_module._BATCH_ADD_TASK_CHUNK_SIZE
+        task_chunk_size = _BATCH_ADD_TASK_CHUNK_SIZE
         for chunk_start in range(0, len(items), task_chunk_size):
             chunk = items[chunk_start : chunk_start + task_chunk_size]
             chunk_outcomes = await asyncio.gather(

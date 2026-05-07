@@ -66,7 +66,7 @@ from opencortex.retrieve.types import (
     QueryResult,
     TypedQuery,
 )
-from opencortex.services.memory_signals import MemorySignalBus
+from opencortex.store.events import MemoryEventManager
 from opencortex.storage.cortex_fs import CortexFS
 from opencortex.storage.storage_interface import StorageInterface
 
@@ -199,7 +199,7 @@ class CortexMemory:
         }
         # Guard to serialize sweep execution across startup/periodic triggers.
         self._autophagy_sweep_guard = asyncio.Lock()
-        self._memory_signal_bus = MemorySignalBus()
+        self._memory_events = MemoryEventManager()
 
     # =========================================================================
     # Collection Routing
@@ -1292,7 +1292,7 @@ class CortexMemory:
         # rerank_client -> embedder -> storage. Each guarded with
         # try/except so one failed close cannot abort the rest of
         # teardown (matches the existing pattern above for
-        # autophagy/signal task cancellation).
+        # autophagy/event task cancellation).
         for label, attr in (
             ("llm_completion", "_llm_completion"),
             ("insights_llm_completion", "_insights_llm_completion"),

@@ -144,7 +144,7 @@ class MemoryRecordService:
             return False
         if "\n" in text:
             return False
-        concrete_signal = re.compile(
+        concrete_event = re.compile(
             r"[\d]"
             r"|[A-Z][a-z]+[A-Z]"
             r"|[A-Z]{2,}"
@@ -152,7 +152,7 @@ class MemoryRecordService:
             r"|[/\\.]"
             r"|[\u4e00-\u9fa5]{2,}"
         )
-        return bool(concrete_signal.search(text))
+        return bool(concrete_event.search(text))
 
     def _fact_point_records(
         self,

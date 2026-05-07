@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Memory write/mutation service for OpenCortex.
+"""Memory writer for OpenCortex.
 
-This module owns add/update/remove/document ingest/batch write behavior while
-MemoryService keeps the compatibility facade plus search/list/scoring methods.
+This module owns add/update/remove/document ingest/batch write behavior through
+explicit dependencies. ``MemoryService`` may delegate here for compatibility,
+but the writer does not depend on that facade.
 """
 
 from __future__ import annotations
@@ -13,8 +14,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from opencortex.core.context import Context
-from opencortex.http.request_context import get_effective_identity
-from opencortex.memory import MemoryKind
+from opencortex.http.request_context import (
+    get_effective_identity,
+    get_effective_project_id,
+)
+from opencortex.retrieve.types import ContextType
+from opencortex.store.events import MemoryStoredEvent
+from opencortex.utils.uri import CortexURI
 
 if TYPE_CHECKING:
     from opencortex.services.memory_directory_record_service import (
@@ -24,8 +30,6 @@ if TYPE_CHECKING:
         MemoryDocumentWriteService,
     )
     from opencortex.services.memory_mutation_service import MemoryMutationService
-    from opencortex.services.memory_service import MemoryService
-    from opencortex.services.memory_store_record_service import MemoryStoreRecordService
     from opencortex.services.memory_write_context_builder import (
         MemoryWriteContextBuilder,
     )
@@ -37,14 +41,14 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class MemoryWriteDependencies:
+class MemoryWriterDependencies:
     """Explicit subsystem bundle used by the normal store write path."""
 
     config: Any
     storage: Any
     fs: Any
     embedder: Any
-    memory_signal_bus: Any
+    memory_events: Any
     entity_index: Any
     memory_record_service: Any
     derivation_service: Any
@@ -52,18 +56,28 @@ class MemoryWriteDependencies:
     ensure_init: Any
     get_collection: Any
     feedback: Any
+    llm_completion: Any = None
+    parser_registry: Any = None
+    set_parser_registry: Any = None
+    derive_queue: Any = None
+    inflight_derive_uris: Any = None
 
 
-class MemoryWriteService:
-    """Own memory write/mutation logic behind the MemoryService facade."""
+class MemoryWriter:
+    """Own memory write/mutation behavior through explicit collaborators."""
 
     def __init__(
         self,
-        memory_service: "MemoryService",
-        dependencies: MemoryWriteDependencies,
+        dependencies: MemoryWriterDependencies,
     ) -> None:
-        self._service = memory_service
         self._deps = dependencies
+        self._parser_registry = dependencies.parser_registry
+
+    def set_parser_registry(self, parser_registry: Any) -> None:
+        """Bind the parser registry owned by this writer."""
+        self._parser_registry = parser_registry
+        if self._deps.set_parser_registry is not None:
+            self._deps.set_parser_registry(parser_registry)
 
     @property
     def _config(self) -> Any:
@@ -86,14 +100,29 @@ class MemoryWriteService:
         return self._deps.embedder
 
     @property
-    def _memory_signal_bus(self) -> Any:
-        """Optional lifecycle signal bus for write-path notifications."""
-        return self._deps.memory_signal_bus
+    def _memory_events(self) -> Any:
+        """Optional lifecycle event bus for write-path notifications."""
+        return self._deps.memory_events
 
     @property
     def _entity_index(self) -> Any:
         """Optional entity index for write-path synchronization."""
         return self._deps.entity_index
+
+    @property
+    def _llm_completion(self) -> Any:
+        """Optional LLM callable used for document summary derivation."""
+        return self._deps.llm_completion
+
+    @property
+    def _derive_queue(self) -> Any:
+        """Background document-derive queue used by resource ingestion."""
+        return self._deps.derive_queue
+
+    @property
+    def _inflight_derive_uris(self) -> Any:
+        """Set of document parent URIs currently queued for derive."""
+        return self._deps.inflight_derive_uris
 
     def _ensure_init(self) -> None:
         """Require the parent memory facade to be initialized."""
@@ -292,6 +321,7 @@ class MemoryWriteService:
         dedup_threshold: float = 0.82,
         embed_text: str = "",
         defer_derive: bool = False,
+        force_primary: bool = False,
     ) -> Context:
         """Add a new context and persist it to vector DB + filesystem.
 
@@ -309,38 +339,34 @@ class MemoryWriteService:
             meta: Arbitrary metadata dict merged into the record.
             related_uri: URIs of related contexts.
             session_id: Session this record belongs to.
-            dedup: Enable semantic dedup check before write.
-            dedup_threshold: Cosine similarity threshold for dedup.
+            dedup: Accepted for API compatibility; merge runs out of band.
+            dedup_threshold: Accepted for API compatibility.
             embed_text: Override text used for embedding (takes
                 priority over abstract + keywords).
             defer_derive: Skip LLM derivation; use truncation as
                 placeholder.
+            force_primary: Internal flag used by document ingestion to write
+                resource chunks without re-entering document routing.
 
         Returns:
             The created ``Context`` with ``meta["dedup_action"]`` set
-            to ``"created"`` or ``"merged"``.
+            to ``"created"``.
         """
         self._ensure_init()
 
-        # Determine ingestion mode
-        from opencortex.ingest.resolver import IngestModeResolver
-
-        ingest_mode = IngestModeResolver.resolve(
-            content=content,
-            meta=meta or {},
-            source_path=(meta or {}).get("source_path", ""),
-            session_id=session_id or "",
-        )
-
-        # Document mode: parse -> chunks -> write each with hierarchy
-        if ingest_mode == "document" and content and is_leaf:
+        if (
+            not force_primary
+            and context_type == ContextType.RESOURCE
+            and content
+            and is_leaf
+        ):
             return await self._document_write_service._add_document(
                 content=content,
                 abstract=abstract,
                 overview=overview,
                 category=category,
                 parent_uri=parent_uri,
-                context_type=context_type or "resource",
+                context_type=ContextType.RESOURCE,
                 meta=meta,
                 session_id=session_id,
                 source_path=(meta or {}).get("source_path", ""),
@@ -348,7 +374,6 @@ class MemoryWriteService:
 
         add_started = asyncio.get_running_loop().time()
         embed_ms = 0
-        dedup_ms = 0
         upsert_ms = 0
         fs_write_ms = 0
 
@@ -361,7 +386,7 @@ class MemoryWriteService:
             uri=uri,
         )
         uri = target.uri
-        parent_uri = target.parent_uri
+        _ = target.parent_uri
 
         derive_result = await self._write_derive_service.derive_for_write(
             abstract=abstract,
@@ -399,55 +424,12 @@ class MemoryWriteService:
         effective_category = assembled.effective_category
         abstract_json = assembled.abstract_json
         object_payload = assembled.object_payload
-        memory_kind = MemoryKind(object_payload["memory_kind"])
-        merge_signature = assembled.merge_signature
-        mergeable = assembled.mergeable
 
         embed_result = await self._write_embed_service.embed_for_write(ctx)
         embed_ms = embed_result.embed_ms
 
-        # --- Write-time semantic dedup ---
-        if dedup and ctx.vector and is_leaf and mergeable:
-            dedup_result = await self._write_dedup_service.try_merge_duplicate(
-                ctx=ctx,
-                vector=ctx.vector,
-                memory_kind=memory_kind.value,
-                merge_signature=merge_signature,
-                threshold=dedup_threshold,
-                tenant_id=tid,
-                user_id=uid,
-                abstract=abstract,
-                content=content,
-                add_started=add_started,
-            )
-            dedup_ms = dedup_result.dedup_ms
-            if dedup_result.merged and dedup_result.ctx is not None:
-                logger.info(
-                    "[MemoryService] add tenant=%s user=%s uri=%s "
-                    "dedup_action=merged dedup_target=%s score=%.3f "
-                    "timing_ms(total=%d derive_layers=%d embed=%d dedup=%d "
-                    "upsert=%d fs_write=%d)",
-                    tid,
-                    uid,
-                    uri,
-                    dedup_result.target_uri,
-                    dedup_result.score,
-                    dedup_result.total_ms_at_match,
-                    derive_layers_ms,
-                    embed_ms,
-                    dedup_ms,
-                    upsert_ms,
-                    fs_write_ms,
-                )
-                return dedup_result.ctx
-
-        # Ensure parent directory records exist in vector DB
-        if is_leaf and parent_uri:
-            await self._ensure_parent_records(parent_uri)
-
-        store_result = await self._store_record_service.persist_context_record(
+        record = self.build_primary_record(
             ctx=ctx,
-            content=content,
             abstract_json=abstract_json,
             object_payload=object_payload,
             effective_category=effective_category,
@@ -459,24 +441,30 @@ class MemoryWriteService:
             tenant_id=tid,
             user_id=uid,
             sparse_vector=embed_result.sparse_vector,
-            is_leaf=is_leaf,
         )
-        upsert_ms = store_result.upsert_ms
+        upsert_ms = await self.upsert_primary_record(record)
+        self.publish_memory_stored(
+            record=record,
+            ctx=ctx,
+            content=content,
+            tenant_id=tid,
+            user_id=uid,
+            context_type=context_type,
+            effective_category=effective_category,
+        )
         fs_write_ms = 0  # Non-blocking
 
         ctx.meta["dedup_action"] = "created"
         total_ms = int((asyncio.get_running_loop().time() - add_started) * 1000)
         logger.info(
             "[MemoryService] add tenant=%s user=%s uri=%s dedup_action=created "
-            "timing_ms(total=%d derive_layers=%d embed=%d dedup=%d "
-            "upsert=%d fs_write=%d)",
+            "timing_ms(total=%d derive_layers=%d embed=%d upsert=%d fs_write=%d)",
             tid,
             uid,
             uri,
             total_ms,
             derive_layers_ms,
             embed_ms,
-            dedup_ms,
             upsert_ms,
             fs_write_ms,
         )
@@ -486,22 +474,118 @@ class MemoryWriteService:
     # Write-time dedup helpers
     # ------------------------------------------------------------------
 
-    @property
-    def _store_record_service(self) -> "MemoryStoreRecordService":
-        """Lazy-built service for store record persistence."""
-        from opencortex.services.memory_store_record_service import (
-            MemoryStoreRecordService,
+    def build_primary_record(
+        self,
+        *,
+        ctx: Context,
+        abstract_json: Dict[str, Any],
+        object_payload: Dict[str, Any],
+        effective_category: str,
+        keywords: str,
+        entities: List[str],
+        meta: Dict[str, Any],
+        context_type: Optional[str],
+        session_id: Optional[str],
+        tenant_id: str,
+        user_id: str,
+        sparse_vector: Optional[Any],
+    ) -> Dict[str, Any]:
+        """Build the primary memory record payload."""
+        record = ctx.to_dict()
+        if ctx.vector:
+            record["vector"] = ctx.vector
+        if sparse_vector:
+            record["sparse_vector"] = sparse_vector
+
+        record["scope"] = "private" if CortexURI(ctx.uri).is_private else "shared"
+        record["category"] = effective_category
+        record["source_user_id"] = user_id
+        record["session_id"] = session_id or ""
+        record["ttl_expires_at"] = self._ttl_for_store_record(
+            context_type=context_type,
+            effective_category=effective_category,
+            meta=meta,
+        )
+        record["project_id"] = get_effective_project_id()
+        record["source_tenant_id"] = tenant_id
+        record["keywords"] = keywords
+        record["entities"] = entities
+        record.update(object_payload)
+        record["abstract_json"] = abstract_json
+        self._populate_store_source_fields(record, meta)
+        return record
+
+    async def upsert_primary_record(self, record: Dict[str, Any]) -> int:
+        """Upsert the primary memory record."""
+        upsert_started = asyncio.get_running_loop().time()
+        await self._storage.upsert(self._get_collection(), record)
+        return int((asyncio.get_running_loop().time() - upsert_started) * 1000)
+
+    def publish_memory_stored(
+        self,
+        *,
+        record: Dict[str, Any],
+        ctx: Context,
+        content: str,
+        tenant_id: str,
+        user_id: str,
+        context_type: Optional[str],
+        effective_category: str,
+    ) -> None:
+        """Publish the primary-write lifecycle event."""
+        memory_events = self._memory_events
+        if memory_events is None:
+            return
+        memory_events.publish_nowait(
+            MemoryStoredEvent(
+                uri=ctx.uri,
+                record_id=str(record["id"]),
+                tenant_id=tenant_id,
+                user_id=user_id,
+                project_id=str(record.get("project_id", "")),
+                context_type=str(
+                    context_type or ctx.context_type or ContextType.MEMORY
+                ),
+                category=effective_category,
+                content=content,
+                record=dict(record),
+            )
         )
 
-        cached = getattr(self, "_store_record_service_instance", None)
-        if cached is None:
-            cached = MemoryStoreRecordService(self)
-            self._store_record_service_instance = cached
-        return cached
+    def _ttl_for_store_record(
+        self,
+        *,
+        context_type: Optional[str],
+        effective_category: str,
+        meta: Dict[str, Any],
+    ) -> str:
+        """Return the TTL string for short-lived store record kinds."""
+        if context_type == ContextType.STAGING:
+            return self._ttl_from_hours(self._config.immediate_event_ttl_hours)
+        if (
+            (context_type or ContextType.MEMORY) == ContextType.MEMORY
+            and effective_category == "events"
+            and meta.get("layer") == "merged"
+        ):
+            return self._ttl_from_hours(self._config.merged_event_ttl_hours)
+        return ""
+
+    @staticmethod
+    def _populate_store_source_fields(
+        record: Dict[str, Any],
+        meta: Dict[str, Any],
+    ) -> None:
+        """Copy document/conversation enrichment fields to top level."""
+        record["source_doc_id"] = meta.get("source_doc_id", "")
+        record["source_doc_title"] = meta.get("source_doc_title", "")
+        record["source_section_path"] = meta.get("source_section_path", "")
+        record["chunk_role"] = meta.get("chunk_role", "")
+        record["speaker"] = meta.get("speaker", "")
+        record["event_date"] = meta.get("event_date")
 
     @property
     def _write_dedup_service(self) -> "MemoryWriteDedupService":
-        """Lazy-built service for write-time semantic deduplication."""
+        """Lazy-built collaborator for semantic deduplication."""
         from opencortex.services.memory_write_dedup_service import (
             MemoryWriteDedupService,
         )
@@ -527,7 +611,7 @@ class MemoryWriteService:
 
     @property
     def _write_derive_service(self) -> "MemoryWriteDeriveService":
-        """Lazy-built service for write-path derive coordination."""
+        """Lazy-built collaborator for write-path derive coordination."""
         from opencortex.services.memory_write_derive_service import (
             MemoryWriteDeriveService,
         )
@@ -540,7 +624,7 @@ class MemoryWriteService:
 
     @property
     def _write_embed_service(self) -> "MemoryWriteEmbedService":
-        """Lazy-built service for write-path embedding."""
+        """Lazy-built collaborator for write-path embedding."""
         from opencortex.services.memory_write_embed_service import (
             MemoryWriteEmbedService,
         )
@@ -553,7 +637,7 @@ class MemoryWriteService:
 
     @property
     def _mutation_service(self) -> "MemoryMutationService":
-        """Lazy-built service for update/remove mutations."""
+        """Lazy-built collaborator for update/remove mutations."""
         from opencortex.services.memory_mutation_service import MemoryMutationService
 
         cached = getattr(self, "_mutation_service_instance", None)
@@ -601,7 +685,7 @@ class MemoryWriteService:
 
     @property
     def _directory_record_service(self) -> "MemoryDirectoryRecordService":
-        """Lazy-built service for parent directory records."""
+        """Lazy-built collaborator for parent directory records."""
         from opencortex.services.memory_directory_record_service import (
             MemoryDirectoryRecordService,
         )
@@ -614,14 +698,14 @@ class MemoryWriteService:
 
     @property
     def _document_write_service(self) -> "MemoryDocumentWriteService":
-        """Lazy-built service for document and batch writes."""
+        """Lazy-built collaborator for document and batch writes."""
         from opencortex.services.memory_document_write_service import (
             MemoryDocumentWriteService,
         )
 
         cached = getattr(self, "_document_write_service_instance", None)
         if cached is None:
-            cached = MemoryDocumentWriteService(self._service)
+            cached = MemoryDocumentWriteService(self)
             self._document_write_service_instance = cached
         return cached
 

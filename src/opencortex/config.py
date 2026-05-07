@@ -187,6 +187,7 @@ class CortexConfig:
     cognition_enabled: bool = True
     autophagy_plugin_enabled: bool = False
     skill_engine_enabled: bool = False
+    insights_enabled: bool = False
     # Autophagy (cognition maintenance)
     # Periodic sweep interval for paged metabolism maintenance.
     autophagy_sweep_interval_seconds: int = 900  # 15 minutes

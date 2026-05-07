@@ -20,10 +20,10 @@ from opencortex.services.memory_filters import (
     and_filter,
     memory_visibility_filter,
 )
-from opencortex.services.memory_signals import MemoryStoredSignal
+from opencortex.store.events import MemoryStoredEvent
 
 if TYPE_CHECKING:
-    from opencortex.services.memory_write_service import MemoryWriteService
+    from opencortex.services.memory_writer import MemoryWriter
 
 logger = logging.getLogger(__name__)
 
@@ -42,11 +42,11 @@ class DedupMergeResult:
 
 
 class MemoryWriteDedupService:
-    """Owns duplicate search, merge, and merge-signal behavior."""
+    """Owns duplicate search, merge, and merge-event behavior."""
 
-    def __init__(self, write_service: "MemoryWriteService") -> None:
+    def __init__(self, write_engine: "MemoryWriter") -> None:
         """Bind the dedup service to a write service facade."""
-        self._write_service = write_service
+        self._write_engine = write_engine
 
     async def try_merge_duplicate(
         self,
@@ -80,7 +80,7 @@ class MemoryWriteDedupService:
         total_ms_at_match = int(
             (asyncio.get_running_loop().time() - add_started) * 1000
         )
-        existing_record = await self._write_service._get_record_by_uri(existing_uri)
+        existing_record = await self._write_engine._get_record_by_uri(existing_uri)
         persisted_owner_id = ""
         persisted_project_id = get_effective_project_id()
         if existing_record:
@@ -90,7 +90,7 @@ class MemoryWriteDedupService:
             )
 
         await self.merge_into(existing_uri, abstract, content)
-        self._publish_merge_signal(
+        self._publish_merge_event(
             uri=existing_uri,
             record_id=persisted_owner_id,
             tenant_id=tenant_id,
@@ -129,8 +129,8 @@ class MemoryWriteDedupService:
                 tid=tid,
                 uid=uid,
             )
-            results = await self._write_service._storage.search(
-                self._write_service._get_collection(),
+            results = await self._write_engine._storage.search(
+                self._write_engine._get_collection(),
                 query_vector=vector,
                 filter=dedup_filter,
                 limit=1,
@@ -148,8 +148,8 @@ class MemoryWriteDedupService:
         self, existing_uri: str, new_abstract: str, new_content: str
     ) -> None:
         """Merge new content into an existing record and reinforce it."""
-        records = await self._write_service._storage.filter(
-            self._write_service._get_collection(),
+        records = await self._write_engine._storage.filter(
+            self._write_engine._get_collection(),
             FilterExpr.eq("uri", existing_uri).to_dict(),
             limit=1,
             output_fields=["abstract", "overview"],
@@ -157,7 +157,7 @@ class MemoryWriteDedupService:
         existing_content = ""
         if records:
             try:
-                existing_content = await self._write_service._fs.read_file(existing_uri)
+                existing_content = await self._write_engine._fs.read_file(existing_uri)
             except Exception:
                 existing_content = ""
 
@@ -173,7 +173,7 @@ class MemoryWriteDedupService:
                 abstract=new_abstract,
                 content=merged_content,
             )
-        await self._write_service.feedback(existing_uri, 0.5)
+        await self._write_engine.feedback(existing_uri, 0.5)
 
     async def _update_merged_record(
         self,
@@ -200,7 +200,7 @@ class MemoryWriteDedupService:
         )
         derived_fact_points: Optional[List[str]] = None
         if content:
-            derive_result = await self._write_service._derive_layers(
+            derive_result = await self._write_engine._derive_layers(
                 user_abstract=abstract,
                 content=content,
                 user_overview="",
@@ -236,7 +236,7 @@ class MemoryWriteDedupService:
         if next_meta:
             update_data["meta"] = next_meta
 
-        embedder = self._write_service._embedder
+        embedder = self._write_engine._embedder
         if embedder:
             loop = asyncio.get_running_loop()
             embed_input = abstract
@@ -247,7 +247,7 @@ class MemoryWriteDedupService:
             if result.sparse_vector:
                 update_data["sparse_vector"] = result.sparse_vector
 
-        abstract_json = self._write_service._build_abstract_json(
+        abstract_json = self._write_engine._build_abstract_json(
             uri=existing_uri,
             context_type=str(record.get("context_type", "") or ""),
             category=str(record.get("category", "") or ""),
@@ -269,25 +269,25 @@ class MemoryWriteDedupService:
                 if isinstance(prior_fps, list):
                     abstract_json["fact_points"] = [str(fp) for fp in prior_fps]
         update_data.update(
-            self._write_service._memory_object_payload(
+            self._write_engine._memory_object_payload(
                 abstract_json,
                 is_leaf=bool(record.get("is_leaf", False)),
             )
         )
         update_data["abstract_json"] = abstract_json
 
-        await self._write_service._storage.update(
-            self._write_service._get_collection(),
+        await self._write_engine._storage.update(
+            self._write_engine._get_collection(),
             record_id,
             update_data,
         )
         updated_record = dict(record)
         updated_record.update(update_data)
-        await self._write_service._sync_anchor_projection_records(
+        await self._write_engine._sync_anchor_projection_records(
             source_record=updated_record,
             abstract_json=abstract_json,
         )
-        await self._write_service._fs.write_context(
+        await self._write_engine._fs.write_context(
             uri=existing_uri,
             content=content,
             abstract=abstract,
@@ -333,7 +333,7 @@ class MemoryWriteDedupService:
             clauses.append(FilterExpr.eq("merge_signature", merge_signature))
         return and_filter(*clauses)
 
-    def _publish_merge_signal(
+    def _publish_merge_event(
         self,
         *,
         uri: str,
@@ -343,12 +343,12 @@ class MemoryWriteDedupService:
         project_id: str,
         existing_record: Dict[str, Any],
     ) -> None:
-        """Publish the dedup merge lifecycle signal when a bus exists."""
-        signal_bus = self._write_service._memory_signal_bus
-        if signal_bus is None:
+        """Publish the dedup merge lifecycle event when a bus exists."""
+        memory_events = self._write_engine._memory_events
+        if memory_events is None:
             return
-        signal_bus.publish_nowait(
-            MemoryStoredSignal(
+        memory_events.publish_nowait(
+            MemoryStoredEvent(
                 uri=uri,
                 record_id=record_id,
                 tenant_id=tenant_id,

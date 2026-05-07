@@ -95,6 +95,8 @@ async def _test_app_context():
     http_server._orchestrator = orch
 
     app = FastAPI()
+    app.state.memory = orch
+    app.state.memory_writer = orch._memory_service._memory_writer
     http_server._register_routes(app)
 
     transport = ASGITransport(app=app)

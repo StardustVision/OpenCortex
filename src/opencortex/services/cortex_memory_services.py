@@ -45,13 +45,13 @@ class CortexMemoryServices:
     def memory_service(self) -> "MemoryService":
         """Lazy-built MemoryService for delegated CRUD/query/scoring methods."""
         from opencortex.services.memory_service import MemoryService
-        from opencortex.services.memory_write_service import MemoryWriteDependencies
+        from opencortex.services.memory_writer import MemoryWriterDependencies
 
         return self._cached(
             "_memory_service_instance",
             lambda: self._build_memory_service(
                 MemoryService,
-                MemoryWriteDependencies,
+                MemoryWriterDependencies,
             ),
         )
 
@@ -64,13 +64,13 @@ class CortexMemoryServices:
         service = memory_service_type(self._orch)
         if not hasattr(self._orch, "_config"):
             return service
-        service.configure_write_dependencies(
+        service.configure_writer_dependencies(
             dependencies_type(
                 config=self._orch._config,
                 storage=self._orch._storage,
-                fs=self._orch._fs,
-                embedder=self._orch._embedder,
-                memory_signal_bus=getattr(self._orch, "_memory_signal_bus", None),
+                fs=getattr(self._orch, "_fs", None),
+                embedder=getattr(self._orch, "_embedder", None),
+                memory_events=getattr(self._orch, "_memory_events", None),
                 entity_index=getattr(self._orch, "_entity_index", None),
                 memory_record_service=self._orch._memory_record_service,
                 derivation_service=self._orch._derivation_service,
@@ -78,9 +78,18 @@ class CortexMemoryServices:
                 ensure_init=self._orch._ensure_init,
                 get_collection=self._orch._get_collection,
                 feedback=service.feedback,
+                llm_completion=getattr(self._orch, "_llm_completion", None),
+                parser_registry=getattr(self._orch, "_parser_registry", None),
+                set_parser_registry=self._set_parser_registry,
+                derive_queue=getattr(self._orch, "_derive_queue", None),
+                inflight_derive_uris=getattr(self._orch, "_inflight_derive_uris", None),
             )
         )
         return service
+
+    def _set_parser_registry(self, parser_registry: object) -> None:
+        """Store writer-created parser registry on the compatibility facade."""
+        self._orch._parser_registry = parser_registry
 
     @property
     def derivation_service(self) -> "DerivationService":

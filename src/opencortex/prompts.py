@@ -144,7 +144,7 @@ Rules — other fields:
 - keywords: 3-15 key terms (names, tools, technologies, concepts). No generic words.
 - entities: Named entities only — people, systems, tools, organizations, places. Max 10.
 - anchor_handles: 0-6 short retrieval handles. Prefer concrete entities, numbers, paths, module names, or compact noun phrases.
-- fact_points: 0-8 atomic fact statements. Each ≤80 chars, self-contained, must contain at least one concrete signal (name, number, date, path, or technical term).
+- fact_points: 0-8 atomic fact statements. Each ≤80 chars, self-contained, must contain at least one concrete event (name, number, date, path, or technical term).
 - Return ONLY the JSON object, no other text."""
 
 
@@ -298,7 +298,7 @@ Return a JSON object with exactly this field:
 
 Rules:
 - Return 0-8 atomic fact statements.
-- Each fact point must be self-contained and include at least one concrete signal such as a name, number, date, location, path, or technical term.
+- Each fact point must be self-contained and include at least one concrete event such as a name, number, date, location, path, or technical term.
 - Each fact point should be concise and no longer than 80 characters when possible.
 - Return ONLY the JSON object, no other text."""
 

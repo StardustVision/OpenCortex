@@ -8,6 +8,7 @@ Design doc: docs/memory-context-protocol.md v1.2
 """
 
 import asyncio
+import contextlib
 import hashlib
 import logging
 import time
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
     from opencortex.context.end_service import ContextEndService
     from opencortex.context.recomposition_engine import SessionRecompositionEngine
     from opencortex.context.recomposition_tasks import ContextRecompositionTaskService
+    from opencortex.context.session_record_writer import SessionRecordWriter
 
 _SEGMENT_MAX_MESSAGES = _segmentation._SEGMENT_MAX_MESSAGES
 _SEGMENT_MAX_TOKENS = _segmentation._SEGMENT_MAX_TOKENS
@@ -62,15 +64,14 @@ SessionKey = Tuple[str, str, str, str]  # (collection, tenant_id, user_id, sessi
 
 
 class RecompositionError(Exception):
-    """Raised by ``_run_full_session_recomposition`` with raise_on_error=True
-    when work fails partway through.
+    """Raised when full-session recomposition fails partway through.
 
     Carries the directory URIs that were already created before the
     failure so the caller can register them with its run-scoped cleanup
     tracker (REVIEW REL-02). Without this, raise_on_error=True callers
     saw the inner ``contextlib.suppress`` best-effort cleanup as a
     silent black box: any URI that failed to delete inside the
-    suppressed block became an orphan with no signal to the outer
+    suppressed block became an orphan with no event to the outer
     layer.
 
     Callers should drain ``created_uris`` into their tracker, then
@@ -132,12 +133,12 @@ class ContextManager:
 
     def __init__(
         self,
-        orchestrator,  # CortexMemory (avoid circular import)
-        observer,  # Observer
+        orchestrator: Any,  # CortexMemory (avoid circular import)
+        observer: Any,  # Observer
         *,
         session_idle_ttl: float = 1800.0,
         idle_check_interval: float = 60.0,
-    ):
+    ) -> None:
         self._orchestrator = orchestrator
         self._observer = observer
 
@@ -181,6 +182,8 @@ class ContextManager:
         self._end_service_instance: Optional[Any] = None
         # Lazy-initialized task service (survives ``__new__`` bypass).
         self._recomposition_task_service_instance: Optional[Any] = None
+        # Lazy-initialized session record writer (survives ``__new__`` bypass).
+        self._session_record_writer_instance: Optional[Any] = None
 
         # Config
         self._session_idle_ttl = session_idle_ttl
@@ -237,6 +240,19 @@ class ContextManager:
             self._recomposition_task_service_instance = inst
         return inst
 
+    @property
+    def _session_record_writer(self) -> "SessionRecordWriter":
+        """Lazy-initialized session record write boundary."""
+        inst = getattr(self, "_session_record_writer_instance", None)
+        if inst is None:
+            from opencortex.context.session_record_writer import (
+                SessionRecordWriter,
+            )
+
+            inst = SessionRecordWriter(self)
+            self._session_record_writer_instance = inst
+        return inst
+
     @staticmethod
     def _new_conversation_buffer() -> ConversationBuffer:
         """Create a fresh conversation buffer for commit coordination."""
@@ -254,10 +270,8 @@ class ContextManager:
         """Cancel idle checker and await pending tasks."""
         if self._idle_checker:
             self._idle_checker.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._idle_checker
-            except asyncio.CancelledError:
-                pass
         await self._recomposition_tasks.close()
 
     # =========================================================================
@@ -412,7 +426,10 @@ class ContextManager:
             index,
         )
 
-    async def _run_full_session_recomposition(self, **kwargs) -> Optional[List[str]]:
+    async def _run_full_session_recomposition(
+        self,
+        **kwargs: Any,
+    ) -> Optional[List[str]]:
         """Create directory parent records for semantically related leaf clusters."""
         return await self._recomposition_engine._run_full_session_recomposition(
             **kwargs,
@@ -498,8 +515,7 @@ class ContextManager:
 
     @staticmethod
     def _canonicalize_for_hash(value: Any) -> Any:
-        """Recursively canonicalize a value so benign reordering does not
-        change the digest (REVIEW ADV-006).
+        """Recursively canonicalize values for stable transcript hashes.
 
         - ``dict`` values: recurse on each entry. Key ordering is handled
           downstream by ``OPT_SORT_KEYS`` during serialization.
@@ -617,7 +633,7 @@ class ContextManager:
         if supplied_hash:
             meta["transcript_hash"] = supplied_hash
 
-        await self._orchestrator.add(
+        await self._session_record_writer.add_session_record(
             uri=source_uri,
             abstract=f"Conversation transcript for {session_id}",
             content=content,
@@ -625,16 +641,10 @@ class ContextManager:
             context_type="resource",
             is_leaf=False,
             session_id=session_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
             meta=meta,
         )
-        # REVIEW closure tracker R2-23 / R4-P2-6 — orchestrator.add()
-        # already schedules the CortexFS write as a fire-and-forget
-        # task (see orchestrator.py: ``asyncio.create_task(self._fs.
-        # write_context(...))`` after the storage upsert). The previous
-        # explicit follow-up ``await self._orchestrator._fs.write_context(...)``
-        # here was a redundant double-write — same uri, same content —
-        # that doubled the FS I/O for source persistence and could race
-        # with the scheduled task on slow filesystems.
         return source_uri
 
     def _segment_anchor_terms(self, record: Dict[str, Any]) -> Set[str]:
@@ -821,7 +831,7 @@ class ContextManager:
         user_id: str,
         session_id: str,
     ) -> SessionKey:
-        """Build a (collection, tenant, user, session) tuple for session state lookup."""
+        """Build a scoped tuple for session state lookup."""
         return (
             self._current_collection_name(),
             tenant_id,
@@ -878,7 +888,8 @@ class ContextManager:
             for sk in expired:
                 collection, tid, uid, sid = sk
                 logger.info(
-                    "[ContextManager] idle-close sid=%s (collection=%s tenant=%s, user=%s)",
+                    "[ContextManager] idle-close sid=%s "
+                    "(collection=%s tenant=%s, user=%s)",
                     sid,
                     collection,
                     tid,

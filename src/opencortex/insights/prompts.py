@@ -10,7 +10,7 @@ CRITICAL GUIDELINES:
    - DO NOT count work Claude decided to do on its own
    - ONLY count when user says "can you...", "please...", "I need...", "let's..."
 
-2. **user_satisfaction_counts**: Base ONLY on explicit user signals.
+2. **user_satisfaction_counts**: Base ONLY on explicit user events.
    - "Yay!", "great!", "perfect!" -> happy
    - "thanks", "looks good", "that works" -> satisfied
    - "ok, now let's..." (continuing without complaint) -> likely_satisfied

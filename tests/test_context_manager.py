@@ -2543,7 +2543,7 @@ class TestContextManager(unittest.TestCase):
     # -------------------------------------------------------------------------
 
     def test_is_valid_fact_point_rejects_generic(self):
-        """Generic descriptions without concrete signals must be rejected."""
+        """Generic descriptions without concrete events must be rejected."""
         orch = self._make_orchestrator()
         self._run(orch.init())
         self.assertFalse(orch._is_valid_fact_point("discussed the plan"))
@@ -2838,7 +2838,7 @@ class TestContextManager(unittest.TestCase):
             ],
             "slots": {},
             "overview": "Alice test",
-            # All fact_points are generic (no concrete signals)
+            # All fact_points are generic (no concrete events)
             "fact_points": ["discussed the plan", "some changes", "ok"],
         }
 

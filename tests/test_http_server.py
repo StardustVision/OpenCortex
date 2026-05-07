@@ -328,13 +328,11 @@ class InMemoryStorage(StorageInterface):
             return True
         op = filt.get("op", "")
         if op == "must":
-            return resolve_field(record, filt.get("field", "")) in filt.get(
-                "conds", []
-            )
+            return resolve_field(record, filt.get("field", "")) in filt.get("conds", [])
         elif op == "prefix":
-            return str(
-                resolve_field(record, filt.get("field", "")) or ""
-            ).startswith(filt.get("prefix", ""))
+            return str(resolve_field(record, filt.get("field", "")) or "").startswith(
+                filt.get("prefix", "")
+            )
         elif op == "range":
             val = resolve_field(record, filt.get("field", ""))
             if val is None:
@@ -413,6 +411,8 @@ async def _build_test_app():
     register_admin_routes(orch, jwt_secret="test-secret")
 
     app = FastAPI()
+    app.state.memory = orch
+    app.state.memory_writer = orch._memory_service._memory_writer
     app.include_router(admin_router)
     http_server._register_routes(app)
     return app, orch, temp_dir
@@ -514,6 +514,48 @@ class TestHTTPServer(unittest.TestCase):
                 self.assertIn("uri", data)
                 self.assertIn("default", data["uri"])
                 self.assertEqual(data["context_type"], "memory")
+
+        self._run(check())
+
+    def test_02b_store_uses_context_type_not_ingest_guessing(self):
+        """POST /memory/store does not infer document mode from metadata."""
+
+        async def check():
+            async with _test_app_context() as client:
+                resp = await client.post(
+                    "/api/v1/memory/store",
+                    json={
+                        "abstract": "User keeps document-shaped notes",
+                        "content": "# Heading\n\nParagraph content here.",
+                        "category": "notes",
+                        "meta": {
+                            "ingest_mode": "document",
+                            "source_path": "notes.md",
+                        },
+                    },
+                )
+                self.assertEqual(resp.status_code, 200)
+                data = resp.json()
+                self.assertEqual(data["context_type"], "memory")
+                self.assertIn("/memories/", data["uri"])
+
+        self._run(check())
+
+    def test_02c_store_rejects_invalid_context_type(self):
+        """POST /memory/store validates context_type at the API boundary."""
+
+        async def check():
+            async with _test_app_context() as client:
+                resp = await client.post(
+                    "/api/v1/memory/store",
+                    json={
+                        "abstract": "Invalid type should fail",
+                        "context_type": "document",
+                    },
+                )
+                self.assertEqual(resp.status_code, 422)
+                self.assertIn("Input should be", resp.text)
+                self.assertIn("resource", resp.text)
 
         self._run(check())
 
@@ -753,7 +795,9 @@ class TestHTTPServer(unittest.TestCase):
                 )
                 self.assertEqual(captured["score_threshold"], 0.12)
                 self.assertEqual(captured["meta"], {"target_doc_id": "doc-1"})
-                self.assertEqual(captured["session_context"], {"session_id": "session-1"})
+                self.assertEqual(
+                    captured["session_context"], {"session_id": "session-1"}
+                )
                 self.assertEqual(
                     captured["metadata_filter"],
                     {
@@ -796,8 +840,8 @@ class TestHTTPServer(unittest.TestCase):
 
         self._run(check())
 
-    def test_04b_context_prepare_is_removed(self):
-        """POST `/api/v1/context` no longer supports prepare."""
+    def test_04b_context_endpoint_is_removed(self):
+        """POST `/api/v1/context` is no longer part of the public API."""
 
         async def check():
             async with _test_app_context() as client:
@@ -812,12 +856,26 @@ class TestHTTPServer(unittest.TestCase):
                         ],
                     },
                 )
-                self.assertEqual(resp.status_code, 400)
-                self.assertIn("prepare phase has been removed", resp.text)
+                self.assertEqual(resp.status_code, 404)
 
         self._run(check())
 
-    def test_04c_memory_search_returns_typed_pipeline_payload(self):
+    def test_04c_session_begin_endpoint_is_removed(self):
+        """POST `/api/v1/session/begin` is not required for conversation mode."""
+
+        async def check():
+            async with _test_app_context() as client:
+                resp = await client.post(
+                    "/api/v1/session/begin",
+                    json={
+                        "session_id": "sess_begin_removed_01",
+                    },
+                )
+                self.assertEqual(resp.status_code, 404)
+
+        self._run(check())
+
+    def test_04d_memory_search_returns_typed_pipeline_payload(self):
         """POST `/api/v1/memory/search` exposes the probe/plan/execute trace."""
 
         async def check():
@@ -846,17 +904,16 @@ class TestHTTPServer(unittest.TestCase):
 
         self._run(check())
 
-    def test_04d_memory_search_exposes_conversation_traceability_fields(self):
+    def test_04e_memory_search_exposes_conversation_traceability_fields(self):
         """POST `/api/v1/memory/search` includes source_uri and msg_range."""
 
         async def check():
             async with _test_app_context() as client:
                 await client.post(
-                    "/api/v1/context",
+                    "/api/v1/session/message",
                     json={
                         "session_id": "sess_ctx_trace_01",
                         "turn_id": "turn_commit_01",
-                        "phase": "commit",
                         "messages": [
                             {"role": "user", "content": "trace-token-hangzhou-001"},
                             {
@@ -867,10 +924,9 @@ class TestHTTPServer(unittest.TestCase):
                     },
                 )
                 await client.post(
-                    "/api/v1/context",
+                    "/api/v1/session/end",
                     json={
                         "session_id": "sess_ctx_trace_01",
-                        "phase": "end",
                     },
                 )
 
@@ -1257,9 +1313,7 @@ class TestHTTPServer(unittest.TestCase):
                     },
                 )
                 self.assertEqual(resp.status_code, 403)
-                self.assertEqual(
-                    resp.json().get("detail"), "Admin access required"
-                )
+                self.assertEqual(resp.json().get("detail"), "Admin access required")
 
         self._run(check())
 

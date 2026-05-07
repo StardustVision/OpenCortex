@@ -28,7 +28,7 @@ class _SpyEmbedder:
 
 
 class TestMemoryDirectoryRecordService(unittest.IsolatedAsyncioTestCase):
-    """Verify directory record extraction from MemoryWriteService."""
+    """Verify directory record extraction from MemoryWriter."""
 
     def _build_service(
         self,
@@ -40,7 +40,7 @@ class TestMemoryDirectoryRecordService(unittest.IsolatedAsyncioTestCase):
             filter=AsyncMock(side_effect=filter_results),
             upsert=AsyncMock(),
         )
-        write_service = SimpleNamespace(
+        write_engine = SimpleNamespace(
             _storage=storage,
             _embedder=embedder,
             _get_collection=MagicMock(return_value="context"),
@@ -48,7 +48,7 @@ class TestMemoryDirectoryRecordService(unittest.IsolatedAsyncioTestCase):
                 side_effect=lambda uri: uri.rsplit("/", 1)[0] if "/" in uri else None
             ),
         )
-        return MemoryDirectoryRecordService(write_service), write_service
+        return MemoryDirectoryRecordService(write_engine), write_engine
 
     async def test_missing_ancestors_are_created_top_down(self) -> None:
         """Missing directory ancestors are upserted from root to leaf."""

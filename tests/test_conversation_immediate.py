@@ -1,4 +1,5 @@
 """Test immediate layer: per-message embed + write for instant searchability."""
+
 import asyncio
 import os
 import shutil
@@ -10,48 +11,66 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from opencortex.config import CortexConfig, init_config
+from opencortex.http.request_context import reset_request_identity, set_request_identity
 from opencortex.models.embedder.base import DenseEmbedderBase, EmbedResult
-from opencortex.http.request_context import set_request_identity, reset_request_identity
 from opencortex.orchestrator import MemoryOrchestrator
 
 
 class MockEmbedder(DenseEmbedderBase):
-    def __init__(self):
+    """Embedder that returns a fixed dense vector."""
+
+    def __init__(self) -> None:
         super().__init__(model_name="mock")
 
-    def embed(self, text):
+    def embed(self, text: str) -> EmbedResult:
+        """Embed text with a deterministic fixed vector."""
+        _ = text
         return EmbedResult(dense_vector=[0.1, 0.2, 0.3, 0.4])
 
-    def get_dimension(self):
+    def get_dimension(self) -> int:
+        """Return the fixed embedding dimension."""
         return 4
 
 
 class TimeoutEmbedder(DenseEmbedderBase):
-    def __init__(self):
+    """Embedder that simulates a retryable timeout."""
+
+    def __init__(self) -> None:
         super().__init__(model_name="timeout")
 
-    def embed(self, text):
+    def embed(self, text: str) -> EmbedResult:
+        """Raise a timeout for every embed call."""
+        _ = text
         raise TimeoutError("remote embedding timed out")
 
-    def get_dimension(self):
+    def get_dimension(self) -> int:
+        """Return the fixed embedding dimension."""
         return 4
 
 
 class RuntimeErrorEmbedder(DenseEmbedderBase):
-    def __init__(self):
+    """Embedder that simulates a non-retryable provider error."""
+
+    def __init__(self) -> None:
         super().__init__(model_name="runtime")
 
-    def embed(self, text):
+    def embed(self, text: str) -> EmbedResult:
+        """Raise a non-retryable runtime error."""
+        _ = text
         raise RuntimeError("OpenAI embedding API error 404: model does not exist")
 
-    def get_dimension(self):
+    def get_dimension(self) -> int:
+        """Return the fixed embedding dimension."""
         return 4
 
 
 class TestConversationImmediate(unittest.TestCase):
-    def test_write_immediate_creates_searchable_record(self):
+    """Immediate conversation write behavior."""
+
+    def test_write_immediate_creates_searchable_record(self) -> None:
         """_write_immediate writes to Qdrant without LLM, making message searchable."""
-        async def run():
+
+        async def run() -> None:
             tmpdir = tempfile.mkdtemp()
             try:
                 cfg = CortexConfig(data_root=tmpdir, embedding_dimension=4)
@@ -63,7 +82,10 @@ class TestConversationImmediate(unittest.TestCase):
                     uri = await orch._write_immediate(
                         session_id="sess-1",
                         msg_index=0,
-                        text="[1 May, 2023] Alice moved to Hangzhou and plans a West Lake visit.",
+                        text=(
+                            "[1 May, 2023] Alice moved to Hangzhou and plans "
+                            "a West Lake visit."
+                        ),
                         meta={
                             "speaker": "Alice",
                             "event_date": "2023-05-01T09:00:00Z",
@@ -80,11 +102,20 @@ class TestConversationImmediate(unittest.TestCase):
                     )
                     self.assertEqual(records[0].get("memory_kind"), "event")
                     self.assertIn("abstract_json", records[0])
-                    anchor_records = await orch._storage.filter(
-                        "context",
-                        {"op": "prefix", "field": "uri", "prefix": f"{uri}/anchors"},
-                        limit=10,
-                    )
+                    anchor_records = []
+                    for _ in range(20):
+                        anchor_records = await orch._storage.filter(
+                            "context",
+                            {
+                                "op": "prefix",
+                                "field": "uri",
+                                "prefix": f"{uri}/anchors",
+                            },
+                            limit=10,
+                        )
+                        if anchor_records:
+                            break
+                        await asyncio.sleep(0.05)
                     self.assertGreaterEqual(len(anchor_records), 1)
                     self.assertTrue(
                         all(
@@ -92,7 +123,9 @@ class TestConversationImmediate(unittest.TestCase):
                             for record in anchor_records
                         )
                     )
-                    self.assertTrue(all(record.get("anchor_surface") for record in anchor_records))
+                    self.assertTrue(
+                        all(record.get("anchor_surface") for record in anchor_records)
+                    )
                 finally:
                     reset_request_identity(tokens)
             finally:
@@ -100,8 +133,12 @@ class TestConversationImmediate(unittest.TestCase):
 
         asyncio.run(run())
 
-    def test_write_immediate_falls_back_to_local_embedder_after_remote_timeout(self):
-        async def run():
+    def test_write_immediate_falls_back_to_local_embedder_after_remote_timeout(
+        self,
+    ) -> None:
+        """Retryable remote embed errors use the local fallback."""
+
+        async def run() -> None:
             tmpdir = tempfile.mkdtemp()
             try:
                 cfg = CortexConfig(
@@ -143,8 +180,12 @@ class TestConversationImmediate(unittest.TestCase):
 
         asyncio.run(run())
 
-    def test_write_immediate_preserves_timeout_when_no_local_fallback_available(self):
-        async def run():
+    def test_write_immediate_preserves_timeout_when_no_local_fallback_available(
+        self,
+    ) -> None:
+        """Retryable errors remain visible when fallback is unavailable."""
+
+        async def run() -> None:
             tmpdir = tempfile.mkdtemp()
             try:
                 cfg = CortexConfig(
@@ -160,17 +201,19 @@ class TestConversationImmediate(unittest.TestCase):
                 await orch.init()
                 tokens = set_request_identity("t1", "u1")
                 try:
-                    with patch.object(
-                        orch,
-                        "_get_immediate_fallback_embedder",
-                        return_value=None,
-                    ) as fallback_getter:
-                        with self.assertRaises(TimeoutError):
-                            await orch._write_immediate(
-                                session_id="sess-fallback-2",
-                                msg_index=0,
-                                text="Alice moved to Hangzhou.",
-                            )
+                    with (
+                        patch.object(
+                            orch,
+                            "_get_immediate_fallback_embedder",
+                            return_value=None,
+                        ) as fallback_getter,
+                        self.assertRaises(TimeoutError),
+                    ):
+                        await orch._write_immediate(
+                            session_id="sess-fallback-2",
+                            msg_index=0,
+                            text="Alice moved to Hangzhou.",
+                        )
                     fallback_getter.assert_called_once()
                 finally:
                     reset_request_identity(tokens)
@@ -180,8 +223,10 @@ class TestConversationImmediate(unittest.TestCase):
 
         asyncio.run(run())
 
-    def test_write_immediate_does_not_hide_non_retryable_remote_errors(self):
-        async def run():
+    def test_write_immediate_does_not_hide_non_retryable_remote_errors(self) -> None:
+        """Non-retryable remote embed errors are not hidden."""
+
+        async def run() -> None:
             tmpdir = tempfile.mkdtemp()
             try:
                 cfg = CortexConfig(
@@ -197,13 +242,17 @@ class TestConversationImmediate(unittest.TestCase):
                 await orch.init()
                 tokens = set_request_identity("t1", "u1")
                 try:
-                    with patch.object(orch, "_get_immediate_fallback_embedder") as fallback_getter:
-                        with self.assertRaisesRegex(RuntimeError, "404"):
-                            await orch._write_immediate(
-                                session_id="sess-fallback-3",
-                                msg_index=0,
-                                text="Alice moved to Hangzhou.",
-                            )
+                    with (
+                        patch.object(
+                            orch, "_get_immediate_fallback_embedder"
+                        ) as fallback_getter,
+                        self.assertRaisesRegex(RuntimeError, "404"),
+                    ):
+                        await orch._write_immediate(
+                            session_id="sess-fallback-3",
+                            msg_index=0,
+                            text="Alice moved to Hangzhou.",
+                        )
                     fallback_getter.assert_not_called()
                 finally:
                     reset_request_identity(tokens)

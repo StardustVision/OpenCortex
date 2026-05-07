@@ -49,7 +49,7 @@ class Context:
         is_leaf: bool = False,
         abstract: str = "",
         overview: str = "",
-        context_type: Optional[str] = None,
+        context_type: Optional[str | Enum] = None,
         category: Optional[str] = None,
         created_at: Optional[datetime] = None,
         updated_at: Optional[datetime] = None,
@@ -69,7 +69,9 @@ class Context:
         self.is_leaf = is_leaf
         self.abstract = abstract
         self.overview = overview
-        self.context_type = context_type or self._derive_context_type()
+        self.context_type = self._normalize_context_type(
+            context_type or self._derive_context_type()
+        )
         self.category = category or self._derive_category()
         self.created_at = created_at or datetime.now(timezone.utc)
         self.updated_at = updated_at or self.created_at
@@ -92,6 +94,13 @@ class Context:
             return "memory"
         else:
             return "resource"
+
+    @staticmethod
+    def _normalize_context_type(context_type: str | Enum) -> str:
+        """Return the persisted string value for a context type."""
+        if isinstance(context_type, Enum):
+            return context_type.value
+        return context_type
 
     def _derive_category(self) -> str:
         """Derive category from URI path segments.
@@ -147,7 +156,7 @@ class Context:
             "is_leaf": self.is_leaf,
             "abstract": self.abstract,
             "overview": self.overview,
-            "context_type": self.context_type,
+            "context_type": self._normalize_context_type(self.context_type),
             "category": self.category,
             "created_at": created_at_str,
             "updated_at": updated_at_str,

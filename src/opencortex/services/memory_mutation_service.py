@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from opencortex.services.memory_filters import FilterExpr
 
 if TYPE_CHECKING:
-    from opencortex.services.memory_write_service import MemoryWriteService
+    from opencortex.services.memory_writer import MemoryWriter
 
 logger = logging.getLogger(__name__)
 
@@ -19,13 +19,13 @@ logger = logging.getLogger(__name__)
 class MemoryMutationService:
     """Owns update/remove mutations for already persisted memory records."""
 
-    def __init__(self, write_service: "MemoryWriteService") -> None:
+    def __init__(self, write_engine: "MemoryWriter") -> None:
         """Bind the mutation service to the write service facade."""
-        self._write_service = write_service
+        self._write_engine = write_engine
 
     @property
     def _orch(self) -> Any:
-        return self._write_service._orch
+        return self._write_engine._service._orch
 
     async def update(
         self,

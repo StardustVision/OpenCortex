@@ -129,7 +129,7 @@ class TestMemoryProbe(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_probe_records_target_uri_scope_input_passthrough(self):
-        """Probe passes scope_input through as signal, does not make scope decisions."""
+        """Probe passes scope_input through as event, does not make scope decisions."""
         storage = _StorageStub([])
         probe = MemoryBootstrapProbe(
             storage=storage,
@@ -353,8 +353,8 @@ class TestMemoryProbe(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.starting_points[0].source_doc_id, "doc-1")
         self.assertEqual(result.scope_level, ScopeLevel.GLOBAL)
 
-    async def test_starting_points_collected_as_signals(self):
-        """Probe collects starting points as signals; scope decisions deferred to planner."""
+    async def test_starting_points_collected_as_events(self):
+        """Probe collects starting points as events; scope decisions deferred to planner."""
         storage = _StorageStub(
             [
                 {

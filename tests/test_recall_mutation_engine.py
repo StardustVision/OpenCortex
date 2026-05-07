@@ -99,12 +99,12 @@ class TestRecallMutationEngine(unittest.TestCase):
         self.assertEqual(result.explanations[0]["owner_id"], "mem-hot")
         self.assertIn("decay", result.explanations[0])
 
-    def test_conflict_signal_marks_state_contested(self):
+    def test_conflict_event_marks_state_contested(self):
         target = self._state("mem-conflict", activation=0.4)
         engine = RecallMutationEngine()
 
         recall_outcome = {
-            "conflict_signals": [
+            "conflict_events": [
                 {
                     "owner_type": "memory",
                     "owner_id": "mem-conflict",
@@ -131,12 +131,12 @@ class TestRecallMutationEngine(unittest.TestCase):
         self.assertEqual(result.explanations[0]["owner_id"], "mem-conflict")
         self.assertEqual(result.explanations[0]["reason"], "answer conflict")
 
-    def test_conflict_signal_with_state_id_only_preserves_reason(self):
+    def test_conflict_event_with_state_id_only_preserves_reason(self):
         target = self._state("mem-conflict", activation=0.3)
         engine = RecallMutationEngine()
 
         recall_outcome = {
-            "conflict_signals": [
+            "conflict_events": [
                 {
                     "state_id": "memory:mem-conflict",
                     "reason": "state-id conflict reason",

@@ -13,7 +13,7 @@ _SMALL_DOC_THRESHOLD = 4000  # tokens (estimated)
 
 
 class IngestModeResolver:
-    """Determine ingestion mode from input signals.
+    """Determine ingestion mode from input events.
 
     Resolution order (explicit first):
     1. meta.ingest_mode (forced)

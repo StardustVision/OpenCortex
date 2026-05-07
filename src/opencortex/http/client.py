@@ -191,23 +191,6 @@ class OpenCortexClient:
             retry_on_read_timeout=False,
         )
 
-    async def memory_batch_store(
-        self,
-        items: List[Dict[str, Any]],
-        source_path: str = "",
-        scan_meta: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        """Store a batch of memory-like items via the HTTP API."""
-        payload: Dict[str, Any] = {"items": items, "source_path": source_path}
-        if scan_meta is not None:
-            payload["scan_meta"] = scan_meta
-        return await self._post(
-            "/api/v1/memory/batch_store",
-            payload,
-            timeout=_STORE_TIMEOUT,
-            retry_on_read_timeout=False,
-        )
-
     async def memory_promote_to_shared(
         self,
         uris: List[str],
@@ -269,7 +252,7 @@ class OpenCortexClient:
         return await self._post("/api/v1/memory/forget", {"uri": uri, "query": query})
 
     async def memory_feedback(self, uri: str, reward: float) -> Dict[str, Any]:
-        """Submit a reward signal for a stored memory."""
+        """Submit a reward event for a stored memory."""
         return await self._post(
             "/api/v1/memory/feedback", {"uri": uri, "reward": reward}
         )
@@ -309,21 +292,27 @@ class OpenCortexClient:
         """Run the phase-1 recall probe for a query."""
         return await self._post("/api/v1/intent/should_recall", {"query": query})
 
-    async def session_begin(self, session_id: str) -> Dict[str, Any]:
-        """Start a new session transcript."""
-        return await self._post("/api/v1/session/begin", {"session_id": session_id})
-
     async def session_message(
-        self, session_id: str, role: str, content: str
+        self,
+        session_id: str,
+        turn_id: str,
+        messages: list[Dict[str, Any]],
+        cited_uris: Optional[list[str]] = None,
+        tool_calls: Optional[list[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
-        """Append one message to a tracked session."""
+        """Commit one conversation turn to a tracked session."""
+        payload: Dict[str, Any] = {
+            "session_id": session_id,
+            "turn_id": turn_id,
+            "messages": messages,
+        }
+        if cited_uris is not None:
+            payload["cited_uris"] = cited_uris
+        if tool_calls is not None:
+            payload["tool_calls"] = tool_calls
         return await self._post(
             "/api/v1/session/message",
-            {
-                "session_id": session_id,
-                "role": role,
-                "content": content,
-            },
+            payload,
         )
 
     async def session_end(

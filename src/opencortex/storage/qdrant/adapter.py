@@ -1054,7 +1054,7 @@ class QdrantStorageAdapter(StorageInterface):
     # =========================================================================
 
     async def update_reward(self, collection: str, id: str, reward: float) -> None:
-        """Accumulate a reward signal on a record's payload."""
+        """Accumulate a reward event on a record's payload."""
         client = await self._ensure_client()
         point_id = self._to_point_id(id)
         existing = await client.retrieve(collection, [point_id])

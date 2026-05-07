@@ -162,7 +162,7 @@ class Knowledge:
     trigger_keywords: Optional[List[str]] = None
     anti_patterns: Optional[List[str]] = None
     success_criteria: Optional[str] = None
-    failure_signals: Optional[str] = None
+    failure_events: Optional[str] = None
     # Negative Rule-specific
     context: Optional[str] = None
     severity: Optional[str] = None
@@ -189,7 +189,7 @@ class Knowledge:
         # Include non-None optional fields
         for k in ("statement", "objective", "preconditions", "confidence",
                    "action_steps", "trigger_keywords", "anti_patterns",
-                   "success_criteria", "failure_signals", "context",
+                   "success_criteria", "failure_events", "context",
                    "severity", "error_pattern", "cause", "fix_suggestion",
                    "frequency", "abstract", "overview"):
             v = getattr(self, k)

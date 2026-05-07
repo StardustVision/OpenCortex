@@ -126,8 +126,9 @@ class TestBatchAddHierarchy(unittest.TestCase):
                 orch = MemoryOrchestrator(config=cfg, embedder=MockEmbedder(), llm_completion=mock_llm)
                 await orch.init()
 
-                # Patch add to capture parent_uri values
-                original = orch.add
+                # Patch writer.add because batch_add now writes through MemoryWriter.
+                writer = orch._memory_service._memory_writer
+                original = writer.add
                 async def spy_add(**kwargs):
                     result = await original(**kwargs)
                     created_records.append({
@@ -137,7 +138,7 @@ class TestBatchAddHierarchy(unittest.TestCase):
                         "uri": result.uri,
                     })
                     return result
-                orch.add = spy_add
+                writer.add = spy_add
 
                 tokens = set_request_identity("t1", "u1")
                 try:

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Integration tests for store/recall lifecycle signal boundaries."""
+"""Integration tests for store/recall lifecycle event boundaries."""
 
 from __future__ import annotations
 
@@ -15,16 +15,16 @@ from opencortex.http.request_context import reset_request_identity, set_request_
 from opencortex.intent import RetrievalDepth, SearchResult
 from opencortex.models.embedder.base import DenseEmbedderBase, EmbedResult
 from opencortex.orchestrator import MemoryOrchestrator
+from opencortex.retrieve.events import RecallCompletedEvent
 from opencortex.retrieve.types import ContextType, FindResult, MatchedContext
-from opencortex.services.memory_signals import (
-    MemorySignalBus,
-    MemoryStoredSignal,
-    RecallCompletedSignal,
+from opencortex.store.events import (
+    MemoryEventManager,
+    MemoryStoredEvent,
 )
 
 
 class MockEmbedder(DenseEmbedderBase):
-    """Small deterministic embedder for signal integration tests."""
+    """Small deterministic embedder for event integration tests."""
 
     def __init__(self) -> None:
         super().__init__(model_name="mock")
@@ -36,11 +36,11 @@ class MockEmbedder(DenseEmbedderBase):
         return 4
 
 
-class TestStoreSignals(unittest.IsolatedAsyncioTestCase):
-    """Memory store publishes lifecycle signals without plugin coupling."""
+class TestStoreEvents(unittest.IsolatedAsyncioTestCase):
+    """Memory store publishes lifecycle events without plugin coupling."""
 
-    async def test_store_publishes_memory_stored_signal(self) -> None:
-        """A successful memory add emits one memory_stored signal."""
+    async def test_store_publishes_memory_stored_event(self) -> None:
+        """A successful memory add emits one memory_stored event."""
         tmpdir = tempfile.mkdtemp()
         cfg = CortexConfig(
             data_root=tmpdir,
@@ -52,14 +52,14 @@ class TestStoreSignals(unittest.IsolatedAsyncioTestCase):
         init_config(cfg)
         orch = MemoryOrchestrator(config=cfg, embedder=MockEmbedder())
         await orch.init()
-        received: list[MemoryStoredSignal] = []
+        received: list[MemoryStoredEvent] = []
         delivered = asyncio.Event()
 
-        async def on_memory_stored(signal: MemoryStoredSignal) -> None:
-            received.append(signal)
+        async def on_memory_stored(event: MemoryStoredEvent) -> None:
+            received.append(event)
             delivered.set()
 
-        orch._memory_signal_bus.subscribe("memory_stored", on_memory_stored)
+        orch._memory_events.subscribe("memory_stored", on_memory_stored)
         tokens = set_request_identity("tenant", "user")
         try:
             result = await orch.add(
@@ -80,15 +80,15 @@ class TestStoreSignals(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(received[0].context_type, "memory")
 
 
-class TestRecallSignals(unittest.IsolatedAsyncioTestCase):
-    """Memory search publishes recall signals and skips skill plugin search."""
+class TestRecallEvents(unittest.IsolatedAsyncioTestCase):
+    """Memory search publishes recall events and skips skill plugin search."""
 
     async def test_search_publishes_recall_completed_without_skill_lookup(self) -> None:
-        """Core recall emits a signal but does not call _skill_manager.search."""
+        """Core recall emits a event but does not call _skill_manager.search."""
         oc = MemoryOrchestrator.__new__(MemoryOrchestrator)
         oc._config = CortexConfig()
         oc._initialized = True
-        oc._memory_signal_bus = MemorySignalBus()
+        oc._memory_events = MemoryEventManager()
         oc._context_manager = None
         oc._storage = MagicMock()
         oc._storage.close = AsyncMock()
@@ -147,14 +147,14 @@ class TestRecallSignals(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-        received: list[RecallCompletedSignal] = []
+        received: list[RecallCompletedEvent] = []
         delivered = asyncio.Event()
 
-        async def on_recall_completed(signal: RecallCompletedSignal) -> None:
-            received.append(signal)
+        async def on_recall_completed(event: RecallCompletedEvent) -> None:
+            received.append(event)
             delivered.set()
 
-        oc._memory_signal_bus.subscribe("recall_completed", on_recall_completed)
+        oc._memory_events.subscribe("recall_completed", on_recall_completed)
 
         result = await oc.search(
             query="test question",

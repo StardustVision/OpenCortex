@@ -8,6 +8,8 @@ from typing import Any, Dict, List, Optional
 import orjson
 from pydantic import BaseModel, Field, field_validator
 
+from opencortex.retrieve.types import ContextType
+
 # =========================================================================
 # Benchmark ingest payload limits — comfortably above LoCoMo / LongMemEval
 # real distributions. Hard caps the per-request fan-out to keep one bad
@@ -25,9 +27,11 @@ _BENCHMARK_MAX_META_BYTES = 16_384
 
 
 class MemoryStoreRequest(BaseModel):
-    """Store a new memory, resource, or skill.
+    """Store a new memory, resource, skill, case, pattern, or staging record.
 
-    context_type: memory | resource | skill | case | pattern
+    Documents are stored as ``resource`` records.
+
+    context_type: memory | resource | skill | case | pattern | staging
     category: profile | preferences | entities | events | cases | patterns |
               error_fixes | workflows | strategies | documents | plans
     """
@@ -42,9 +46,12 @@ class MemoryStoreRequest(BaseModel):
             "patterns, error_fixes, workflows, strategies, documents, plans"
         ),
     )
-    context_type: str = Field(
-        default="memory",
-        description="Type: memory, resource, skill, case, pattern",
+    context_type: ContextType = Field(
+        default=ContextType.MEMORY,
+        description=(
+            "Type: memory, resource, skill, case, pattern, staging. "
+            "Use resource for documents."
+        ),
     )
     meta: Optional[Dict[str, Any]] = None
     dedup: bool = Field(
@@ -58,6 +65,14 @@ class MemoryStoreRequest(BaseModel):
         "Useful when the display text differs from the optimal "
         "search text (e.g., omitting date prefixes).",
     )
+
+    @field_validator("context_type", mode="before")
+    @classmethod
+    def validate_context_type(cls, value: object) -> object:
+        """Validate store context type at the transport boundary."""
+        if value == ContextType.ANY:
+            raise ValueError("context_type=any is only valid for search")
+        return value
 
 
 class MemorySearchRequest(BaseModel):
@@ -160,47 +175,11 @@ class MemoryFeedbackRequest(BaseModel):
 # =========================================================================
 
 
-class SessionBeginRequest(BaseModel):
-    """Start a session transcript."""
-
-    session_id: str
-
-
-class SessionMessageRequest(BaseModel):
-    """Append one message to an active session transcript."""
-
-    session_id: str
-    role: str
-    content: str
-
-
 class SessionEndRequest(BaseModel):
     """Close a session transcript and trigger post-processing."""
 
     session_id: str
     quality_score: float = 0.5
-
-
-# =========================================================================
-# Batch Import
-# =========================================================================
-
-
-class MemoryBatchItem(BaseModel):
-    """One batch-ingested memory or resource payload."""
-
-    content: str
-    category: str = "documents"
-    context_type: str = "resource"
-    meta: Optional[Dict[str, Any]] = None
-
-
-class MemoryBatchStoreRequest(BaseModel):
-    """Batch store request payload."""
-
-    items: List[MemoryBatchItem]
-    source_path: str = ""
-    scan_meta: Optional[Dict[str, Any]] = None
 
 
 class PromoteToSharedRequest(BaseModel):
@@ -273,7 +252,7 @@ class TraceListRequest(BaseModel):
 
 
 # =========================================================================
-# Context Protocol
+# Session Turn
 # =========================================================================
 
 
@@ -285,32 +264,24 @@ class ToolCallRecord(BaseModel):
 
 
 class ContextMessage(BaseModel):
-    """One context lifecycle message payload."""
+    """One session lifecycle message payload."""
 
     role: str
     content: str
     meta: Optional[Dict[str, Any]] = None
 
 
-class ContextConfig(BaseModel):
-    """Runtime knobs for the context lifecycle endpoint."""
-
-    fail_fast_end: bool = False
-
-
-class ContextRequest(BaseModel):
-    """Unified `/api/v1/context` request payload."""
+class SessionTurnRequest(BaseModel):
+    """Commit one conversation turn to an active session."""
 
     session_id: str = Field(..., pattern=r"^[a-zA-Z0-9_-]{1,128}$")
-    turn_id: Optional[str] = Field(
-        default=None,
+    turn_id: str = Field(
+        ...,
         pattern=r"^[a-zA-Z0-9_-]{1,128}$",
     )
-    phase: str  # commit | end
-    messages: Optional[List[ContextMessage]] = None
+    messages: List[ContextMessage]
     tool_calls: Optional[List[ToolCallRecord]] = None
     cited_uris: Optional[List[str]] = None
-    config: Optional[ContextConfig] = None
 
 
 class BenchmarkConversationMessage(BaseModel):

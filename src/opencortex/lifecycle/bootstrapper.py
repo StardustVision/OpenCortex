@@ -178,6 +178,7 @@ class SubsystemBootstrapper:
             filter_builder=orch._build_probe_filter,
             top_k=6,
         )
+        self._register_primary_record_side_effects()
 
         # 8. Background maintenance: text indexes, migrations, re-embed
         asyncio.create_task(self._startup_maintenance())
@@ -192,7 +193,7 @@ class SubsystemBootstrapper:
             False,
         ):
             await self._init_cognition()
-            self._register_autophagy_signal_handlers()
+            self._register_autophagy_event_handlers()
             orch._start_autophagy_sweeper()
 
         # 9b. Plan 009 / R5 — periodic sweeper that watches the
@@ -248,36 +249,120 @@ class SubsystemBootstrapper:
             metabolism_controller=(orch._cognitive_metabolism_controller),
         )
 
-    def _register_autophagy_signal_handlers(self) -> None:
-        """Subscribe autophagy plugin handlers to memory lifecycle signals."""
+    def _register_autophagy_event_handlers(self) -> None:
+        """Subscribe autophagy plugin handlers to memory lifecycle events."""
         orch = self._orch
-        signal_bus = getattr(orch, "_memory_signal_bus", None)
-        if signal_bus is None or orch._autophagy_kernel is None:
+        memory_events = getattr(orch, "_memory_events", None)
+        if memory_events is None or orch._autophagy_kernel is None:
             return
 
-        async def on_memory_stored(signal: Any) -> None:
-            if signal.context_type != "memory":
+        async def on_memory_stored(event: Any) -> None:
+            if event.context_type != "memory":
                 return
             await orch._initialize_autophagy_owner_state(
                 owner_type=OwnerType.MEMORY,
-                owner_id=signal.record_id,
-                tenant_id=signal.tenant_id,
-                user_id=signal.user_id,
-                project_id=signal.project_id,
+                owner_id=event.record_id,
+                tenant_id=event.tenant_id,
+                user_id=event.user_id,
+                project_id=event.project_id,
             )
 
-        async def on_recall_completed(signal: Any) -> None:
-            recalled_owner_ids = await orch._resolve_memory_owner_ids(signal.memories)
+        async def on_recall_completed(event: Any) -> None:
+            recalled_owner_ids = await orch._resolve_memory_owner_ids(event.memories)
             if not recalled_owner_ids or orch._autophagy_kernel is None:
                 return
             await orch._autophagy_kernel.apply_recall_outcome(
                 owner_ids=recalled_owner_ids,
-                query=signal.query,
+                query=event.query,
                 recall_outcome={"selected_results": recalled_owner_ids},
             )
 
-        signal_bus.subscribe("memory_stored", on_memory_stored)
-        signal_bus.subscribe("recall_completed", on_recall_completed)
+        memory_events.subscribe("memory_stored", on_memory_stored)
+        memory_events.subscribe("recall_completed", on_recall_completed)
+
+    def _register_primary_record_side_effects(self) -> None:
+        """Subscribe async post-primary-write index/blob handlers."""
+        orch = self._orch
+        memory_events = getattr(orch, "_memory_events", None)
+        if memory_events is None:
+            return
+
+        async def on_primary_record_stored(event: Any) -> None:
+            record = dict(event.record or {})
+            if not record:
+                return
+            await self._sync_primary_record_projection(record)
+            self._sync_primary_record_entity_index(event, record)
+            await self._write_primary_record_blob(event, record)
+            self._reserve_reasoning_tree_index(event, record)
+
+        memory_events.subscribe("memory_stored", on_primary_record_stored)
+
+    async def _sync_primary_record_projection(
+        self,
+        record: dict[str, Any],
+    ) -> None:
+        """Update anchor/fact projections for a primary record."""
+        await self._orch._sync_anchor_projection_records(
+            source_record=record,
+            abstract_json=self._record_abstract_json(record),
+        )
+
+    def _sync_primary_record_entity_index(
+        self,
+        event: Any,
+        record: dict[str, Any],
+    ) -> None:
+        """Update the optional entity index for a primary record."""
+        entities = record.get("entities") or []
+        entity_index = getattr(self._orch, "_entity_index", None)
+        if entity_index is None or not entities:
+            return
+        entity_index.add(
+            self._orch._get_collection(),
+            str(record.get("id") or event.record_id),
+            entities,
+        )
+
+    async def _write_primary_record_blob(
+        self,
+        event: Any,
+        record: dict[str, Any],
+    ) -> None:
+        """Write CortexFS blob data for a primary record when enabled."""
+        fs = getattr(self._orch, "_fs", None)
+        if fs is None:
+            return
+        await fs.write_context(
+            uri=self._event_uri(event),
+            content=str(getattr(event, "content", "") or ""),
+            abstract=str(record.get("abstract", "") or ""),
+            abstract_json=self._record_abstract_json(record),
+            overview=str(record.get("overview", "") or ""),
+            is_leaf=bool(record.get("is_leaf", False)),
+        )
+
+    @staticmethod
+    def _reserve_reasoning_tree_index(
+        event: Any,
+        record: dict[str, Any],
+    ) -> None:
+        """Reserve the future ReasoningTreeIndex side-effect boundary."""
+        # ReasoningTreeIndex will register here as an optional secondary index.
+        # Documents should be indexed by default, sessions only at end, and
+        # memories only when they exceed the configured token threshold.
+        _ = event
+        _ = record
+
+    @staticmethod
+    def _record_abstract_json(record: dict[str, Any]) -> dict[str, Any]:
+        """Return the abstract-json payload for a primary record."""
+        return dict(record.get("abstract_json") or {})
+
+    @staticmethod
+    def _event_uri(event: Any) -> str:
+        """Return the primary URI carried by memory/session events."""
+        return str(getattr(event, "uri", "") or getattr(event, "record_uri", ""))
 
     async def _init_alpha(self) -> None:
         """Initialize Cortex Alpha components if enabled."""

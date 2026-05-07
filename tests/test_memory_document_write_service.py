@@ -18,9 +18,9 @@ class TestGenerateAbstractOverview(unittest.TestCase):
 
     def test_no_llm_returns_file_path_and_truncated_overview(self) -> None:
         """No LLM preserves the legacy deterministic fallback."""
-        mock_memory_service = MagicMock()
-        mock_memory_service._orch._llm_completion = None
-        service = MemoryDocumentWriteService(mock_memory_service)
+        writer = MagicMock()
+        writer._llm_completion = None
+        service = MemoryDocumentWriteService(writer)
         content = "x" * 800
 
         abstract, overview = self._run(

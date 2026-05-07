@@ -209,7 +209,7 @@ class SessionRecordsRepository:
         max_pages`` when the storage adapter does not support scroll
         (in-memory test fixtures, for example) — this preserves
         single-call semantics for those backends while still providing
-        the overflow signal.
+        the overflow event.
         """
         all_records: List[Dict[str, Any]] = []
         scroll = getattr(self._storage, "scroll", None)

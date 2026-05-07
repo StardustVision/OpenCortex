@@ -14,18 +14,18 @@ from opencortex.http.request_context import (
     reset_request_project_id,
     set_request_project_id,
 )
-from opencortex.services.memory_signals import MemoryStoredSignal
+from opencortex.store.events import MemoryStoredEvent
 from opencortex.services.memory_write_dedup_service import MemoryWriteDedupService
 
 
-class _SignalBus:
-    """Capture published signals for assertions."""
+class _Events:
+    """Capture published events for assertions."""
 
     def __init__(self) -> None:
-        self.signals: List[Any] = []
+        self.events: List[Any] = []
 
-    def publish_nowait(self, signal: Any) -> None:
-        self.signals.append(signal)
+    def publish_nowait(self, event: Any) -> None:
+        self.events.append(event)
 
 
 class TestMemoryWriteDedupService(unittest.IsolatedAsyncioTestCase):
@@ -66,7 +66,7 @@ class TestMemoryWriteDedupService(unittest.IsolatedAsyncioTestCase):
             _storage=storage,
             _fs=fs,
             _embedder=None,
-            _memory_signal_bus=_SignalBus(),
+            _memory_events=_Events(),
             _get_collection=MagicMock(return_value="context"),
             _get_record_by_uri=AsyncMock(
                 return_value=existing_record
@@ -225,8 +225,8 @@ class TestMemoryWriteDedupService(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(duplicate)
 
-    async def test_try_merge_duplicate_merges_and_publishes_signal(self) -> None:
-        """A duplicate hit merges into the target and emits a merge signal."""
+    async def test_try_merge_duplicate_merges_and_publishes_event(self) -> None:
+        """A duplicate hit merges into the target and emits a merge event."""
         existing_record = {
             "id": "target-id",
             "uri": "target-uri",
@@ -276,18 +276,18 @@ class TestMemoryWriteDedupService(unittest.IsolatedAsyncioTestCase):
         orch._sync_anchor_projection_records.assert_awaited_once()
         orch._fs.write_context.assert_awaited_once()
 
-        self.assertEqual(len(orch._memory_signal_bus.signals), 1)
-        signal = orch._memory_signal_bus.signals[0]
-        self.assertIsInstance(signal, MemoryStoredSignal)
-        self.assertEqual(signal.uri, "target-uri")
-        self.assertEqual(signal.record_id, "target-id")
-        self.assertEqual(signal.tenant_id, "tenant-1")
-        self.assertEqual(signal.user_id, "user-1")
-        self.assertEqual(signal.project_id, "project-9")
-        self.assertEqual(signal.context_type, "memory")
-        self.assertEqual(signal.category, "preferences")
-        self.assertEqual(signal.dedup_action, "merged")
-        self.assertEqual(signal.record, existing_record)
+        self.assertEqual(len(orch._memory_events.events), 1)
+        event = orch._memory_events.events[0]
+        self.assertIsInstance(event, MemoryStoredEvent)
+        self.assertEqual(event.uri, "target-uri")
+        self.assertEqual(event.record_id, "target-id")
+        self.assertEqual(event.tenant_id, "tenant-1")
+        self.assertEqual(event.user_id, "user-1")
+        self.assertEqual(event.project_id, "project-9")
+        self.assertEqual(event.context_type, "memory")
+        self.assertEqual(event.category, "preferences")
+        self.assertEqual(event.dedup_action, "merged")
+        self.assertEqual(event.record, existing_record)
 
     async def test_merge_into_without_new_content_preserves_existing_content(
         self,

@@ -37,7 +37,7 @@ def _cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
 
 
 class QueryFastClassifier:
-    """Two-layer query classifier: structural signals + embedding centroid."""
+    """Two-layer query classifier: structural events + embedding centroid."""
 
     def __init__(self, embedder: Any, config: Any) -> None:
         self.embedder = embedder
@@ -60,7 +60,7 @@ class QueryFastClassifier:
         target_doc_id: Optional[str] = None,
         session_context: Optional[dict] = None,
     ) -> QueryClassification:
-        # Layer 0: structural signal
+        # Layer 0: structural event
         if target_doc_id:
             weights = self.hybrid_weights.get("document_scoped", {})
             return QueryClassification(

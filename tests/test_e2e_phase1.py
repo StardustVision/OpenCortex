@@ -771,7 +771,7 @@ class TestE2EPhase1(unittest.TestCase):
     # -----------------------------------------------------------------
 
     def test_07_feedback(self):
-        """Feedback sends reward signal and updates activity count."""
+        """Feedback sends reward event and updates activity count."""
         orch = self._init_orch()
 
         ctx = self._run(

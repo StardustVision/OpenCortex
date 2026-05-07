@@ -10,11 +10,10 @@ Usage::
 """
 
 import logging
-import re
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Dict, Optional
+from typing import Annotated, Any, AsyncIterator, Dict, Optional
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
@@ -27,27 +26,20 @@ from opencortex.auth.token import (
 )
 from opencortex.config import get_config
 from opencortex.cortex_memory import CortexMemory
+from opencortex.http.memory_store import store_warnings
 from opencortex.http.models import (
-    # Context Protocol
-    ContextRequest,
     IntentShouldRecallRequest,
-    KnowledgeApproveRequest,
-    KnowledgeRejectRequest,
-    KnowledgeSearchRequest,
-    MemoryBatchStoreRequest,
     MemoryFeedbackRequest,
     MemoryForgetRequest,
     MemorySearchRequest,
     MemorySearchResponse,
     MemoryStoreRequest,
     PromoteToSharedRequest,
-    SessionBeginRequest,
     SessionEndRequest,
-    SessionMessageRequest,
-    # Cortex Alpha
-    SessionMessagesRequest,
+    SessionTurnRequest,
 )
 from opencortex.http.request_context import (
+    get_collection_name,
     reset_request_identity,
     reset_request_project_id,
     reset_request_role,
@@ -57,11 +49,26 @@ from opencortex.http.request_context import (
     set_request_role,
 )
 from opencortex.retrieve.types import ContextType
+from opencortex.storage.cortex_namespace import CortexNamespace
+from opencortex.store.embedder import StoreEmbedder
+from opencortex.store.event_worker import EventWorker
+from opencortex.store.events import StoreEvents
+from opencortex.store.memory_store import MemoryStore
+from opencortex.store.resource_store import ResourceStore
+from opencortex.store.schemas import (
+    StoredRecord,
+    memory_store_input_from_request,
+    resource_store_input_from_request,
+    session_end_input_from_request,
+    session_message_input_from_request,
+)
+from opencortex.store.session_buffer import SessionBuffer
+from opencortex.store.session_ender import SessionEnder
+from opencortex.store.session_merger import SessionMerger
+from opencortex.store.session_store import SessionStore
+from opencortex.writer.primary_record_writer import PrimaryRecordWriter
 
 logger = logging.getLogger(__name__)
-
-# Module-level memory facade, initialized in lifespan
-_orchestrator: Optional[CortexMemory] = None
 
 # Module-level JWT secret, loaded once at startup
 _jwt_secret: Optional[str] = None
@@ -73,42 +80,230 @@ _AUTH_WHITELIST = {
     "/openapi.json",
 }
 
-_CODE_PATTERN = re.compile(
-    r"^\s*(def |class |import |from |if |for |while |return |"
-    r"const |let |var |function |\{|\}|//|#!)"
-)
-
 
 def _check_store_warnings(abstract: str) -> list:
     """Return advisory warnings for a store request. Never blocks storage."""
-    warnings = []
-    stripped = abstract.strip()
-    if len(stripped) < 10:
-        warnings.append(
-            {
-                "key": "abstract_too_short",
-                "message": (
-                    "Memory abstract should be at least 10 characters "
-                    "for useful retrieval"
-                ),
-            }
-        )
-        return warnings
+    return store_warnings(abstract)
 
-    lines = [ln for ln in stripped.splitlines() if ln.strip()]
-    if len(lines) >= 2:
-        code_lines = sum(1 for ln in lines if _CODE_PATTERN.match(ln))
-        if code_lines / len(lines) > 0.8:
-            warnings.append(
-                {
-                    "key": "code_snippet_detected",
-                    "message": (
-                        "Consider storing a description of the code pattern "
-                        "rather than raw code"
-                    ),
-                }
-            )
-    return warnings
+
+def store_response(
+    stored: StoredRecord,
+    warnings: list[Dict[str, str]],
+) -> Dict[str, Any]:
+    """Build the HTTP response payload for a stored record."""
+    resp: Dict[str, Any] = {
+        "uri": stored.uri,
+        "context_type": stored.context_type,
+        "category": stored.category,
+        "abstract": stored.abstract,
+    }
+    if stored.overview:
+        resp["overview"] = stored.overview
+    dedup_action = stored.meta.get("dedup_action")
+    if dedup_action:
+        resp["dedup_action"] = dedup_action
+    if warnings:
+        resp["warnings"] = warnings
+    return resp
+
+
+def get_memory(request: Request) -> CortexMemory:
+    """FastAPI dependency for the application memory facade."""
+    memory = getattr(request.app.state, "memory", None)
+    if memory is None:
+        raise HTTPException(status_code=503, detail="OpenCortex is not initialized")
+    return memory
+
+
+def get_store_storage(request: Request) -> Any:
+    """FastAPI dependency for vector storage used by store flows."""
+    storage = getattr(request.app.state, "store_storage", None)
+    if storage is None:
+        raise HTTPException(status_code=503, detail="Store storage is not initialized")
+    return storage
+
+
+def get_store_config(request: Request) -> Any:
+    """FastAPI dependency for store configuration."""
+    config = getattr(request.app.state, "store_config", None)
+    if config is None:
+        raise HTTPException(status_code=503, detail="Store config is not initialized")
+    return config
+
+
+def get_collection_resolver(request: Request) -> Any:
+    """FastAPI dependency for active collection resolution."""
+    resolver = getattr(request.app.state, "collection_resolver", None)
+    if resolver is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Collection resolver is not initialized",
+        )
+    return resolver
+
+
+def get_ttl_resolver(request: Request) -> Any:
+    """FastAPI dependency for TTL timestamp conversion."""
+    resolver = getattr(request.app.state, "ttl_resolver", None)
+    if resolver is None:
+        raise HTTPException(status_code=503, detail="TTL resolver is not initialized")
+    return resolver
+
+
+def get_llm_completion(request: Request) -> Any:
+    """FastAPI dependency for optional store derivation LLM."""
+    return getattr(request.app.state, "store_llm_completion", None)
+
+
+def get_embedding_model(request: Request) -> Any:
+    """FastAPI dependency for optional store embedding model."""
+    return getattr(request.app.state, "store_embedder", None)
+
+
+def get_memory_events(request: Request) -> Any:
+    """FastAPI dependency for store lifecycle events."""
+    return getattr(request.app.state, "store_memory_events", None)
+
+
+def get_cortex_namespace(
+    storage: Annotated[Any, Depends(get_store_storage)],
+    collection_resolver: Annotated[Any, Depends(get_collection_resolver)],
+) -> CortexNamespace:
+    """FastAPI dependency for URI namespace resolution."""
+    return CortexNamespace(
+        storage=storage,
+        collection_resolver=collection_resolver,
+    )
+
+
+def get_store_embedder(
+    embedding_model: Annotated[Any, Depends(get_embedding_model)],
+) -> StoreEmbedder:
+    """FastAPI dependency for store embedding."""
+    return StoreEmbedder(embedding_model)
+
+
+def get_primary_record_writer(
+    config: Annotated[Any, Depends(get_store_config)],
+    storage: Annotated[Any, Depends(get_store_storage)],
+    collection_resolver: Annotated[Any, Depends(get_collection_resolver)],
+    ttl_resolver: Annotated[Any, Depends(get_ttl_resolver)],
+) -> PrimaryRecordWriter:
+    """FastAPI dependency for primary record writes."""
+    return PrimaryRecordWriter(
+        config=config,
+        storage=storage,
+        collection_resolver=collection_resolver,
+        ttl_from_hours=ttl_resolver,
+    )
+
+
+def get_store_events(
+    memory_events: Annotated[Any, Depends(get_memory_events)],
+) -> StoreEvents:
+    """FastAPI dependency for store event publishing."""
+    return StoreEvents(memory_events)
+
+
+def get_memory_store(
+    llm_completion: Annotated[Any, Depends(get_llm_completion)],
+    namespace: Annotated[CortexNamespace, Depends(get_cortex_namespace)],
+    embedder: Annotated[StoreEmbedder, Depends(get_store_embedder)],
+    writer: Annotated[PrimaryRecordWriter, Depends(get_primary_record_writer)],
+    events: Annotated[StoreEvents, Depends(get_store_events)],
+) -> MemoryStore:
+    """FastAPI dependency for memory store flow."""
+    return MemoryStore(
+        namespace=namespace,
+        llm_completion=llm_completion,
+        embedder=embedder,
+        writer=writer,
+        events=events,
+    )
+
+
+def get_resource_store(
+    llm_completion: Annotated[Any, Depends(get_llm_completion)],
+    namespace: Annotated[CortexNamespace, Depends(get_cortex_namespace)],
+    embedder: Annotated[StoreEmbedder, Depends(get_store_embedder)],
+    writer: Annotated[PrimaryRecordWriter, Depends(get_primary_record_writer)],
+    events: Annotated[StoreEvents, Depends(get_store_events)],
+) -> ResourceStore:
+    """FastAPI dependency for resource store flow."""
+    return ResourceStore(
+        namespace=namespace,
+        llm_completion=llm_completion,
+        embedder=embedder,
+        writer=writer,
+        events=events,
+    )
+
+
+def get_session_buffer(
+    request: Request,
+) -> SessionBuffer:
+    """FastAPI dependency for session message buffer state."""
+    buffer = getattr(request.app.state, "session_buffer", None)
+    if buffer is None:
+        raise HTTPException(status_code=503, detail="Session buffer is not initialized")
+    return buffer
+
+
+def get_session_store(
+    buffer: Annotated[SessionBuffer, Depends(get_session_buffer)],
+    namespace: Annotated[CortexNamespace, Depends(get_cortex_namespace)],
+    embedder: Annotated[StoreEmbedder, Depends(get_store_embedder)],
+    writer: Annotated[PrimaryRecordWriter, Depends(get_primary_record_writer)],
+    events: Annotated[StoreEvents, Depends(get_store_events)],
+) -> SessionStore:
+    """FastAPI dependency for session message store flow."""
+    return SessionStore(
+        buffer=buffer,
+        namespace=namespace,
+        embedder=embedder,
+        writer=writer,
+        events=events,
+    )
+
+
+def get_session_merger(
+    buffer: Annotated[SessionBuffer, Depends(get_session_buffer)],
+    namespace: Annotated[CortexNamespace, Depends(get_cortex_namespace)],
+    embedder: Annotated[StoreEmbedder, Depends(get_store_embedder)],
+    writer: Annotated[PrimaryRecordWriter, Depends(get_primary_record_writer)],
+    events: Annotated[StoreEvents, Depends(get_store_events)],
+) -> SessionMerger:
+    """FastAPI dependency for session merge flow."""
+    return SessionMerger(
+        buffer=buffer,
+        namespace=namespace,
+        embedder=embedder,
+        writer=writer,
+        events=events,
+    )
+
+
+def get_session_ender(
+    buffer: Annotated[SessionBuffer, Depends(get_session_buffer)],
+    merger: Annotated[SessionMerger, Depends(get_session_merger)],
+    namespace: Annotated[CortexNamespace, Depends(get_cortex_namespace)],
+    embedder: Annotated[StoreEmbedder, Depends(get_store_embedder)],
+    writer: Annotated[PrimaryRecordWriter, Depends(get_primary_record_writer)],
+    events: Annotated[StoreEvents, Depends(get_store_events)],
+    storage: Annotated[Any, Depends(get_store_storage)],
+    collection_resolver: Annotated[Any, Depends(get_collection_resolver)],
+) -> SessionEnder:
+    """FastAPI dependency for session end flow."""
+    return SessionEnder(
+        buffer=buffer,
+        merger=merger,
+        namespace=namespace,
+        embedder=embedder,
+        writer=writer,
+        events=events,
+        storage=storage,
+        collection_resolver=collection_resolver,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -190,11 +385,28 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Initialize and teardown CortexMemory."""
-    global _orchestrator, _jwt_secret
+    global memory, _jwt_secret
     config = get_config()
     _jwt_secret = ensure_secret(config.data_root)
-    _orchestrator = CortexMemory(config=config)
-    await _orchestrator.init()
+    memory = CortexMemory(config=config)
+    await memory.init()
+    app.state.memory = memory
+    app.state.store_config = config
+    app.state.store_storage = memory._storage
+    app.state.store_embedder = memory._embedder
+    app.state.store_llm_completion = memory._llm_completion
+    app.state.store_memory_events = memory._memory_events
+    event_worker = EventWorker(memory_events=memory._memory_events)
+    event_worker.subscribe()
+    await event_worker.start()
+    app.state.store_event_worker = event_worker
+    app.state.collection_resolver = memory._get_collection
+    app.state.ttl_resolver = memory._ttl_from_hours
+    app.state.session_buffer = SessionBuffer(
+        collection_resolver=lambda: get_collection_name() or "context",
+        merge_token_budget=config.conversation_merge_token_budget,
+        idle_ttl_seconds=config.session_idle_ttl,
+    )
     logger.info("[HTTP] CortexMemory initialized (data_root=%s)", config.data_root)
 
     # Auto-generate admin token on first startup
@@ -211,17 +423,17 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     from opencortex.http.admin_routes import register_admin_routes
 
-    register_admin_routes(_orchestrator, _jwt_secret)
+    register_admin_routes(memory, _jwt_secret)
 
-    # Initialize insights components (optional feature)
-    try:
+    # Insights routes are plugin-owned and disabled by default.
+    if getattr(memory._config, "insights_enabled", False):
         from opencortex.insights.agent import InsightsAgent
         from opencortex.insights.api import create_insights_router
         from opencortex.insights.collector import InsightsCollector
         from opencortex.insights.report import ReportManager
         from opencortex.models.llm_factory import create_llm_completion
 
-        if not _orchestrator._trace_store:
+        if not memory._trace_store:
             raise Exception(
                 "TraceStore not initialized; enable trace_splitter in "
                 "cortex_alpha config"
@@ -238,10 +450,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         # connection-pool reuse across calls. That's out of scope for
         # this leak fix — InsightsAgent's sync→async bridge needs a
         # separate refactor. Logged as residual.
-        llm_callable = create_llm_completion(_orchestrator._config)
+        llm_callable = create_llm_completion(memory._config)
         if not llm_callable:
             raise Exception("LLM not configured; insights requires LLM API key")
-        _orchestrator._insights_llm_completion = llm_callable
+        memory._insights_llm_completion = llm_callable
 
         class LLMWrapper:
             def __init__(self, callable_: Any) -> None:
@@ -257,26 +469,26 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 finally:
                     loop.close()
 
-        collector = InsightsCollector(_orchestrator._trace_store, _orchestrator)
+        collector = InsightsCollector(memory._trace_store, memory)
         llm = LLMWrapper(llm_callable)
         agent = InsightsAgent(llm=llm, collector=collector)
-        report_manager = ReportManager(_orchestrator._fs)
+        report_manager = ReportManager(memory._fs)
 
-        _orchestrator._insights_report_manager = report_manager
+        memory._insights_report_manager = report_manager
 
         insights_router = create_insights_router(
             agent=agent,
             report_manager=report_manager,
-            orchestrator=_orchestrator,
+            orchestrator=memory,
         )
         app.include_router(insights_router)
         logger.info("[HTTP] Insights components initialized and routes registered")
-    except Exception as e:
-        logger.warning(f"[HTTP] Insights components not available: {e}")
-        _orchestrator._insights_report_manager = None
+    else:
+        logger.info("[HTTP] Insights routes disabled")
+        memory._insights_report_manager = None
 
     # Skill Engine routes are plugin-owned and disabled by default.
-    if getattr(_orchestrator._config, "skill_engine_enabled", False):
+    if getattr(memory._config, "skill_engine_enabled", False):
         try:
             from opencortex.skill_engine.http_routes import router as skill_router
 
@@ -288,8 +500,22 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        await _orchestrator.close()
-        _orchestrator = None
+        if getattr(app.state, "store_event_worker", None) is not None:
+            await app.state.store_event_worker.close()
+        app.state.store_event_worker = None
+        app.state.ttl_resolver = None
+        app.state.collection_resolver = None
+        app.state.store_memory_events = None
+        app.state.store_llm_completion = None
+        app.state.store_embedder = None
+        app.state.store_storage = None
+        app.state.store_config = None
+        if getattr(app.state, "session_buffer", None) is not None:
+            app.state.session_buffer.clear()
+        app.state.session_buffer = None
+        app.state.memory = None
+        await memory.close()
+        memory = None
         logger.info("[HTTP] Orchestrator closed")
 
 
@@ -372,47 +598,26 @@ def _register_routes(app: FastAPI) -> None:
     # =====================================================================
 
     @app.post("/api/v1/memory/store")
-    async def memory_store(req: MemoryStoreRequest) -> Dict[str, Any]:
-        # URI is always auto-generated by backend based on identity,
-        # context_type, and category.
-        # Client-provided uri is ignored to prevent malformed storage paths.
+    async def memory_store(
+        req: MemoryStoreRequest,
+        memory_store: Annotated[MemoryStore, Depends(get_memory_store)],
+        resource_store: Annotated[ResourceStore, Depends(get_resource_store)],
+    ) -> Dict[str, Any]:
         warnings = _check_store_warnings(req.abstract)
-        result = await _orchestrator.add(
-            abstract=req.abstract,
-            content=req.content,
-            overview=req.overview,
-            category=req.category,
-            context_type=req.context_type,
-            meta=req.meta,
-            dedup=req.dedup,
-            embed_text=req.embed_text,
-        )
-        resp: Dict[str, Any] = {
-            "uri": result.uri,
-            "context_type": result.context_type,
-            "category": result.category,
-            "abstract": result.abstract,
-        }
-        if result.overview:
-            resp["overview"] = result.overview
-        dedup_action = result.meta.get("dedup_action")
-        if dedup_action:
-            resp["dedup_action"] = dedup_action
-        if warnings:
-            resp["warnings"] = warnings
-        return resp
-
-    @app.post("/api/v1/memory/batch_store")
-    async def memory_batch_store(req: MemoryBatchStoreRequest) -> Dict[str, Any]:
-        return await _orchestrator.batch_add(
-            items=[item.model_dump() for item in req.items],
-            source_path=req.source_path,
-            scan_meta=req.scan_meta,
+        if req.context_type == ContextType.MEMORY:
+            stored = await memory_store.store(memory_store_input_from_request(req))
+            return store_response(stored, warnings)
+        if req.context_type == ContextType.RESOURCE:
+            stored = await resource_store.store(resource_store_input_from_request(req))
+            return store_response(stored, warnings)
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unsupported store context_type: {req.context_type}",
         )
 
     @app.post("/api/v1/memory/promote_to_shared")
     async def memory_promote_to_shared(req: PromoteToSharedRequest) -> Dict[str, Any]:
-        return await _orchestrator.promote_to_shared(
+        return await memory.promote_to_shared(
             uris=req.uris,
             project_id=req.project_id,
         )
@@ -440,7 +645,7 @@ def _register_routes(app: FastAPI) -> None:
                 else req.metadata_filter
             )
 
-        result = await _orchestrator.search(
+        result = await memory.search(
             query=req.query,
             limit=req.limit,
             context_type=ct,
@@ -476,7 +681,7 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.post("/api/v1/memory/feedback")
     async def memory_feedback(req: MemoryFeedbackRequest) -> Dict[str, str]:
-        await _orchestrator.feedback(uri=req.uri, reward=req.reward)
+        await memory.feedback(uri=req.uri, reward=req.reward)
         return {"status": "ok", "uri": req.uri, "reward": str(req.reward)}
 
     @app.get("/api/v1/memory/list")
@@ -488,7 +693,7 @@ def _register_routes(app: FastAPI) -> None:
         include_payload: bool = False,
     ) -> Dict[str, Any]:
         """List user's accessible memories (private + shared)."""
-        items = await _orchestrator.list_memories(
+        items = await memory.list_memories(
             category=category,
             context_type=context_type,
             limit=limit,
@@ -503,49 +708,49 @@ def _register_routes(app: FastAPI) -> None:
         limit: int = 200,
     ) -> Dict[str, Any]:
         """Lightweight index of all memories, grouped by type."""
-        return await _orchestrator.memory_index(
+        return await memory.memory_index(
             context_type=context_type,
             limit=limit,
         )
 
     @app.get("/api/v1/memory/stats")
     async def memory_stats() -> Dict[str, Any]:
-        return await _orchestrator.stats()
+        return await memory.stats()
 
     @app.get("/api/v1/memory/derive_status")
     async def memory_derive_status(uri: str) -> Dict[str, Any]:
         """Check async derive status for a document URI."""
-        return await _orchestrator.derive_status(uri)
+        return await memory.derive_status(uri)
 
     @app.post("/api/v1/memory/wait_derives")
     async def memory_wait_derives() -> Dict[str, Any]:
         """Wait until all in-flight deferred derives complete."""
-        await _orchestrator.wait_deferred_derives()
+        await memory.wait_deferred_derives()
         return {"status": "ok"}
 
     @app.post("/api/v1/memory/forget")
     async def memory_forget(req: MemoryForgetRequest) -> Dict[str, Any]:
         """Delete a memory by exact URI or semantic search query."""
         if req.uri:
-            count = await _orchestrator.remove(req.uri)
+            count = await memory.remove(req.uri)
             return {"status": "ok", "forgotten": count, "uri": req.uri}
         if req.query:
-            results = await _orchestrator.search(query=req.query, limit=1)
+            results = await memory.search(query=req.query, limit=1)
             if not results:
                 return {"status": "not_found", "forgotten": 0}
             uri = results[0].uri
-            count = await _orchestrator.remove(uri)
+            count = await memory.remove(uri)
             return {"status": "ok", "forgotten": count, "uri": uri}
         raise HTTPException(400, "Either uri or query is required")
 
     @app.post("/api/v1/memory/decay")
     async def memory_decay() -> Dict[str, Any]:
-        result = await _orchestrator.decay()
+        result = await memory.decay()
         return result or {}
 
     @app.get("/api/v1/memory/health")
     async def memory_health() -> Dict[str, Any]:
-        return await _orchestrator.health_check()
+        return await memory.health_check()
 
     # =====================================================================
     # Intent
@@ -553,123 +758,29 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.post("/api/v1/intent/should_recall")
     async def intent_should_recall(req: IntentShouldRecallRequest) -> Dict[str, Any]:
-        return (await _orchestrator.probe_memory(req.query)).to_dict()
+        return (await memory.probe_memory(req.query)).to_dict()
 
     # =====================================================================
     # Session
     # =====================================================================
 
-    @app.post("/api/v1/session/begin")
-    async def session_begin(req: SessionBeginRequest) -> Dict[str, Any]:
-        return await _orchestrator.session_begin(session_id=req.session_id)
-
     @app.post("/api/v1/session/message")
-    async def session_message(req: SessionMessageRequest) -> Dict[str, Any]:
-        return await _orchestrator.session_message(
-            session_id=req.session_id,
-            role=req.role,
-            content=req.content,
-        )
+    async def session_message(
+        req: SessionTurnRequest,
+        session_store: Annotated[SessionStore, Depends(get_session_store)],
+    ) -> Dict[str, Any]:
+        return (
+            await session_store.message(session_message_input_from_request(req))
+        ).model_dump()
 
     @app.post("/api/v1/session/end")
-    async def session_end(req: SessionEndRequest) -> Dict[str, Any]:
-        return await _orchestrator.session_end(
-            session_id=req.session_id,
-            quality_score=req.quality_score,
-        )
-
-    # =====================================================================
-    # Cortex Alpha
-    # =====================================================================
-
-    @app.post("/api/v1/session/messages")
-    async def session_messages_batch(req: SessionMessagesRequest) -> Dict[str, Any]:
-        """Batch message recording (Observer debounce buffer)."""
-        if _orchestrator._observer:
-            from opencortex.http.request_context import get_effective_identity
-
-            tid, uid = get_effective_identity()
-            _orchestrator._observer.record_batch(
-                session_id=_orchestrator._observer_session_id(
-                    req.session_id,
-                    tenant_id=tid,
-                    user_id=uid,
-                ),
-                messages=req.messages,
-                tenant_id=tid,
-                user_id=uid,
-            )
-        return {"ok": True, "count": len(req.messages)}
-
-    @app.post("/api/v1/knowledge/search")
-    async def knowledge_search(req: KnowledgeSearchRequest) -> Dict[str, Any]:
-        if not _orchestrator._config.cortex_alpha.archivist_enabled:
-            return {"error": "feature disabled"}
-        return await _orchestrator.knowledge_search(
-            query=req.query,
-            types=req.types,
-            limit=req.limit,
-        )
-
-    @app.post("/api/v1/knowledge/approve")
-    async def knowledge_approve(req: KnowledgeApproveRequest) -> Dict[str, Any]:
-        if not _orchestrator._config.cortex_alpha.archivist_enabled:
-            return {"error": "feature disabled"}
-        return await _orchestrator.knowledge_approve(req.knowledge_id)
-
-    @app.post("/api/v1/knowledge/reject")
-    async def knowledge_reject(req: KnowledgeRejectRequest) -> Dict[str, Any]:
-        if not _orchestrator._config.cortex_alpha.archivist_enabled:
-            return {"error": "feature disabled"}
-        return await _orchestrator.knowledge_reject(req.knowledge_id)
-
-    @app.get("/api/v1/knowledge/candidates")
-    async def knowledge_candidates() -> Dict[str, Any]:
-        if not _orchestrator._config.cortex_alpha.archivist_enabled:
-            return {"error": "feature disabled"}
-        return await _orchestrator.knowledge_list_candidates()
-
-    @app.post("/api/v1/archivist/trigger")
-    async def archivist_trigger() -> Dict[str, Any]:
-        if not _orchestrator._config.cortex_alpha.archivist_enabled:
-            return {"error": "feature disabled"}
-        return await _orchestrator.archivist_trigger()
-
-    @app.get("/api/v1/archivist/status")
-    async def archivist_status() -> Dict[str, Any]:
-        if not _orchestrator._config.cortex_alpha.archivist_enabled:
-            return {"error": "feature disabled"}
-        return await _orchestrator.archivist_status()
-
-    # =====================================================================
-    # Context Protocol
-    # =====================================================================
-
-    @app.post("/api/v1/context")
-    async def context_handler(req: ContextRequest) -> Dict[str, Any]:
-        """Context lifecycle endpoint for commit / end."""
-        from opencortex.http.request_context import get_effective_identity
-
-        if req.phase == "prepare":
-            raise HTTPException(
-                status_code=400,
-                detail="prepare phase has been removed; use intent/search APIs",
-            )
-
-        tid, uid = get_effective_identity()
-        return await _orchestrator._context_manager.handle(
-            session_id=req.session_id,
-            phase=req.phase,
-            tenant_id=tid,
-            user_id=uid,
-            turn_id=req.turn_id,
-            messages=[m.model_dump() for m in req.messages] if req.messages else None,
-            cited_uris=req.cited_uris,
-            config=req.config.model_dump() if req.config else None,
-            tool_calls=[t.model_dump() for t in req.tool_calls]
-            if req.tool_calls
-            else None,
-        )
+    async def session_end(
+        req: SessionEndRequest,
+        session_ender: Annotated[SessionEnder, Depends(get_session_ender)],
+    ) -> Dict[str, Any]:
+        return (
+            await session_ender.end(session_end_input_from_request(req))
+        ).model_dump()
 
     # =====================================================================
     # System Status
@@ -677,7 +788,7 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.get("/api/v1/system/status")
     async def system_status(type: str = "doctor") -> Dict[str, Any]:
-        return await _orchestrator.system_status(status_type=type)
+        return await memory.system_status(status_type=type)
 
     # =====================================================================
     # Content (L0/L1/L2 on-demand loading)
@@ -686,13 +797,13 @@ def _register_routes(app: FastAPI) -> None:
     @app.get("/api/v1/content/abstract")
     async def content_abstract(uri: str) -> Dict[str, Any]:
         """Read L0 abstract from CortexFS."""
-        text = await _orchestrator._fs.abstract(uri)
+        text = await memory._fs.abstract(uri)
         return {"status": "ok", "result": text}
 
     @app.get("/api/v1/content/overview")
     async def content_overview(uri: str) -> Dict[str, Any]:
         """Read L1 overview from CortexFS."""
-        text = await _orchestrator._fs.overview(uri)
+        text = await memory._fs.overview(uri)
         return {"status": "ok", "result": text}
 
     @app.get("/api/v1/content/read")
@@ -702,7 +813,7 @@ def _register_routes(app: FastAPI) -> None:
         limit: int = -1,
     ) -> Dict[str, Any]:
         """Read L2 content from CortexFS."""
-        raw = await _orchestrator._fs.read(
+        raw = await memory._fs.read(
             uri + "/content.md",
             offset=offset,
             size=limit,

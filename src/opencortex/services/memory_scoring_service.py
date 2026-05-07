@@ -31,7 +31,7 @@ class MemoryScoringService:
     # =========================================================================
 
     async def feedback(self, uri: str, reward: float) -> None:
-        """Submit a reward signal for a context.
+        """Submit a reward event for a context.
 
         Positive rewards reinforce retrieval; negative rewards penalize
         it. The reinforced score formula:
@@ -79,7 +79,7 @@ class MemoryScoringService:
         )
 
     async def feedback_batch(self, rewards: List[Dict[str, Any]]) -> None:
-        """Submit batch reward signals.
+        """Submit batch reward events.
 
         Args:
             rewards: List of ``{"uri": str, "reward": float}`` dicts.

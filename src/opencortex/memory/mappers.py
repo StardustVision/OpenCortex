@@ -89,7 +89,7 @@ class MemoryRetrievalHints(MemoryDomainModel):
 
 
 def infer_memory_kind(*, category: str = "", context_type: str = "", uri: str = "") -> MemoryKind:
-    """Infer the primary memory kind from current record signals."""
+    """Infer the primary memory kind from current record events."""
     normalized_category = (category or "").strip().lower()
     normalized_context_type = (context_type or "").strip().lower()
     normalized_uri = (uri or "").strip().lower()
@@ -596,7 +596,7 @@ def _is_paragraph_style_handle(value: str) -> bool:
     return False
 
 
-def _has_concrete_handle_signal(value: str) -> bool:
+def _has_concrete_handle_event(value: str) -> bool:
     if _TIME_TOKEN_RE.search(value):
         return True
     if any(char.isdigit() for char in value):
@@ -626,7 +626,7 @@ def _append_distilled_handle(
         return
     if _is_paragraph_style_handle(normalized):
         return
-    if not trusted and not _has_concrete_handle_signal(normalized):
+    if not trusted and not _has_concrete_handle_event(normalized):
         return
     if lowered in {handle.lower() for handle in handles}:
         return

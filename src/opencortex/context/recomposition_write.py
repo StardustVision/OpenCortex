@@ -93,7 +93,7 @@ class RecompositionWriteService:
         llm_abstract = derived.get("abstract", "")
         llm_overview = derived.get("overview", "")
 
-        await self._manager._orchestrator.add(
+        await self._manager._session_record_writer.add_session_record(
             uri=dir_uri,
             abstract=llm_abstract,
             content=content,
@@ -101,6 +101,8 @@ class RecompositionWriteService:
             context_type="memory",
             is_leaf=False,
             session_id=session_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
             meta={
                 **aggregated_meta,
                 "layer": "directory",
@@ -116,17 +118,6 @@ class RecompositionWriteService:
         )
 
         await self._patch_keywords(dir_uri, keywords_str)
-        await self._write_fs_context(
-            uri=dir_uri,
-            content=content,
-            abstract=llm_abstract,
-            abstract_json={
-                "keywords": keywords_list,
-                "child_count": len(source_records),
-            },
-            overview=llm_overview,
-            is_leaf=False,
-        )
         return dir_uri
 
     async def write_session_summary(
@@ -150,7 +141,7 @@ class RecompositionWriteService:
         keywords_str = self._keywords_string(keywords_list)
         content = "\n\n".join(abstracts)
 
-        await self._manager._orchestrator.add(
+        await self._manager._session_record_writer.add_session_record(
             uri=summary_uri,
             abstract=llm_abstract,
             content=content,
@@ -158,6 +149,8 @@ class RecompositionWriteService:
             context_type="memory",
             is_leaf=False,
             session_id=session_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
             meta={
                 "layer": "session_summary",
                 "session_id": session_id,
@@ -169,17 +162,6 @@ class RecompositionWriteService:
         )
 
         await self._patch_keywords(summary_uri, keywords_str)
-        await self._write_fs_context(
-            uri=summary_uri,
-            content=content,
-            abstract=llm_abstract,
-            abstract_json={
-                "keywords": keywords_list,
-                "child_count": len(abstracts),
-            },
-            overview=llm_overview,
-            is_leaf=False,
-        )
         return summary_uri
 
     async def write_merged_leaf(
@@ -206,7 +188,7 @@ class RecompositionWriteService:
             "recomposition_stage": "online_tail",
             "tool_calls": all_tool_calls if all_tool_calls else [],
         }
-        merged_context = await self._manager._orchestrator.add(
+        merged_context = await self._manager._session_record_writer.add_session_record(
             uri=self.merged_leaf_uri(
                 tenant_id,
                 user_id,
@@ -217,8 +199,11 @@ class RecompositionWriteService:
             content=content,
             category="events",
             context_type="memory",
-            meta=leaf_meta,
+            is_leaf=True,
             session_id=session_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            meta=leaf_meta,
             defer_derive=True,
         )
         self._schedule_deferred_derive(
@@ -256,29 +241,6 @@ class RecompositionWriteService:
                 )
         except Exception:
             logger.warning("[ContextManager] Failed to patch keywords for %s", uri)
-
-    async def _write_fs_context(
-        self,
-        *,
-        uri: str,
-        content: str,
-        abstract: str,
-        abstract_json: Dict[str, Any],
-        overview: str,
-        is_leaf: bool,
-    ) -> None:
-        """Write the paired CortexFS context when CortexFS is enabled."""
-        fs = getattr(self._manager._orchestrator, "_fs", None)
-        if fs is None:
-            return
-        await fs.write_context(
-            uri=uri,
-            content=content,
-            abstract=abstract,
-            abstract_json=abstract_json,
-            overview=overview,
-            is_leaf=is_leaf,
-        )
 
     def _schedule_deferred_derive(
         self,

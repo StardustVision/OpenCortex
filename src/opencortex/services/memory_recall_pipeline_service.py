@@ -14,8 +14,8 @@ from opencortex.intent.retrieval_support import (
     build_scope_filter,
 )
 from opencortex.intent.timing import StageTimingCollector, measure_async, measure_sync
+from opencortex.retrieve.events import RecallCompletedEvent
 from opencortex.retrieve.types import ContextType, DetailLevel, FindResult
-from opencortex.services.memory_signals import RecallCompletedSignal
 
 if TYPE_CHECKING:
     from opencortex.services.memory_query_service import MemoryQueryService
@@ -425,12 +425,12 @@ class MemoryRecallPipelineService:
         tenant_id: str,
         user_id: str,
     ) -> None:
-        """Publish recall-completed lifecycle signal when a bus exists."""
-        signal_bus = getattr(self._orch, "_memory_signal_bus", None)
-        if signal_bus is None:
+        """Publish recall-completed lifecycle event when a bus exists."""
+        memory_events = getattr(self._orch, "_memory_events", None)
+        if memory_events is None:
             return
-        signal_bus.publish_nowait(
-            RecallCompletedSignal(
+        memory_events.publish_nowait(
+            RecallCompletedEvent(
                 query=query,
                 tenant_id=tenant_id,
                 user_id=user_id,

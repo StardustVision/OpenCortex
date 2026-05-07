@@ -1,8 +1,8 @@
 """
 Tests verifying Phase 2 HTTP endpoints are gated by config.
 
-When archivist_enabled=False (Phase 1 default), knowledge/* and archivist/*
-endpoints should return {"error": "feature disabled"}.
+When optional Alpha plugins are disabled, knowledge/* and archivist/*
+endpoints should not be registered on the public API surface.
 
 Uses same test pattern as test_http_server.py:
   - httpx.AsyncClient + ASGITransport (no JWT auth, no lifespan)
@@ -54,7 +54,9 @@ async def _shrinkage_test_app():
     http_server._register_routes(app)
 
     transport = ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
         try:
             yield client, orch
         finally:
@@ -72,95 +74,137 @@ class TestPhase2Shrinkage(unittest.TestCase):
 
     def test_default_config_disables_trace_splitter(self):
         """TraceSplitter should not be initialized with default config."""
+
         async def _test():
             async with _shrinkage_test_app() as (client, orch):
                 self.assertIsNone(orch._trace_splitter)
+
         self._run(_test())
 
     def test_default_config_disables_archivist(self):
         """Archivist should not be initialized with default config."""
+
         async def _test():
             async with _shrinkage_test_app() as (client, orch):
                 self.assertIsNone(orch._archivist)
+
         self._run(_test())
 
     def test_observer_still_enabled(self):
         """Observer should always be initialized (lightweight, needed for transcript)."""
+
         async def _test():
             async with _shrinkage_test_app() as (client, orch):
                 self.assertIsNotNone(orch._observer)
+
         self._run(_test())
 
     def test_trace_store_not_initialized_when_disabled(self):
         """TraceStore should not be initialized when trace_splitter disabled."""
+
         async def _test():
             async with _shrinkage_test_app() as (client, orch):
                 self.assertIsNone(orch._trace_store)
+
         self._run(_test())
 
     def test_knowledge_store_not_initialized_when_disabled(self):
         """KnowledgeStore should not be initialized when archivist disabled."""
+
         async def _test():
             async with _shrinkage_test_app() as (client, orch):
                 self.assertIsNone(orch._knowledge_store)
+
         self._run(_test())
 
     def test_session_end_no_traces_when_disabled(self):
         """session_end should produce traces=0 when TraceSplitter disabled."""
+
         async def _test():
             async with _shrinkage_test_app() as (client, orch):
                 cm = orch._context_manager
                 # Run commit/end lifecycle.
-                await cm.handle(session_id="s1", phase="commit",
-                                tenant_id="testteam", user_id="alice",
-                                turn_id="t1",
-                                messages=[{"role": "user", "content": "hello"},
-                                          {"role": "assistant", "content": "hi"}])
-                result = await cm.handle(session_id="s1", phase="end",
-                                         tenant_id="testteam", user_id="alice")
+                await cm.handle(
+                    session_id="s1",
+                    phase="commit",
+                    tenant_id="testteam",
+                    user_id="alice",
+                    turn_id="t1",
+                    messages=[
+                        {"role": "user", "content": "hello"},
+                        {"role": "assistant", "content": "hi"},
+                    ],
+                )
+                result = await cm.handle(
+                    session_id="s1", phase="end", tenant_id="testteam", user_id="alice"
+                )
                 self.assertEqual(result["traces"], 0)
+
         self._run(_test())
 
-    def test_knowledge_search_returns_disabled(self):
-        """POST /api/v1/knowledge/search returns error when disabled."""
+    def test_knowledge_search_route_not_registered(self):
+        """POST /api/v1/knowledge/search is absent when plugins are disabled."""
+
         async def _test():
             async with _shrinkage_test_app() as (client, orch):
-                resp = await client.post("/api/v1/knowledge/search",
-                                         json={"query": "test", "limit": 5})
-                self.assertEqual(resp.status_code, 200)
-                data = resp.json()
-                self.assertIn("error", data)
-                self.assertEqual(data["error"], "feature disabled")
+                resp = await client.post(
+                    "/api/v1/knowledge/search", json={"query": "test", "limit": 5}
+                )
+                self.assertEqual(resp.status_code, 404)
+
         self._run(_test())
 
-    def test_knowledge_candidates_returns_disabled(self):
-        """GET /api/v1/knowledge/candidates returns error when disabled."""
+    def test_knowledge_candidates_route_not_registered(self):
+        """GET /api/v1/knowledge/candidates is absent when plugins are disabled."""
+
         async def _test():
             async with _shrinkage_test_app() as (client, orch):
                 resp = await client.get("/api/v1/knowledge/candidates")
-                data = resp.json()
-                self.assertIn("error", data)
-                self.assertEqual(data["error"], "feature disabled")
+                self.assertEqual(resp.status_code, 404)
+
         self._run(_test())
 
-    def test_archivist_trigger_returns_disabled(self):
-        """POST /api/v1/archivist/trigger returns error when disabled."""
+    def test_archivist_trigger_route_not_registered(self):
+        """POST /api/v1/archivist/trigger is absent when plugins are disabled."""
+
         async def _test():
             async with _shrinkage_test_app() as (client, orch):
                 resp = await client.post("/api/v1/archivist/trigger")
-                data = resp.json()
-                self.assertIn("error", data)
-                self.assertEqual(data["error"], "feature disabled")
+                self.assertEqual(resp.status_code, 404)
+
         self._run(_test())
 
-    def test_archivist_status_returns_disabled(self):
-        """GET /api/v1/archivist/status returns error when disabled."""
+    def test_archivist_status_route_not_registered(self):
+        """GET /api/v1/archivist/status is absent when plugins are disabled."""
+
         async def _test():
             async with _shrinkage_test_app() as (client, orch):
                 resp = await client.get("/api/v1/archivist/status")
-                data = resp.json()
-                self.assertIn("error", data)
-                self.assertEqual(data["error"], "feature disabled")
+                self.assertEqual(resp.status_code, 404)
+
+        self._run(_test())
+
+    def test_session_messages_route_not_registered(self):
+        """POST /api/v1/session/messages is absent when plugins are disabled."""
+
+        async def _test():
+            async with _shrinkage_test_app() as (client, orch):
+                resp = await client.post(
+                    "/api/v1/session/messages",
+                    json={"session_id": "s1", "messages": []},
+                )
+                self.assertEqual(resp.status_code, 404)
+
+        self._run(_test())
+
+    def test_insights_routes_not_registered_by_default(self):
+        """GET /api/v1/insights/latest is absent unless insights is enabled."""
+
+        async def _test():
+            async with _shrinkage_test_app() as (client, orch):
+                resp = await client.get("/api/v1/insights/latest")
+                self.assertEqual(resp.status_code, 404)
+
         self._run(_test())
 
 

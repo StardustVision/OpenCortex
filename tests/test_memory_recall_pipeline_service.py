@@ -17,21 +17,21 @@ from opencortex.retrieve.types import (
     SearchExplain,
     TypedQuery,
 )
+from opencortex.retrieve.events import RecallCompletedEvent
 from opencortex.services.memory_query_service import MemoryQueryService
 from opencortex.services.memory_recall_pipeline_service import (
     MemoryRecallPipelineService,
 )
-from opencortex.services.memory_signals import RecallCompletedSignal
 
 
-class _SignalBus:
-    """Capture published recall signals for assertions."""
+class _Events:
+    """Capture published recall events for assertions."""
 
     def __init__(self) -> None:
-        self.signals: list[object] = []
+        self.events: list[object] = []
 
-    def publish_nowait(self, signal: object) -> None:
-        self.signals.append(signal)
+    def publish_nowait(self, event: object) -> None:
+        self.events.append(event)
 
 
 class TestMemoryRecallPipelineService(unittest.IsolatedAsyncioTestCase):
@@ -62,12 +62,12 @@ class TestMemoryRecallPipelineService(unittest.IsolatedAsyncioTestCase):
             session_context=None,
         )
 
-    async def test_no_plan_short_circuits_without_signal(self) -> None:
+    async def test_no_plan_short_circuits_without_event(self) -> None:
         """A planner miss returns an empty result and does not publish recall."""
-        signal_bus = _SignalBus()
+        memory_events = _Events()
         orch = SimpleNamespace(
             _ensure_init=MagicMock(),
-            _memory_signal_bus=signal_bus,
+            _memory_events=memory_events,
             plan_memory=MagicMock(return_value=None),
         )
         memory_service = SimpleNamespace(_orch=orch)
@@ -88,11 +88,11 @@ class TestMemoryRecallPipelineService(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.resources, [])
         self.assertEqual(result.skills, [])
         self.assertIs(result.probe_result, probe_result)
-        self.assertEqual(signal_bus.signals, [])
+        self.assertEqual(memory_events.events, [])
 
-    async def test_pipeline_runs_retrieve_finalize_and_signal(self) -> None:
-        """Recall pipeline preserves helper calls, runtime finalization, and signal."""
-        signal_bus = _SignalBus()
+    async def test_pipeline_runs_retrieve_finalize_and_event(self) -> None:
+        """Recall pipeline preserves helper calls, runtime finalization, and event."""
+        memory_events = _Events()
         typed_query = TypedQuery(
             query="auth preference",
             context_type=ContextType.MEMORY,
@@ -145,7 +145,7 @@ class TestMemoryRecallPipelineService(unittest.IsolatedAsyncioTestCase):
         orch = SimpleNamespace(
             _ensure_init=MagicMock(),
             _config=SimpleNamespace(explain_enabled=True),
-            _memory_signal_bus=signal_bus,
+            _memory_events=memory_events,
             _memory_runtime=SimpleNamespace(
                 finalize=MagicMock(return_value=runtime_result)
             ),
@@ -196,10 +196,10 @@ class TestMemoryRecallPipelineService(unittest.IsolatedAsyncioTestCase):
             typed_query.target_directories,
             ["opencortex://tenant/user/memories/preferences"],
         )
-        self.assertEqual(len(signal_bus.signals), 1)
-        signal = signal_bus.signals[0]
-        self.assertIsInstance(signal, RecallCompletedSignal)
-        self.assertEqual(signal.query, "auth preference")
-        self.assertEqual(signal.tenant_id, "tenant")
-        self.assertEqual(signal.user_id, "user")
-        self.assertEqual(signal.memories, [memory])
+        self.assertEqual(len(memory_events.events), 1)
+        event = memory_events.events[0]
+        self.assertIsInstance(event, RecallCompletedEvent)
+        self.assertEqual(event.query, "auth preference")
+        self.assertEqual(event.tenant_id, "tenant")
+        self.assertEqual(event.user_id, "user")
+        self.assertEqual(event.memories, [memory])

@@ -1,9 +1,9 @@
 """
-Write-time object-aware deduplication tests.
+Out-of-band object-aware deduplication tests.
 
-Validates that orchestrator.add(dedup=True) correctly detects and handles
-duplicates: mergeable kinds merge, non-mergeable kinds append, different abstract → create,
-dedup=False → force write, cross-tenant → no dedup.
+Validates that orchestrator.add(dedup=True) still performs pure primary writes.
+The merge algorithm is covered by MemoryWriteDedupService tests and is intended
+to run out of band.
 """
 
 import asyncio
@@ -411,11 +411,11 @@ class TestWriteDedup(unittest.TestCase):
         self.assertEqual(self._record_count(), 2)
 
     # -----------------------------------------------------------------
-    # 2. Same abstract + mergeable category → merged
+    # 2. Same abstract + mergeable category → still creates primary records
     # -----------------------------------------------------------------
 
-    def test_same_abstract_mergeable_merged(self):
-        """Identical abstract in 'preferences' → second add() merged."""
+    def test_same_abstract_mergeable_creates_new_primary_record(self):
+        """Identical preferences are not merged during write."""
         orch = self._make_orch()
 
         ctx1 = self._run(
@@ -427,7 +427,6 @@ class TestWriteDedup(unittest.TestCase):
         )
         self.assertEqual(ctx1.meta.get("dedup_action"), "created")
 
-        # Same abstract, no content → identical vector → dedup triggers
         ctx2 = self._run(
             orch.add(
                 abstract="User prefers dark theme in all editors",
@@ -435,9 +434,9 @@ class TestWriteDedup(unittest.TestCase):
                 dedup=True,
             )
         )
-        self.assertEqual(ctx2.meta.get("dedup_action"), "merged")
-        self.assertEqual(ctx2.uri, ctx1.uri)
-        self.assertEqual(self._record_count(), 1)
+        self.assertEqual(ctx2.meta.get("dedup_action"), "created")
+        self.assertNotEqual(ctx2.uri, ctx1.uri)
+        self.assertEqual(self._record_count(), 2)
         records = [
             r
             for r in self.storage._records.get("context", {}).values()
@@ -614,11 +613,11 @@ class TestWriteDedup(unittest.TestCase):
         self.assertEqual(ctx2.meta.get("dedup_action"), "created")
 
     # -----------------------------------------------------------------
-    # 8. Merged content is appended
+    # 8. Repeated mergeable content still creates a new primary record
     # -----------------------------------------------------------------
 
-    def test_merged_content_appended(self):
-        """When merging, new content is appended to existing."""
+    def test_repeated_mergeable_content_creates_new_primary_record(self):
+        """Dedup merge does not run during write."""
         orch = self._make_orch()
 
         # First add without content → vector = pure abstract
@@ -629,7 +628,6 @@ class TestWriteDedup(unittest.TestCase):
                 dedup=True,
             )
         )
-        # Second add same abstract → triggers dedup merge
         ctx2 = self._run(
             orch.add(
                 abstract="User prefers vim keybindings",
@@ -637,16 +635,15 @@ class TestWriteDedup(unittest.TestCase):
                 dedup=True,
             )
         )
-        self.assertEqual(ctx2.meta.get("dedup_action"), "merged")
+        self.assertEqual(ctx2.meta.get("dedup_action"), "created")
 
-        # Verify only 1 leaf record
         records = list(self.storage._records.get("context", {}).values())
         leaf_records = [
             r
             for r in records
             if r.get("is_leaf", False) and r.get("category") == "preferences"
         ]
-        self.assertEqual(len(leaf_records), 1)
+        self.assertEqual(len(leaf_records), 2)
 
     # -----------------------------------------------------------------
     # 9. Dedup with no embedder → skips dedup gracefully

@@ -37,6 +37,9 @@ class TestRecompositionWriteService(unittest.TestCase):
         manager._orchestrator.add = AsyncMock(
             side_effect=lambda **kwargs: SimpleNamespace(uri=kwargs["uri"])
         )
+        manager._session_record_writer.add_session_record = AsyncMock(
+            side_effect=lambda **kwargs: SimpleNamespace(uri=kwargs["uri"])
+        )
         manager._orchestrator._complete_deferred_derive = AsyncMock()
         manager._orchestrator._fs = None
         return manager
@@ -89,8 +92,8 @@ class TestRecompositionWriteService(unittest.TestCase):
             )
         )
 
-        manager._orchestrator.add.assert_awaited_once()
-        add_kwargs = manager._orchestrator.add.await_args.kwargs
+        manager._session_record_writer.add_session_record.assert_awaited_once()
+        add_kwargs = manager._session_record_writer.add_session_record.await_args.kwargs
         self.assertEqual(add_kwargs["uri"], uri)
         self.assertEqual(add_kwargs["content"], "child one\n\nchild two")
         self.assertEqual(add_kwargs["meta"]["layer"], "directory")
@@ -100,7 +103,6 @@ class TestRecompositionWriteService(unittest.TestCase):
             "record-id",
             {"keywords": "alpha, beta"},
         )
-        fs.write_context.assert_awaited_once()
 
     def test_write_session_summary_persists_summary_record(self) -> None:
         """Session summary writes preserve metadata and keyword patching."""
@@ -121,7 +123,7 @@ class TestRecompositionWriteService(unittest.TestCase):
         )
 
         self.assertTrue(uri.endswith("/session/conversations/session-1/summary"))
-        add_kwargs = manager._orchestrator.add.await_args.kwargs
+        add_kwargs = manager._session_record_writer.add_session_record.await_args.kwargs
         self.assertEqual(add_kwargs["uri"], uri)
         self.assertEqual(add_kwargs["meta"]["layer"], "session_summary")
         self.assertEqual(add_kwargs["meta"]["child_count"], 2)
@@ -160,7 +162,7 @@ class TestRecompositionWriteService(unittest.TestCase):
 
         manager = self._run(_exercise())
 
-        add_kwargs = manager._orchestrator.add.await_args.kwargs
+        add_kwargs = manager._session_record_writer.add_session_record.await_args.kwargs
         self.assertTrue(add_kwargs["defer_derive"])
         self.assertEqual(add_kwargs["meta"]["layer"], "merged")
         manager._orchestrator._complete_deferred_derive.assert_awaited_once()

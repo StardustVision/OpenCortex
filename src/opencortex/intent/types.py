@@ -113,7 +113,7 @@ class SearchCandidate(MemoryDomainModel):
 
 
 class SearchEvidence(MemoryDomainModel):
-    """Probe evidence signals consumed by the planner."""
+    """Probe evidence events consumed by the planner."""
 
     top_score: Optional[float] = None
     score_gap: Optional[float] = None

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from opencortex.core.context import Context
 
 if TYPE_CHECKING:
-    from opencortex.services.memory_write_service import MemoryWriteService
+    from opencortex.services.memory_writer import MemoryWriter
 
 
 @dataclass(frozen=True)
@@ -24,13 +24,13 @@ class MemoryWriteEmbedResult:
 class MemoryWriteEmbedService:
     """Owns normal write-path embedding mechanics."""
 
-    def __init__(self, write_service: "MemoryWriteService") -> None:
+    def __init__(self, write_engine: "MemoryWriter") -> None:
         """Bind the embed service to a write service facade."""
-        self._write_service = write_service
+        self._write_engine = write_engine
 
     async def embed_for_write(self, ctx: Context) -> MemoryWriteEmbedResult:
         """Embed a normal write context and attach its dense vector."""
-        embedder = self._write_service._embedder
+        embedder = self._write_engine._embedder
         if not embedder:
             return MemoryWriteEmbedResult()
 

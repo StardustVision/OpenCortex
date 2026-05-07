@@ -3,7 +3,7 @@
 
 ``MemoryService`` preserves the public method surface that
 ``CortexMemory`` delegates to, while write/mutation and scoring
-domain logic live in narrower services.
+domain logic live in narrower collaborators.
 
 Boundary
 --------
@@ -55,9 +55,9 @@ if TYPE_CHECKING:
     from opencortex.cortex_memory import CortexMemory
     from opencortex.services.memory_query_service import MemoryQueryService
     from opencortex.services.memory_scoring_service import MemoryScoringService
-    from opencortex.services.memory_write_service import (
-        MemoryWriteDependencies,
-        MemoryWriteService,
+    from opencortex.services.memory_writer import (
+        MemoryWriter,
+        MemoryWriterDependencies,
     )
 
 _BATCH_ADD_CONCURRENCY = 8
@@ -82,30 +82,30 @@ class MemoryService:
                 at call time. Stored as ``self._orch``; not validated.
         """
         self._orch = orchestrator
-        self._write_dependencies: "MemoryWriteDependencies | None" = None
+        self._write_dependencies: "MemoryWriterDependencies | None" = None
 
-    def configure_write_dependencies(
+    def configure_writer_dependencies(
         self,
-        dependencies: "MemoryWriteDependencies",
+        dependencies: "MemoryWriterDependencies",
     ) -> None:
         """Bind explicit write-path dependencies from the service registry."""
         self._write_dependencies = dependencies
 
     @property
-    def _memory_write_service(self) -> "MemoryWriteService":
-        """Lazy-built MemoryWriteService for write/mutation methods."""
-        from opencortex.services.memory_write_service import MemoryWriteService
+    def _memory_writer(self) -> "MemoryWriter":
+        """Lazy-built MemoryWriter for write/mutation methods."""
+        from opencortex.services.memory_writer import MemoryWriter
 
-        cached = getattr(self, "_memory_write_service_instance", None)
+        cached = getattr(self, "_memory_writer_instance", None)
         if cached is None:
             if self._write_dependencies is None:
                 raise RuntimeError("Memory write dependencies are not configured")
-            cached = MemoryWriteService(self, self._write_dependencies)
-            self._memory_write_service_instance = cached
+            cached = MemoryWriter(self._write_dependencies)
+            self._memory_writer_instance = cached
         return cached
 
     # =========================================================================
-    # Write / mutation facade
+    # Write / mutation compatibility
     # =========================================================================
 
     async def update(
@@ -116,8 +116,8 @@ class MemoryService:
         meta: Optional[Dict[str, Any]] = None,
         overview: Optional[str] = None,
     ) -> bool:
-        """Delegate to MemoryWriteService.update."""
-        return await self._memory_write_service.update(
+        """Delegate to MemoryWriter.update."""
+        return await self._memory_writer.update(
             uri=uri,
             abstract=abstract,
             content=content,
@@ -126,8 +126,8 @@ class MemoryService:
         )
 
     async def remove(self, uri: str, recursive: bool = True) -> int:
-        """Delegate to MemoryWriteService.remove."""
-        return await self._memory_write_service.remove(uri, recursive=recursive)
+        """Delegate to MemoryWriter.remove."""
+        return await self._memory_writer.remove(uri, recursive=recursive)
 
     async def add(
         self,
@@ -146,9 +146,10 @@ class MemoryService:
         dedup_threshold: float = 0.82,
         embed_text: str = "",
         defer_derive: bool = False,
+        force_primary: bool = False,
     ) -> Context:
-        """Delegate to MemoryWriteService.add."""
-        return await self._memory_write_service.add(
+        """Delegate to MemoryWriter.add."""
+        return await self._memory_writer.add(
             abstract=abstract,
             content=content,
             overview=overview,
@@ -164,6 +165,7 @@ class MemoryService:
             dedup_threshold=dedup_threshold,
             embed_text=embed_text,
             defer_derive=defer_derive,
+            force_primary=force_primary,
         )
 
     async def _check_duplicate(
@@ -175,8 +177,8 @@ class MemoryService:
         tid: str,
         uid: str,
     ) -> Optional[Tuple[str, float]]:
-        """Delegate to MemoryWriteService._check_duplicate."""
-        return await self._memory_write_service._check_duplicate(
+        """Delegate to MemoryWriter._check_duplicate."""
+        return await self._memory_writer._check_duplicate(
             vector=vector,
             memory_kind=memory_kind,
             merge_signature=merge_signature,
@@ -188,24 +190,24 @@ class MemoryService:
     async def _merge_into(
         self, existing_uri: str, new_abstract: str, new_content: str
     ) -> None:
-        """Delegate to MemoryWriteService._merge_into."""
-        await self._memory_write_service._merge_into(
+        """Delegate to MemoryWriter._merge_into."""
+        await self._memory_writer._merge_into(
             existing_uri=existing_uri,
             new_abstract=new_abstract,
             new_content=new_content,
         )
 
     async def _ensure_parent_records(self, parent_uri: str) -> None:
-        """Delegate to MemoryWriteService._ensure_parent_records."""
-        await self._memory_write_service._ensure_parent_records(parent_uri)
+        """Delegate to MemoryWriter._ensure_parent_records."""
+        await self._memory_writer._ensure_parent_records(parent_uri)
 
     async def _generate_abstract_overview(
         self,
         content: str,
         file_path: str,
     ) -> tuple[str, str]:
-        """Delegate to MemoryWriteService._generate_abstract_overview."""
-        return await self._memory_write_service._generate_abstract_overview(
+        """Delegate to MemoryWriter._generate_abstract_overview."""
+        return await self._memory_writer._generate_abstract_overview(
             content,
             file_path,
         )
@@ -222,8 +224,8 @@ class MemoryService:
         session_id: Optional[str],
         source_path: str,
     ) -> Context:
-        """Delegate to MemoryWriteService._add_document."""
-        return await self._memory_write_service._add_document(
+        """Delegate to MemoryWriter._add_document."""
+        return await self._memory_writer._add_document(
             content=content,
             abstract=abstract,
             overview=overview,
@@ -241,8 +243,8 @@ class MemoryService:
         source_path: str = "",
         scan_meta: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Delegate to MemoryWriteService.batch_add."""
-        return await self._memory_write_service.batch_add(
+        """Delegate to MemoryWriter.batch_add."""
+        return await self._memory_writer.batch_add(
             items=items,
             source_path=source_path,
             scan_meta=scan_meta,

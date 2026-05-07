@@ -683,7 +683,7 @@ class BackgroundTaskManager:
         Teardown order:
         1. Connection sweeper (cancel first — must not inspect half-closed pools)
         2. Autophagy sweeper tasks (startup + periodic)
-        3. Memory signal handler tasks
+        3. Memory event handler tasks
         4. Derive worker (graceful drain via sentinel, then forced cancel on timeout)
 
         Resets each task handle attribute on CortexMemory to ``None``
@@ -719,9 +719,9 @@ class BackgroundTaskManager:
         # unit tests that build instances via ``__new__`` to skip
         # ``__init__`` (e.g. tests/test_perf_fixes.py) used to crash
         # here on the first attribute miss.
-        signal_bus = getattr(orch, "_memory_signal_bus", None)
-        if signal_bus is not None:
-            await signal_bus.close()
+        memory_events = getattr(orch, "_memory_events", None)
+        if memory_events is not None:
+            await memory_events.close()
 
         derive_worker_task = getattr(orch, "_derive_worker_task", None)
         if derive_worker_task and not derive_worker_task.done():

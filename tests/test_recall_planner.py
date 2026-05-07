@@ -189,8 +189,8 @@ class TestRecallPlannerIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.total, 1)
         self.assertEqual(result.memories[0].session_id, "sess-a")
 
-    async def test_search_probe_passes_scope_signals(self):
-        """Probe passes scope_input through as signals (planner scope tested after Unit 5)."""
+    async def test_search_probe_passes_scope_events(self):
+        """Probe passes scope_input through as events (planner scope tested after Unit 5)."""
         await self.orch.add(
             abstract="Project launch notes under events root.",
             category="events",
