@@ -7,14 +7,14 @@ import asyncio
 import unittest
 
 from opencortex.core.identity import IdentityProfile
-from opencortex.store.event_actions import SearchIndexAction
-from opencortex.store.event_worker import EventWorker
-from opencortex.store.events import (
+from opencortex.store.event.actions import SearchIndexAction
+from opencortex.store.event.events import (
     MemoryEvent,
     MemoryEventManager,
     MemoryStoredEvent,
     SessionTurnStoredEvent,
 )
+from opencortex.store.event.worker import EventWorker
 
 
 class TestMemoryEventManager(unittest.IsolatedAsyncioTestCase):

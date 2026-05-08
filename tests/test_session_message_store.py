@@ -9,10 +9,10 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 from opencortex.store.embedder import StoreEmbedder
-from opencortex.store.events import StoreEvents
+from opencortex.store.event.events import StoreEvents
 from opencortex.store.schemas import SessionMessage, SessionMessageInput
-from opencortex.store.session_buffer import SessionBuffer
-from opencortex.store.session_store import SessionStore
+from opencortex.store.session.buffer import SessionBuffer
+from opencortex.store.session.store import SessionStore
 from opencortex.writer.primary_record_writer import PrimaryRecordWriter
 
 

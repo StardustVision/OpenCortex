@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from opencortex.lifecycle.bootstrapper import SubsystemBootstrapper
 from opencortex.retrieve.events import RecallCompletedEvent
-from opencortex.store.events import MemoryEventManager, MemoryStoredEvent
+from opencortex_app.store.event.events import MemoryEventManager, MemoryStoredEvent
 
 
 class TestSubsystemBootstrapperConstruction(unittest.TestCase):

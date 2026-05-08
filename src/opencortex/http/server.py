@@ -27,17 +27,13 @@ from opencortex.auth.token import (
 from opencortex.config import get_config
 from opencortex.core.identity import IdentityProfile
 from opencortex.cortex_memory import CortexMemory
-from opencortex.http.memory_store import store_warnings
 from opencortex.http.models import (
     IntentShouldRecallRequest,
     MemoryFeedbackRequest,
     MemoryForgetRequest,
     MemorySearchRequest,
     MemorySearchResponse,
-    MemoryStoreRequest,
     PromoteToSharedRequest,
-    SessionEndRequest,
-    SessionTurnRequest,
 )
 from opencortex.http.request_context import (
     get_collection_name,
@@ -55,7 +51,7 @@ from opencortex.http.request_context import (
 from opencortex.retrieve.types import ContextType
 from opencortex.storage.cortex_namespace import CortexNamespace
 from opencortex.store.embedder import StoreEmbedder
-from opencortex.store.event_actions import (
+from opencortex.store.event.actions import (
     CortexFSAction,
     EntityIndexAction,
     ReasoningTreeIndexAction,
@@ -63,21 +59,11 @@ from opencortex.store.event_actions import (
     SessionCleanupAction,
     SessionMergeAction,
 )
-from opencortex.store.event_worker import EventWorker
-from opencortex.store.events import StoreEvents
-from opencortex.store.memory_store import MemoryStore
-from opencortex.store.resource_store import ResourceStore
-from opencortex.store.schemas import (
-    StoredRecord,
-    memory_store_input_from_request,
-    resource_store_input_from_request,
-    session_end_input_from_request,
-    session_message_input_from_request,
-)
-from opencortex.store.session_buffer import SessionBuffer
-from opencortex.store.session_ender import SessionEnder
-from opencortex.store.session_merger import SessionMerger
-from opencortex.store.session_store import SessionStore
+from opencortex.store.event.events import StoreEvents
+from opencortex.store.event.worker import EventWorker
+from opencortex.store.session.buffer import SessionBuffer
+from opencortex.store.session.merger import SessionMerger
+from opencortex_app.store.routes import router as app_write_router
 from opencortex.writer.primary_record_writer import PrimaryRecordWriter
 
 logger = logging.getLogger(__name__)
@@ -93,259 +79,12 @@ _AUTH_WHITELIST = {
 }
 
 
-def _check_store_warnings(abstract: str) -> list:
-    """Return advisory warnings for a store request. Never blocks storage."""
-    return store_warnings(abstract)
-
-
-def store_response(
-    stored: StoredRecord,
-    warnings: list[Dict[str, str]],
-) -> Dict[str, Any]:
-    """Build the HTTP response payload for a stored record."""
-    resp: Dict[str, Any] = {
-        "uri": stored.uri,
-        "context_type": stored.context_type,
-        "category": stored.category,
-        "abstract": stored.abstract,
-    }
-    if stored.overview:
-        resp["overview"] = stored.overview
-    dedup_action = stored.meta.get("dedup_action")
-    if dedup_action:
-        resp["dedup_action"] = dedup_action
-    if warnings:
-        resp["warnings"] = warnings
-    return resp
-
-
 def get_memory(request: Request) -> CortexMemory:
     """FastAPI dependency for the application memory facade."""
     memory = getattr(request.app.state, "memory", None)
     if memory is None:
         raise HTTPException(status_code=503, detail="OpenCortex is not initialized")
     return memory
-
-
-def get_store_storage(request: Request) -> Any:
-    """FastAPI dependency for vector storage used by store flows."""
-    storage = getattr(request.app.state, "store_storage", None)
-    if storage is None and getattr(request.app.state, "memory", None) is not None:
-        storage = request.app.state.memory._storage
-    if storage is None:
-        raise HTTPException(status_code=503, detail="Store storage is not initialized")
-    return storage
-
-
-def get_store_config(request: Request) -> Any:
-    """FastAPI dependency for store configuration."""
-    config = getattr(request.app.state, "store_config", None)
-    if config is None and getattr(request.app.state, "memory", None) is not None:
-        config = request.app.state.memory._config
-    if config is None:
-        raise HTTPException(status_code=503, detail="Store config is not initialized")
-    return config
-
-
-def get_collection_resolver(request: Request) -> Any:
-    """FastAPI dependency for active collection resolution."""
-    resolver = getattr(request.app.state, "collection_resolver", None)
-    if resolver is None and getattr(request.app.state, "memory", None) is not None:
-        resolver = request.app.state.memory._get_collection
-    if resolver is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Collection resolver is not initialized",
-        )
-    return resolver
-
-
-def get_ttl_resolver(request: Request) -> Any:
-    """FastAPI dependency for TTL timestamp conversion."""
-    resolver = getattr(request.app.state, "ttl_resolver", None)
-    if resolver is None and getattr(request.app.state, "memory", None) is not None:
-        resolver = request.app.state.memory._ttl_from_hours
-    if resolver is None:
-        raise HTTPException(status_code=503, detail="TTL resolver is not initialized")
-    return resolver
-
-
-def get_llm_completion(request: Request) -> Any:
-    """FastAPI dependency for optional store derivation LLM."""
-    completion = getattr(request.app.state, "store_llm_completion", None)
-    if completion is None and getattr(request.app.state, "memory", None) is not None:
-        completion = request.app.state.memory._llm_completion
-    return completion
-
-
-def get_embedding_model(request: Request) -> Any:
-    """FastAPI dependency for optional store embedding model."""
-    embedder = getattr(request.app.state, "store_embedder", None)
-    if embedder is None and getattr(request.app.state, "memory", None) is not None:
-        embedder = request.app.state.memory._embedder
-    return embedder
-
-
-def get_memory_events(request: Request) -> Any:
-    """FastAPI dependency for store lifecycle events."""
-    events = getattr(request.app.state, "store_memory_events", None)
-    if events is None and getattr(request.app.state, "memory", None) is not None:
-        events = request.app.state.memory._memory_events
-    return events
-
-
-def get_cortex_namespace(
-    storage: Annotated[Any, Depends(get_store_storage)],
-    collection_resolver: Annotated[Any, Depends(get_collection_resolver)],
-) -> CortexNamespace:
-    """FastAPI dependency for URI namespace resolution."""
-    return CortexNamespace(
-        storage=storage,
-        collection_resolver=collection_resolver,
-    )
-
-
-def get_store_embedder(
-    embedding_model: Annotated[Any, Depends(get_embedding_model)],
-) -> StoreEmbedder:
-    """FastAPI dependency for store embedding."""
-    return StoreEmbedder(embedding_model)
-
-
-def get_primary_record_writer(
-    config: Annotated[Any, Depends(get_store_config)],
-    storage: Annotated[Any, Depends(get_store_storage)],
-    collection_resolver: Annotated[Any, Depends(get_collection_resolver)],
-    ttl_resolver: Annotated[Any, Depends(get_ttl_resolver)],
-) -> PrimaryRecordWriter:
-    """FastAPI dependency for primary record writes."""
-    return PrimaryRecordWriter(
-        config=config,
-        storage=storage,
-        collection_resolver=collection_resolver,
-        ttl_from_hours=ttl_resolver,
-    )
-
-
-def get_store_events(
-    memory_events: Annotated[Any, Depends(get_memory_events)],
-) -> StoreEvents:
-    """FastAPI dependency for store event publishing."""
-    return StoreEvents(memory_events)
-
-
-def get_memory_store(
-    llm_completion: Annotated[Any, Depends(get_llm_completion)],
-    namespace: Annotated[CortexNamespace, Depends(get_cortex_namespace)],
-    embedder: Annotated[StoreEmbedder, Depends(get_store_embedder)],
-    writer: Annotated[PrimaryRecordWriter, Depends(get_primary_record_writer)],
-    events: Annotated[StoreEvents, Depends(get_store_events)],
-) -> MemoryStore:
-    """FastAPI dependency for memory store flow."""
-    return MemoryStore(
-        namespace=namespace,
-        llm_completion=llm_completion,
-        embedder=embedder,
-        writer=writer,
-        events=events,
-    )
-
-
-def get_resource_store(
-    llm_completion: Annotated[Any, Depends(get_llm_completion)],
-    namespace: Annotated[CortexNamespace, Depends(get_cortex_namespace)],
-    embedder: Annotated[StoreEmbedder, Depends(get_store_embedder)],
-    writer: Annotated[PrimaryRecordWriter, Depends(get_primary_record_writer)],
-    events: Annotated[StoreEvents, Depends(get_store_events)],
-) -> ResourceStore:
-    """FastAPI dependency for resource store flow."""
-    return ResourceStore(
-        namespace=namespace,
-        llm_completion=llm_completion,
-        embedder=embedder,
-        writer=writer,
-        events=events,
-    )
-
-
-def get_session_buffer(
-    request: Request,
-) -> SessionBuffer:
-    """FastAPI dependency for session message buffer state."""
-    buffer = getattr(request.app.state, "session_buffer", None)
-    if buffer is None and getattr(request.app.state, "memory", None) is not None:
-        config = request.app.state.memory._config
-        buffer = SessionBuffer(
-            collection_resolver=lambda: get_collection_name() or "context",
-            merge_token_budget=config.conversation_merge_token_budget,
-            idle_ttl_seconds=getattr(config, "session_idle_ttl", 1800.0),
-        )
-        request.app.state.session_buffer = buffer
-    if buffer is None:
-        raise HTTPException(status_code=503, detail="Session buffer is not initialized")
-    return buffer
-
-
-def get_session_store(
-    buffer: Annotated[SessionBuffer, Depends(get_session_buffer)],
-    namespace: Annotated[CortexNamespace, Depends(get_cortex_namespace)],
-    embedder: Annotated[StoreEmbedder, Depends(get_store_embedder)],
-    writer: Annotated[PrimaryRecordWriter, Depends(get_primary_record_writer)],
-    events: Annotated[StoreEvents, Depends(get_store_events)],
-) -> SessionStore:
-    """FastAPI dependency for session message store flow."""
-    return SessionStore(
-        buffer=buffer,
-        namespace=namespace,
-        embedder=embedder,
-        writer=writer,
-        events=events,
-    )
-
-
-def get_session_merger(
-    buffer: Annotated[SessionBuffer, Depends(get_session_buffer)],
-    namespace: Annotated[CortexNamespace, Depends(get_cortex_namespace)],
-    embedder: Annotated[StoreEmbedder, Depends(get_store_embedder)],
-    writer: Annotated[PrimaryRecordWriter, Depends(get_primary_record_writer)],
-    events: Annotated[StoreEvents, Depends(get_store_events)],
-    storage: Annotated[Any, Depends(get_store_storage)],
-    collection_resolver: Annotated[Any, Depends(get_collection_resolver)],
-) -> SessionMerger:
-    """FastAPI dependency for session merge flow."""
-    return SessionMerger(
-        buffer=buffer,
-        namespace=namespace,
-        embedder=embedder,
-        writer=writer,
-        events=events,
-        storage=storage,
-        collection_resolver=collection_resolver,
-    )
-
-
-def get_session_ender(
-    buffer: Annotated[SessionBuffer, Depends(get_session_buffer)],
-    merger: Annotated[SessionMerger, Depends(get_session_merger)],
-    namespace: Annotated[CortexNamespace, Depends(get_cortex_namespace)],
-    embedder: Annotated[StoreEmbedder, Depends(get_store_embedder)],
-    writer: Annotated[PrimaryRecordWriter, Depends(get_primary_record_writer)],
-    events: Annotated[StoreEvents, Depends(get_store_events)],
-    storage: Annotated[Any, Depends(get_store_storage)],
-    collection_resolver: Annotated[Any, Depends(get_collection_resolver)],
-) -> SessionEnder:
-    """FastAPI dependency for session end flow."""
-    return SessionEnder(
-        buffer=buffer,
-        merger=merger,
-        namespace=namespace,
-        embedder=embedder,
-        writer=writer,
-        events=events,
-        storage=storage,
-        collection_resolver=collection_resolver,
-    )
-
 
 # ---------------------------------------------------------------------------
 # Request Context Middleware
@@ -485,8 +224,6 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         embedder=event_embedder,
         writer=event_writer,
         events=event_store_events,
-        storage=memory._storage,
-        collection_resolver=memory._get_collection,
     )
     event_worker = EventWorker(
         memory_events=memory._memory_events,
@@ -668,6 +405,8 @@ def create_app() -> FastAPI:
 
 def _register_routes(app: FastAPI) -> None:
     """Register all REST endpoints on *app*."""
+    app.include_router(app_write_router)
+
     # =====================================================================
     # Deprecation shims
     # =====================================================================
@@ -704,24 +443,6 @@ def _register_routes(app: FastAPI) -> None:
     # =====================================================================
     # Core Memory
     # =====================================================================
-
-    @app.post("/api/v1/memory/store")
-    async def memory_store(
-        req: MemoryStoreRequest,
-        memory_store: Annotated[MemoryStore, Depends(get_memory_store)],
-        resource_store: Annotated[ResourceStore, Depends(get_resource_store)],
-    ) -> Dict[str, Any]:
-        warnings = _check_store_warnings(req.abstract)
-        if req.context_type == ContextType.MEMORY:
-            stored = await memory_store.store(memory_store_input_from_request(req))
-            return store_response(stored, warnings)
-        if req.context_type == ContextType.RESOURCE:
-            stored = await resource_store.store(resource_store_input_from_request(req))
-            return store_response(stored, warnings)
-        raise HTTPException(
-            status_code=422,
-            detail=f"Unsupported store context_type: {req.context_type}",
-        )
 
     @app.post("/api/v1/memory/promote_to_shared")
     async def memory_promote_to_shared(
@@ -894,28 +615,6 @@ def _register_routes(app: FastAPI) -> None:
         memory: Annotated[CortexMemory, Depends(get_memory)],
     ) -> Dict[str, Any]:
         return (await memory.probe_memory(req.query)).to_dict()
-
-    # =====================================================================
-    # Session
-    # =====================================================================
-
-    @app.post("/api/v1/session/message")
-    async def session_message(
-        req: SessionTurnRequest,
-        session_store: Annotated[SessionStore, Depends(get_session_store)],
-    ) -> Dict[str, Any]:
-        return (
-            await session_store.message(session_message_input_from_request(req))
-        ).model_dump()
-
-    @app.post("/api/v1/session/end")
-    async def session_end(
-        req: SessionEndRequest,
-        session_ender: Annotated[SessionEnder, Depends(get_session_ender)],
-    ) -> Dict[str, Any]:
-        return (
-            await session_ender.end(session_end_input_from_request(req))
-        ).model_dump()
 
     # =====================================================================
     # System Status

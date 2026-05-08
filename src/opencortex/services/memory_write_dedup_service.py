@@ -20,7 +20,7 @@ from opencortex.services.memory_filters import (
     and_filter,
     memory_visibility_filter,
 )
-from opencortex.store.events import MemoryStoredEvent
+from opencortex.store.event.events import MemoryStoredEvent
 
 if TYPE_CHECKING:
     from opencortex.services.memory_writer import MemoryWriter

@@ -66,7 +66,7 @@ from opencortex.retrieve.types import (
     QueryResult,
     TypedQuery,
 )
-from opencortex.store.events import MemoryEventManager
+from opencortex.store.event.events import MemoryEventManager
 from opencortex.storage.cortex_fs import CortexFS
 from opencortex.storage.storage_interface import StorageInterface
 

@@ -9,15 +9,15 @@ from typing import Any, Protocol, TypeVar
 
 from pydantic import BaseModel
 
-from opencortex.store.events import (
+from opencortex.store.event.events import (
     MemoryEvent,
     MemoryStoredEvent,
     SessionEndedEvent,
     SessionMergedEvent,
     SessionTurnStoredEvent,
 )
-from opencortex.store.session_buffer import SessionBuffer
-from opencortex.store.session_merger import SessionMerger
+from opencortex.store.session.buffer import SessionBuffer
+from opencortex.store.session.merger import SessionMerger
 
 logger = logging.getLogger(__name__)
 
@@ -131,8 +131,7 @@ class SearchIndexAction:
             for index in self.anchor_indexes(event)
         ]
         fact_records = [
-            self.fact_record(event, record, index)
-            for index in self.fact_indexes(event)
+            self.fact_record(event, record, index) for index in self.fact_indexes(event)
         ]
         return anchor_records + fact_records
 

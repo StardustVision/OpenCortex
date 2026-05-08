@@ -8,8 +8,8 @@ import contextlib
 import logging
 from typing import Any
 
-from opencortex.store.event_actions import EventAction
-from opencortex.store.events import (
+from opencortex.store.event.actions import EventAction
+from opencortex.store.event.events import (
     MemoryEvent,
     MemoryEventManager,
     MemoryStoredEvent,
@@ -58,7 +58,7 @@ class EventWorker:
             return
         self.task = asyncio.create_task(
             self.run(),
-            name="opencortex.store.event_worker",
+            name="opencortex.store.event.worker",
         )
 
     async def close(self) -> None:

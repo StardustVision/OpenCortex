@@ -11,22 +11,22 @@ from opencortex.core.identity import IdentityProfile
 from opencortex.core.user_id import UserIdentifier
 from opencortex.http.request_context import get_identity_profile
 from opencortex.retrieve.types import ContextType
+from opencortex.storage.cortex_namespace import CortexNamespace
 from opencortex.store.common import (
     build_abstract_json,
     memory_object_payload,
     merge_unique_strings,
 )
 from opencortex.store.embedder import StoreEmbedder
+from opencortex.store.event.events import StoreEvents
 from opencortex.store.schemas import (
     PrimaryRecordInput,
     SessionMessage,
     SessionMessageInput,
     SessionMessageResult,
 )
-from opencortex.store.session_buffer import SessionBuffer
-from opencortex.store.events import StoreEvents
+from opencortex.store.session.buffer import SessionBuffer
 from opencortex.store.types import MemoryCategory, SessionRecordLayer
-from opencortex.storage.cortex_namespace import CortexNamespace
 from opencortex.writer.primary_record_writer import PrimaryRecordWriter
 
 logger = logging.getLogger(__name__)

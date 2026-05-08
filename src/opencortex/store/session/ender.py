@@ -11,18 +11,18 @@ from opencortex.core.user_id import UserIdentifier
 from opencortex.http.request_context import get_identity_profile
 from opencortex.retrieve.types import ContextType
 from opencortex.services.memory_filters import FilterExpr
+from opencortex.storage.cortex_namespace import CortexNamespace
 from opencortex.store.common import build_abstract_json, memory_object_payload
 from opencortex.store.embedder import StoreEmbedder
+from opencortex.store.event.events import StoreEvents
 from opencortex.store.schemas import (
     PrimaryRecordInput,
     SessionEndInput,
     SessionEndResult,
 )
-from opencortex.store.session_buffer import SessionBuffer
-from opencortex.store.session_merger import SessionMerger
-from opencortex.store.events import StoreEvents
+from opencortex.store.session.buffer import SessionBuffer
+from opencortex.store.session.merger import SessionMerger
 from opencortex.store.types import MemoryCategory, SessionRecordLayer
-from opencortex.storage.cortex_namespace import CortexNamespace
 from opencortex.utils.text import smart_truncate
 from opencortex.writer.primary_record_writer import PrimaryRecordWriter
 

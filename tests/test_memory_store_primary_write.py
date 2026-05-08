@@ -13,8 +13,8 @@ from opencortex.http.request_context import (
     reset_request_project_id,
     set_request_project_id,
 )
-from opencortex.store.events import MemoryStoredEvent
 from opencortex.services.memory_writer import MemoryWriter
+from opencortex.store.event.events import MemoryStoredEvent
 
 
 class _Events:

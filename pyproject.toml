@@ -13,6 +13,8 @@ dependencies = [
     "orjson>=3.10",
     "fastapi>=0.115.0",
     "pydantic>=2.7",
+    "pydantic-settings>=2.6.0",
+    "structlog>=24.4.0",
     "uvicorn[standard]>=0.30.0",
     "httpx>=0.27.0",
     "onnxruntime>=1.24.0",
@@ -37,6 +39,7 @@ training = [
 ]
 
 [project.scripts]
+opencortex-app = "opencortex_app.__main__:main"
 opencortex-server = "opencortex.http.__main__:main"
 opencortex-token = "opencortex.auth.__main__:main"
 
@@ -56,12 +59,14 @@ dev = [
 line-length = 88
 target-version = "py310"
 include = [
+    "src/opencortex_app/**/*.py",
     "src/opencortex/http/__main__.py",
     "src/opencortex/http/client.py",
     "src/opencortex/http/models.py",
     "src/opencortex/http/request_context.py",
     "src/opencortex/http/server.py",
     "src/opencortex/skill_engine/http_routes.py",
+    "tests/opencortex_app/**/*.py",
 ]
 
 [tool.ruff.format]

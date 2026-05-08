@@ -64,6 +64,25 @@ class MockEmbedder(DenseEmbedderBase):
         return [x / norm for x in raw]
 
 
+class MockLLMCompletion:
+    """Fake LLM completion for write-path layer derivation."""
+
+    async def __call__(self, prompt: str) -> str:
+        """Return deterministic layer JSON for any prompt."""
+        text = prompt.split("<content>", maxsplit=1)[-1]
+        text = text.split("</content>", maxsplit=1)[0].strip()
+        return json.dumps(
+            {
+                "abstract": text,
+                "overview": text,
+                "keywords": [],
+                "entities": [],
+                "anchor_handles": [],
+                "fact_points": [text] if text else [],
+            }
+        )
+
+
 # =============================================================================
 # In-memory storage helpers shared with HTTP integration tests.
 # =============================================================================
@@ -391,6 +410,8 @@ async def _build_test_app():
         register_admin_routes,
         router as admin_router,
     )
+    from opencortex.store.event.actions import SessionCleanupAction
+    from opencortex.store.event.worker import EventWorker
 
     temp_dir = tempfile.mkdtemp(prefix="http_test_")
     config = CortexConfig(
@@ -405,7 +426,12 @@ async def _build_test_app():
     storage = InMemoryStorage()
     embedder = MockEmbedder()
 
-    orch = CortexMemory(config=config, storage=storage, embedder=embedder)
+    orch = CortexMemory(
+        config=config,
+        storage=storage,
+        embedder=embedder,
+        llm_completion=MockLLMCompletion(),
+    )
     await orch.init()
     http_server._orchestrator = orch
     register_admin_routes(orch, jwt_secret="test-secret")
@@ -413,6 +439,24 @@ async def _build_test_app():
     app = FastAPI()
     app.state.memory = orch
     app.state.memory_writer = orch._memory_service._memory_writer
+    app.state.store_config = config
+    app.state.vector_store = storage
+    app.state.store_embedder = embedder
+    app.state.store_llm_completion = orch._llm_completion
+    app.state.store_memory_events = orch._memory_events
+    app.state.collection_resolver = orch._get_collection
+    app.state.ttl_resolver = orch._ttl_from_hours
+    app.state.store_event_worker = EventWorker(
+        memory_events=orch._memory_events,
+        actions=[
+            SessionCleanupAction(
+                storage=storage,
+                collection_resolver=orch._get_collection,
+            )
+        ],
+    )
+    app.state.store_event_worker.subscribe()
+    await app.state.store_event_worker.start()
     app.include_router(admin_router)
     http_server._register_routes(app)
     return app, orch, temp_dir
@@ -441,6 +485,7 @@ async def _test_app_context():
         try:
             yield client
         finally:
+            await app.state.store_event_worker.close()
             await orch.close()
             http_server._orchestrator = None
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -459,6 +504,7 @@ async def _test_app_context_with_orchestrator():
         try:
             yield client, orch
         finally:
+            await app.state.store_event_worker.close()
             await orch.close()
             http_server._orchestrator = None
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -505,8 +551,11 @@ class TestHTTPServer(unittest.TestCase):
                 resp = await client.post(
                     "/api/v1/memory/store",
                     json={
-                        "abstract": "User prefers dark theme",
-                        "category": "preferences",
+                        "type": "memory",
+                        "content": "User prefers dark theme",
+                        "category": "semantic",
+                        "metadata": {},
+                        "source": {"kind": "manual"},
                     },
                 )
                 self.assertEqual(resp.status_code, 200)
@@ -517,21 +566,21 @@ class TestHTTPServer(unittest.TestCase):
 
         self._run(check())
 
-    def test_02b_store_uses_context_type_not_ingest_guessing(self):
-        """POST /memory/store does not infer document mode from metadata."""
+    def test_02b_store_uses_type_not_source_guessing(self):
+        """POST /memory/store does not infer resource mode from source fields."""
 
         async def check():
             async with _test_app_context() as client:
                 resp = await client.post(
                     "/api/v1/memory/store",
                     json={
-                        "abstract": "User keeps document-shaped notes",
+                        "type": "memory",
                         "content": "# Heading\n\nParagraph content here.",
-                        "category": "notes",
-                        "meta": {
+                        "category": "semantic",
+                        "metadata": {
                             "ingest_mode": "document",
-                            "source_path": "notes.md",
                         },
+                        "source": {"kind": "document", "path": "notes.md"},
                     },
                 )
                 self.assertEqual(resp.status_code, 200)
@@ -541,21 +590,67 @@ class TestHTTPServer(unittest.TestCase):
 
         self._run(check())
 
-    def test_02c_store_rejects_invalid_context_type(self):
-        """POST /memory/store validates context_type at the API boundary."""
+    def test_02c_store_rejects_invalid_type(self):
+        """POST /memory/store validates type at the API boundary."""
 
         async def check():
             async with _test_app_context() as client:
                 resp = await client.post(
                     "/api/v1/memory/store",
                     json={
-                        "abstract": "Invalid type should fail",
-                        "context_type": "document",
+                        "type": "document",
+                        "content": "Invalid type should fail",
+                        "category": "semantic",
+                        "metadata": {},
+                        "source": {"kind": "manual"},
                     },
                 )
                 self.assertEqual(resp.status_code, 422)
                 self.assertIn("Input should be", resp.text)
                 self.assertIn("resource", resp.text)
+
+        self._run(check())
+
+    def test_02d_store_rejects_invalid_category(self):
+        """POST /memory/store validates category at the API boundary."""
+
+        async def check():
+            async with _test_app_context() as client:
+                resp = await client.post(
+                    "/api/v1/memory/store",
+                    json={
+                        "type": "memory",
+                        "content": "Invalid category should fail",
+                        "category": "preferences",
+                        "metadata": {},
+                        "source": {"kind": "manual"},
+                    },
+                )
+                self.assertEqual(resp.status_code, 422)
+                self.assertIn("semantic", resp.text)
+                self.assertIn("episodic", resp.text)
+                self.assertIn("procedural", resp.text)
+
+        self._run(check())
+
+    def test_02e_store_rejects_extra_legacy_fields(self):
+        """POST /memory/store rejects removed public store fields."""
+
+        async def check():
+            async with _test_app_context() as client:
+                resp = await client.post(
+                    "/api/v1/memory/store",
+                    json={
+                        "type": "memory",
+                        "content": "Legacy fields should fail",
+                        "category": "semantic",
+                        "metadata": {},
+                        "source": {"kind": "manual"},
+                        "abstract": "legacy",
+                    },
+                )
+                self.assertEqual(resp.status_code, 422)
+                self.assertIn("Extra inputs are not permitted", resp.text)
 
         self._run(check())
 

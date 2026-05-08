@@ -17,7 +17,7 @@ from opencortex.core.context import Context, Vectorize
 from opencortex.core.user_id import UserIdentifier
 from opencortex.http.request_context import get_effective_project_id
 from opencortex.services.derivation_service import _merge_unique_strings
-from opencortex.store.events import (
+from opencortex.store.event.events import (
     MemoryStoredEvent,
     SessionTurnStoredEvent,
 )

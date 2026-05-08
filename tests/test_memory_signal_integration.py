@@ -17,7 +17,7 @@ from opencortex.models.embedder.base import DenseEmbedderBase, EmbedResult
 from opencortex.orchestrator import MemoryOrchestrator
 from opencortex.retrieve.events import RecallCompletedEvent
 from opencortex.retrieve.types import ContextType, FindResult, MatchedContext
-from opencortex.store.events import (
+from opencortex_app.store.event.events import (
     MemoryEventManager,
     MemoryStoredEvent,
 )

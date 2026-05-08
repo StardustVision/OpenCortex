@@ -4,16 +4,16 @@
 from __future__ import annotations
 
 from opencortex.core.context import Context, Vectorize
-from opencortex.core.user_id import UserIdentifier
 from opencortex.core.identity import IdentityProfile
+from opencortex.core.user_id import UserIdentifier
 from opencortex.retrieve.types import ContextType
+from opencortex.storage.cortex_namespace import CortexNamespace
 from opencortex.store.common import build_abstract_json, memory_object_payload
 from opencortex.store.embedder import StoreEmbedder
+from opencortex.store.event.events import StoreEvents
 from opencortex.store.schemas import PrimaryRecordInput, StoredRecord
-from opencortex.store.session_buffer import SessionBuffer, SessionKey
-from opencortex.store.events import StoreEvents
+from opencortex.store.session.buffer import SessionBuffer, SessionKey
 from opencortex.store.types import MemoryCategory, SessionRecordLayer
-from opencortex.storage.cortex_namespace import CortexNamespace
 from opencortex.utils.text import smart_truncate
 from opencortex.writer.primary_record_writer import PrimaryRecordWriter
 
@@ -29,16 +29,12 @@ class SessionMerger:
         embedder: StoreEmbedder,
         writer: PrimaryRecordWriter,
         events: StoreEvents,
-        storage: object | None = None,
-        collection_resolver: object | None = None,
     ) -> None:
         self.buffer = buffer
         self.namespace = namespace
         self.embedder = embedder
         self.writer = writer
         self.events = events
-        self.storage = storage
-        self.collection_resolver = collection_resolver
 
     async def merge_unmerged(
         self,
@@ -64,7 +60,6 @@ class SessionMerger:
         )
         await self.embedder.embed_context(record_input.ctx)
         stored = await self.writer.write(record_input)
-        await self.remove_immediate_records(snapshot.immediate_uris)
         self.events.session_merged(
             profile=profile,
             merged_uri=stored.uri,
@@ -73,15 +68,6 @@ class SessionMerger:
             record=dict(stored.record),
         )
         return stored
-
-    async def remove_immediate_records(self, source_uris: list[str]) -> None:
-        """Remove immediate RAG records after the merged leaf is written."""
-        if self.storage is None or self.collection_resolver is None:
-            return
-        collection = self.collection_resolver()
-        for uri in source_uris:
-            if uri:
-                await self.storage.remove_by_uri(collection, uri)
 
     def build_merged_record(
         self,

@@ -131,14 +131,13 @@ class TestEvalContract(unittest.TestCase):
                 resp = await client.post(
                     "/api/v1/memory/store",
                     json={
-                        "abstract": "Test document title",
+                        "type": "resource",
                         "content": "# Heading\n\nParagraph content here.",
-                        "context_type": "resource",
-                        "meta": {
+                        "category": "semantic",
+                        "metadata": {
                             "ingest_mode": "document",
-                            "source_path": "test.md",
                         },
-                        "dedup": False,
+                        "source": {"kind": "document", "path": "test.md"},
                     },
                 )
                 self.assertIn(

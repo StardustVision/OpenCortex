@@ -19,7 +19,7 @@ from opencortex.http.request_context import (
     get_effective_project_id,
 )
 from opencortex.retrieve.types import ContextType
-from opencortex.store.events import MemoryStoredEvent
+from opencortex.store.event.events import MemoryStoredEvent
 from opencortex.utils.uri import CortexURI
 
 if TYPE_CHECKING:

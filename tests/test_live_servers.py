@@ -79,8 +79,11 @@ class TestHTTPLive(unittest.TestCase):
                 r = await c.post(
                     "/api/v1/memory/store",
                     json={
-                        "abstract": "Live test: user prefers dark theme in all editors",
-                        "category": "live_preferences",
+                        "type": "memory",
+                        "content": "Live test: user prefers dark theme in all editors",
+                        "category": "semantic",
+                        "metadata": {},
+                        "source": {"kind": "manual"},
                     },
                 )
                 self.assertEqual(r.status_code, 200)
@@ -102,8 +105,11 @@ class TestHTTPLive(unittest.TestCase):
                 await c.post(
                     "/api/v1/memory/store",
                     json={
-                        "abstract": "Live test: team uses Redis for caching",
-                        "category": "live_tech",
+                        "type": "memory",
+                        "content": "Live test: team uses Redis for caching",
+                        "category": "semantic",
+                        "metadata": {},
+                        "source": {"kind": "manual"},
                     },
                 )
                 # Search
