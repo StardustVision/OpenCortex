@@ -178,8 +178,6 @@ class SubsystemBootstrapper:
             filter_builder=orch._build_probe_filter,
             top_k=6,
         )
-        self._register_primary_record_side_effects()
-
         # 8. Background maintenance: text indexes, migrations, re-embed
         asyncio.create_task(self._startup_maintenance())
 

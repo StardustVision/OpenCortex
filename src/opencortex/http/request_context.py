@@ -13,6 +13,8 @@ fall back to defaults.
 from contextvars import ContextVar, Token
 from typing import Optional, Tuple
 
+from opencortex.core.identity import IdentityProfile
+
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
@@ -31,6 +33,9 @@ _request_user_id: ContextVar[Optional[str]] = ContextVar(
 )
 _request_project_id: ContextVar[Optional[str]] = ContextVar(
     "_request_project_id", default=None
+)
+_identity_profile: ContextVar[Optional[IdentityProfile]] = ContextVar(
+    "_identity_profile", default=None
 )
 
 
@@ -66,6 +71,41 @@ def get_effective_identity() -> Tuple[str, str]:
     tenant = _request_tenant_id.get() or _DEFAULT_TENANT
     user = _request_user_id.get() or _DEFAULT_USER
     return (tenant, user)
+
+
+def set_identity_profile(profile: IdentityProfile) -> Token[Optional[IdentityProfile]]:
+    """Set the current request identity profile."""
+    return _identity_profile.set(profile)
+
+
+def reset_identity_profile(token: Token[Optional[IdentityProfile]]) -> None:
+    """Reset the identity profile contextvar."""
+    _identity_profile.reset(token)
+
+
+def get_identity_profile(
+    *,
+    session_id: str = "",
+    collection: str = "",
+) -> IdentityProfile:
+    """Return the current identity profile with optional overrides."""
+    profile = _identity_profile.get()
+    if profile is None:
+        tenant_id, user_id = get_effective_identity()
+        profile = IdentityProfile(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            project_id=get_effective_project_id(),
+            collection=get_collection_name() or "",
+        )
+    updates = {}
+    if session_id:
+        updates["session_id"] = session_id
+    if collection:
+        updates["collection"] = collection
+    if updates:
+        return profile.model_copy(update=updates)
+    return profile
 
 
 # ---------------------------------------------------------------------------

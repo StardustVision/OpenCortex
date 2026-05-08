@@ -24,16 +24,16 @@ class PrimaryRecordWriter:
         collection_resolver: Any,
         ttl_from_hours: Any,
     ) -> None:
-        self._config = config
-        self._storage = storage
-        self._collection_resolver = collection_resolver
-        self._ttl_from_hours = ttl_from_hours
+        self.config = config
+        self.storage = storage
+        self.collection_resolver = collection_resolver
+        self.ttl_from_hours = ttl_from_hours
 
     async def write(self, record_input: PrimaryRecordInput) -> StoredRecord:
         """Build and upsert the primary record."""
-        record = self._build_record(record_input)
+        record = self.build_record(record_input)
         upsert_started = asyncio.get_running_loop().time()
-        await self._storage.upsert(self._collection_resolver(), record)
+        await self.storage.upsert(self.collection_resolver(), record)
         upsert_ms = int((asyncio.get_running_loop().time() - upsert_started) * 1000)
         return StoredRecord(
             uri=record_input.ctx.uri,
@@ -46,7 +46,7 @@ class PrimaryRecordWriter:
             upsert_ms=upsert_ms,
         )
 
-    def _build_record(self, record_input: PrimaryRecordInput) -> dict[str, Any]:
+    def build_record(self, record_input: PrimaryRecordInput) -> dict[str, Any]:
         """Build the vector-store payload for a primary record."""
         ctx = record_input.ctx
         record = ctx.to_dict()
@@ -59,36 +59,38 @@ class PrimaryRecordWriter:
         record["category"] = record_input.effective_category
         record["source_user_id"] = record_input.user_id
         record["session_id"] = record_input.session_id or ""
-        record["ttl_expires_at"] = self._ttl_for_store_record(record_input)
-        record["project_id"] = get_effective_project_id()
+        record["ttl_expires_at"] = self.ttl_for_store_record(record_input)
+        record["project_id"] = (
+            record_input.meta.get("project_id") or get_effective_project_id()
+        )
         record["source_tenant_id"] = record_input.tenant_id
         record["keywords"] = record_input.keywords
         record["entities"] = record_input.entities
         record.update(record_input.object_payload)
         record["abstract_json"] = record_input.abstract_json
-        self._populate_source_fields(record, record_input.meta)
+        self.populate_source_fields(record, record_input.meta)
         return record
 
-    def _ttl_for_store_record(self, record_input: PrimaryRecordInput) -> str:
+    def ttl_for_store_record(self, record_input: PrimaryRecordInput) -> str:
         """Return TTL for short-lived primary record kinds."""
         if record_input.context_type == ContextType.STAGING:
-            return self._ttl_from_hours(self._config.immediate_event_ttl_hours)
+            return self.ttl_from_hours(self.config.immediate_event_ttl_hours)
         if (
             record_input.context_type == ContextType.MEMORY
             and record_input.effective_category == str(MemoryCategory.EVENTS)
             and record_input.meta.get("layer") == str(SessionRecordLayer.IMMEDIATE)
         ):
-            return self._ttl_from_hours(self._config.immediate_event_ttl_hours)
+            return self.ttl_from_hours(self.config.immediate_event_ttl_hours)
         if (
             record_input.context_type == ContextType.MEMORY
             and record_input.effective_category == str(MemoryCategory.EVENTS)
             and record_input.meta.get("layer") == str(SessionRecordLayer.MERGED)
         ):
-            return self._ttl_from_hours(self._config.merged_event_ttl_hours)
+            return self.ttl_from_hours(self.config.merged_event_ttl_hours)
         return ""
 
     @staticmethod
-    def _populate_source_fields(
+    def populate_source_fields(
         record: dict[str, Any],
         meta: dict[str, Any],
     ) -> None:

@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from opencortex.core.context import Context, Vectorize
 from opencortex.core.user_id import UserIdentifier
-from opencortex.http.request_context import get_effective_identity
+from opencortex.http.request_context import get_identity_profile
 from opencortex.prompts import build_layer_derivation_prompt
 from opencortex.retrieve.types import ContextType
 from opencortex.storage.cortex_namespace import CortexNamespace
@@ -49,11 +49,11 @@ class ResourceStore:
         writer: PrimaryRecordWriter,
         events: StoreEvents,
     ) -> None:
-        self._namespace = namespace
-        self._llm_completion = llm_completion
-        self._embedder = embedder
-        self._writer = writer
-        self._events = events
+        self.namespace = namespace
+        self.llm_completion = llm_completion
+        self.embedder = embedder
+        self.writer = writer
+        self.events = events
 
     async def store(self, input_: ResourceStoreInput) -> StoredRecord:
         """Run the resource store flow."""
@@ -61,8 +61,8 @@ class ResourceStore:
         target = await self.resolve(normalized)
         derived = await self.derive(normalized)
         draft = self.assemble(normalized, target, derived)
-        embedding = await self._embedder.embed_context(draft.ctx)
-        tenant_id, user_id = get_effective_identity()
+        embedding = await self.embedder.embed_context(draft.ctx)
+        profile = get_identity_profile()
         record_input = PrimaryRecordInput(
             ctx=draft.ctx,
             abstract_json=draft.abstract_json,
@@ -73,13 +73,13 @@ class ResourceStore:
             meta=draft.meta,
             context_type=ContextType.RESOURCE,
             session_id="",
-            tenant_id=tenant_id,
-            user_id=user_id,
+            tenant_id=profile.tenant_id,
+            user_id=profile.user_id,
             sparse_vector=embedding.sparse_vector,
             content=normalized.content,
         )
-        stored = await self._writer.write(record_input)
-        self._events.resource_stored(record_input, stored)
+        stored = await self.writer.write(record_input)
+        self.events.resource_stored(record_input, stored)
         stored.meta["dedup_action"] = "created"
         return stored
 
@@ -104,7 +104,7 @@ class ResourceStore:
     async def resolve(self, input_: ResourceStoreInput) -> StoreTarget:
         """Resolve resource target URI and metadata."""
         abstract = input_.abstract or input_.source_path or "resource"
-        uri, parent_uri = await self._namespace.resolve(
+        uri, parent_uri = await self.namespace.resolve(
             context_type=ContextType.RESOURCE,
             category=input_.category,
             abstract=abstract,
@@ -120,7 +120,7 @@ class ResourceStore:
     async def derive(self, input_: ResourceStoreInput) -> StoreDerived:
         """Derive resource summary fields."""
         derive_started = asyncio.get_running_loop().time()
-        layers = await self._derive_layers(
+        layers = await self.derive_layers(
             abstract=input_.abstract,
             overview=input_.overview,
             content=input_.content,
@@ -152,7 +152,8 @@ class ResourceStore:
             meta["topics"] = merge_unique_strings(meta.get("topics"), keywords_list)
 
         keywords = ", ".join(keywords_list)
-        tenant_id, user_id = get_effective_identity()
+        profile = get_identity_profile()
+        meta["project_id"] = profile.project_id
         ctx = Context(
             uri=target.uri,
             parent_uri=target.parent_uri,
@@ -164,7 +165,7 @@ class ResourceStore:
             related_uri=[],
             meta=meta,
             session_id=None,
-            user=UserIdentifier(tenant_id, user_id),
+            user=UserIdentifier(profile.tenant_id, profile.user_id),
         )
 
         embed_text = input_.embed_text
@@ -205,7 +206,7 @@ class ResourceStore:
             object_payload=object_payload,
         )
 
-    async def _derive_layers(
+    async def derive_layers(
         self,
         *,
         abstract: str,
@@ -224,9 +225,9 @@ class ResourceStore:
                 "anchor_handles": [],
                 "fact_points": [],
             }
-        if self._llm_completion is not None:
+        if self.llm_completion is not None:
             try:
-                response = await self._llm_completion(
+                response = await self.llm_completion(
                     build_layer_derivation_prompt(content, abstract)
                 )
                 parsed = parse_json_from_response(response)

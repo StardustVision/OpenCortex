@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from opencortex.http.request_context import get_effective_project_id
+from opencortex.core.identity import IdentityProfile
 from opencortex.parse.base import estimate_tokens
 
 SessionKey = tuple[str, str, str, str]
@@ -46,13 +46,13 @@ class SessionBuffer:
         merge_token_budget: int,
         idle_ttl_seconds: float = 1800.0,
     ) -> None:
-        self._collection_resolver = collection_resolver
-        self._merge_token_budget = max(1, int(merge_token_budget or 1))
-        self._idle_ttl_seconds = max(1.0, float(idle_ttl_seconds))
-        self._locks: dict[SessionKey, asyncio.Lock] = {}
-        self._activity: dict[SessionKey, float] = {}
-        self._project_ids: dict[SessionKey, str] = {}
-        self._buffers: dict[SessionKey, ConversationBuffer] = {}
+        self.collection_resolver = collection_resolver
+        self.merge_token_budget = max(1, int(merge_token_budget or 1))
+        self.idle_ttl_seconds = max(1.0, float(idle_ttl_seconds))
+        self.locks: dict[SessionKey, asyncio.Lock] = {}
+        self.activity: dict[SessionKey, float] = {}
+        self.project_ids: dict[SessionKey, str] = {}
+        self.buffers: dict[SessionKey, ConversationBuffer] = {}
 
     def session_key(
         self,
@@ -63,21 +63,31 @@ class SessionBuffer:
         session_id: str,
     ) -> SessionKey:
         """Build the scoped session state key."""
-        return (collection or self._collection_resolver(), tenant_id, user_id, session_id)
+        return (collection or self.collection_resolver(), tenant_id, user_id, session_id)
+
+    def profile_key(self, profile: IdentityProfile) -> SessionKey:
+        """Build the scoped session key from an identity profile."""
+        return self.session_key(
+            collection=profile.collection or None,
+            tenant_id=profile.tenant_id,
+            user_id=profile.user_id,
+            session_id=profile.session_id,
+        )
 
     def lock(self, key: SessionKey) -> asyncio.Lock:
         """Return the lock for one session key."""
         self.prune_idle()
-        return self._locks.setdefault(key, asyncio.Lock())
+        return self.locks.setdefault(key, asyncio.Lock())
 
-    def touch(self, key: SessionKey) -> None:
+    def touch(self, key: SessionKey, profile: IdentityProfile | None = None) -> None:
         """Record current activity and project context for the session."""
-        self._activity[key] = time.time()
-        self._project_ids[key] = get_effective_project_id()
+        self.activity[key] = time.time()
+        if profile is not None:
+            self.project_ids[key] = profile.project_id
 
     def next_msg_index(self, key: SessionKey) -> int:
         """Return the next message index in the active buffer."""
-        buffer = self._buffers.setdefault(key, ConversationBuffer())
+        buffer = self.buffers.setdefault(key, ConversationBuffer())
         return buffer.start_msg_index + len(buffer.messages)
 
     def append(
@@ -89,7 +99,7 @@ class SessionBuffer:
         tool_calls: list[dict[str, Any]] | None = None,
     ) -> None:
         """Append one written immediate record into the active buffer."""
-        buffer = self._buffers.setdefault(key, ConversationBuffer())
+        buffer = self.buffers.setdefault(key, ConversationBuffer())
         buffer.messages.append(text)
         buffer.immediate_uris.append(record_uri)
         buffer.token_count += estimate_tokens(text)
@@ -98,14 +108,14 @@ class SessionBuffer:
 
     def should_merge(self, key: SessionKey) -> bool:
         """Return whether buffered messages should be merged."""
-        buffer = self._buffers.get(key)
+        buffer = self.buffers.get(key)
         if buffer is None:
             return False
-        return buffer.token_count >= self._merge_token_budget
+        return buffer.token_count >= self.merge_token_budget
 
     def snapshot(self, key: SessionKey) -> SessionBufferSnapshot | None:
         """Detach current buffered messages for synchronous merge."""
-        buffer = self._buffers.get(key)
+        buffer = self.buffers.get(key)
         if buffer is None or not buffer.messages:
             return None
         snapshot = SessionBufferSnapshot(
@@ -115,7 +125,7 @@ class SessionBuffer:
             immediate_uris=list(buffer.immediate_uris),
             tool_calls_per_turn=[list(item) for item in buffer.tool_calls_per_turn],
         )
-        self._buffers[key] = ConversationBuffer(
+        self.buffers[key] = ConversationBuffer(
             start_msg_index=buffer.start_msg_index + len(buffer.messages),
         )
         return snapshot
@@ -125,8 +135,8 @@ class SessionBuffer:
         now = time.time()
         stale_keys = [
             key
-            for key, last_seen in self._activity.items()
-            if now - last_seen >= self._idle_ttl_seconds
+            for key, last_seen in self.activity.items()
+            if now - last_seen >= self.idle_ttl_seconds
         ]
         for key in stale_keys:
             self.drop(key)
@@ -134,14 +144,14 @@ class SessionBuffer:
 
     def drop(self, key: SessionKey) -> None:
         """Drop all in-memory state for one session key."""
-        self._locks.pop(key, None)
-        self._activity.pop(key, None)
-        self._project_ids.pop(key, None)
-        self._buffers.pop(key, None)
+        self.locks.pop(key, None)
+        self.activity.pop(key, None)
+        self.project_ids.pop(key, None)
+        self.buffers.pop(key, None)
 
     def clear(self) -> None:
         """Drop all in-memory session state."""
-        self._locks.clear()
-        self._activity.clear()
-        self._project_ids.clear()
-        self._buffers.clear()
+        self.locks.clear()
+        self.activity.clear()
+        self.project_ids.clear()
+        self.buffers.clear()

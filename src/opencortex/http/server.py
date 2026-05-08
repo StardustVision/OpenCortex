@@ -25,6 +25,7 @@ from opencortex.auth.token import (
     save_token_record,
 )
 from opencortex.config import get_config
+from opencortex.core.identity import IdentityProfile
 from opencortex.cortex_memory import CortexMemory
 from opencortex.http.memory_store import store_warnings
 from opencortex.http.models import (
@@ -40,10 +41,13 @@ from opencortex.http.models import (
 )
 from opencortex.http.request_context import (
     get_collection_name,
+    reset_collection_name,
+    reset_identity_profile,
     reset_request_identity,
     reset_request_project_id,
     reset_request_role,
     set_collection_name,
+    set_identity_profile,
     set_request_identity,
     set_request_project_id,
     set_request_role,
@@ -51,6 +55,14 @@ from opencortex.http.request_context import (
 from opencortex.retrieve.types import ContextType
 from opencortex.storage.cortex_namespace import CortexNamespace
 from opencortex.store.embedder import StoreEmbedder
+from opencortex.store.event_actions import (
+    CortexFSAction,
+    EntityIndexAction,
+    ReasoningTreeIndexAction,
+    SearchIndexAction,
+    SessionCleanupAction,
+    SessionMergeAction,
+)
 from opencortex.store.event_worker import EventWorker
 from opencortex.store.events import StoreEvents
 from opencortex.store.memory_store import MemoryStore
@@ -118,6 +130,8 @@ def get_memory(request: Request) -> CortexMemory:
 def get_store_storage(request: Request) -> Any:
     """FastAPI dependency for vector storage used by store flows."""
     storage = getattr(request.app.state, "store_storage", None)
+    if storage is None and getattr(request.app.state, "memory", None) is not None:
+        storage = request.app.state.memory._storage
     if storage is None:
         raise HTTPException(status_code=503, detail="Store storage is not initialized")
     return storage
@@ -126,6 +140,8 @@ def get_store_storage(request: Request) -> Any:
 def get_store_config(request: Request) -> Any:
     """FastAPI dependency for store configuration."""
     config = getattr(request.app.state, "store_config", None)
+    if config is None and getattr(request.app.state, "memory", None) is not None:
+        config = request.app.state.memory._config
     if config is None:
         raise HTTPException(status_code=503, detail="Store config is not initialized")
     return config
@@ -134,6 +150,8 @@ def get_store_config(request: Request) -> Any:
 def get_collection_resolver(request: Request) -> Any:
     """FastAPI dependency for active collection resolution."""
     resolver = getattr(request.app.state, "collection_resolver", None)
+    if resolver is None and getattr(request.app.state, "memory", None) is not None:
+        resolver = request.app.state.memory._get_collection
     if resolver is None:
         raise HTTPException(
             status_code=503,
@@ -145,6 +163,8 @@ def get_collection_resolver(request: Request) -> Any:
 def get_ttl_resolver(request: Request) -> Any:
     """FastAPI dependency for TTL timestamp conversion."""
     resolver = getattr(request.app.state, "ttl_resolver", None)
+    if resolver is None and getattr(request.app.state, "memory", None) is not None:
+        resolver = request.app.state.memory._ttl_from_hours
     if resolver is None:
         raise HTTPException(status_code=503, detail="TTL resolver is not initialized")
     return resolver
@@ -152,17 +172,26 @@ def get_ttl_resolver(request: Request) -> Any:
 
 def get_llm_completion(request: Request) -> Any:
     """FastAPI dependency for optional store derivation LLM."""
-    return getattr(request.app.state, "store_llm_completion", None)
+    completion = getattr(request.app.state, "store_llm_completion", None)
+    if completion is None and getattr(request.app.state, "memory", None) is not None:
+        completion = request.app.state.memory._llm_completion
+    return completion
 
 
 def get_embedding_model(request: Request) -> Any:
     """FastAPI dependency for optional store embedding model."""
-    return getattr(request.app.state, "store_embedder", None)
+    embedder = getattr(request.app.state, "store_embedder", None)
+    if embedder is None and getattr(request.app.state, "memory", None) is not None:
+        embedder = request.app.state.memory._embedder
+    return embedder
 
 
 def get_memory_events(request: Request) -> Any:
     """FastAPI dependency for store lifecycle events."""
-    return getattr(request.app.state, "store_memory_events", None)
+    events = getattr(request.app.state, "store_memory_events", None)
+    if events is None and getattr(request.app.state, "memory", None) is not None:
+        events = request.app.state.memory._memory_events
+    return events
 
 
 def get_cortex_namespace(
@@ -244,6 +273,14 @@ def get_session_buffer(
 ) -> SessionBuffer:
     """FastAPI dependency for session message buffer state."""
     buffer = getattr(request.app.state, "session_buffer", None)
+    if buffer is None and getattr(request.app.state, "memory", None) is not None:
+        config = request.app.state.memory._config
+        buffer = SessionBuffer(
+            collection_resolver=lambda: get_collection_name() or "context",
+            merge_token_budget=config.conversation_merge_token_budget,
+            idle_ttl_seconds=getattr(config, "session_idle_ttl", 1800.0),
+        )
+        request.app.state.session_buffer = buffer
     if buffer is None:
         raise HTTPException(status_code=503, detail="Session buffer is not initialized")
     return buffer
@@ -272,6 +309,8 @@ def get_session_merger(
     embedder: Annotated[StoreEmbedder, Depends(get_store_embedder)],
     writer: Annotated[PrimaryRecordWriter, Depends(get_primary_record_writer)],
     events: Annotated[StoreEvents, Depends(get_store_events)],
+    storage: Annotated[Any, Depends(get_store_storage)],
+    collection_resolver: Annotated[Any, Depends(get_collection_resolver)],
 ) -> SessionMerger:
     """FastAPI dependency for session merge flow."""
     return SessionMerger(
@@ -280,6 +319,8 @@ def get_session_merger(
         embedder=embedder,
         writer=writer,
         events=events,
+        storage=storage,
+        collection_resolver=collection_resolver,
     )
 
 
@@ -332,9 +373,22 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             id_tokens = set_request_identity("default", "default")
             project_id = request.headers.get("x-project-id", "public")
             project_token = set_request_project_id(project_id)
+            collection = request.headers.get("x-collection") or ""
+            collection_token = set_collection_name(collection) if collection else None
+            profile_token = set_identity_profile(
+                IdentityProfile(
+                    tenant_id="default",
+                    user_id="default",
+                    project_id=project_id,
+                    collection=collection,
+                )
+            )
             try:
                 return await call_next(request)
             finally:
+                reset_identity_profile(profile_token)
+                if collection_token is not None:
+                    reset_collection_name(collection_token)
                 reset_request_identity(id_tokens)
                 reset_request_project_id(project_token)
 
@@ -366,12 +420,22 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         project_token = set_request_project_id(project_id)
 
         collection = request.headers.get("x-collection")
-        if collection:
-            set_collection_name(collection)
+        collection_token = set_collection_name(collection) if collection else None
+        profile_token = set_identity_profile(
+            IdentityProfile(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                project_id=project_id,
+                collection=collection or "",
+            )
+        )
 
         try:
             return await call_next(request)
         finally:
+            reset_identity_profile(profile_token)
+            if collection_token is not None:
+                reset_collection_name(collection_token)
             reset_request_identity(id_tokens)
             reset_request_project_id(project_token)
             reset_request_role(role_token)
@@ -396,10 +460,6 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.store_embedder = memory._embedder
     app.state.store_llm_completion = memory._llm_completion
     app.state.store_memory_events = memory._memory_events
-    event_worker = EventWorker(memory_events=memory._memory_events)
-    event_worker.subscribe()
-    await event_worker.start()
-    app.state.store_event_worker = event_worker
     app.state.collection_resolver = memory._get_collection
     app.state.ttl_resolver = memory._ttl_from_hours
     app.state.session_buffer = SessionBuffer(
@@ -407,6 +467,54 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         merge_token_budget=config.conversation_merge_token_budget,
         idle_ttl_seconds=config.session_idle_ttl,
     )
+    event_namespace = CortexNamespace(
+        storage=memory._storage,
+        collection_resolver=memory._get_collection,
+    )
+    event_embedder = StoreEmbedder(memory._embedder)
+    event_writer = PrimaryRecordWriter(
+        config=config,
+        storage=memory._storage,
+        collection_resolver=memory._get_collection,
+        ttl_from_hours=memory._ttl_from_hours,
+    )
+    event_store_events = StoreEvents(memory._memory_events)
+    event_merger = SessionMerger(
+        buffer=app.state.session_buffer,
+        namespace=event_namespace,
+        embedder=event_embedder,
+        writer=event_writer,
+        events=event_store_events,
+        storage=memory._storage,
+        collection_resolver=memory._get_collection,
+    )
+    event_worker = EventWorker(
+        memory_events=memory._memory_events,
+        actions=[
+            SearchIndexAction(
+                storage=memory._storage,
+                collection_resolver=memory._get_collection,
+                embedder=memory._embedder,
+            ),
+            EntityIndexAction(
+                entity_index=getattr(memory, "_entity_index", None),
+                collection_resolver=memory._get_collection,
+            ),
+            CortexFSAction(fs=memory._fs),
+            SessionMergeAction(
+                buffer=app.state.session_buffer,
+                merger=event_merger,
+            ),
+            SessionCleanupAction(
+                storage=memory._storage,
+                collection_resolver=memory._get_collection,
+            ),
+            ReasoningTreeIndexAction(),
+        ],
+    )
+    event_worker.subscribe()
+    await event_worker.start()
+    app.state.store_event_worker = event_worker
     logger.info("[HTTP] CortexMemory initialized (data_root=%s)", config.data_root)
 
     # Auto-generate admin token on first startup
@@ -616,7 +724,10 @@ def _register_routes(app: FastAPI) -> None:
         )
 
     @app.post("/api/v1/memory/promote_to_shared")
-    async def memory_promote_to_shared(req: PromoteToSharedRequest) -> Dict[str, Any]:
+    async def memory_promote_to_shared(
+        req: PromoteToSharedRequest,
+        memory: Annotated[CortexMemory, Depends(get_memory)],
+    ) -> Dict[str, Any]:
         return await memory.promote_to_shared(
             uris=req.uris,
             project_id=req.project_id,
@@ -628,7 +739,9 @@ def _register_routes(app: FastAPI) -> None:
         response_model_exclude_none=True,
     )
     async def memory_search(
-        req: MemorySearchRequest, request: Request
+        req: MemorySearchRequest,
+        request: Request,
+        memory: Annotated[CortexMemory, Depends(get_memory)],
     ) -> MemorySearchResponse:
         ct = ContextType(req.context_type) if req.context_type else None
         metadata_filter = None
@@ -680,12 +793,16 @@ def _register_routes(app: FastAPI) -> None:
         return MemorySearchResponse.model_validate(response_payload)
 
     @app.post("/api/v1/memory/feedback")
-    async def memory_feedback(req: MemoryFeedbackRequest) -> Dict[str, str]:
+    async def memory_feedback(
+        req: MemoryFeedbackRequest,
+        memory: Annotated[CortexMemory, Depends(get_memory)],
+    ) -> Dict[str, str]:
         await memory.feedback(uri=req.uri, reward=req.reward)
         return {"status": "ok", "uri": req.uri, "reward": str(req.reward)}
 
     @app.get("/api/v1/memory/list")
     async def memory_list(
+        memory: Annotated[CortexMemory, Depends(get_memory)],
         category: Optional[str] = None,
         context_type: Optional[str] = None,
         limit: int = 50,
@@ -704,6 +821,7 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.get("/api/v1/memory/index")
     async def memory_index(
+        memory: Annotated[CortexMemory, Depends(get_memory)],
         context_type: Optional[str] = None,
         limit: int = 200,
     ) -> Dict[str, Any]:
@@ -714,22 +832,32 @@ def _register_routes(app: FastAPI) -> None:
         )
 
     @app.get("/api/v1/memory/stats")
-    async def memory_stats() -> Dict[str, Any]:
+    async def memory_stats(
+        memory: Annotated[CortexMemory, Depends(get_memory)],
+    ) -> Dict[str, Any]:
         return await memory.stats()
 
     @app.get("/api/v1/memory/derive_status")
-    async def memory_derive_status(uri: str) -> Dict[str, Any]:
+    async def memory_derive_status(
+        uri: str,
+        memory: Annotated[CortexMemory, Depends(get_memory)],
+    ) -> Dict[str, Any]:
         """Check async derive status for a document URI."""
         return await memory.derive_status(uri)
 
     @app.post("/api/v1/memory/wait_derives")
-    async def memory_wait_derives() -> Dict[str, Any]:
+    async def memory_wait_derives(
+        memory: Annotated[CortexMemory, Depends(get_memory)],
+    ) -> Dict[str, Any]:
         """Wait until all in-flight deferred derives complete."""
         await memory.wait_deferred_derives()
         return {"status": "ok"}
 
     @app.post("/api/v1/memory/forget")
-    async def memory_forget(req: MemoryForgetRequest) -> Dict[str, Any]:
+    async def memory_forget(
+        req: MemoryForgetRequest,
+        memory: Annotated[CortexMemory, Depends(get_memory)],
+    ) -> Dict[str, Any]:
         """Delete a memory by exact URI or semantic search query."""
         if req.uri:
             count = await memory.remove(req.uri)
@@ -744,12 +872,16 @@ def _register_routes(app: FastAPI) -> None:
         raise HTTPException(400, "Either uri or query is required")
 
     @app.post("/api/v1/memory/decay")
-    async def memory_decay() -> Dict[str, Any]:
+    async def memory_decay(
+        memory: Annotated[CortexMemory, Depends(get_memory)],
+    ) -> Dict[str, Any]:
         result = await memory.decay()
         return result or {}
 
     @app.get("/api/v1/memory/health")
-    async def memory_health() -> Dict[str, Any]:
+    async def memory_health(
+        memory: Annotated[CortexMemory, Depends(get_memory)],
+    ) -> Dict[str, Any]:
         return await memory.health_check()
 
     # =====================================================================
@@ -757,7 +889,10 @@ def _register_routes(app: FastAPI) -> None:
     # =====================================================================
 
     @app.post("/api/v1/intent/should_recall")
-    async def intent_should_recall(req: IntentShouldRecallRequest) -> Dict[str, Any]:
+    async def intent_should_recall(
+        req: IntentShouldRecallRequest,
+        memory: Annotated[CortexMemory, Depends(get_memory)],
+    ) -> Dict[str, Any]:
         return (await memory.probe_memory(req.query)).to_dict()
 
     # =====================================================================
@@ -787,7 +922,10 @@ def _register_routes(app: FastAPI) -> None:
     # =====================================================================
 
     @app.get("/api/v1/system/status")
-    async def system_status(type: str = "doctor") -> Dict[str, Any]:
+    async def system_status(
+        memory: Annotated[CortexMemory, Depends(get_memory)],
+        type: str = "doctor",
+    ) -> Dict[str, Any]:
         return await memory.system_status(status_type=type)
 
     # =====================================================================
@@ -795,13 +933,19 @@ def _register_routes(app: FastAPI) -> None:
     # =====================================================================
 
     @app.get("/api/v1/content/abstract")
-    async def content_abstract(uri: str) -> Dict[str, Any]:
+    async def content_abstract(
+        uri: str,
+        memory: Annotated[CortexMemory, Depends(get_memory)],
+    ) -> Dict[str, Any]:
         """Read L0 abstract from CortexFS."""
         text = await memory._fs.abstract(uri)
         return {"status": "ok", "result": text}
 
     @app.get("/api/v1/content/overview")
-    async def content_overview(uri: str) -> Dict[str, Any]:
+    async def content_overview(
+        uri: str,
+        memory: Annotated[CortexMemory, Depends(get_memory)],
+    ) -> Dict[str, Any]:
         """Read L1 overview from CortexFS."""
         text = await memory._fs.overview(uri)
         return {"status": "ok", "result": text}
@@ -809,6 +953,7 @@ def _register_routes(app: FastAPI) -> None:
     @app.get("/api/v1/content/read")
     async def content_read(
         uri: str,
+        memory: Annotated[CortexMemory, Depends(get_memory)],
         offset: int = 0,
         limit: int = -1,
     ) -> Dict[str, Any]:

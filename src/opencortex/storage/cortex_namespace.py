@@ -7,6 +7,7 @@ import hashlib
 from typing import Any
 from uuid import uuid4
 
+from opencortex.core.identity import IdentityProfile
 from opencortex.http.request_context import (
     get_effective_identity,
     get_effective_project_id,
@@ -109,9 +110,17 @@ class CortexNamespace:
             node_name,
         )
 
-    def session_events_parent(self, session_id: str) -> str:
+    def session_events_parent(
+        self,
+        session_id: str,
+        *,
+        profile: IdentityProfile | None = None,
+    ) -> str:
         """Return the parent URI for session event records."""
-        tenant_id, user_id = get_effective_identity()
+        if profile is not None:
+            tenant_id, user_id = profile.tenant_id, profile.user_id
+        else:
+            tenant_id, user_id = get_effective_identity()
         return CortexURI.build_private(
             tenant_id,
             user_id,
@@ -120,9 +129,16 @@ class CortexNamespace:
             session_id,
         )
 
-    def session_immediate_uri(self) -> str:
+    def session_immediate_uri(
+        self,
+        *,
+        profile: IdentityProfile | None = None,
+    ) -> str:
         """Return a URI for one immediate session message."""
-        tenant_id, user_id = get_effective_identity()
+        if profile is not None:
+            tenant_id, user_id = profile.tenant_id, profile.user_id
+        else:
+            tenant_id, user_id = get_effective_identity()
         return CortexURI.build_private(
             tenant_id,
             user_id,
@@ -131,9 +147,18 @@ class CortexNamespace:
             uuid4().hex,
         )
 
-    def session_merged_uri(self, session_id: str, msg_range: list[int]) -> str:
+    def session_merged_uri(
+        self,
+        session_id: str,
+        msg_range: list[int],
+        *,
+        profile: IdentityProfile | None = None,
+    ) -> str:
         """Return a stable URI for one merged session message range."""
-        tenant_id, user_id = get_effective_identity()
+        if profile is not None:
+            tenant_id, user_id = profile.tenant_id, profile.user_id
+        else:
+            tenant_id, user_id = get_effective_identity()
         session_hash = hashlib.md5(session_id.encode("utf-8")).hexdigest()[:12]
         node_name = (
             f"conversation-{session_hash}-{int(msg_range[0]):06d}-"
@@ -147,9 +172,17 @@ class CortexNamespace:
             node_name,
         )
 
-    def session_final_uri(self, session_id: str) -> str:
+    def session_final_uri(
+        self,
+        session_id: str,
+        *,
+        profile: IdentityProfile | None = None,
+    ) -> str:
         """Return the stable final primary record URI for one session."""
-        tenant_id, user_id = get_effective_identity()
+        if profile is not None:
+            tenant_id, user_id = profile.tenant_id, profile.user_id
+        else:
+            tenant_id, user_id = get_effective_identity()
         return CortexURI.build_private(
             tenant_id,
             user_id,

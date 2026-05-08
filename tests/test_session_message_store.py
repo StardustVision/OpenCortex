@@ -9,10 +9,10 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 from opencortex.store.embedder import StoreEmbedder
+from opencortex.store.events import StoreEvents
 from opencortex.store.schemas import SessionMessage, SessionMessageInput
 from opencortex.store.session_buffer import SessionBuffer
 from opencortex.store.session_store import SessionStore
-from opencortex.store.events import StoreEvents
 from opencortex.writer.primary_record_writer import PrimaryRecordWriter
 
 
@@ -59,8 +59,10 @@ class TestSessionMessageStore(unittest.IsolatedAsyncioTestCase):
         store = SessionStore(
             buffer=buffer,
             namespace=SimpleNamespace(
-                session_immediate_uri=lambda: "opencortex://default/default/memories/events/immediate-1",
-                session_events_parent=lambda session_id: (
+                session_immediate_uri=lambda **_kwargs: (
+                    "opencortex://default/default/memories/events/immediate-1"
+                ),
+                session_events_parent=lambda session_id, **_kwargs: (
                     f"opencortex://default/default/memories/events/{session_id}"
                 ),
             ),

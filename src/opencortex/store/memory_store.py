@@ -9,7 +9,7 @@ from typing import Any
 
 from opencortex.core.context import Context, Vectorize
 from opencortex.core.user_id import UserIdentifier
-from opencortex.http.request_context import get_effective_identity
+from opencortex.http.request_context import get_identity_profile
 from opencortex.prompts import build_layer_derivation_prompt
 from opencortex.retrieve.types import ContextType
 from opencortex.storage.cortex_namespace import CortexNamespace
@@ -49,11 +49,11 @@ class MemoryStore:
         writer: PrimaryRecordWriter,
         events: StoreEvents,
     ) -> None:
-        self._namespace = namespace
-        self._llm_completion = llm_completion
-        self._embedder = embedder
-        self._writer = writer
-        self._events = events
+        self.namespace = namespace
+        self.llm_completion = llm_completion
+        self.embedder = embedder
+        self.writer = writer
+        self.events = events
 
     async def store(self, input_: MemoryStoreInput) -> StoredRecord:
         """Validate-derived memory store flow."""
@@ -61,8 +61,8 @@ class MemoryStore:
         target = await self.resolve(input_)
         derived = await self.derive(input_)
         draft = self.assemble(input_, target, derived)
-        embedding = await self._embedder.embed_context(draft.ctx)
-        tenant_id, user_id = get_effective_identity()
+        embedding = await self.embedder.embed_context(draft.ctx)
+        profile = get_identity_profile()
         record_input = PrimaryRecordInput(
             ctx=draft.ctx,
             abstract_json=draft.abstract_json,
@@ -73,19 +73,19 @@ class MemoryStore:
             meta=draft.meta,
             context_type=ContextType.MEMORY,
             session_id="",
-            tenant_id=tenant_id,
-            user_id=user_id,
+            tenant_id=profile.tenant_id,
+            user_id=profile.user_id,
             sparse_vector=embedding.sparse_vector,
             content=input_.content,
         )
-        stored = await self._writer.write(record_input)
-        self._events.memory_stored(record_input, stored)
+        stored = await self.writer.write(record_input)
+        self.events.memory_stored(record_input, stored)
         stored.meta["dedup_action"] = "created"
         logger.info(
             "[MemoryStore] store tenant=%s user=%s uri=%s timing_ms(total=%d "
             "derive_layers=%d embed=%d upsert=%d)",
-            tenant_id,
-            user_id,
+            profile.tenant_id,
+            profile.user_id,
             stored.uri,
             int((asyncio.get_running_loop().time() - started) * 1000),
             derived.derive_ms,
@@ -96,7 +96,7 @@ class MemoryStore:
 
     async def resolve(self, input_: MemoryStoreInput) -> StoreTarget:
         """Resolve memory target URI and metadata."""
-        uri, parent_uri = await self._namespace.resolve(
+        uri, parent_uri = await self.namespace.resolve(
             context_type=ContextType.MEMORY,
             category=input_.category,
             abstract=input_.abstract,
@@ -112,7 +112,7 @@ class MemoryStore:
     async def derive(self, input_: MemoryStoreInput) -> StoreDerived:
         """Derive memory fields."""
         derive_started = asyncio.get_running_loop().time()
-        layers = await self._derive_layers(
+        layers = await self.derive_layers(
             abstract=input_.abstract,
             overview=input_.overview,
             content=input_.content,
@@ -132,7 +132,7 @@ class MemoryStore:
         derived: StoreDerived,
     ) -> StoreDraft:
         """Assemble a memory primary-record draft."""
-        return self._assemble_primary_draft(
+        return self.assemble_primary_draft(
             input_=input_,
             target=target,
             derived=derived,
@@ -140,7 +140,7 @@ class MemoryStore:
             is_leaf=True,
         )
 
-    async def _derive_layers(
+    async def derive_layers(
         self,
         *,
         abstract: str,
@@ -159,9 +159,9 @@ class MemoryStore:
                 "anchor_handles": [],
                 "fact_points": [],
             }
-        if self._llm_completion is not None:
+        if self.llm_completion is not None:
             try:
-                response = await self._llm_completion(
+                response = await self.llm_completion(
                     build_layer_derivation_prompt(content, abstract)
                 )
                 parsed = parse_json_from_response(response)
@@ -179,7 +179,8 @@ class MemoryStore:
 
         fallback_overview = overview or smart_truncate(str(content or "").strip(), 1200)
         return {
-            "abstract": abstract or self._abstract_from_overview(fallback_overview, content),
+            "abstract": abstract
+            or self.abstract_from_overview(fallback_overview, content),
             "overview": fallback_overview,
             "keywords": "",
             "entities": [],
@@ -187,7 +188,7 @@ class MemoryStore:
             "fact_points": [],
         }
 
-    def _assemble_primary_draft(
+    def assemble_primary_draft(
         self,
         *,
         input_: MemoryStoreInput,
@@ -216,7 +217,8 @@ class MemoryStore:
             meta["anchor_handles"] = anchor_handles
         keywords = ", ".join(keywords_list)
 
-        tenant_id, user_id = get_effective_identity()
+        profile = get_identity_profile()
+        meta["project_id"] = profile.project_id
         ctx = Context(
             uri=target.uri,
             parent_uri=target.parent_uri,
@@ -228,7 +230,7 @@ class MemoryStore:
             related_uri=[],
             meta=meta,
             session_id=None,
-            user=UserIdentifier(tenant_id, user_id),
+            user=UserIdentifier(profile.tenant_id, profile.user_id),
         )
 
         base_text = input_.embed_text or derived.abstract
@@ -268,7 +270,7 @@ class MemoryStore:
         )
 
     @staticmethod
-    def _abstract_from_overview(overview: str, content: str) -> str:
+    def abstract_from_overview(overview: str, content: str) -> str:
         """Return a compact abstract fallback."""
         overview_text = str(overview or "").strip()
         if overview_text:
