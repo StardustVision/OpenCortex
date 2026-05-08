@@ -16,6 +16,7 @@ from opencortex_app.store.session.merger import SessionMerger
 from opencortex_app.store.session.store import SessionStore
 from opencortex_app.store.store import MemoryStore, ResourceStore
 from opencortex_app.store.writer.primary_record_writer import PrimaryRecordWriter
+from opencortex_app.vector.retrieval import MemoryRetriever
 
 
 def get_vector_store(request: Request) -> Any:
@@ -196,4 +197,29 @@ def get_session_ender(
         events=events,
         vector_store=vector_store,
         collection_resolver=collection_resolver,
+    )
+
+
+def get_cortex_storage(request: Request) -> Any:
+    """Return CFS-backed CortexStorage for retrieval hydration."""
+    runtime = getattr(request.app.state, "runtime", None)
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="Runtime is not initialized")
+    return runtime.cortex_storage
+
+
+def get_memory_retriever(
+    vector_store: Annotated[Any, Depends(get_vector_store)],
+    collection_resolver: Annotated[Any, Depends(get_collection_resolver)],
+    embedder: Annotated[Any, Depends(get_embedding_model)],
+    cortex_storage: Annotated[Any, Depends(get_cortex_storage)],
+    llm_completion: Annotated[Any, Depends(get_llm_completion)],
+) -> MemoryRetriever:
+    """Return memory retriever."""
+    return MemoryRetriever(
+        vector_store=vector_store,
+        collection_resolver=collection_resolver,
+        embedder=embedder,
+        cortex_storage=cortex_storage,
+        llm_completion=llm_completion,
     )

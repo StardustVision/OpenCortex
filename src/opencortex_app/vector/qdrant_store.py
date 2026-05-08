@@ -87,6 +87,38 @@ class QdrantVectorStore:
         )
         return [self.from_point(point) for point in points]
 
+    async def search(
+        self,
+        collection: str,
+        *,
+        query_vector: list[float] | None,
+        filters: models.Filter | None = None,
+        limit: int = 10,
+        score_threshold: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return scored payloads from dense vector search or filtered scroll."""
+        await self.ensure_collection(collection)
+        if query_vector is None:
+            records = await self.filter(collection, filters, limit=limit)
+            return [{**record, "_score": 0.0} for record in records]
+        if len(query_vector) != self.vector_size:
+            raise ValueError(
+                "Vector dimension mismatch: "
+                f"expected {self.vector_size}, got {len(query_vector)}"
+            )
+        client = await self.ensure_client()
+        response = await client.query_points(
+            collection_name=collection,
+            query=query_vector,
+            using=self.dense_vector_name,
+            query_filter=filters,
+            limit=limit,
+            with_payload=True,
+            with_vectors=False,
+            score_threshold=score_threshold,
+        )
+        return [self.from_scored_point(point) for point in response.points]
+
     async def remove_by_uri(self, collection: str, uri: str) -> bool:
         """Remove the record at uri and derived records beneath that URI."""
         await self.ensure_collection(collection)
@@ -181,6 +213,13 @@ class QdrantVectorStore:
         """Convert a Qdrant point back to the flat record payload."""
         payload = dict(point.payload or {})
         payload.setdefault("id", str(point.id))
+        return payload
+
+    @staticmethod
+    def from_scored_point(point: Any) -> dict[str, Any]:
+        """Convert a scored Qdrant point back to the flat record payload."""
+        payload = QdrantVectorStore.from_point(point)
+        payload["_score"] = float(getattr(point, "score", 0.0) or 0.0)
         return payload
 
 

@@ -40,6 +40,63 @@ def derived_json(content: str) -> str:
     )
 
 
+async def fake_llm_completion(prompt: str, *, temperature: float = 0.0) -> str:
+    """Return fake LLM JSON for layer derivation and query planning."""
+    if "Split this user query into short retrieval queries" in prompt:
+        return (
+            '{"retrieval_queries":['
+            '"写入链路设计",'
+            '"召回链路设计",'
+            '"Qdrant 向量写入检索"'
+            "]}"
+        )
+    if "Select the best reason-tree entry URIs" in prompt:
+        return '{"selected_uris":["' + extract_first_reason_tree_uri(prompt) + '"]}'
+    return derived_json(extract_prompt_content(prompt))
+
+
+async def oversized_query_llm_completion(
+    prompt: str,
+    *,
+    temperature: float = 0.0,
+) -> str:
+    """Return an oversized retrieval query for error-path tests."""
+    if "Split this user query into short retrieval queries" in prompt:
+        return '{"retrieval_queries":["' + ("x" * 120) + '"]}'
+    return await fake_llm_completion(prompt, temperature=temperature)
+
+
+async def invalid_reason_tree_llm_completion(
+    prompt: str,
+    *,
+    temperature: float = 0.0,
+) -> str:
+    """Return an invalid reason-tree URI for error-path tests."""
+    if "Select the best reason-tree entry URIs" in prompt:
+        return '{"selected_uris":["opencortex://invalid/reason-tree"]}'
+    return await fake_llm_completion(prompt, temperature=temperature)
+
+
+def extract_prompt_content(prompt: str) -> str:
+    """Return the content block from a derivation prompt."""
+    start = prompt.find("<content>")
+    end = prompt.rfind("</content>")
+    if start >= 0 and end > start:
+        return prompt[start + len("<content>") : end].strip()
+    return prompt
+
+
+def extract_first_reason_tree_uri(prompt: str) -> str:
+    """Return the first candidate URI from a reason-tree prompt."""
+    marker = " uri="
+    start = prompt.find(marker)
+    if start < 0:
+        return ""
+    start += len(marker)
+    end = prompt.find(" ", start)
+    return prompt[start:] if end < 0 else prompt[start:end]
+
+
 def fake_embedding(_text: str) -> object:
     """Return one deterministic embedding."""
     return type(
@@ -49,23 +106,47 @@ def fake_embedding(_text: str) -> object:
     )()
 
 
+def keyword_embedding(text: str) -> object:
+    """Return a deterministic embedding keyed by distinctive test terms."""
+    vector = [0.0] * 1024
+    lowered = text.lower()
+    if "zephyr" in lowered:
+        vector[0] = 1.0
+    if "atlas" in lowered:
+        vector[1] = 1.0
+    if "orion" in lowered:
+        vector[2] = 1.0
+    if not any(vector):
+        vector[3] = 1.0
+    return type(
+        "Embedding",
+        (),
+        {"dense_vector": vector, "sparse_vector": None},
+    )()
+
+
 def fake_embedding_batch(texts: list[str]) -> list[object]:
     """Return one deterministic embedding per text."""
     return [fake_embedding(text) for text in texts]
 
 
+def keyword_embedding_batch(texts: list[str]) -> list[object]:
+    """Return one keyword embedding per text."""
+    return [keyword_embedding(text) for text in texts]
+
+
 class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
     """Verify the standalone opencortex_app FastAPI surface."""
 
-    async def test_create_app_exposes_only_write_routes(self) -> None:
-        """The app exposes the three primary write endpoints."""
+    async def test_create_app_exposes_write_and_search_routes(self) -> None:
+        """The app exposes write endpoints and memory search."""
         app = create_app()
 
         paths = {route.path for route in app.routes}
         self.assertIn("/api/v1/memory/store", paths)
+        self.assertIn("/api/v1/memory/search", paths)
         self.assertIn("/api/v1/session/message", paths)
         self.assertIn("/api/v1/session/end", paths)
-        self.assertNotIn("/api/v1/memory/search", paths)
 
     async def test_lifespan_initializes_store_dependencies(self) -> None:
         """Lifespan initializes state used by dependency injection."""
@@ -86,9 +167,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
             with (
                 patch(
                     "opencortex_app.llm.client.LLMCompletion.complete",
-                    new=AsyncMock(
-                        return_value=derived_json("User prefers dark theme.")
-                    ),
+                    new=AsyncMock(side_effect=fake_llm_completion),
                 ),
                 patch(
                     "opencortex_app.vector.embedder.OpenAIEmbeddingClient.embed",
@@ -129,7 +208,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
             with (
                 patch(
                     "opencortex_app.llm.client.LLMCompletion.complete",
-                    new=AsyncMock(return_value=derived_json(content)),
+                    new=AsyncMock(side_effect=fake_llm_completion),
                 ),
                 patch(
                     "opencortex_app.vector.embedder.OpenAIEmbeddingClient.embed",
@@ -180,7 +259,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
             with (
                 patch(
                     "opencortex_app.llm.client.LLMCompletion.complete",
-                    new=AsyncMock(return_value=derived_json(content)),
+                    new=AsyncMock(side_effect=fake_llm_completion),
                 ),
                 patch(
                     "opencortex_app.vector.embedder.OpenAIEmbeddingClient.embed",
@@ -265,6 +344,440 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(abstract, f"derived abstract: {content}")
         self.assertEqual(overview, f"derived overview: {content}")
         self.assertEqual(content_file, content)
+
+    async def test_memory_search_recalls_written_indexes(self) -> None:
+        """Search recalls primary records through secondary retrieval surfaces."""
+        content = "assistant: Alice uses Python in Hangzhou."
+        with TemporaryDirectory() as data_root:
+            app = create_app(settings=fast_merge_settings(data_root))
+            with (
+                patch(
+                    "opencortex_app.llm.client.LLMCompletion.complete",
+                    new=AsyncMock(side_effect=fake_llm_completion),
+                ),
+                patch(
+                    "opencortex_app.vector.embedder.OpenAIEmbeddingClient.embed",
+                    side_effect=fake_embedding,
+                ),
+                patch(
+                    "opencortex_app.vector.embedder.OpenAIEmbeddingClient.embed_batch",
+                    side_effect=fake_embedding_batch,
+                ),
+            ):
+                async with app.router.lifespan_context(app):
+                    transport = ASGITransport(app=app)
+                    async with httpx.AsyncClient(
+                        transport=transport,
+                        base_url="http://testserver",
+                    ) as client:
+                        await client.post(
+                            "/api/v1/session/message",
+                            json={
+                                "session_id": "session-recall",
+                                "turn_id": "turn-1",
+                                "messages": [
+                                    {
+                                        "role": "assistant",
+                                        "content": content,
+                                        "meta": {"entities": ["Alice"]},
+                                    }
+                                ],
+                            },
+                        )
+                        await app.state.store_event_worker.wait_idle()
+                        response = await client.post(
+                            "/api/v1/memory/search",
+                            json={
+                                "query": "Alice Python",
+                                "limit": 3,
+                            },
+                        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertEqual(data["total"], 1)
+        result = data["results"][0]
+        self.assertEqual(result["session_id"], "session-recall")
+        self.assertEqual(result["content"], content)
+        self.assertIn("l0_object", result["retrieval_surfaces"])
+        probe = data["plan"]["probe"]
+        self.assertEqual(probe["evidence"]["object_candidate_count"], 1)
+        self.assertGreaterEqual(probe["evidence"]["locator_candidate_count"], 1)
+        self.assertTrue(probe["starting_uris"])
+        self.assertNotIn("range_source", probe)
+        self.assertNotIn("hard_range", probe)
+        self.assertNotIn("range_miss", probe)
+        self.assertNotIn("direct_hits", probe)
+        self.assertNotIn("locator_hits", probe)
+        self.assertNotIn("retrieval_queries", probe)
+        self.assertNotIn("query_vector", probe)
+        self.assertNotIn("search_vectors", probe)
+        self.assertNotIn("scope_filter", data["plan"])
+        self.assertNotIn("session_scope", data["plan"])
+        self.assertNotIn("target_uri", data["plan"])
+        self.assertNotIn("search_vectors", data["plan"])
+        self.assertEqual(data["plan"]["starting_uris"], probe["starting_uris"])
+        self.assertEqual(data["plan"]["decision"], "focused")
+        self.assertEqual(data["plan"]["depth"], "l2")
+        self.assertFalse(data["plan"]["reason_tree"]["enabled"])
+        self.assertFalse(data["plan"]["cone_expansion"]["enabled"])
+        self.assertGreater(data["plan"]["surface_limits"]["l0_object"], 0)
+        self.assertGreater(data["plan"]["surface_weights"]["fact_index"], 0)
+        self.assertTrue(
+            {
+                "anchor_index",
+                "fact_index",
+                "entity_index",
+                "reason_tree_index",
+            }.intersection(result["retrieval_surfaces"])
+        )
+
+    async def test_write_to_recall_hit_rate_for_memory_resource_session(
+        self,
+    ) -> None:
+        """Memory, resource, and session writes are each recalled by target query."""
+        targets: dict[str, str] = {}
+        with TemporaryDirectory() as data_root:
+            app = create_app(settings=fast_merge_settings(data_root))
+            with (
+                patch(
+                    "opencortex_app.llm.client.LLMCompletion.complete",
+                    new=AsyncMock(side_effect=fake_llm_completion),
+                ),
+                patch(
+                    "opencortex_app.vector.embedder.OpenAIEmbeddingClient.embed",
+                    side_effect=keyword_embedding,
+                ),
+                patch(
+                    "opencortex_app.vector.embedder.OpenAIEmbeddingClient.embed_batch",
+                    side_effect=keyword_embedding_batch,
+                ),
+            ):
+                async with app.router.lifespan_context(app):
+                    transport = ASGITransport(app=app)
+                    async with httpx.AsyncClient(
+                        transport=transport,
+                        base_url="http://testserver",
+                    ) as client:
+                        memory_response = await client.post(
+                            "/api/v1/memory/store",
+                            json={
+                                "type": "memory",
+                                "content": "Zephyr uses a blue notebook for planning.",
+                                "category": "semantic",
+                                "metadata": {"entities": ["Zephyr"]},
+                                "source": {"kind": "manual"},
+                            },
+                        )
+                        resource_response = await client.post(
+                            "/api/v1/memory/store",
+                            json={
+                                "type": "resource",
+                                "content": "Atlas guide documents vector recall setup.",
+                                "category": "semantic",
+                                "metadata": {
+                                    "entities": ["Atlas"],
+                                    "source_path": "/docs/atlas-guide.md",
+                                },
+                                "source": {
+                                    "kind": "document",
+                                    "path": "/docs/atlas-guide.md",
+                                    "title": "Atlas Guide",
+                                },
+                            },
+                        )
+                        await client.post(
+                            "/api/v1/session/message",
+                            json={
+                                "session_id": "session-orion-recall",
+                                "turn_id": "turn-1",
+                                "messages": [
+                                    {
+                                        "role": "assistant",
+                                        "content": (
+                                            "Orion deployment requires canary checks."
+                                        ),
+                                        "meta": {"entities": ["Orion"]},
+                                    }
+                                ],
+                            },
+                        )
+                        await app.state.store_event_worker.wait_idle()
+                        records = await app.state.vector_store.filter("context", None)
+                        targets["memory"] = memory_response.json()["uri"]
+                        targets["resource"] = resource_response.json()["uri"]
+                        targets["session"] = next(
+                            record["uri"]
+                            for record in records
+                            if record.get("session_id") == "session-orion-recall"
+                            and record.get("retrieval_surface") == "l0_object"
+                        )
+
+                        queries = {
+                            "memory": "Zephyr notebook planning",
+                            "resource": "Atlas vector recall setup",
+                            "session": "Orion canary deployment",
+                        }
+                        search_results = {
+                            kind: (
+                                await client.post(
+                                    "/api/v1/memory/search",
+                                    json={"query": query, "limit": 3},
+                                )
+                            ).json()["data"]["results"]
+                            for kind, query in queries.items()
+                        }
+
+        hits = {
+            kind: any(result["uri"] == targets[kind] for result in results)
+            for kind, results in search_results.items()
+        }
+        hit_rate = sum(1 for hit in hits.values() if hit) / len(hits)
+        self.assertEqual(hits, {"memory": True, "resource": True, "session": True})
+        self.assertEqual(hit_rate, 1.0)
+
+    async def test_large_memory_search_decomposes_query_inside_probe(self) -> None:
+        """Large search queries are split before probe vector search."""
+        content = "assistant: Alice uses Python in Hangzhou."
+        with TemporaryDirectory() as data_root:
+            app = create_app(settings=fast_merge_settings(data_root))
+            with (
+                patch(
+                    "opencortex_app.llm.client.LLMCompletion.complete",
+                    new=AsyncMock(side_effect=fake_llm_completion),
+                ) as llm_mock,
+                patch(
+                    "opencortex_app.vector.embedder.OpenAIEmbeddingClient.embed",
+                    side_effect=fake_embedding,
+                ),
+                patch(
+                    "opencortex_app.vector.embedder.OpenAIEmbeddingClient.embed_batch",
+                    side_effect=fake_embedding_batch,
+                ),
+            ):
+                async with app.router.lifespan_context(app):
+                    transport = ASGITransport(app=app)
+                    async with httpx.AsyncClient(
+                        transport=transport,
+                        base_url="http://testserver",
+                    ) as client:
+                        await client.post(
+                            "/api/v1/session/message",
+                            json={
+                                "session_id": "session-large-recall",
+                                "turn_id": "turn-1",
+                                "messages": [
+                                    {
+                                        "role": "assistant",
+                                        "content": content,
+                                        "meta": {"entities": ["Alice"]},
+                                    }
+                                ],
+                            },
+                        )
+                        await app.state.store_event_worker.wait_idle()
+                        response = await client.post(
+                            "/api/v1/memory/search",
+                            json={
+                                "query": (
+                                    "总结一下这个 session 里关于写入链路、召回链路"
+                                    "和 Qdrant 的所有讨论，按阶段列出结论"
+                                ),
+                                "limit": 3,
+                            },
+                        )
+
+        self.assertEqual(response.status_code, 200)
+        plan = response.json()["data"]["plan"]
+        probe = plan["probe"]
+        self.assertGreaterEqual(probe["evidence"]["candidate_count"], 1)
+        self.assertNotIn("retrieval_queries", probe)
+        self.assertNotIn("direct_hits", probe)
+        self.assertNotIn("locator_hits", probe)
+        self.assertTrue(plan["reason_tree"]["enabled"])
+        self.assertTrue(plan["reason_tree"]["use_llm"])
+        self.assertTrue(plan["cone_expansion"]["enabled"])
+        prompts = [call.args[0] for call in llm_mock.call_args_list]
+        self.assertTrue(
+            any(
+                "Split this user query into short retrieval queries" in p
+                for p in prompts
+            )
+        )
+        self.assertTrue(
+            any("Select the best reason-tree entry URIs" in p for p in prompts)
+        )
+        self.assertIn("reason_tree_index", plan["surface_limits"])
+        self.assertIn(
+            "reason_tree_index",
+            response.json()["data"]["results"][0]["retrieval_surfaces"],
+        )
+
+    async def test_large_memory_search_rejects_invalid_reason_tree_uri(self) -> None:
+        """ReasonTree selection fails when the LLM returns only invalid URIs."""
+        content = "assistant: Alice uses Python in Hangzhou."
+        with TemporaryDirectory() as data_root:
+            app = create_app(settings=fast_merge_settings(data_root))
+            with (
+                patch(
+                    "opencortex_app.llm.client.LLMCompletion.complete",
+                    new=AsyncMock(side_effect=invalid_reason_tree_llm_completion),
+                ),
+                patch(
+                    "opencortex_app.vector.embedder.OpenAIEmbeddingClient.embed",
+                    side_effect=fake_embedding,
+                ),
+                patch(
+                    "opencortex_app.vector.embedder.OpenAIEmbeddingClient.embed_batch",
+                    side_effect=fake_embedding_batch,
+                ),
+            ):
+                async with app.router.lifespan_context(app):
+                    transport = ASGITransport(app=app)
+                    async with httpx.AsyncClient(
+                        transport=transport,
+                        base_url="http://testserver",
+                    ) as client:
+                        await client.post(
+                            "/api/v1/session/message",
+                            json={
+                                "session_id": "session-invalid-reason-tree",
+                                "turn_id": "turn-1",
+                                "messages": [
+                                    {
+                                        "role": "assistant",
+                                        "content": content,
+                                        "meta": {"entities": ["Alice"]},
+                                    }
+                                ],
+                            },
+                        )
+                        await app.state.store_event_worker.wait_idle()
+                        with self.assertRaisesRegex(
+                            ValueError,
+                            "Reason tree selected no valid candidate URIs",
+                        ):
+                            await client.post(
+                                "/api/v1/memory/search",
+                                json={
+                                    "query": (
+                                        "总结一下这个 session 里关于写入链路、召回链路"
+                                        "和 Qdrant 的所有讨论，按阶段列出结论"
+                                    ),
+                                    "limit": 3,
+                                },
+                            )
+
+    async def test_large_memory_search_rejects_oversized_llm_query(self) -> None:
+        """Probe does not truncate oversized LLM retrieval queries."""
+        content = "assistant: Alice uses Python in Hangzhou."
+        with TemporaryDirectory() as data_root:
+            app = create_app(settings=fast_merge_settings(data_root))
+            with (
+                patch(
+                    "opencortex_app.llm.client.LLMCompletion.complete",
+                    new=AsyncMock(side_effect=oversized_query_llm_completion),
+                ),
+                patch(
+                    "opencortex_app.vector.embedder.OpenAIEmbeddingClient.embed",
+                    side_effect=fake_embedding,
+                ),
+                patch(
+                    "opencortex_app.vector.embedder.OpenAIEmbeddingClient.embed_batch",
+                    side_effect=fake_embedding_batch,
+                ),
+            ):
+                async with app.router.lifespan_context(app):
+                    transport = ASGITransport(app=app)
+                    async with httpx.AsyncClient(
+                        transport=transport,
+                        base_url="http://testserver",
+                    ) as client:
+                        await client.post(
+                            "/api/v1/session/message",
+                            json={
+                                "session_id": "session-oversized-recall",
+                                "turn_id": "turn-1",
+                                "messages": [
+                                    {
+                                        "role": "assistant",
+                                        "content": content,
+                                        "meta": {"entities": ["Alice"]},
+                                    }
+                                ],
+                            },
+                        )
+                        await app.state.store_event_worker.wait_idle()
+                        with self.assertRaisesRegex(
+                            ValueError,
+                            "oversized retrieval query",
+                        ):
+                            await client.post(
+                                "/api/v1/memory/search",
+                                json={
+                                    "query": (
+                                        "总结一下这个 session 里关于写入链路、召回链路"
+                                        "和 Qdrant 的所有讨论，按阶段列出结论"
+                                    ),
+                                    "limit": 3,
+                                },
+                            )
+
+    async def test_memory_search_does_not_expose_probe_range_fields(self) -> None:
+        """Probe output should only expose evidence used by the planner."""
+        content = "assistant: Alice uses Python in Hangzhou."
+        with TemporaryDirectory() as data_root:
+            app = create_app(settings=fast_merge_settings(data_root))
+            with (
+                patch(
+                    "opencortex_app.llm.client.LLMCompletion.complete",
+                    new=AsyncMock(side_effect=fake_llm_completion),
+                ),
+                patch(
+                    "opencortex_app.vector.embedder.OpenAIEmbeddingClient.embed",
+                    side_effect=fake_embedding,
+                ),
+                patch(
+                    "opencortex_app.vector.embedder.OpenAIEmbeddingClient.embed_batch",
+                    side_effect=fake_embedding_batch,
+                ),
+            ):
+                async with app.router.lifespan_context(app):
+                    transport = ASGITransport(app=app)
+                    async with httpx.AsyncClient(
+                        transport=transport,
+                        base_url="http://testserver",
+                    ) as client:
+                        await client.post(
+                            "/api/v1/session/message",
+                            json={
+                                "session_id": "session-global-recall",
+                                "turn_id": "turn-1",
+                                "messages": [
+                                    {
+                                        "role": "assistant",
+                                        "content": content,
+                                        "meta": {"entities": ["Alice"]},
+                                    }
+                                ],
+                            },
+                        )
+                        await app.state.store_event_worker.wait_idle()
+                        response = await client.post(
+                            "/api/v1/memory/search",
+                            json={
+                                "query": "Alice Python",
+                                "limit": 3,
+                            },
+                        )
+
+        self.assertEqual(response.status_code, 200)
+        probe = response.json()["data"]["plan"]["probe"]
+        self.assertNotIn("range_source", probe)
+        self.assertNotIn("hard_range", probe)
+        self.assertNotIn("range_miss", probe)
+        self.assertNotIn("session_scope", probe)
+        self.assertNotIn("target_uri", probe)
 
     async def test_lifespan_requires_llm_configuration(self) -> None:
         """The app fails fast when no LLM API key is configured."""

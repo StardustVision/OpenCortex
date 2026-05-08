@@ -7,7 +7,9 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from opencortex_app.core.identity import get_identity_profile
 from opencortex_app.store.dependencies import (
+    get_memory_retriever,
     get_memory_store,
     get_resource_store,
     get_session_ender,
@@ -26,6 +28,10 @@ from opencortex_app.store.session.ender import SessionEnder
 from opencortex_app.store.session.store import SessionStore
 from opencortex_app.store.store import MemoryStore, ResourceStore
 from opencortex_app.store.types import StoreRecordType
+from opencortex_app.vector.retrieval import (
+    MemoryRetriever,
+    RetrievalRequest,
+)
 
 router = APIRouter(prefix="/api/v1")
 
@@ -49,6 +55,20 @@ async def memory_store(
         status_code=422,
         detail=f"Unsupported store type: {req.type}",
     )
+
+
+@router.post("/memory/search")
+async def memory_search(
+    req: RetrievalRequest,
+    retriever: Annotated[
+        MemoryRetriever,
+        Depends(get_memory_retriever),
+    ],
+) -> dict[str, Any]:
+    """Search retrieval-ready memory records."""
+    profile = get_identity_profile()
+    result = await retriever.search(req, profile=profile)
+    return _response(result.model_dump(mode="json"))
 
 
 @router.post("/session/message")
