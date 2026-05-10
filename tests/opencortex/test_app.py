@@ -21,6 +21,10 @@ from opencortex.settings import Settings, get_settings
 from opencortex.store.document_tree import DocumentParser
 
 captured_system_prompts: list[str] = []
+MCP_HEADERS = {
+    "content-type": "application/json",
+    "accept": "application/json, text/event-stream",
+}
 
 
 def app_settings(data_root: str) -> Settings:
@@ -222,6 +226,177 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/api/v1/memory/forget", paths)
         self.assertIn("/api/v1/session/message", paths)
         self.assertIn("/api/v1/session/end", paths)
+        self.assertIn("/mcp", paths)
+
+    async def test_mcp_get_returns_405(self) -> None:
+        """Streamable HTTP GET is rejected until SSE sessions are supported."""
+        app = create_app(settings=app_settings(":memory:"))
+        transport = ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            response = await client.get("/mcp")
+
+        self.assertEqual(response.status_code, 405)
+
+    async def test_mcp_rejects_missing_streamable_http_accept(self) -> None:
+        """MCP POST requires the Streamable HTTP Accept header pair."""
+        app = create_app(settings=app_settings(":memory:"))
+        transport = ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            response = await client.post(
+                "/mcp",
+                headers={
+                    "content-type": "application/json",
+                    "accept": "application/json",
+                },
+                json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+            )
+
+        self.assertEqual(response.status_code, 406)
+
+    async def test_mcp_initialize_and_tools_list(self) -> None:
+        """MCP exposes initialize and tools/list over Streamable HTTP."""
+        with TemporaryDirectory() as data_root:
+            app = create_app(settings=app_settings(data_root))
+            with (
+                patch(
+                    "opencortex.llm.client.LLMCompletion.complete",
+                    new=AsyncMock(side_effect=fake_llm_completion),
+                ),
+                patch(
+                    "opencortex.vector.embedder.OpenAIEmbeddingClient.embed",
+                    side_effect=fake_embedding,
+                ),
+                patch(
+                    "opencortex.vector.embedder.OpenAIEmbeddingClient.embed_batch",
+                    side_effect=fake_embedding_batch,
+                ),
+            ):
+                async with app.router.lifespan_context(app):
+                    transport = ASGITransport(app=app)
+                    async with httpx.AsyncClient(
+                        transport=transport,
+                        base_url="http://testserver",
+                    ) as client:
+                        init_response = await client.post(
+                            "/mcp",
+                            headers=MCP_HEADERS,
+                            json={
+                                "jsonrpc": "2.0",
+                                "id": "init-1",
+                                "method": "initialize",
+                                "params": {
+                                    "protocolVersion": "2025-06-18",
+                                    "capabilities": {},
+                                    "clientInfo": {"name": "test", "version": "0"},
+                                },
+                            },
+                        )
+                        tools_response = await client.post(
+                            "/mcp",
+                            headers=MCP_HEADERS,
+                            json={
+                                "jsonrpc": "2.0",
+                                "id": "tools-1",
+                                "method": "tools/list",
+                            },
+                        )
+
+        self.assertEqual(init_response.status_code, 200)
+        init_result = init_response.json()["result"]
+        self.assertEqual(init_result["protocolVersion"], "2025-06-18")
+        self.assertIn("tools", init_result["capabilities"])
+
+        self.assertEqual(tools_response.status_code, 200)
+        tool_names = {tool["name"] for tool in tools_response.json()["result"]["tools"]}
+        self.assertIn("opencortex.search", tool_names)
+        self.assertIn("opencortex.store_memory", tool_names)
+        self.assertIn("opencortex.store_resource", tool_names)
+        search_tool = next(
+            tool
+            for tool in tools_response.json()["result"]["tools"]
+            if tool["name"] == "opencortex.search"
+        )
+        self.assertIn("inputSchema", search_tool)
+
+    async def test_mcp_store_and_search_tools_use_new_chain(self) -> None:
+        """MCP tools/call writes and recalls through the current memory chain."""
+        with TemporaryDirectory() as data_root:
+            app = create_app(settings=app_settings(data_root))
+            with (
+                patch(
+                    "opencortex.llm.client.LLMCompletion.complete",
+                    new=AsyncMock(side_effect=fake_llm_completion),
+                ),
+                patch(
+                    "opencortex.vector.embedder.OpenAIEmbeddingClient.embed",
+                    side_effect=keyword_embedding,
+                ),
+                patch(
+                    "opencortex.vector.embedder.OpenAIEmbeddingClient.embed_batch",
+                    side_effect=keyword_embedding_batch,
+                ),
+            ):
+                async with app.router.lifespan_context(app):
+                    transport = ASGITransport(app=app)
+                    async with httpx.AsyncClient(
+                        transport=transport,
+                        base_url="http://testserver",
+                    ) as client:
+                        store_response = await client.post(
+                            "/mcp",
+                            headers=MCP_HEADERS,
+                            json={
+                                "jsonrpc": "2.0",
+                                "id": "store-1",
+                                "method": "tools/call",
+                                "params": {
+                                    "name": "opencortex.store_memory",
+                                    "arguments": {
+                                        "content": (
+                                            "Zephyr uses a blue notebook for planning."
+                                        ),
+                                        "category": "semantic",
+                                        "metadata": {"entities": ["Zephyr"]},
+                                        "source": {"kind": "manual"},
+                                    },
+                                },
+                            },
+                        )
+                        await app.state.store_event_worker.wait_idle()
+                        search_response = await client.post(
+                            "/mcp",
+                            headers=MCP_HEADERS,
+                            json={
+                                "jsonrpc": "2.0",
+                                "id": "search-1",
+                                "method": "tools/call",
+                                "params": {
+                                    "name": "opencortex.search",
+                                    "arguments": {
+                                        "query": "Zephyr notebook planning",
+                                        "limit": 3,
+                                    },
+                                },
+                            },
+                        )
+
+        self.assertEqual(store_response.status_code, 200)
+        store_result = store_response.json()["result"]
+        self.assertFalse(store_result["isError"])
+        stored_uri = store_result["structuredContent"]["uri"]
+        self.assertEqual(store_result["structuredContent"]["context_type"], "memory")
+
+        self.assertEqual(search_response.status_code, 200)
+        search_result = search_response.json()["result"]
+        self.assertFalse(search_result["isError"])
+        results = search_result["structuredContent"]["results"]
+        self.assertTrue(any(result["uri"] == stored_uri for result in results))
 
     async def test_lifespan_initializes_store_dependencies(self) -> None:
         """Lifespan initializes state used by dependency injection."""

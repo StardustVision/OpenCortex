@@ -13,6 +13,7 @@ from opencortex.core.identity import (
     get_collection_name,
 )
 from opencortex.core.middlewares import WriteRequestContextMiddleware
+from opencortex.mcp.routes import router as mcp_router
 from opencortex.runtime import AppRuntime, AppRuntimeConfig
 from opencortex.settings import Settings, get_settings
 from opencortex.storage.namespace import CortexNamespace
@@ -91,6 +92,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if settings.identity_context_enabled:
         app.add_middleware(WriteRequestContextMiddleware)
     app.include_router(store_router)
+    app.include_router(mcp_router)
     app.state.settings = settings
     return app
 
