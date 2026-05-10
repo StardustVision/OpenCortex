@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""
-CLI tool for managing OpenCortex JWT tokens.
+"""CLI tool for managing OpenCortex JWT tokens.
 
 Usage::
 
@@ -19,12 +18,11 @@ from opencortex.auth.token import (
     revoke_token,
     save_token_record,
 )
-from opencortex.config import get_config
+from opencortex.settings import get_settings
 
 
 def _get_data_root() -> str:
-    config = get_config()
-    return config.data_root
+    return get_settings().data_root
 
 
 def cmd_generate(_args: argparse.Namespace) -> None:
@@ -87,6 +85,7 @@ def cmd_revoke(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    """Parse token CLI arguments and execute the selected command."""
     parser = argparse.ArgumentParser(
         prog="opencortex-token",
         description="Manage OpenCortex JWT tokens",

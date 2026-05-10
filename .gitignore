@@ -21,7 +21,6 @@ web/dist/
 ruvector.db
 data_e2e_demo/
 .worktrees/
-benchmark_*/
 .ace/
 .mcp.json
 mcp.json
@@ -29,9 +28,6 @@ mcp.json
 .qdrant-initialized
 data_hotpotqa/
 .vite/
-docs/benchmark/*.json
-docs/benchmark/*.log
-docs/benchmark/*.md
 
 # macOS Finder metadata
 .DS_Store

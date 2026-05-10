@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Any, List, Optional, Union
 
 from opencortex.parse.base import ParsedChunk
 
@@ -11,13 +11,13 @@ class BaseParser(ABC):
     """Abstract parser that converts documents into ParsedChunk lists."""
 
     @abstractmethod
-    async def parse(self, source: Union[str, Path], **kwargs) -> List[ParsedChunk]:
+    async def parse(self, source: Union[str, Path], **kwargs: Any) -> List[ParsedChunk]:
         """Parse a document from file path or content string."""
         ...
 
     @abstractmethod
     async def parse_content(
-        self, content: str, source_path: Optional[str] = None, **kwargs
+        self, content: str, source_path: Optional[str] = None, **kwargs: Any
     ) -> List[ParsedChunk]:
         """Parse document content directly."""
         ...

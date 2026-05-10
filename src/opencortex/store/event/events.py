@@ -6,24 +6,22 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
-import logging
 from typing import Any, Awaitable, Callable, Dict, List, Set
 
+import structlog
 from pydantic import BaseModel, Field, model_validator
 
 from opencortex.core.identity import IdentityProfile
 from opencortex.store.schemas import PrimaryRecordInput, StoredRecord
 from opencortex.store.types import EventName
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 EventHandler = Callable[[Any], Awaitable[None] | None]
 
 
 class MemoryEvent(BaseModel):
     """Base event with the event-manager routing name."""
-
-    model_config = {"frozen": True}
 
     @property
     def name(self) -> str:
@@ -101,6 +99,23 @@ class MemoryStoredEvent(ProfileEvent):
         return str(EventName.MEMORY_STORED)
 
 
+class CheckUpdateEvent(ProfileEvent):
+    """Emitted after every primary write to check later mutation work."""
+
+    uri: str
+    record_id: str
+    context_type: str
+    category: str
+    layer: str = ""
+    content: str = ""
+    record: Dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def name(self) -> str:
+        """Event name used by the manager."""
+        return str(EventName.CHECK_UPDATE)
+
+
 class SessionTurnStoredEvent(SessionEvent):
     """Emitted after `/session/message` stores one turn."""
 
@@ -163,8 +178,8 @@ class MemoryEventManager:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             logger.debug(
-                "[MemoryEventManager] Dropping %s event without running loop",
-                event.name,
+                "memory_event_dropped_without_running_loop",
+                event_name=event.name,
             )
             return
 
@@ -199,9 +214,9 @@ class MemoryEventManager:
             raise
         except Exception as exc:
             logger.warning(
-                "[MemoryEventManager] Handler failed for %s: %s",
-                event.name,
-                exc,
+                "memory_event_handler_failed",
+                event_name=event.name,
+                error=str(exc),
             )
 
 
@@ -259,14 +274,21 @@ class StoreEvents:
         """Publish merge primary-record completion."""
         if self.memory_events is None:
             return
+        record_data = dict(record or {})
         self.memory_events.publish_nowait(
             SessionMergedEvent(
                 profile=profile,
                 merged_uri=merged_uri,
                 source_uris=source_uris,
                 content=content,
-                record=dict(record or {}),
+                record=record_data,
             )
+        )
+        self.publish_check_update(
+            profile=profile,
+            uri=merged_uri,
+            content=content,
+            record=record_data,
         )
 
     def session_ended(
@@ -281,14 +303,21 @@ class StoreEvents:
         """Publish `/session/end` completion."""
         if self.memory_events is None:
             return
+        record_data = dict(record or {})
         self.memory_events.publish_nowait(
             SessionEndedEvent(
                 profile=profile,
                 final_uri=final_uri,
                 merged_uris=merged_uris,
                 content=content,
-                record=dict(record or {}),
+                record=record_data,
             )
+        )
+        self.publish_check_update(
+            profile=profile,
+            uri=final_uri,
+            content=content,
+            record=record_data,
         )
 
     def publish_primary_record(
@@ -299,20 +328,49 @@ class StoreEvents:
         """Publish the `/memory/store` write event."""
         if self.memory_events is None:
             return
+        event = MemoryStoredEvent(
+            profile=IdentityProfile(
+                tenant_id=record_input.tenant_id,
+                user_id=record_input.user_id,
+                project_id=str(stored.record.get("project_id", "") or "public"),
+                session_id=record_input.session_id,
+            ),
+            uri=stored.uri,
+            record_id=str(stored.record["id"]),
+            context_type=stored.context_type,
+            category=stored.category,
+            layer=str(record_input.meta.get("layer", "") or ""),
+            content=record_input.content,
+            record=dict(stored.record),
+        )
+        self.memory_events.publish_nowait(event)
+        self.publish_check_update(
+            profile=event.profile,
+            uri=event.uri,
+            content=event.content,
+            record=dict(event.record),
+        )
+
+    def publish_check_update(
+        self,
+        *,
+        profile: IdentityProfile | None,
+        uri: str,
+        content: str,
+        record: dict[str, Any],
+    ) -> None:
+        """Publish a post-write update-check event."""
+        if self.memory_events is None:
+            return
         self.memory_events.publish_nowait(
-            MemoryStoredEvent(
-                profile=IdentityProfile(
-                    tenant_id=record_input.tenant_id,
-                    user_id=record_input.user_id,
-                    project_id=str(stored.record.get("project_id", "") or "public"),
-                    session_id=record_input.session_id,
-                ),
-                uri=stored.uri,
-                record_id=str(stored.record["id"]),
-                context_type=stored.context_type,
-                category=stored.category,
-                layer=str(record_input.meta.get("layer", "") or ""),
-                content=record_input.content,
-                record=dict(stored.record),
+            CheckUpdateEvent(
+                profile=profile,
+                uri=uri,
+                record_id=str(record.get("id", "") or uri),
+                context_type=str(record.get("context_type", "") or ""),
+                category=str(record.get("category", "") or ""),
+                layer=str((record.get("meta") or {}).get("layer", "") or ""),
+                content=content,
+                record=dict(record),
             )
         )

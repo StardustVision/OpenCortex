@@ -3,19 +3,19 @@
 
 from __future__ import annotations
 
-from opencortex.core.context import Context, Vectorize
 from opencortex.core.identity import IdentityProfile
-from opencortex.core.user_id import UserIdentifier
-from opencortex.retrieve.types import ContextType
-from opencortex.storage.cortex_namespace import CortexNamespace
-from opencortex.store.common import build_abstract_json, memory_object_payload
-from opencortex.store.embedder import StoreEmbedder
+from opencortex.storage.namespace import CortexNamespace
 from opencortex.store.event.events import StoreEvents
-from opencortex.store.schemas import PrimaryRecordInput, StoredRecord
+from opencortex.store.schemas import (
+    Context,
+    PrimaryRecordInput,
+    RawPrimaryRecord,
+    StoredRecord,
+    primary_ttl,
+)
 from opencortex.store.session.buffer import SessionBuffer, SessionKey
-from opencortex.store.types import MemoryCategory, SessionRecordLayer
-from opencortex.utils.text import smart_truncate
-from opencortex.writer.primary_record_writer import PrimaryRecordWriter
+from opencortex.store.types import ContextType, MemoryCategory, SessionRecordLayer
+from opencortex.store.writer.primary_record_writer import PrimaryRecordWriter
 
 
 class SessionMerger:
@@ -26,15 +26,17 @@ class SessionMerger:
         *,
         buffer: SessionBuffer,
         namespace: CortexNamespace,
-        embedder: StoreEmbedder,
         writer: PrimaryRecordWriter,
         events: StoreEvents,
+        config: object,
+        ttl_from_hours: object,
     ) -> None:
         self.buffer = buffer
         self.namespace = namespace
-        self.embedder = embedder
         self.writer = writer
         self.events = events
+        self.config = config
+        self.ttl_from_hours = ttl_from_hours
 
     async def merge_unmerged(
         self,
@@ -43,7 +45,7 @@ class SessionMerger:
         profile: IdentityProfile,
     ) -> StoredRecord | None:
         """Synchronously merge the current unmerged session buffer."""
-        snapshot = self.buffer.snapshot(key)
+        snapshot = self.buffer.pop_merge_chunk(key) or self.buffer.snapshot(key)
         if snapshot is None:
             return None
 
@@ -58,7 +60,6 @@ class SessionMerger:
             msg_range=msg_range,
             source_uris=snapshot.immediate_uris,
         )
-        await self.embedder.embed_context(record_input.ctx)
         stored = await self.writer.write(record_input)
         self.events.session_merged(
             profile=profile,
@@ -85,7 +86,6 @@ class SessionMerger:
             profile=profile,
         )
         parent_uri = self.namespace.session_events_parent(session_id, profile=profile)
-        abstract = smart_truncate(content.strip(), 240)
         meta = {
             "project_id": profile.project_id,
             "layer": str(SessionRecordLayer.MERGED),
@@ -99,35 +99,33 @@ class SessionMerger:
             uri=uri,
             parent_uri=parent_uri,
             is_leaf=True,
-            abstract=abstract,
-            overview="",
             context_type=ContextType.MEMORY,
             category=str(MemoryCategory.EVENTS),
             meta=meta,
             session_id=session_id,
-            user=UserIdentifier(profile.tenant_id, profile.user_id),
+            profile=profile,
         )
-        ctx.vectorize = Vectorize(content)
-        abstract_json = build_abstract_json(
-            uri=uri,
-            context_type=ContextType.MEMORY,
-            category=str(MemoryCategory.EVENTS),
-            abstract=abstract,
-            overview="",
+        raw_record = RawPrimaryRecord.from_context(
+            ctx=ctx,
             content=content,
-            entities=[],
-            meta=meta,
-            keywords=[],
-            parent_uri=parent_uri,
+            effective_category=str(MemoryCategory.EVENTS),
+            tenant_id=profile.tenant_id,
+            user_id=profile.user_id,
+            project_id=profile.project_id,
             session_id=session_id,
+            meta=meta,
+            ttl_expires_at=primary_ttl(
+                config=self.config,
+                ttl_from_hours=self.ttl_from_hours,
+                context_type=ContextType.MEMORY,
+                category=str(MemoryCategory.EVENTS),
+                layer=str(SessionRecordLayer.MERGED),
+            ),
         )
         return PrimaryRecordInput(
             ctx=ctx,
-            abstract_json=abstract_json,
-            object_payload=memory_object_payload(abstract_json, is_leaf=True),
-            effective_category=str(MemoryCategory.EVENTS),
-            keywords="",
-            entities=[],
+            payload=raw_record.model_dump(mode="json"),
+            effective_category=raw_record.category,
             meta=meta,
             context_type=ContextType.MEMORY,
             session_id=session_id,

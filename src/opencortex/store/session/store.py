@@ -3,33 +3,33 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
-from opencortex.core.context import Context, Vectorize
-from opencortex.core.identity import IdentityProfile
-from opencortex.core.user_id import UserIdentifier
-from opencortex.http.request_context import get_identity_profile
-from opencortex.retrieve.types import ContextType
-from opencortex.storage.cortex_namespace import CortexNamespace
+import structlog
+
+from opencortex.core.identity import IdentityProfile, get_identity_profile
+from opencortex.storage.namespace import CortexNamespace
 from opencortex.store.common import (
     build_abstract_json,
     memory_object_payload,
     merge_unique_strings,
 )
-from opencortex.store.embedder import StoreEmbedder
 from opencortex.store.event.events import StoreEvents
 from opencortex.store.schemas import (
+    Context,
     PrimaryRecordInput,
+    RawPrimaryRecord,
     SessionMessage,
     SessionMessageInput,
     SessionMessageResult,
+    Vectorize,
+    primary_ttl,
 )
 from opencortex.store.session.buffer import SessionBuffer
-from opencortex.store.types import MemoryCategory, SessionRecordLayer
-from opencortex.writer.primary_record_writer import PrimaryRecordWriter
+from opencortex.store.types import ContextType, MemoryCategory, SessionRecordLayer
+from opencortex.store.writer.primary_record_writer import PrimaryRecordWriter
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class SessionStore:
@@ -40,15 +40,19 @@ class SessionStore:
         *,
         buffer: SessionBuffer,
         namespace: CortexNamespace,
-        embedder: StoreEmbedder,
+        embedder: Any,
         writer: PrimaryRecordWriter,
         events: StoreEvents,
+        config: Any,
+        ttl_from_hours: Any,
     ) -> None:
         self.buffer = buffer
         self.namespace = namespace
         self.embedder = embedder
         self.writer = writer
         self.events = events
+        self.config = config
+        self.ttl_from_hours = ttl_from_hours
 
     async def message(self, input_: SessionMessageInput) -> SessionMessageResult:
         """Write one session turn through the direct message store chain."""
@@ -62,14 +66,14 @@ class SessionStore:
 
             for message in input_.messages:
                 msg_index = self.buffer.next_msg_index(key)
-                record_input = self.build_immediate_record(
+                record_input = await self.build_immediate_record(
                     input_=input_,
                     message=message,
                     msg_index=msg_index,
                     profile=profile,
                 )
-                await self.embedder.embed_context(record_input.ctx)
                 stored = await self.writer.write(record_input)
+                self.events.memory_stored(record_input, stored)
                 self.buffer.append(
                     key,
                     text=record_input.content,
@@ -79,6 +83,8 @@ class SessionStore:
                     ),
                 )
                 written_uris.append(stored.uri)
+                if self.buffer.freeze_ready_chunks(key):
+                    merge_requested = True
 
             self.events.session_turn_stored(
                 profile=profile,
@@ -86,7 +92,7 @@ class SessionStore:
                 record_uris=written_uris,
                 tool_calls=input_.tool_calls,
             )
-            merge_requested = self.buffer.should_merge(key)
+            merge_requested = merge_requested or self.buffer.should_merge(key)
 
         return SessionMessageResult(
             turn_id=input_.turn_id,
@@ -94,7 +100,7 @@ class SessionStore:
             merge_requested=merge_requested,
         )
 
-    def build_immediate_record(
+    async def build_immediate_record(
         self,
         *,
         input_: SessionMessageInput,
@@ -114,45 +120,41 @@ class SessionStore:
             msg_index=msg_index,
             profile=profile,
         )
-        entities = merge_unique_strings(meta.get("entities"))
-        topics = merge_unique_strings(meta.get("topics"))
-        keywords = ", ".join(topics)
         content = self.decorate_message_text(message.content, meta)
 
         ctx = Context(
             uri=uri,
             parent_uri=parent_uri,
             is_leaf=True,
-            abstract=content,
-            overview="",
             context_type=ContextType.MEMORY,
             category=str(MemoryCategory.EVENTS),
             related_uri=[],
             meta=meta,
             session_id=input_.session_id,
-            user=UserIdentifier(profile.tenant_id, profile.user_id),
+            profile=profile,
         )
-        ctx.vectorize = Vectorize(self.immediate_embed_text(content))
-        abstract_json = build_abstract_json(
-            uri=uri,
-            context_type=ContextType.MEMORY,
-            category=str(MemoryCategory.EVENTS),
-            abstract=content,
-            overview="",
+        raw_record = RawPrimaryRecord.from_context(
+            ctx=ctx,
             content=content,
-            entities=entities,
-            meta=meta,
-            keywords=topics,
-            parent_uri=parent_uri,
+            effective_category=str(MemoryCategory.EVENTS),
+            tenant_id=profile.tenant_id,
+            user_id=profile.user_id,
+            project_id=profile.project_id,
             session_id=input_.session_id,
+            meta=meta,
+            ttl_expires_at=primary_ttl(
+                config=self.config,
+                ttl_from_hours=self.ttl_from_hours,
+                context_type=ContextType.MEMORY,
+                category=str(MemoryCategory.EVENTS),
+                layer=str(SessionRecordLayer.IMMEDIATE),
+            ),
         )
+        await self.prepare_immediate_ready_payload(raw_record, ctx, meta)
         return PrimaryRecordInput(
             ctx=ctx,
-            abstract_json=abstract_json,
-            object_payload=memory_object_payload(abstract_json, is_leaf=True),
-            effective_category=str(MemoryCategory.EVENTS),
-            keywords=keywords,
-            entities=entities,
+            payload=raw_record.model_dump(mode="json"),
+            effective_category=raw_record.category,
             meta=meta,
             context_type=ContextType.MEMORY,
             session_id=input_.session_id,
@@ -160,6 +162,51 @@ class SessionStore:
             user_id=profile.user_id,
             content=content,
         )
+
+    async def prepare_immediate_ready_payload(
+        self,
+        raw_record: RawPrimaryRecord,
+        ctx: Context,
+        meta: dict[str, Any],
+    ) -> None:
+        """Make an immediate message synchronously retrieval-ready."""
+        entities = merge_unique_strings(meta.get("entities"))
+        keywords_list = merge_unique_strings(meta.get("topics"))
+        keywords = ", ".join(keywords_list)
+        abstract_json = build_abstract_json(
+            uri=raw_record.uri,
+            context_type=str(ContextType.MEMORY),
+            category=str(MemoryCategory.EVENTS),
+            abstract=raw_record.content,
+            overview="",
+            content=raw_record.content,
+            entities=entities,
+            meta=meta,
+            keywords=keywords_list,
+            parent_uri=raw_record.parent_uri,
+            session_id=raw_record.session_id,
+        )
+        abstract_json["fact_points"] = [raw_record.content]
+        raw_record.abstract = raw_record.content
+        raw_record.overview = ""
+        raw_record.entities = entities
+        raw_record.keywords = keywords
+        raw_record.abstract_json = abstract_json
+        raw_record.retrieval_surface = "l0_object"
+        raw_record.retrieval_ready = True
+        raw_record.derive_status = "ready"
+        raw_record.meta = meta
+        for key, value in memory_object_payload(abstract_json, is_leaf=True).items():
+            setattr(raw_record, key, value)
+        ctx.abstract = raw_record.abstract
+        ctx.overview = raw_record.overview
+        ctx.vectorize = Vectorize(self.immediate_embed_text(raw_record.content))
+        embedding = await self.embedder.embed_context(ctx)
+        if not ctx.vector:
+            raise ValueError("Immediate embedding returned no dense vector")
+        raw_record.vector = ctx.vector
+        if embedding.sparse_vector:
+            raw_record.sparse_vector = embedding.sparse_vector
 
     @staticmethod
     def message_meta(

@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""
-JWT token generation, verification, and record management.
+"""JWT token generation, verification, and record management.
 
 Tokens use HS256 signing with a server-generated secret key stored at
 ``{data_root}/auth_secret.key``.  Token records (issued tokens with metadata)
@@ -24,6 +23,7 @@ _ALGORITHM = "HS256"
 # ---------------------------------------------------------------------------
 # Secret key management
 # ---------------------------------------------------------------------------
+
 
 def ensure_secret(data_root: str) -> str:
     """Read or auto-generate the HS256 secret key.
@@ -50,7 +50,10 @@ def ensure_secret(data_root: str) -> str:
 # Token generation / verification
 # ---------------------------------------------------------------------------
 
-def generate_token(tenant_id: str, user_id: str, secret: str, *, role: str = "user") -> str:
+
+def generate_token(
+    tenant_id: str, user_id: str, secret: str, *, role: str = "user"
+) -> str:
     """Generate a JWT with tenant and user identity claims.
 
     Claims::
@@ -97,6 +100,7 @@ def generate_admin_token(secret: str) -> str:
 # Token records (issued token bookkeeping)
 # ---------------------------------------------------------------------------
 
+
 def _records_path(data_root: str) -> Path:
     return Path(data_root) / _TOKEN_RECORDS_FILE
 
@@ -130,16 +134,19 @@ def save_token_record(
     records = load_token_records(data_root)
     # Remove existing record for the same tenant_id + user_id
     records = [
-        r for r in records
+        r
+        for r in records
         if not (r["tenant_id"] == tenant_id and r["user_id"] == user_id)
     ]
-    records.append({
-        "token": token,
-        "tenant_id": tenant_id,
-        "user_id": user_id,
-        "role": role,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    })
+    records.append(
+        {
+            "token": token,
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "role": role,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
     p = _records_path(data_root)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_bytes(json.dumps(records, option=json.OPT_INDENT_2))

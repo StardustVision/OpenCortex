@@ -3,7 +3,7 @@
 import logging
 import re
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Any, List, Optional, Union
 
 from opencortex.parse.base import ParsedChunk, lazy_import
 from opencortex.parse.parsers.base_parser import BaseParser
@@ -12,11 +12,15 @@ logger = logging.getLogger(__name__)
 
 
 class EPubParser(BaseParser):
+    """Parser for EPUB documents."""
+
     @property
     def supported_extensions(self) -> List[str]:
+        """Return EPUB file extensions."""
         return [".epub"]
 
-    async def parse(self, source: Union[str, Path], **kwargs) -> List[ParsedChunk]:
+    async def parse(self, source: Union[str, Path], **kwargs: Any) -> List[ParsedChunk]:
+        """Extract EPUB document text and parse it into chunks."""
         ebooklib = lazy_import("ebooklib")
         epub = lazy_import("ebooklib.epub")
         book = epub.read_epub(str(source))
@@ -30,12 +34,15 @@ class EPubParser(BaseParser):
         return await self.parse_content(content, source_path=str(source), **kwargs)
 
     async def parse_content(
-        self, content: str, source_path: Optional[str] = None, **kwargs
+        self, content: str, source_path: Optional[str] = None, **kwargs: Any
     ) -> List[ParsedChunk]:
+        """Parse markdown-like EPUB content into document chunks."""
         from opencortex.parse.parsers.markdown import MarkdownParser
 
         md_parser = MarkdownParser()
-        chunks = await md_parser.parse_content(content, source_path=source_path, **kwargs)
+        chunks = await md_parser.parse_content(
+            content, source_path=source_path, **kwargs
+        )
         for chunk in chunks:
             chunk.source_format = "epub"
         return chunks
@@ -43,7 +50,11 @@ class EPubParser(BaseParser):
     @staticmethod
     def _html_to_text(html: str) -> str:
         """Simple HTML to text conversion."""
-        text = re.sub(r"<h([1-6])[^>]*>(.*?)</h\1>", lambda m: "#" * int(m.group(1)) + " " + m.group(2), html)
+        text = re.sub(
+            r"<h([1-6])[^>]*>(.*?)</h\1>",
+            lambda m: "#" * int(m.group(1)) + " " + m.group(2),
+            html,
+        )
         text = re.sub(r"<p[^>]*>(.*?)</p>", r"\1\n\n", text)
         text = re.sub(r"<br\s*/?>", "\n", text)
         text = re.sub(r"<[^>]+>", "", text)

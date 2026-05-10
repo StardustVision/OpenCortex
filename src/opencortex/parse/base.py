@@ -60,8 +60,8 @@ def lazy_import(module_name: str, package_name: Optional[str] = None) -> Any:
     """Import a module lazily, raising ImportError with install hint if missing."""
     try:
         return importlib.import_module(module_name)
-    except ImportError:
+    except ImportError as exc:
         pkg = package_name or module_name
         raise ImportError(
             f"Module '{module_name}' not available. Install: pip install {pkg}"
-        )
+        ) from exc

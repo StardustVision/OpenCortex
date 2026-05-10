@@ -2,7 +2,7 @@
 
 import logging
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Any, List, Optional, Union
 
 from opencortex.parse.base import ParsedChunk, lazy_import
 from opencortex.parse.parsers.base_parser import BaseParser
@@ -11,11 +11,15 @@ logger = logging.getLogger(__name__)
 
 
 class WordParser(BaseParser):
+    """Parser for Microsoft Word documents."""
+
     @property
     def supported_extensions(self) -> List[str]:
+        """Return Word file extensions."""
         return [".docx", ".doc"]
 
-    async def parse(self, source: Union[str, Path], **kwargs) -> List[ParsedChunk]:
+    async def parse(self, source: Union[str, Path], **kwargs: Any) -> List[ParsedChunk]:
+        """Convert a Word document to markdown-like text and parse chunks."""
         docx = lazy_import("docx", "python-docx")
         doc = docx.Document(str(source))
         md_lines = []
@@ -39,12 +43,15 @@ class WordParser(BaseParser):
         return await self.parse_content(content, source_path=str(source), **kwargs)
 
     async def parse_content(
-        self, content: str, source_path: Optional[str] = None, **kwargs
+        self, content: str, source_path: Optional[str] = None, **kwargs: Any
     ) -> List[ParsedChunk]:
+        """Parse markdown-like Word content into document chunks."""
         from opencortex.parse.parsers.markdown import MarkdownParser
 
         md_parser = MarkdownParser()
-        chunks = await md_parser.parse_content(content, source_path=source_path, **kwargs)
+        chunks = await md_parser.parse_content(
+            content, source_path=source_path, **kwargs
+        )
         for chunk in chunks:
             chunk.source_format = "docx"
         return chunks

@@ -6,8 +6,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from opencortex.core.context import Context
-from opencortex.store.schemas import StoreEmbedding
+from opencortex.store.schemas import Context, StoreEmbedding
 
 
 class StoreEmbedder:

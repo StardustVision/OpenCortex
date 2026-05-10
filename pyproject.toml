@@ -39,8 +39,8 @@ training = [
 ]
 
 [project.scripts]
-opencortex-app = "opencortex_app.__main__:main"
-opencortex-server = "opencortex.http.__main__:main"
+opencortex = "opencortex.__main__:main"
+opencortex-server = "opencortex.__main__:main"
 opencortex-token = "opencortex.auth.__main__:main"
 
 [tool.setuptools]
@@ -59,14 +59,8 @@ dev = [
 line-length = 88
 target-version = "py310"
 include = [
-    "src/opencortex_app/**/*.py",
-    "src/opencortex/http/__main__.py",
-    "src/opencortex/http/client.py",
-    "src/opencortex/http/models.py",
-    "src/opencortex/http/request_context.py",
-    "src/opencortex/http/server.py",
-    "src/opencortex/skill_engine/http_routes.py",
-    "tests/opencortex_app/**/*.py",
+    "src/opencortex/**/*.py",
+    "tests/opencortex/**/*.py",
 ]
 
 [tool.ruff.format]

@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from opencortex.core.identity import IdentityProfile
-from opencortex.parse.base import estimate_tokens
+from opencortex.utils.text import estimate_tokens
 
 SessionKey = tuple[str, str, str, str]
 
@@ -53,6 +53,7 @@ class SessionBuffer:
         self.activity: dict[SessionKey, float] = {}
         self.project_ids: dict[SessionKey, str] = {}
         self.buffers: dict[SessionKey, ConversationBuffer] = {}
+        self.pending_merges: dict[SessionKey, list[SessionBufferSnapshot]] = {}
 
     def session_key(
         self,
@@ -63,7 +64,8 @@ class SessionBuffer:
         session_id: str,
     ) -> SessionKey:
         """Build the scoped session state key."""
-        return (collection or self.collection_resolver(), tenant_id, user_id, session_id)
+        resolved_collection = collection or self.collection_resolver()
+        return (resolved_collection, tenant_id, user_id, session_id)
 
     def profile_key(self, profile: IdentityProfile) -> SessionKey:
         """Build the scoped session key from an identity profile."""
@@ -103,8 +105,7 @@ class SessionBuffer:
         buffer.messages.append(text)
         buffer.immediate_uris.append(record_uri)
         buffer.token_count += estimate_tokens(text)
-        if tool_calls:
-            buffer.tool_calls_per_turn.append(list(tool_calls))
+        buffer.tool_calls_per_turn.append(list(tool_calls or []))
 
     def should_merge(self, key: SessionKey) -> bool:
         """Return whether buffered messages should be merged."""
@@ -115,20 +116,91 @@ class SessionBuffer:
 
     def snapshot(self, key: SessionKey) -> SessionBufferSnapshot | None:
         """Detach current buffered messages for synchronous merge."""
+        pending = self.pop_merge_chunk(key)
+        if pending is not None:
+            return pending
+        if self.freeze_merge_chunk(key, force=True):
+            return self.pop_merge_chunk(key)
+        return None
+
+    def freeze_ready_chunks(self, key: SessionKey) -> int:
+        """Freeze all active chunks that reached the merge budget."""
+        frozen = 0
+        while self.freeze_merge_chunk(key):
+            frozen += 1
+        return frozen
+
+    def freeze_all_chunks(self, key: SessionKey) -> int:
+        """Freeze all active messages into bounded merge chunks."""
+        frozen = 0
+        while self.freeze_merge_chunk(key, force=True):
+            frozen += 1
+        return frozen
+
+    def freeze_merge_chunk(self, key: SessionKey, *, force: bool = False) -> bool:
+        """Move one bounded active-buffer chunk into the pending merge queue."""
         buffer = self.buffers.get(key)
         if buffer is None or not buffer.messages:
-            return None
+            return False
+        if not force and buffer.token_count < self.merge_token_budget:
+            return False
+
+        count = self.merge_chunk_size(buffer, force=force)
+        if count <= 0:
+            return False
+        messages = list(buffer.messages[:count])
+        token_count = sum(estimate_tokens(message) for message in messages)
         snapshot = SessionBufferSnapshot(
-            messages=list(buffer.messages),
-            token_count=buffer.token_count,
+            messages=messages,
+            token_count=token_count,
             start_msg_index=buffer.start_msg_index,
-            immediate_uris=list(buffer.immediate_uris),
-            tool_calls_per_turn=[list(item) for item in buffer.tool_calls_per_turn],
+            immediate_uris=list(buffer.immediate_uris[:count]),
+            tool_calls_per_turn=[
+                list(item) for item in buffer.tool_calls_per_turn[:count]
+            ],
         )
         self.buffers[key] = ConversationBuffer(
-            start_msg_index=buffer.start_msg_index + len(buffer.messages),
+            messages=list(buffer.messages[count:]),
+            token_count=sum(
+                estimate_tokens(message) for message in buffer.messages[count:]
+            ),
+            start_msg_index=buffer.start_msg_index + count,
+            immediate_uris=list(buffer.immediate_uris[count:]),
+            tool_calls_per_turn=[
+                list(item) for item in buffer.tool_calls_per_turn[count:]
+            ],
         )
+        self.pending_merges.setdefault(key, []).append(snapshot)
+        return True
+
+    def merge_chunk_size(self, buffer: ConversationBuffer, *, force: bool) -> int:
+        """Return how many active messages belong to the next merge chunk."""
+        if force and buffer.token_count < self.merge_token_budget:
+            return len(buffer.messages)
+
+        count = 0
+        tokens = 0
+        for message in buffer.messages:
+            message_tokens = estimate_tokens(message)
+            if count > 0 and tokens + message_tokens > self.merge_token_budget:
+                break
+            count += 1
+            tokens += message_tokens
+        return max(1, count)
+
+    def pop_merge_chunk(self, key: SessionKey) -> SessionBufferSnapshot | None:
+        """Return the oldest frozen merge chunk."""
+        chunks = self.pending_merges.get(key)
+        if not chunks:
+            return None
+        snapshot = chunks.pop(0)
+        if not chunks:
+            self.pending_merges.pop(key, None)
         return snapshot
+
+    def has_pending_merge(self, key: SessionKey) -> bool:
+        """Return whether frozen merge chunks are waiting."""
+        return bool(self.pending_merges.get(key))
 
     def prune_idle(self) -> int:
         """Drop idle session state and return the number of removed sessions."""
@@ -148,6 +220,7 @@ class SessionBuffer:
         self.activity.pop(key, None)
         self.project_ids.pop(key, None)
         self.buffers.pop(key, None)
+        self.pending_merges.pop(key, None)
 
     def clear(self) -> None:
         """Drop all in-memory session state."""
@@ -155,3 +228,4 @@ class SessionBuffer:
         self.activity.clear()
         self.project_ids.clear()
         self.buffers.clear()
+        self.pending_merges.clear()

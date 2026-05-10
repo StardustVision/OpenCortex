@@ -5,14 +5,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from opencortex.memory import (
-    MemoryKind,
-    memory_abstract_from_record,
-    memory_anchor_hits_from_abstract,
-    memory_kind_policy,
-    memory_merge_signature_from_abstract,
-)
-
 
 def merge_unique_strings(*groups: Any) -> list[str]:
     """Return a stable ordered union of non-empty string values."""
@@ -67,7 +59,11 @@ def build_abstract_json(
         "parent_uri": parent_uri,
         "session_id": session_id,
     }
-    result = memory_abstract_from_record(record).to_dict()
+    result = {
+        **record,
+        "memory_kind": memory_kind_for_record(record),
+        "anchors": anchors_from_record(record),
+    }
     anchor_handles = meta.get("anchor_handles")
     if not anchor_handles:
         return result
@@ -100,17 +96,52 @@ def memory_object_payload(
     is_leaf: bool,
 ) -> dict[str, Any]:
     """Project canonical abstract payload into flat vector metadata."""
-    memory_kind = MemoryKind(str(abstract_json["memory_kind"]))
-    policy = memory_kind_policy(memory_kind)
-    anchor_hits = memory_anchor_hits_from_abstract(abstract_json)
+    memory_kind = str(abstract_json.get("memory_kind", "semantic") or "semantic")
+    anchor_hits = [
+        str(anchor.get("value", "") or "")
+        for anchor in abstract_json.get("anchors", [])
+        if isinstance(anchor, dict) and str(anchor.get("value", "") or "").strip()
+    ]
     return {
-        "memory_kind": memory_kind.value,
+        "memory_kind": memory_kind,
         "anchor_hits": anchor_hits,
-        "merge_signature": memory_merge_signature_from_abstract(abstract_json),
-        "mergeable": policy.mergeable,
+        "merge_signature": merge_signature_from_abstract(abstract_json),
+        "mergeable": memory_kind != "episodic",
         "retrieval_surface": "l0_object" if is_leaf else "",
         "anchor_surface": bool(is_leaf and anchor_hits),
     }
+
+
+def memory_kind_for_record(record: dict[str, Any]) -> str:
+    """Return the memory kind for a canonical record."""
+    category = str(record.get("category", "") or "").strip()
+    if category in {"semantic", "episodic", "procedural"}:
+        return category
+    return "semantic"
+
+
+def anchors_from_record(record: dict[str, Any]) -> list[dict[str, str]]:
+    """Build anchor payloads from entities and keywords."""
+    anchors: list[dict[str, str]] = []
+    for entity in record.get("entities", []) or []:
+        value = str(entity).strip()
+        if value:
+            anchors.append({"anchor_type": "entity", "value": value, "text": value})
+    for keyword in record.get("keywords", []) or []:
+        value = str(keyword).strip()
+        if value:
+            anchors.append({"anchor_type": "topic", "value": value, "text": value})
+    return anchors
+
+
+def merge_signature_from_abstract(abstract_json: dict[str, Any]) -> str:
+    """Return a deterministic merge signature for object-level memory."""
+    parts = [
+        str(abstract_json.get("memory_kind", "")),
+        str(abstract_json.get("category", "")),
+        str(abstract_json.get("abstract", "")).strip().lower(),
+    ]
+    return "|".join(parts)
 
 
 def extract_category_from_uri(uri: str) -> str:
@@ -139,4 +170,3 @@ def extract_category_from_uri(uri: str) -> str:
         if idx + 1 < len(parts):
             return parts[idx + 1]
     return ""
-

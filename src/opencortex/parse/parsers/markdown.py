@@ -1,5 +1,4 @@
-"""
-Markdown parser for OpenCortex — ported from OpenViking v5.0.
+"""Markdown parser for OpenCortex — ported from OpenViking v5.0.
 
 Returns List[ParsedChunk] instead of writing to VikingFS.
 All chunking logic preserved: heading detection, section merge, smart split.
@@ -11,7 +10,6 @@ Scenarios:
 4. Oversized sections without subsections → split by paragraphs
 """
 
-import hashlib
 import logging
 import re
 from pathlib import Path
@@ -35,7 +33,7 @@ class MarkdownParser(BaseParser):
         self,
         extract_frontmatter: bool = True,
         config: Optional[ParserConfig] = None,
-    ):
+    ) -> None:
         self.extract_frontmatter = extract_frontmatter
         self.config = config or ParserConfig()
         self._heading_pattern = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
@@ -46,9 +44,11 @@ class MarkdownParser(BaseParser):
 
     @property
     def supported_extensions(self) -> List[str]:
+        """Return Markdown file extensions."""
         return [".md", ".markdown", ".mdown", ".mkd"]
 
-    async def parse(self, source: Union[str, Path], **kwargs) -> List[ParsedChunk]:
+    async def parse(self, source: Union[str, Path], **kwargs: Any) -> List[ParsedChunk]:
+        """Parse a markdown file path or raw markdown string."""
         path = Path(source)
         if path.exists():
             content = self._read_file(path)
@@ -59,7 +59,7 @@ class MarkdownParser(BaseParser):
         self,
         content: str,
         source_path: Optional[str] = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> List[ParsedChunk]:
         """Parse markdown content into ParsedChunk list."""
         meta: Dict[str, Any] = {}
@@ -112,9 +112,14 @@ class MarkdownParser(BaseParser):
         chunks: List[ParsedChunk] = []
         sections = self._build_top_level_sections(content, headings)
         self._process_sections_to_chunks(
-            content, headings, sections, chunks,
-            parent_index=-1, parent_level=0,
-            max_size=max_size, min_size=min_size,
+            content,
+            headings,
+            sections,
+            chunks,
+            parent_index=-1,
+            parent_level=0,
+            max_size=max_size,
+            min_size=min_size,
             parent_path="",
         )
         return chunks
@@ -158,14 +163,16 @@ class MarkdownParser(BaseParser):
         if first_heading_start > 0:
             pre_content = content[:first_heading_start].strip()
             if pre_content:
-                sections.append({
-                    "name": "preamble",
-                    "content": pre_content,
-                    "tokens": estimate_tokens(pre_content),
-                    "has_children": False,
-                    "heading_idx": None,
-                    "level": 0,
-                })
+                sections.append(
+                    {
+                        "name": "preamble",
+                        "content": pre_content,
+                        "tokens": estimate_tokens(pre_content),
+                        "has_children": False,
+                        "heading_idx": None,
+                        "level": 0,
+                    }
+                )
 
         # Top-level headings
         for i, h in enumerate(headings):
@@ -201,7 +208,9 @@ class MarkdownParser(BaseParser):
         has_children = len(child_indices) > 0
         heading_prefix = "#" * level
         section_start = end_pos
-        full_content = f"{heading_prefix} {title}\n\n{content[section_start:section_end].strip()}"
+        full_content = (
+            f"{heading_prefix} {title}\n\n{content[section_start:section_end].strip()}"
+        )
         full_tokens = estimate_tokens(full_content)
 
         direct_content = ""
@@ -240,7 +249,9 @@ class MarkdownParser(BaseParser):
         expanded = []
         for sec in sections:
             if sec.get("heading_idx") is not None and "content" not in sec:
-                expanded.append(self._get_section_info(content, headings, sec["heading_idx"]))
+                expanded.append(
+                    self._get_section_info(content, headings, sec["heading_idx"])
+                )
             else:
                 expanded.append(sec)
 
@@ -258,7 +269,9 @@ class MarkdownParser(BaseParser):
 
             # Small section → accumulate in pending
             if tokens < min_size:
-                pending = self._try_add_to_pending(pending, sec, max_size, chunks, parent_index)
+                pending = self._try_add_to_pending(
+                    pending, sec, max_size, chunks, parent_index
+                )
                 continue
 
             # Can merge with pending?
@@ -272,19 +285,33 @@ class MarkdownParser(BaseParser):
             self._flush_pending(pending, chunks, parent_index)
             pending = []
             self._save_section_chunk(
-                content, headings, sec, chunks, parent_index, max_size, min_size,
+                content,
+                headings,
+                sec,
+                chunks,
+                parent_index,
+                max_size,
+                min_size,
                 parent_path=parent_path,
             )
 
         # Flush remaining
         self._flush_pending(pending, chunks, parent_index)
 
-    def _can_merge(self, pending: List, tokens: int, max_size: int, has_children: bool) -> bool:
-        return sum(s["tokens"] for s in pending) + tokens <= max_size and not has_children
+    def _can_merge(
+        self, pending: List, tokens: int, max_size: int, has_children: bool
+    ) -> bool:
+        return (
+            sum(s["tokens"] for s in pending) + tokens <= max_size and not has_children
+        )
 
     def _try_add_to_pending(
-        self, pending: List, sec: Dict, max_size: int,
-        chunks: List[ParsedChunk], parent_index: int
+        self,
+        pending: List,
+        sec: Dict,
+        max_size: int,
+        chunks: List[ParsedChunk],
+        parent_index: int,
     ) -> List:
         if pending and sum(s["tokens"] for s in pending) + sec["tokens"] > max_size:
             self._save_merged_chunks(pending, chunks, parent_index)
@@ -304,18 +331,20 @@ class MarkdownParser(BaseParser):
         """Save merged sections as a single chunk."""
         combined = "\n\n".join(s["content"] for s in sections)
         names = [s["name"] for s in sections]
-        title = names[0] if len(names) == 1 else f"{names[0]} (+{len(names)-1} more)"
+        title = names[0] if len(names) == 1 else f"{names[0]} (+{len(names) - 1} more)"
         level = sections[0].get("level", 1)
         # Use the section_path from the first section in the merge group
         section_path = sections[0].get("_section_path", sections[0].get("name", ""))
-        chunks.append(ParsedChunk(
-            content=combined,
-            title=title,
-            level=level,
-            parent_index=parent_index,
-            source_format="markdown",
-            meta={"section_path": section_path} if section_path else {},
-        ))
+        chunks.append(
+            ParsedChunk(
+                content=combined,
+                title=title,
+                level=level,
+                parent_index=parent_index,
+                source_format="markdown",
+                meta={"section_path": section_path} if section_path else {},
+            )
+        )
 
     def _save_section_chunk(
         self,
@@ -341,71 +370,88 @@ class MarkdownParser(BaseParser):
 
         # Fits in one chunk
         if tokens <= max_size:
-            chunks.append(ParsedChunk(
-                content=sec["content"],
-                title=sec_name,
-                level=level,
-                parent_index=parent_index,
-                source_format="markdown",
-                meta=chunk_meta,
-            ))
+            chunks.append(
+                ParsedChunk(
+                    content=sec["content"],
+                    title=sec_name,
+                    level=level,
+                    parent_index=parent_index,
+                    source_format="markdown",
+                    meta=chunk_meta,
+                )
+            )
             return
 
         if has_children:
             # Create directory chunk, then recurse
             dir_index = len(chunks)
             dir_content = sec.get("direct_content", "") or sec_name
-            chunks.append(ParsedChunk(
-                content=dir_content,
-                title=sec_name,
-                level=level,
-                parent_index=parent_index,
-                source_format="markdown",
-                meta=chunk_meta,
-            ))
+            chunks.append(
+                ParsedChunk(
+                    content=dir_content,
+                    title=sec_name,
+                    level=level,
+                    parent_index=parent_index,
+                    source_format="markdown",
+                    meta=chunk_meta,
+                )
+            )
 
             # Build children
             children = []
             if sec.get("direct_content"):
-                children.append({
-                    "name": sec_name,
-                    "content": sec["direct_content"],
-                    "tokens": estimate_tokens(sec["direct_content"]),
-                    "has_children": False,
-                    "heading_idx": None,
-                    "level": level + 1,
-                })
+                children.append(
+                    {
+                        "name": sec_name,
+                        "content": sec["direct_content"],
+                        "tokens": estimate_tokens(sec["direct_content"]),
+                        "has_children": False,
+                        "heading_idx": None,
+                        "level": level + 1,
+                    }
+                )
             for child_idx in sec.get("child_indices", []):
                 children.append({"heading_idx": child_idx})
 
             self._process_sections_to_chunks(
-                content, headings, children, chunks,
-                parent_index=dir_index, parent_level=level,
-                max_size=max_size, min_size=min_size,
+                content,
+                headings,
+                children,
+                chunks,
+                parent_index=dir_index,
+                parent_level=level,
+                max_size=max_size,
+                min_size=min_size,
                 parent_path=section_path,
             )
         else:
             # Split by paragraphs
             parts = self._smart_split_content(sec["content"], max_size)
             for i, part in enumerate(parts):
-                chunks.append(ParsedChunk(
-                    content=part,
-                    title=f"{sec_name} (part {i+1})" if len(parts) > 1 else sec_name,
-                    level=level,
-                    parent_index=parent_index,
-                    source_format="markdown",
-                    meta=chunk_meta,
-                ))
+                chunks.append(
+                    ParsedChunk(
+                        content=part,
+                        title=f"{sec_name} (part {i + 1})"
+                        if len(parts) > 1
+                        else sec_name,
+                        level=level,
+                        parent_index=parent_index,
+                        source_format="markdown",
+                        meta=chunk_meta,
+                    )
+                )
 
     # ========== Utilities ==========
 
-    def _extract_frontmatter(self, content: str) -> Tuple[str, Optional[Dict[str, Any]]]:
+    def _extract_frontmatter(
+        self, content: str
+    ) -> Tuple[str, Optional[Dict[str, Any]]]:
         """Extract YAML frontmatter from content."""
         match = self._frontmatter_pattern.match(content)
         if not match:
             return content, None
         frontmatter_text = match.group(1)
-        content_without = content[match.end():]
+        content_without = content[match.end() :]
         frontmatter = {}
         for line in frontmatter_text.split("\n"):
             line = line.strip()
@@ -430,7 +476,7 @@ class MarkdownParser(BaseParser):
                     current_tokens = 0
                 char_split_size = int(max_size * 3)
                 for i in range(0, len(para), char_split_size):
-                    parts.append(para[i:i + char_split_size].strip())
+                    parts.append(para[i : i + char_split_size].strip())
             elif current_tokens + para_tokens > max_size and current:
                 parts.append(current.strip())
                 current = para
