@@ -1,194 +1,543 @@
-<h1 align="center">OpenCortex</h1>
-<p align="center"><strong>Persistent memory and context infrastructure for AI agents</strong></p>
-<p align="center">
-  <a href="#what-is-opencortex">Overview</a> &middot;
-  <a href="#key-concepts">Key Concepts</a> &middot;
-  <a href="#architecture-overview">Architecture</a> &middot;
-  <a href="#quick-start">Quick Start</a> &middot;
-  <a href="#core-features">Features</a> &middot;
-  <a href="#api-overview">API</a> &middot;
-  <a href="#repository-layout">Repository</a> &middot;
-  <a href="README_CN.md">中文文档</a>
-</p>
+# OpenCortex
 
----
+OpenCortex is a memory storage and recall runtime for AI agents. It stores
+memories, resources, and conversation sessions into a layered file tree plus a
+Qdrant vector index, then exposes the result through HTTP APIs, Streamable HTTP
+MCP, and a small web console.
 
-## What is OpenCortex
+The current codebase is the new `opencortex` runtime. Historical memory-chain
+code has been removed from the active package; future features such as
+insights, autophagy, skill engine, and self-upgrade are tracked as design
+documents under `docs/design/`.
 
-LLM agents forget. Session context, user preferences, design decisions, debugging history, and reusable workflows disappear unless they are stored outside the model window.
+## What It Does
 
-OpenCortex is the persistence layer for that problem. It combines layered memory storage, intent-aware recall planning, and retrieval tuned for agent workflows, then exposes the result through one HTTP API backend.
+OpenCortex provides:
 
-In practice, OpenCortex is built for:
+- Durable memory writes for user facts, preferences, events, and workflows.
+- Resource writes for documents, parsed sections, and shared knowledge material.
+- Session writes for conversation turns and session-end summaries.
+- L0/L1/L2 storage layers:
+  - `L0`: compact abstract
+  - `L1`: overview
+  - `L2`: full content
+- Background side indexes for recall:
+  - primary object records
+  - anchor and fact indexes
+  - entity index
+  - reason-tree index
+  - cone-expansion-ready relation signals
+- Retrieval through probe, planner, executor, ranker, reason-tree selection, and
+  optional cone expansion.
+- Semantic forget by query or URI.
+- JWT-protected API, admin token management, and MCP access.
+- A React web console for token management and memory inspection.
 
-- cross-session memory and project context
-- document and conversation ingestion
-- retrieval that balances relevance, recency, feedback, and structure
-- optional knowledge, insights, and skill-oriented services on the same substrate
-- multi-tenant and project-scoped isolation via JWT-backed identity
-
-## Key Concepts
-
-### Three-layer memory
-
-Each record is stored at multiple levels of detail:
-
-| Layer | Role |
-|---|---|
-| `L0` | Small abstract for cheap indexing and quick confirmation |
-| `L1` | Structured overview for most recall responses |
-| `L2` | Full content for deep inspection and audits |
-
-### Explicit recall planning
-
-OpenCortex does not treat every query as a generic vector search. Queries are classified, routed, and turned into a recall plan that decides whether recall should run, which context to search, and how much detail to return.
-
-### Retrieval beyond embeddings
-
-Search combines multiple signals instead of a single vector score. Depending on configuration and query type, ranking can use semantic search, lexical weighting, rerank gating, explicit feedback, hotness, and cone-style expansion around shared entities.
-
-### Context lifecycle
-
-The central lifecycle endpoint is `/api/v1/context`. It drives three phases:
-
-- `prepare`: plan recall and return memory or knowledge context
-- `commit`: record the turn and feedback signals
-- `end`: flush session state and optional post-processing
-
-### Shared memory substrate
-
-Core memory, optional knowledge extraction, insights reporting, and the skill engine share the same storage, identity, and retrieval base instead of standing up separate systems.
-
-## Architecture Overview
+## Current Architecture
 
 ```text
-AI client
-  -> HTTP API
-  -> FastAPI server
-  -> CortexMemory
-     -> ingest pipelines for memory / document / conversation
-     -> recall planning and retrieval
-     -> CortexFS + embedded Qdrant storage
-     -> optional knowledge / insights / skill services
-  -> optional web console at /console
+Client / Agent / MCP client
+  -> Bearer JWT middleware
+  -> FastAPI routes
+     -> Store flows
+        -> PrimaryRecordWriter
+        -> CFS-backed CortexStorage
+        -> QdrantVectorStore
+        -> persistent SQLite-backed event queue
+        -> background writers for semantic layers and side indexes
+     -> Retrieval flow
+        -> probe
+        -> planner
+        -> executor
+        -> ranker
+        -> CFS hydration
+  -> Optional React console
 ```
 
-At a high level, agents and client applications call the FastAPI backend directly over HTTP. The backend coordinates storage, recall, context lifecycle, and optional higher-level analysis services.
+The core split is intentional:
 
-## Quick Start
+- `storage/` owns CFS and URI-tree file operations.
+- `vector/` owns Qdrant payloads, vector storage, and retrieval.
+- `store/` owns write flows, session handling, events, and writers.
+- `console/` owns web-console management APIs and does not change MCP or the
+  public memory API contract.
+- `mcp/` exposes the same memory capabilities through Streamable HTTP MCP.
 
-### Requirements
+## Repository Layout
+
+```text
+src/opencortex/
+  app.py                  FastAPI application factory and runtime wiring
+  settings.py             OPENCORTEX_APP_* configuration
+  auth/                   JWT generation, verification, and admin token APIs
+  console/                Web-console-only management APIs
+  core/                   request identity context and middleware
+  llm/                    OpenAI-compatible LLM client
+  mcp/                    Streamable HTTP MCP transport and tools
+  parse/                  document parser adapters
+  prompts/                write and retrieval prompts
+  storage/                CFS, CortexStorage, persistent queue, URI namespace
+  store/                  write/session/event flows and writers
+  vector/                 Qdrant store, payload schemas, retrieval pipeline
+
+web/                      React/Vite console
+tests/opencortex/         Current runtime tests
+docs/design/              Detailed feature and roadmap documents
+```
+
+## Requirements
 
 - Python `>=3.10`
-- Node.js `>=18` only for optional console development
 - `uv`
+- Node.js `>=18` for the web console
+- Qdrant can run embedded through `qdrant-client` local storage or as a server
+  through `OPENCORTEX_APP_QDRANT_URL`.
 
-### 1. Install
+## Install
 
 ```bash
-git clone https://github.com/StardustVision/OpenCortex.git
-cd OpenCortex
 uv sync
 ```
 
-### 2. Start the backend
+For parser extras:
+
+```bash
+uv sync --extra parsers
+```
+
+For web console dependencies:
+
+```bash
+cd web
+npm install
+```
+
+## Configuration
+
+Settings use the `OPENCORTEX_APP_` environment prefix and may also be loaded
+from `.env`.
+
+Common settings:
+
+```bash
+export OPENCORTEX_APP_DATA_ROOT=./data
+export OPENCORTEX_APP_VECTOR_DIMENSION=1024
+
+# Embedded local Qdrant if empty. Use server Qdrant for production-like runs.
+export OPENCORTEX_APP_QDRANT_URL=
+export OPENCORTEX_APP_QDRANT_API_KEY=
+
+# OpenAI-compatible embedding endpoint.
+export OPENCORTEX_APP_EMBEDDING_API_BASE=https://api.openai.com/v1
+export OPENCORTEX_APP_EMBEDDING_API_KEY=<embedding-key>
+export OPENCORTEX_APP_EMBEDDING_MODEL=text-embedding-3-small
+
+# OpenAI-compatible or supported LLM endpoint.
+export OPENCORTEX_APP_LLM_API_BASE=https://api.openai.com/v1
+export OPENCORTEX_APP_LLM_API_KEY=<llm-key>
+export OPENCORTEX_APP_LLM_MODEL=gpt-4o-mini
+export OPENCORTEX_APP_LLM_API_STYLE=openai
+
+# Background event worker concurrency.
+export OPENCORTEX_APP_STORE_EVENT_WORKER_CONCURRENCY=4
+```
+
+The app creates:
+
+- `data/auth_secret.key` for JWT signing
+- `data/tokens.json` for issued token records
+- `data/qdrant/` when using embedded Qdrant
+- CFS content under the configured data root
+- persistent event queue files under CFS-managed storage
+
+Do not commit runtime `data*/` or secrets.
+
+## Start The Backend
 
 ```bash
 uv run opencortex-server --host 127.0.0.1 --port 8921
 ```
 
-Generate or inspect tokens when needed:
+Equivalent entry point:
+
+```bash
+uv run opencortex --host 127.0.0.1 --port 8921
+```
+
+Development reload:
+
+```bash
+uv run opencortex-server --host 127.0.0.1 --port 8921 --reload
+```
+
+## Authentication
+
+All `/api/*`, `/admin/*`, `/console/*`, and `/mcp` endpoints require:
+
+```http
+Authorization: Bearer <jwt>
+```
+
+JWT tokens identify a tenant and user. Project is treated as business metadata,
+not as part of API-key creation.
+
+Create a user token interactively:
 
 ```bash
 uv run opencortex-token generate
+```
+
+List issued tokens:
+
+```bash
 uv run opencortex-token list
 ```
 
-### 3. Call the HTTP API
-
-Create or reuse a token, then send requests directly to the running backend:
+Revoke by prefix:
 
 ```bash
-uv run opencortex-token generate
-export OPENCORTEX_TOKEN="<token printed by opencortex-token>"
-curl -H "Authorization: Bearer $OPENCORTEX_TOKEN" http://127.0.0.1:8921/api/v1/memory/health
+uv run opencortex-token revoke <token-prefix>
 ```
 
-The central agent lifecycle endpoint is `/api/v1/context`. Memory and content endpoints live under `/api/v1/memory` and `/api/v1/content`.
-
-### 4. Docker option
+Admin token management is available through `/admin/v1/tokens`. A configured
+bootstrap admin token can be supplied with:
 
 ```bash
-docker compose up -d
-docker compose logs -f
+export OPENCORTEX_APP_ADMIN_API_TOKEN=<admin-jwt>
 ```
 
-If built frontend assets are present, the console is served at `http://127.0.0.1:8921/console`.
+The configured token must be signed by the current `data/auth_secret.key`.
 
-## Core Features
+## HTTP API
 
-OpenCortex centers on one memory substrate that handles short facts, documents, and conversations; explicit lifecycle handling through `/api/v1/context`; retrieval that can mix semantic, lexical, feedback, recency, and structure-aware signals; and optional knowledge, insights, and skill workflows on the same backend under request-scoped isolation.
+### Store Memory Or Resource
 
-## API Overview
+`POST /api/v1/memory/store`
 
-OpenCortex exposes a broader API than this landing page lists. The most important areas are:
-
-- Memory: persistent storage and retrieval for memories, documents, and conversations
-- Context and session: the agent lifecycle centered on `/api/v1/context`
-- Content and observability: layered content reads plus health or diagnostics surfaces
-- Knowledge / insights / skills: optional higher-level workflows built on the same backend
-- Auth / admin: identity, tokens, diagnostics, and administrative maintenance
-
-Concrete next stops for route-level details:
-
-- `src/opencortex/http/`
-- `src/opencortex/skill_engine/`
-- `src/opencortex/insights/`
-
-## Repository Layout
-
-At the top level, the repository is organized around the core backend in `src/opencortex/`, the optional console in `web/`, automated verification in `tests/`, and supporting material under `docs/`, `scripts/`, and `examples/`.
-
-## Deep Dives
-
-- [Three-layer storage](docs/architecture/three-layer-storage.md)
-- [Cone retrieval](docs/architecture/cone-retrieval.md)
-- [Autophagy and context lifecycle](docs/architecture/autophagy.md)
-- [Skill engine](docs/architecture/skill-engine.md)
-
-## Testing
+Memory example:
 
 ```bash
-uv run --group dev pytest
+curl -sS http://127.0.0.1:8921/api/v1/memory/store \
+  -H "Authorization: Bearer $OPENCORTEX_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "memory",
+    "content": "Alice prefers concise technical summaries.",
+    "category": "semantic",
+    "metadata": {"entities": ["Alice"]},
+    "source": {"kind": "manual"}
+  }'
 ```
 
-## Python Style Gate
-
-OpenCortex uses a repo-level Python style gate based on `ruff`. The current
-enforced subset is the practical baseline for the Google Python Style Guide in
-this repo: imports, naming, public docstrings, public type annotations, TODO
-format, exception hygiene, and obvious simplification rules.
-
-The initial ratchet currently targets the transport-facing Python surface:
-
-- `src/opencortex/http/*.py`
-- `src/opencortex/skill_engine/http_routes.py`
-
-Run it locally before shipping Python changes:
+Resource example:
 
 ```bash
-uv run --group dev ruff format --check .
-uv run --group dev ruff check .
+curl -sS http://127.0.0.1:8921/api/v1/memory/store \
+  -H "Authorization: Bearer $OPENCORTEX_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "resource",
+    "content": "# Qdrant Notes\n\nUse server Qdrant for production-like runs.",
+    "category": "semantic",
+    "metadata": {"title": "Qdrant Notes", "source_path": "/docs/qdrant.md"},
+    "source": {"kind": "document", "path": "/docs/qdrant.md", "title": "Qdrant Notes"}
+  }'
 ```
 
-The gate intentionally starts on a bounded surface and uses a small set of
-temporary file-level ignores for legacy transition points. Both are debt to be
-burned down, not a safe place for new code.
+The synchronous request writes the primary record. Semantic derivation, L0/L1/L2
+CFS materialization, and side indexes are handled by the background event
+worker.
 
-## Tech Stack
+### Search
 
-OpenCortex uses a Python/FastAPI backend, CortexFS plus embedded Qdrant for storage, and React/Vite for the optional console.
+`POST /api/v1/memory/search`
+
+```bash
+curl -sS http://127.0.0.1:8921/api/v1/memory/search \
+  -H "Authorization: Bearer $OPENCORTEX_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What does Alice prefer?", "limit": 5}'
+```
+
+The public search request intentionally accepts only:
+
+- `query`
+- `limit`
+
+Filtering and management controls belong to the console API, not to the public
+memory recall contract.
+
+### Forget
+
+`POST /api/v1/memory/forget`
+
+Semantic forget:
+
+```bash
+curl -sS http://127.0.0.1:8921/api/v1/memory/forget \
+  -H "Authorization: Bearer $OPENCORTEX_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Alice concise summaries"}'
+```
+
+Explicit URI forget:
+
+```bash
+curl -sS http://127.0.0.1:8921/api/v1/memory/forget \
+  -H "Authorization: Bearer $OPENCORTEX_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"uri": "opencortex://tenant/user/memories/public/semantic/example"}'
+```
+
+### Session Message
+
+`POST /api/v1/session/message`
+
+```bash
+curl -sS http://127.0.0.1:8921/api/v1/session/message \
+  -H "Authorization: Bearer $OPENCORTEX_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "session_id": "session-001",
+    "turn_id": "turn-001",
+    "messages": [
+      {"role": "user", "content": "Remember that Alice prefers concise summaries."}
+    ],
+    "tool_calls": [],
+    "cited_uris": []
+  }'
+```
+
+Session writes can create immediate records and enqueue merge work. Merge
+cleanup removes stale immediate records after merged records are written.
+
+### Session End
+
+`POST /api/v1/session/end`
+
+```bash
+curl -sS http://127.0.0.1:8921/api/v1/session/end \
+  -H "Authorization: Bearer $OPENCORTEX_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"session_id": "session-001"}'
+```
+
+Session end writes final session memory and, when content is structured, a
+parsed final tree plus reason-tree side indexes.
+
+### Auth
+
+`GET /api/v1/auth/me`
+
+```bash
+curl -sS http://127.0.0.1:8921/api/v1/auth/me \
+  -H "Authorization: Bearer $OPENCORTEX_TOKEN"
+```
+
+## Admin API
+
+Admin APIs are separate from user memory APIs and MCP.
+
+### List Tokens
+
+`GET /admin/v1/tokens`
+
+Returns public token records only. Full token values are never returned from
+list.
+
+### Create Token
+
+`POST /admin/v1/tokens`
+
+```bash
+curl -sS http://127.0.0.1:8921/admin/v1/tokens \
+  -H "Authorization: Bearer $OPENCORTEX_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"tenant_id": "tenant-a", "user_id": "alice"}'
+```
+
+The full token is returned once on create.
+
+### Revoke Token
+
+`DELETE /admin/v1/tokens`
+
+```bash
+curl -sS -X DELETE http://127.0.0.1:8921/admin/v1/tokens \
+  -H "Authorization: Bearer $OPENCORTEX_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"token_prefix": "abcd1234"}'
+```
+
+## Console API
+
+The web console uses `/console/v1/*`. These routes are management-facing and do
+not change the public memory API or MCP contracts.
+
+Current console routes:
+
+- `GET /console/v1/stats`
+- `GET /console/v1/memories`
+- `POST /console/v1/memories/search`
+- `GET /console/v1/memories/content?uri=...`
+- `DELETE /console/v1/memories`
+
+Admin users can provide tenant/user filters. Regular users are limited to their
+own identity scope.
+
+## Web Console
+
+Start the backend first, then:
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
+Open:
+
+```text
+http://127.0.0.1:5173
+```
+
+The Vite dev server proxies:
+
+- `/api` to the backend
+- `/admin` to the backend
+- `/console` to the backend
+
+The console currently includes:
+
+- token-verified login
+- dashboard stats
+- memory search/list/detail/delete
+- admin token management
+
+## MCP
+
+OpenCortex supports Streamable HTTP MCP at:
+
+```text
+POST /mcp
+```
+
+Required headers:
+
+```http
+Authorization: Bearer <jwt>
+Content-Type: application/json
+Accept: application/json, text/event-stream
+```
+
+Current MCP tools:
+
+- `opencortex.search`
+- `opencortex.store_memory`
+- `opencortex.store_resource`
+- `opencortex.forget`
+- `opencortex.session_message`
+- `opencortex.session_end`
+
+`GET /mcp` and `DELETE /mcp` currently return `405`; this runtime is stateless
+Streamable HTTP JSON-RPC, not the older HTTP+SSE transport.
+
+## Storage And Index Design
+
+OpenCortex writes to two durable surfaces:
+
+### CFS
+
+CFS stores the URI tree and file layers:
+
+```text
+opencortex://<tenant>/<user>/<bucket>/<project>/<category>/<node>/
+  content.md
+  .abstract.md
+  .overview.md
+  .abstract.json
+```
+
+`CortexStorage` is the higher-level URI storage facade over CFS.
+
+### Qdrant
+
+Qdrant stores vector-searchable payloads. Main payload surfaces include:
+
+- `l0_object`: primary memory/resource/session object
+- `directory`: payload-only URI ancestor records
+- `anchor_index`: anchor handles for locating related memories
+- `fact_index`: fact points extracted from content
+- `entity_index`: entity projections
+- `reason_tree_index`: reason-tree nodes and summaries
+
+The vector module owns payload schemas and retrieval logic. Storage does not own
+Qdrant writes directly.
+
+## Retrieval Pipeline
+
+The recall path is:
+
+```text
+RetrievalRequest
+  -> Probe
+  -> Planner
+  -> Executor
+  -> Ranker
+  -> Reason-tree selection
+  -> Cone expansion
+  -> CFS hydration
+  -> RetrievalResponse
+```
+
+The public API keeps the input small (`query`, `limit`) while the internal plan
+chooses surfaces, budgets, weights, depth, reason-tree usage, and cone expansion.
+
+## Background Events
+
+Primary writes emit events into a persistent queue. Worker actions then perform
+side effects:
+
+- semantic derivation through LLM
+- CFS layer writes
+- search index writes
+- entity index writes
+- reason-tree build and index writes
+- session merge and cleanup
+- check-update events for future mutation logic
+
+The queue is persisted under the configured data root, so interrupted workers can
+resume.
+
+## Development Checks
+
+Python:
+
+```bash
+uv run --group dev ruff format --check src/opencortex tests/opencortex
+uv run --group dev ruff check src/opencortex tests/opencortex
+uv run --group dev pytest tests/opencortex -q
+```
+
+Web:
+
+```bash
+cd web
+npm run build
+```
+
+## Design Documents
+
+Detailed current and planned behavior is documented in Chinese under:
+
+- `docs/design/opencortex-functional-parity.md`
+- `docs/design/opencortex-recall-design.md`
+- `docs/design/insights-functional-detail.md`
+- `docs/design/autophagy-functional-detail.md`
+- `docs/design/skill-engine-functional-detail.md`
+- `docs/design/self-upgrade-functional-detail.md`
 
 ## License
 
 Apache-2.0
+

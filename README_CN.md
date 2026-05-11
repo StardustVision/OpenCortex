@@ -1,171 +1,526 @@
-<h1 align="center">OpenCortex</h1>
-<p align="center"><strong>面向 AI Agent 的持久记忆与上下文基础设施</strong></p>
-<p align="center">
-  <a href="#什么是-opencortex">简介</a> &middot;
-  <a href="#核心概念">核心概念</a> &middot;
-  <a href="#架构概览">架构</a> &middot;
-  <a href="#快速开始">快速开始</a> &middot;
-  <a href="#核心能力">特性</a> &middot;
-  <a href="#api-概览">API</a> &middot;
-  <a href="#仓库结构">仓库</a> &middot;
-  <a href="README.md">English</a>
-</p>
+# OpenCortex
 
----
+OpenCortex 是面向 AI Agent 的记忆存储与召回运行时。它把 memory、
+resource、session 写入分层文件树和 Qdrant 向量索引，再通过 HTTP API、
+Streamable HTTP MCP 和 Web 控制台提供访问。
 
-## 什么是 OpenCortex
+当前仓库只保留新的 `opencortex` 运行时。旧记忆链路不再是活跃代码；insights、
+autophagy、skill engine、自我升级等能力目前以详细设计文档形式放在
+`docs/design/`。
 
-LLM Agent 会遗忘。会话上下文、用户偏好、设计结论、排障过程和可复用工作流，如果不落到模型上下文窗口之外，就会在会话结束后消失。
+## 当前能力
 
-OpenCortex 就是解决这个问题的持久化层。它把分层记忆存储、面向意图的召回规划和适合 Agent 工作流的检索能力组合起来，并通过统一的 HTTP API 后端对外提供服务。
+OpenCortex 当前提供：
 
-它主要面向这些场景：
+- 用户事实、偏好、事件、工作流等 durable memory 写入。
+- 文档和共享知识材料的 resource 写入。
+- 对话 turn 和 session/end 的 session 写入。
+- L0/L1/L2 三层存储：
+  - `L0`：紧凑 abstract
+  - `L1`：overview
+  - `L2`：完整 content
+- 面向召回的旁路索引：
+  - primary object record
+  - anchor index
+  - fact index
+  - entity index
+  - reason-tree index
+  - 为 cone expansion 准备的关系信号
+- probe、planner、executor、ranker、reason-tree selection 和 cone expansion
+  组成的召回链路。
+- 按语义 query 或 URI 删除记忆。
+- JWT 保护的 API、admin token 管理和 MCP 访问。
+- React Web 控制台，用于 token 管理和记忆查看。
 
-- 跨会话记忆和项目上下文
-- 文档与对话写入
-- 兼顾相关性、时间性、反馈信号和结构信息的检索
-- 建立在同一底座上的可选知识、洞察和技能服务
-- 基于 JWT 身份的多租户与项目级隔离
-
-## 核心概念
-
-### 三层记忆
-
-每条记录会保存为多个细节层级：
-
-| 层级 | 作用 |
-|---|---|
-| `L0` | 轻量摘要，用于低成本索引和快速确认 |
-| `L1` | 结构化概览，适合作为默认召回结果 |
-| `L2` | 完整内容，用于深入分析和审计 |
-
-### 显式召回规划
-
-OpenCortex 不把所有查询都当成普通向量检索。查询会先分类、路由，再生成召回计划，决定是否召回、搜索哪些上下文，以及返回多少细节。
-
-### 不止向量相似度的检索
-
-搜索不依赖单一向量分数。根据配置和查询类型，排序可以融合语义检索、词法权重、精排门控、显式反馈、热度，以及围绕共享实体扩展的锥形检索信号。
-
-### 上下文生命周期
-
-中心生命周期端点是 `/api/v1/context`，负责三个阶段：
-
-- `prepare`：规划召回并返回记忆或知识上下文
-- `commit`：记录当前轮次和反馈信号
-- `end`：收尾会话状态并触发可选后处理
-
-### 共享记忆底座
-
-核心记忆、可选知识提取、洞察报告和技能引擎共用同一套存储、身份和检索基础，而不是分别搭建独立系统。
-
-## 架构概览
+## 架构
 
 ```text
-AI 客户端
-  -> HTTP API
-  -> FastAPI 服务
-  -> CortexMemory
-     -> 记忆 / 文档 / 对话写入管线
-     -> 召回规划与检索
-     -> CortexFS + 嵌入式 Qdrant 存储
-     -> 可选知识 / 洞察 / 技能服务
-  -> 可选 Web 控制台 /console
+Client / Agent / MCP client
+  -> Bearer JWT middleware
+  -> FastAPI routes
+     -> Store flows
+        -> PrimaryRecordWriter
+        -> CFS-backed CortexStorage
+        -> QdrantVectorStore
+        -> SQLite-backed persistent event queue
+        -> semantic layer 和旁路索引后台 writer
+     -> Retrieval flow
+        -> probe
+        -> planner
+        -> executor
+        -> ranker
+        -> CFS hydration
+  -> React console
 ```
 
-整体上，Agent 和客户端应用直接通过 HTTP 调用 FastAPI 后端；后端统一协调存储、召回、上下文生命周期和可选分析服务。
+核心边界：
 
-## 快速开始
+- `storage/`：CFS、URI-tree 文件操作、CortexStorage、持久队列。
+- `vector/`：Qdrant payload、向量存储、召回链路。
+- `store/`：写入流程、session 流程、事件和 writer。
+- `console/`：Web 控制台管理 API，不侵入 MCP 或公开 memory API。
+- `mcp/`：通过 Streamable HTTP MCP 暴露同一套 memory 能力。
 
-### 环境要求
+## 目录结构
+
+```text
+src/opencortex/
+  app.py                  FastAPI app factory 和运行时装配
+  settings.py             OPENCORTEX_APP_* 配置
+  auth/                   JWT 生成、验证、admin token API
+  console/                Web 控制台专用管理 API
+  core/                   请求身份上下文和 middleware
+  llm/                    OpenAI-compatible LLM client
+  mcp/                    Streamable HTTP MCP transport 和 tools
+  parse/                  文档 parser adapter
+  prompts/                写入和召回 prompt
+  storage/                CFS、CortexStorage、持久队列、URI namespace
+  store/                  写入、session、event flow 和 writer
+  vector/                 Qdrant store、payload schema、retrieval pipeline
+
+web/                      React/Vite 控制台
+tests/opencortex/         当前新运行时测试
+docs/design/              详细功能设计和后续排期
+```
+
+## 环境要求
 
 - Python `>=3.10`
-- Node.js `>=18`，仅用于可选控制台开发
 - `uv`
+- Node.js `>=18`，用于 Web 控制台
+- Qdrant 可用 embedded local 模式；生产级或大数据量建议使用独立 Qdrant
+  Server，并通过 `OPENCORTEX_APP_QDRANT_URL` 接入。
 
-### 1. 安装
+## 安装
 
 ```bash
-git clone https://github.com/StardustVision/OpenCortex.git
-cd OpenCortex
 uv sync
 ```
 
-### 2. 启动后端
+如需文档解析依赖：
+
+```bash
+uv sync --extra parsers
+```
+
+Web 控制台依赖：
+
+```bash
+cd web
+npm install
+```
+
+## 配置
+
+配置使用 `OPENCORTEX_APP_` 环境变量前缀，也可以放入 `.env`。
+
+常用配置：
+
+```bash
+export OPENCORTEX_APP_DATA_ROOT=./data
+export OPENCORTEX_APP_VECTOR_DIMENSION=1024
+
+# 留空则使用 embedded local Qdrant。
+export OPENCORTEX_APP_QDRANT_URL=
+export OPENCORTEX_APP_QDRANT_API_KEY=
+
+export OPENCORTEX_APP_EMBEDDING_API_BASE=https://api.openai.com/v1
+export OPENCORTEX_APP_EMBEDDING_API_KEY=<embedding-key>
+export OPENCORTEX_APP_EMBEDDING_MODEL=text-embedding-3-small
+
+export OPENCORTEX_APP_LLM_API_BASE=https://api.openai.com/v1
+export OPENCORTEX_APP_LLM_API_KEY=<llm-key>
+export OPENCORTEX_APP_LLM_MODEL=gpt-4o-mini
+export OPENCORTEX_APP_LLM_API_STYLE=openai
+
+export OPENCORTEX_APP_STORE_EVENT_WORKER_CONCURRENCY=4
+```
+
+运行时会创建：
+
+- `data/auth_secret.key`：JWT 签名密钥
+- `data/tokens.json`：已签发 token 记录
+- `data/qdrant/`：embedded Qdrant 数据
+- CFS 内容树
+- 持久事件队列
+
+不要提交 `data*/`、日志、token 或本地密钥。
+
+## 启动后端
 
 ```bash
 uv run opencortex-server --host 127.0.0.1 --port 8921
 ```
 
-需要时生成或查看 token：
+等价入口：
+
+```bash
+uv run opencortex --host 127.0.0.1 --port 8921
+```
+
+开发 reload：
+
+```bash
+uv run opencortex-server --host 127.0.0.1 --port 8921 --reload
+```
+
+## 鉴权
+
+所有 `/api/*`、`/admin/*`、`/console/*` 和 `/mcp` 都需要：
+
+```http
+Authorization: Bearer <jwt>
+```
+
+Token 表示租户和用户身份。`project` 是业务属性，不属于 API key 创建参数。
+
+生成用户 token：
 
 ```bash
 uv run opencortex-token generate
+```
+
+查看 token：
+
+```bash
 uv run opencortex-token list
 ```
 
-### 3. 调用 HTTP API
-
-创建或复用 token，然后直接请求正在运行的后端：
+按 prefix 撤销：
 
 ```bash
-uv run opencortex-token generate
-export OPENCORTEX_TOKEN="<opencortex-token 输出的 token>"
-curl -H "Authorization: Bearer $OPENCORTEX_TOKEN" http://127.0.0.1:8921/api/v1/memory/health
+uv run opencortex-token revoke <token-prefix>
 ```
 
-中心 Agent 生命周期端点是 `/api/v1/context`。记忆与内容相关端点位于 `/api/v1/memory` 和 `/api/v1/content`。
-
-### 4. Docker 方式
+Admin token 管理走 `/admin/v1/tokens`。也可以通过配置注入 bootstrap admin token：
 
 ```bash
-docker compose up -d
-docker compose logs -f
+export OPENCORTEX_APP_ADMIN_API_TOKEN=<admin-jwt>
 ```
 
-如果前端构建产物已经存在，控制台可通过 `http://127.0.0.1:8921/console` 访问。
+该 token 必须由当前 `data/auth_secret.key` 签名。
 
-## 核心能力
+## HTTP API
 
-OpenCortex 的核心能力集中在同一套记忆底座之上：它既能处理短记忆、文档和对话，又围绕 `/api/v1/context` 提供显式召回规划和生命周期处理；检索可融合语义、词法、反馈、热度与结构化信号，同时还能在同一后端上扩展知识、洞察和技能工作流，并通过请求身份强制执行租户、用户和项目范围隔离。
+### 写入 Memory 或 Resource
 
-## API 概览
+`POST /api/v1/memory/store`
 
-OpenCortex 的 API 范围比这份 README 更广。最重要的几个分组是：
-
-- 记忆：记忆、文档与对话的持久化和检索
-- 上下文 / 会话：围绕 `/api/v1/context` 的 Agent 生命周期
-- 内容 / 可观测性：分层内容读取，以及健康和诊断相关能力
-- 知识 / 洞察 / 技能：建立在同一后端上的可选高阶工作流
-- 鉴权 / 管理：身份、令牌、诊断与管理员维护能力
-
-如果你要继续查看具体路由，建议直接从这些目录进入：
-
-- `src/opencortex/http/`
-- `src/opencortex/skill_engine/`
-- `src/opencortex/insights/`
-
-## 仓库结构
-
-仓库顶层主要分为几块：`src/opencortex/` 承载核心后端，`web/` 提供可选控制台，`tests/` 负责自动化验证，`docs/`、`scripts/`、`examples/` 则提供文档、运维辅助脚本和示例集成。
-
-## 深入阅读
-
-- [三层存储](docs/architecture/three-layer-storage-cn.md)
-- [锥形检索](docs/architecture/cone-retrieval-cn.md)
-- [自噬式记忆流程与上下文生命周期](docs/architecture/autophagy-cn.md)
-- [技能引擎](docs/architecture/skill-engine-cn.md)
-
-## 测试
+Memory 示例：
 
 ```bash
-uv run --group dev pytest
+curl -sS http://127.0.0.1:8921/api/v1/memory/store \
+  -H "Authorization: Bearer $OPENCORTEX_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "memory",
+    "content": "Alice prefers concise technical summaries.",
+    "category": "semantic",
+    "metadata": {"entities": ["Alice"]},
+    "source": {"kind": "manual"}
+  }'
 ```
 
-## 技术栈
+Resource 示例：
 
-OpenCortex 主要由 Python/FastAPI 后端、CortexFS + 嵌入式 Qdrant 存储，以及可选的 React/Vite 控制台组成。
+```bash
+curl -sS http://127.0.0.1:8921/api/v1/memory/store \
+  -H "Authorization: Bearer $OPENCORTEX_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "resource",
+    "content": "# Qdrant Notes\n\nUse server Qdrant for production-like runs.",
+    "category": "semantic",
+    "metadata": {"title": "Qdrant Notes", "source_path": "/docs/qdrant.md"},
+    "source": {"kind": "document", "path": "/docs/qdrant.md", "title": "Qdrant Notes"}
+  }'
+```
+
+同步请求只写 primary record。LLM 语义派生、L0/L1/L2 CFS 写入和旁路索引由后台
+worker 处理。
+
+### 召回
+
+`POST /api/v1/memory/search`
+
+```bash
+curl -sS http://127.0.0.1:8921/api/v1/memory/search \
+  -H "Authorization: Bearer $OPENCORTEX_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What does Alice prefer?", "limit": 5}'
+```
+
+公开召回请求只接受：
+
+- `query`
+- `limit`
+
+筛选和管理行为属于 console API，不放进公开 memory recall contract。
+
+### 删除
+
+`POST /api/v1/memory/forget`
+
+语义删除：
+
+```bash
+curl -sS http://127.0.0.1:8921/api/v1/memory/forget \
+  -H "Authorization: Bearer $OPENCORTEX_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Alice concise summaries"}'
+```
+
+按 URI 删除：
+
+```bash
+curl -sS http://127.0.0.1:8921/api/v1/memory/forget \
+  -H "Authorization: Bearer $OPENCORTEX_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"uri": "opencortex://tenant/user/memories/public/semantic/example"}'
+```
+
+### 写入 Session Message
+
+`POST /api/v1/session/message`
+
+```bash
+curl -sS http://127.0.0.1:8921/api/v1/session/message \
+  -H "Authorization: Bearer $OPENCORTEX_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "session_id": "session-001",
+    "turn_id": "turn-001",
+    "messages": [
+      {"role": "user", "content": "Remember that Alice prefers concise summaries."}
+    ],
+    "tool_calls": [],
+    "cited_uris": []
+  }'
+```
+
+Session message 会写 immediate record，并在满足条件时触发 merge。merge 完成后会清理
+旧 immediate records。
+
+### 结束 Session
+
+`POST /api/v1/session/end`
+
+```bash
+curl -sS http://127.0.0.1:8921/api/v1/session/end \
+  -H "Authorization: Bearer $OPENCORTEX_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"session_id": "session-001"}'
+```
+
+Session end 会写 final session memory；如果内容是结构化的，还会生成 final tree 和
+reason-tree side index。
+
+### 当前身份
+
+`GET /api/v1/auth/me`
+
+```bash
+curl -sS http://127.0.0.1:8921/api/v1/auth/me \
+  -H "Authorization: Bearer $OPENCORTEX_TOKEN"
+```
+
+## Admin API
+
+Admin API 与 user memory API、MCP 分离。
+
+### Token 列表
+
+`GET /admin/v1/tokens`
+
+列表只返回公开字段，不返回完整 token。
+
+### 创建 Token
+
+`POST /admin/v1/tokens`
+
+```bash
+curl -sS http://127.0.0.1:8921/admin/v1/tokens \
+  -H "Authorization: Bearer $OPENCORTEX_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"tenant_id": "tenant-a", "user_id": "alice"}'
+```
+
+完整 token 只在创建时返回一次。
+
+### 撤销 Token
+
+`DELETE /admin/v1/tokens`
+
+```bash
+curl -sS -X DELETE http://127.0.0.1:8921/admin/v1/tokens \
+  -H "Authorization: Bearer $OPENCORTEX_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"token_prefix": "abcd1234"}'
+```
+
+## Console API
+
+Web 控制台使用 `/console/v1/*`。这些是管理面 API，不改变公开 memory API 或 MCP
+contract。
+
+当前 console routes：
+
+- `GET /console/v1/stats`
+- `GET /console/v1/memories`
+- `POST /console/v1/memories/search`
+- `GET /console/v1/memories/content?uri=...`
+- `DELETE /console/v1/memories`
+
+Admin 可传 tenant/user 筛选；普通用户只能看到自身身份范围。
+
+## Web 控制台
+
+先启动后端，再启动前端：
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
+打开：
+
+```text
+http://127.0.0.1:5173
+```
+
+Vite dev server 会代理：
+
+- `/api`
+- `/admin`
+- `/console`
+
+当前控制台包含：
+
+- token 校验登录
+- dashboard stats
+- memory search/list/detail/delete
+- admin token management
+
+## MCP
+
+OpenCortex 支持 Streamable HTTP MCP：
+
+```text
+POST /mcp
+```
+
+必需 headers：
+
+```http
+Authorization: Bearer <jwt>
+Content-Type: application/json
+Accept: application/json, text/event-stream
+```
+
+当前 MCP tools：
+
+- `opencortex.search`
+- `opencortex.store_memory`
+- `opencortex.store_resource`
+- `opencortex.forget`
+- `opencortex.session_message`
+- `opencortex.session_end`
+
+`GET /mcp` 和 `DELETE /mcp` 当前返回 `405`。当前实现是无状态 Streamable HTTP
+JSON-RPC，不是旧 HTTP+SSE transport。
+
+## 存储与索引设计
+
+OpenCortex 写入两个持久面：
+
+### CFS
+
+CFS 保存 URI tree 和文件层：
+
+```text
+opencortex://<tenant>/<user>/<bucket>/<project>/<category>/<node>/
+  content.md
+  .abstract.md
+  .overview.md
+  .abstract.json
+```
+
+`CortexStorage` 是 CFS 之上的 URI storage facade。
+
+### Qdrant
+
+Qdrant 保存可向量检索的 payload。主要 retrieval surfaces：
+
+- `l0_object`：primary memory/resource/session object
+- `directory`：payload-only URI ancestor record
+- `anchor_index`：定位相关记忆的 anchor handle
+- `fact_index`：从内容提取的 fact point
+- `entity_index`：entity projection
+- `reason_tree_index`：reason-tree node 和 summary
+
+`vector/` 拥有 payload schema 和召回逻辑。`storage/` 不直接拥有 Qdrant 写入。
+
+## 召回链路
+
+```text
+RetrievalRequest
+  -> Probe
+  -> Planner
+  -> Executor
+  -> Ranker
+  -> Reason-tree selection
+  -> Cone expansion
+  -> CFS hydration
+  -> RetrievalResponse
+```
+
+公开 API 保持输入简单，只接受 `query` 和 `limit`。内部 plan 决定 surface、budget、
+weight、depth、是否使用 reason tree，以及是否做 cone expansion。
+
+## 后台事件
+
+Primary write 会把事件写入持久队列。Worker action 负责：
+
+- LLM semantic derivation
+- CFS layer 写入
+- search index 写入
+- entity index 写入
+- reason-tree build 和 index 写入
+- session merge 和 cleanup
+- 为后续 mutation 预留的 check-update event
+
+队列持久化在 data root 下，中断后可恢复。
+
+## 开发检查
+
+Python：
+
+```bash
+uv run --group dev ruff format --check src/opencortex tests/opencortex
+uv run --group dev ruff check src/opencortex tests/opencortex
+uv run --group dev pytest tests/opencortex -q
+```
+
+Web：
+
+```bash
+cd web
+npm run build
+```
+
+## 设计文档
+
+详细设计和后续排期：
+
+- `docs/design/opencortex-functional-parity.md`
+- `docs/design/opencortex-recall-design.md`
+- `docs/design/insights-functional-detail.md`
+- `docs/design/autophagy-functional-detail.md`
+- `docs/design/skill-engine-functional-detail.md`
+- `docs/design/self-upgrade-functional-detail.md`
 
 ## License
 
 Apache-2.0
+
