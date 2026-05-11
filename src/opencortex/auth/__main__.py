@@ -60,7 +60,13 @@ def cmd_list(_args: argparse.Namespace) -> None:
     print(f"{'Tenant':<16} {'User':<16} {'Created':<28} {'Token (prefix)':<20}")
     print("-" * 80)
     for rec in records:
-        token_prefix = rec["token"][:16] + "..."
+        token_prefix = str(
+            rec.get("token_prefix")
+            or rec.get("token_hash", "")[:16]
+            or rec.get("token", "")[:16]
+        )
+        if token_prefix and not token_prefix.endswith("..."):
+            token_prefix = f"{token_prefix}..."
         print(
             f"{rec['tenant_id']:<16} "
             f"{rec['user_id']:<16} "

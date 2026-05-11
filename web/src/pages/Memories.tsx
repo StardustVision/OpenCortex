@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Brain, ChevronDown, ChevronUp, Copy, Trash2 } from 'lucide-react';
 import { Badge } from '../components/common/Badge';
@@ -52,7 +52,10 @@ export const Memories: React.FC = () => {
   const [showMetadata, setShowMetadata] = useState(false);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const selectedKey = selectionKey(selected);
-  const scope = role === 'admin' ? adminFilters : {};
+  const scope = useMemo(
+    () => (role === 'admin' ? adminFilters : {}),
+    [adminFilters, role],
+  );
 
   useEffect(() => {
     if (role !== 'admin' || !client) return;

@@ -34,20 +34,26 @@ def app_settings(data_root: str) -> Settings:
     return Settings(data_root=data_root, llm_api_key="test-key")
 
 
-def auth_headers(data_root: str, *, role: str = "user") -> dict[str, str]:
+def auth_headers(
+    data_root: str,
+    *,
+    role: str = "user",
+    tenant_id: str = "default",
+    user_id: str = "default",
+) -> dict[str, str]:
     """Return authorization headers for app tests."""
     secret = ensure_secret(data_root)
     token = generate_token(
-        "default",
-        "default",
+        tenant_id,
+        user_id,
         secret,
         role=role,
     )
     save_token_record(
         data_root,
         token,
-        "default",
-        "default",
+        tenant_id,
+        user_id,
         role=role,
     )
     return {"authorization": f"Bearer {token}"}
@@ -310,6 +316,22 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(api_response.status_code, 401)
         self.assertEqual(mcp_response.status_code, 401)
         self.assertEqual(console_response.status_code, 401)
+
+    async def test_auth_still_enforced_when_identity_context_disabled(self) -> None:
+        """Disabling context injection does not disable protected-route auth."""
+        app = create_app(
+            settings=app_settings(":memory:").model_copy(
+                update={"identity_context_enabled": False}
+            )
+        )
+        transport = ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            response = await client.get("/console/v1/stats")
+
+        self.assertEqual(response.status_code, 401)
 
     async def test_auth_me_reads_bearer_claims(self) -> None:
         """Bearer JWT claims populate request identity."""
@@ -827,6 +849,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
                             },
                         )
                         await app.state.store_event_worker.wait_idle()
+                        self.assertEqual(store_response.status_code, 200)
                         uri = store_response.json()["uri"]
 
                         stats_response = await client.get("/console/v1/stats")
@@ -863,6 +886,79 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(delete_response.status_code, 200)
         self.assertEqual(delete_response.json()["uri"], uri)
+
+    async def test_console_memory_management_enforces_visibility(self) -> None:
+        """Console content and URI delete reject another user's memory URI."""
+        content = "Private Orion runbook."
+        with TemporaryDirectory() as data_root:
+            app = create_app(settings=app_settings(data_root))
+            owner_headers = auth_headers(
+                data_root,
+                tenant_id="tenant-a",
+                user_id="owner",
+            )
+            other_headers = auth_headers(
+                data_root,
+                tenant_id="tenant-a",
+                user_id="other",
+            )
+            with (
+                patch(
+                    "opencortex.llm.client.LLMCompletion.complete",
+                    new=AsyncMock(side_effect=fake_llm_completion),
+                ),
+                patch(
+                    "opencortex.vector.embedder.OpenAIEmbeddingClient.embed",
+                    side_effect=keyword_embedding,
+                ),
+                patch(
+                    "opencortex.vector.embedder.OpenAIEmbeddingClient.embed_batch",
+                    side_effect=keyword_embedding_batch,
+                ),
+            ):
+                async with app.router.lifespan_context(app):
+                    transport = ASGITransport(app=app)
+                    async with httpx.AsyncClient(
+                        transport=transport,
+                        base_url="http://testserver",
+                    ) as client:
+                        store_response = await client.post(
+                            "/api/v1/memory/store",
+                            headers=owner_headers,
+                            json={
+                                "type": "memory",
+                                "content": content,
+                                "category": "semantic",
+                                "metadata": {},
+                                "source": {"kind": "manual"},
+                            },
+                        )
+                        await app.state.store_event_worker.wait_idle()
+                        self.assertEqual(store_response.status_code, 200)
+                        uri = store_response.json()["uri"]
+
+                        content_response = await client.get(
+                            "/console/v1/memories/content",
+                            headers=other_headers,
+                            params={"uri": uri},
+                        )
+                        delete_response = await client.request(
+                            "DELETE",
+                            "/console/v1/memories",
+                            headers=other_headers,
+                            json={"uri": uri},
+                        )
+                        owner_content_response = await client.get(
+                            "/console/v1/memories/content",
+                            headers=owner_headers,
+                            params={"uri": uri},
+                        )
+
+        self.assertEqual(content_response.status_code, 404)
+        self.assertEqual(delete_response.status_code, 200)
+        self.assertEqual(delete_response.json()["forgotten"], 0)
+        self.assertEqual(owner_content_response.status_code, 200)
+        self.assertEqual(owner_content_response.json()["content"], content)
 
     async def test_memory_store_uses_llm_derived_layers(self) -> None:
         """Store writes use LLM-derived abstract and overview layers."""
@@ -1287,40 +1383,22 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         data = response.json()["data"]
         self.assertEqual(data["total"], 1)
+        self.assertNotIn("plan", data)
         result = data["results"][0]
         self.assertEqual(result["session_id"], "session-recall")
+        self.assertEqual(result["type"], "memory")
         self.assertEqual(result["content"], content)
-        self.assertIn("l0_object", result["retrieval_surfaces"])
-        probe = data["plan"]["probe"]
-        self.assertEqual(probe["evidence"]["object_candidate_count"], 1)
-        self.assertGreaterEqual(probe["evidence"]["locator_candidate_count"], 1)
-        self.assertTrue(probe["starting_uris"])
-        self.assertNotIn("range_source", probe)
-        self.assertNotIn("hard_range", probe)
-        self.assertNotIn("range_miss", probe)
-        self.assertNotIn("direct_hits", probe)
-        self.assertNotIn("locator_hits", probe)
-        self.assertNotIn("retrieval_queries", probe)
-        self.assertNotIn("query_vector", probe)
-        self.assertNotIn("search_vectors", probe)
-        self.assertNotIn("scope_filter", data["plan"])
-        self.assertNotIn("session_scope", data["plan"])
-        self.assertNotIn("target_uri", data["plan"])
-        self.assertNotIn("search_vectors", data["plan"])
-        self.assertEqual(data["plan"]["starting_uris"], probe["starting_uris"])
-        self.assertEqual(data["plan"]["decision"], "focused")
-        self.assertEqual(data["plan"]["depth"], "l2")
-        self.assertFalse(data["plan"]["reason_tree"]["enabled"])
-        self.assertFalse(data["plan"]["cone_expansion"]["enabled"])
-        self.assertGreater(data["plan"]["surface_limits"]["l0_object"], 0)
-        self.assertGreater(data["plan"]["surface_weights"]["fact_index"], 0)
+        self.assertEqual(result["source"]["session_id"], "session-recall")
+        self.assertNotIn("retrieval_surfaces", result)
+        self.assertNotIn("match_reason", result)
         self.assertTrue(
             {
-                "anchor_index",
-                "fact_index",
-                "entity_index",
-                "reason_tree_index",
-            }.intersection(result["retrieval_surfaces"])
+                "memory",
+                "topic",
+                "fact",
+                "entity",
+                "summary",
+            }.intersection({item["kind"] for item in result["evidence"]})
         )
 
     async def test_write_to_recall_hit_rate_for_memory_resource_session(
@@ -1484,15 +1562,9 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
                         )
 
         self.assertEqual(response.status_code, 200)
-        plan = response.json()["data"]["plan"]
-        probe = plan["probe"]
-        self.assertGreaterEqual(probe["evidence"]["candidate_count"], 1)
-        self.assertNotIn("retrieval_queries", probe)
-        self.assertNotIn("direct_hits", probe)
-        self.assertNotIn("locator_hits", probe)
-        self.assertTrue(plan["reason_tree"]["enabled"])
-        self.assertTrue(plan["reason_tree"]["use_llm"])
-        self.assertTrue(plan["cone_expansion"]["enabled"])
+        data = response.json()["data"]
+        self.assertNotIn("plan", data)
+        self.assertTrue(data["results"])
         prompts = [call.args[0] for call in llm_mock.call_args_list]
         self.assertTrue(
             any(
@@ -1506,10 +1578,9 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         self.assertIn(LAYER_DERIVATION_SYSTEM_PROMPT, captured_system_prompts)
         self.assertIn(QUERY_DECOMPOSITION_SYSTEM_PROMPT, captured_system_prompts)
         self.assertIn(REASON_TREE_SELECTION_SYSTEM_PROMPT, captured_system_prompts)
-        self.assertIn("reason_tree_index", plan["surface_limits"])
         self.assertIn(
-            "reason_tree_index",
-            response.json()["data"]["results"][0]["retrieval_surfaces"],
+            "summary",
+            {item["kind"] for item in data["results"][0]["evidence"]},
         )
 
     async def test_large_memory_search_rejects_invalid_reason_tree_uri(self) -> None:
@@ -1628,7 +1699,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         reason_hit = next(
             result
             for result in data["results"]
-            if "reason_tree_index" in result["retrieval_surfaces"]
+            if any(item["kind"] == "summary" for item in result["evidence"])
         )
         self.assertEqual(reason_hit["uri"], store_response.json()["uri"])
         self.assertNotIn("/reason_tree/", reason_hit["uri"])
@@ -1691,8 +1762,8 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
                                 },
                             )
 
-    async def test_memory_search_does_not_expose_probe_range_fields(self) -> None:
-        """Probe output should only expose evidence used by the planner."""
+    async def test_memory_search_does_not_expose_execution_internals(self) -> None:
+        """Public search response exposes business evidence, not execution internals."""
         content = "assistant: Alice uses Python in Hangzhou."
         with TemporaryDirectory() as data_root:
             app = create_app(settings=fast_merge_settings(data_root))
@@ -1742,12 +1813,15 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
                         )
 
         self.assertEqual(response.status_code, 200)
-        probe = response.json()["data"]["plan"]["probe"]
-        self.assertNotIn("range_source", probe)
-        self.assertNotIn("hard_range", probe)
-        self.assertNotIn("range_miss", probe)
-        self.assertNotIn("session_scope", probe)
-        self.assertNotIn("target_uri", probe)
+        data = response.json()["data"]
+        self.assertNotIn("plan", data)
+        result = data["results"][0]
+        self.assertIn("source", result)
+        self.assertIn("evidence", result)
+        self.assertNotIn("probe", result)
+        self.assertNotIn("cone_expansion", result)
+        self.assertNotIn("reason_tree", result)
+        self.assertNotIn("retrieval_surfaces", result)
 
     async def test_lifespan_requires_llm_configuration(self) -> None:
         """The app fails fast when no LLM API key is configured."""

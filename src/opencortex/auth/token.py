@@ -11,6 +11,7 @@ import os
 import secrets
 import time
 from pathlib import Path
+from threading import RLock
 from typing import Any, Dict, List, Optional
 
 import jwt
@@ -19,6 +20,8 @@ import orjson as json
 _SECRET_KEY_FILE = "auth_secret.key"
 _TOKEN_RECORDS_FILE = "tokens.json"
 _ALGORITHM = "HS256"
+_cache_lock = RLock()
+_record_cache: dict[str, tuple[int, int, list[dict[str, Any]]]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -38,12 +41,10 @@ def ensure_secret(data_root: str) -> str:
 
     key_path.parent.mkdir(parents=True, exist_ok=True)
     secret = secrets.token_hex(64)
-    # Atomic write via temp + rename
     tmp_path = key_path.with_suffix(".tmp")
     tmp_path.write_text(secret, encoding="utf-8")
-    tmp_path.rename(key_path)
-    # Restrict permissions to owner-only
-    os.chmod(key_path, 0o600)
+    os.chmod(tmp_path, 0o600)
+    os.replace(tmp_path, key_path)
     return secret
 
 
@@ -114,10 +115,22 @@ def load_token_records(data_root: str) -> List[Dict[str, Any]]:
     p = _records_path(data_root)
     if not p.exists():
         return []
+    stat = p.stat()
+    cache_key = str(p)
+    with _cache_lock:
+        cached = _record_cache.get(cache_key)
+        if cached and cached[0] == stat.st_mtime_ns and cached[1] == stat.st_size:
+            return [dict(record) for record in cached[2]]
     try:
-        return json.loads(p.read_bytes())
+        records = json.loads(p.read_bytes())
     except Exception:
         return []
+    if not isinstance(records, list):
+        return []
+    normalized = [dict(record) for record in records if isinstance(record, dict)]
+    with _cache_lock:
+        _record_cache[cache_key] = (stat.st_mtime_ns, stat.st_size, normalized)
+    return [dict(record) for record in normalized]
 
 
 def public_token_record(record: Dict[str, Any]) -> Dict[str, Any]:
@@ -147,6 +160,23 @@ def find_token_record(data_root: str, token: str) -> Optional[Dict[str, Any]]:
         if record.get("token_hash") == hashed or record.get("token") == token:
             return record
     return None
+
+
+def store_token_records(data_root: str, records: list[dict[str, Any]]) -> None:
+    """Persist token records atomically."""
+    p = _records_path(data_root)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = p.with_name(f".{p.name}.{os.getpid()}.tmp")
+    tmp_path.write_bytes(json.dumps(records, option=json.OPT_INDENT_2))
+    os.chmod(tmp_path, 0o600)
+    os.replace(tmp_path, p)
+    stat = p.stat()
+    with _cache_lock:
+        _record_cache[str(p)] = (
+            stat.st_mtime_ns,
+            stat.st_size,
+            [dict(r) for r in records],
+        )
 
 
 def register_token_record(
@@ -191,30 +221,29 @@ def save_token_record(
     """
     from datetime import datetime, timezone
 
-    records = load_token_records(data_root)
-    # Remove existing record for the same tenant_id + user_id
-    records = [
-        r
-        for r in records
-        if not (
-            r.get("tenant_id") == tenant_id
-            and r.get("user_id") == user_id
-            and str(r.get("role", "user") or "user") == role
+    with _cache_lock:
+        records = load_token_records(data_root)
+        records = [
+            r
+            for r in records
+            if not (
+                r.get("tenant_id") == tenant_id
+                and r.get("user_id") == user_id
+                and str(r.get("role", "user") or "user") == role
+            )
+        ]
+        hashed = token_hash(token)
+        records.append(
+            {
+                "token_hash": hashed,
+                "token_prefix": hashed[:16],
+                "tenant_id": tenant_id,
+                "user_id": user_id,
+                "role": role,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
         )
-    ]
-    records.append(
-        {
-            "token_hash": token_hash(token),
-            "token_prefix": token_hash(token)[:16],
-            "tenant_id": tenant_id,
-            "user_id": user_id,
-            "role": role,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
-    )
-    p = _records_path(data_root)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_bytes(json.dumps(records, option=json.OPT_INDENT_2))
+        store_token_records(data_root, records)
 
 
 def revoke_token(data_root: str, token_prefix: str) -> Optional[Dict[str, Any]]:
@@ -222,18 +251,18 @@ def revoke_token(data_root: str, token_prefix: str) -> Optional[Dict[str, Any]]:
 
     Returns the removed record, or ``None`` if not found.
     """
-    records = load_token_records(data_root)
-    for i, rec in enumerate(records):
-        prefix = str(rec.get("token_prefix", "") or "").removesuffix("...")
-        hashed = str(rec.get("token_hash", "") or "")
-        legacy_token = str(rec.get("token", "") or "")
-        if (
-            prefix == token_prefix
-            or hashed.startswith(token_prefix)
-            or legacy_token.startswith(token_prefix)
-        ):
-            removed = records.pop(i)
-            p = _records_path(data_root)
-            p.write_bytes(json.dumps(records, option=json.OPT_INDENT_2))
-            return removed
+    with _cache_lock:
+        records = load_token_records(data_root)
+        for i, rec in enumerate(records):
+            prefix = str(rec.get("token_prefix", "") or "").removesuffix("...")
+            hashed = str(rec.get("token_hash", "") or "")
+            legacy_token = str(rec.get("token", "") or "")
+            if (
+                prefix == token_prefix
+                or hashed.startswith(token_prefix)
+                or legacy_token.startswith(token_prefix)
+            ):
+                removed = records.pop(i)
+                store_token_records(data_root, records)
+                return removed
     return None

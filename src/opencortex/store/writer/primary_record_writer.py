@@ -9,7 +9,11 @@ from typing import Any
 from opencortex.store.schemas import PrimaryRecordInput, StoredRecord
 from opencortex.store.types import ContextType
 from opencortex.utils.uri import CortexURI
-from opencortex.vector.payloads import DirectoryPayload, VectorPayloadSurface
+from opencortex.vector.payloads import (
+    DirectoryPayload,
+    PrimaryPayload,
+    VectorPayloadSurface,
+)
 
 
 class PrimaryRecordWriter:
@@ -53,6 +57,13 @@ class PrimaryRecordWriter:
             raise ValueError("PrimaryRecordWriter requires a prepared payload")
         if not record.get("id") or not record.get("uri"):
             raise ValueError("PrimaryRecordWriter payload requires id and uri")
+        if record.get("retrieval_surface") == str(VectorPayloadSurface.L0_OBJECT):
+            vectors = {
+                key: record.pop(key)
+                for key in ("vector", "sparse_vector")
+                if key in record
+            }
+            return {**PrimaryPayload.model_validate(record).to_record(), **vectors}
         return record
 
     async def ensure_parent_records(

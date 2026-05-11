@@ -92,8 +92,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         version=settings.app_version,
         lifespan=lifespan,
     )
-    if settings.identity_context_enabled:
-        app.add_middleware(WriteRequestContextMiddleware)
+    app.add_middleware(WriteRequestContextMiddleware)
     app.include_router(auth_router)
     app.include_router(admin_router)
     app.include_router(store_router)

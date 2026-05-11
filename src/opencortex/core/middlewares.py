@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import JSONResponse
@@ -28,9 +30,9 @@ class WriteRequestContextMiddleware(BaseHTTPMiddleware):
     ) -> Response:
         """Set context variables from headers for the request duration."""
         settings = getattr(request.app.state, "settings", None)
-        profile = authenticated_profile_from_bearer(
+        profile = await authenticated_profile_from_bearer(
             request.headers.get("authorization", ""),
-            data_root=getattr(settings, "data_root", "./data"),
+            data_root=str(getattr(settings, "data_root", "./data")),
         )
         if profile is None and protected_path(request.url.path):
             return JSONResponse(
@@ -38,6 +40,8 @@ class WriteRequestContextMiddleware(BaseHTTPMiddleware):
                 content={"detail": "Bearer token is required"},
             )
         profile = profile or IdentityProfile()
+        if not bool(getattr(settings, "identity_context_enabled", True)):
+            return await call_next(request)
 
         profile_token = identity_context.set(
             profile.model_copy(
@@ -52,7 +56,7 @@ class WriteRequestContextMiddleware(BaseHTTPMiddleware):
             identity_context.reset(profile_token)
 
 
-def authenticated_profile_from_bearer(
+async def authenticated_profile_from_bearer(
     authorization: str,
     *,
     data_root: str,
@@ -62,12 +66,12 @@ def authenticated_profile_from_bearer(
     if scheme.lower() != "bearer" or not token:
         return None
     try:
-        secret = ensure_secret(data_root)
+        secret = await asyncio.to_thread(ensure_secret, data_root)
         claims = decode_token(token, secret)
     except Exception:
         return None
 
-    if find_token_record(data_root, token) is None:
+    if await asyncio.to_thread(find_token_record, data_root, token) is None:
         return None
     return IdentityProfile(
         tenant_id=str(claims.get("tid", "") or "default"),

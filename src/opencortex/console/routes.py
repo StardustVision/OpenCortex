@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections import Counter
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -100,6 +99,18 @@ class ConsoleForgetRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ConsoleMemoryQuery(BaseModel):
+    """Normalized console list query."""
+
+    tenant_id: str = ""
+    user_id: str = ""
+    project_id: str = ""
+    context_type: str = ""
+    category: str = ""
+    limit: int
+    offset: int
+
+
 @router.get("/memories", response_model=ConsoleMemoryListResponse)
 async def console_list_memories(
     vector_store: Annotated[Any, Depends(get_vector_store)],
@@ -116,27 +127,23 @@ async def console_list_memories(
     profile = console_profile(
         tenant_id=tenant_id, user_id=user_id, project_id=project_id
     )
-    records = await vector_store.filter(
+    records, total = await load_console_memories(
+        vector_store,
         collection_resolver(),
-        console_filter(
-            profile,
+        profile=profile,
+        query=ConsoleMemoryQuery(
             tenant_id=tenant_id,
             user_id=user_id,
             project_id=project_id,
             context_type=context_type,
             category=category,
+            limit=limit,
+            offset=offset,
         ),
-        limit=10000,
     )
-    primary_records = sorted(
-        (record for record in records if is_primary_record(record)),
-        key=record_sort_key,
-        reverse=True,
-    )
-    window = primary_records[offset : offset + limit]
     return ConsoleMemoryListResponse(
-        results=[memory_record(record) for record in window],
-        total=len(primary_records),
+        results=[memory_record(record) for record in records],
+        total=total,
     )
 
 
@@ -160,7 +167,7 @@ async def console_search_memories(
     )
     return ConsoleMemoryListResponse(
         results=[
-            ConsoleMemoryRecord.model_validate(item.model_dump(mode="json"))
+            memory_record_from_search(item.model_dump(mode="json"))
             for item in result.results
         ],
         total=result.total,
@@ -170,9 +177,17 @@ async def console_search_memories(
 @router.get("/memories/content", response_model=ConsoleContentResponse)
 async def console_memory_content(
     cortex_storage: Annotated[Any, Depends(get_cortex_storage)],
+    vector_store: Annotated[Any, Depends(get_vector_store)],
+    collection_resolver: Annotated[Any, Depends(get_collection_resolver)],
     uri: str,
 ) -> ConsoleContentResponse:
     """Return all display layers for one memory URI."""
+    await require_visible_memory(
+        vector_store,
+        collection_resolver(),
+        uri,
+        profile=console_profile(),
+    )
     abstract, overview, content = await asyncio.gather(
         read_optional(cortex_storage.abstract(uri)),
         read_optional(cortex_storage.overview(uri)),
@@ -219,29 +234,29 @@ async def console_stats(
     profile = console_profile(
         tenant_id=tenant_id, user_id=user_id, project_id=project_id
     )
-    records = await vector_store.filter(
-        collection_resolver(),
-        console_filter(
-            profile,
-            tenant_id=tenant_id,
-            user_id=user_id,
-            project_id=project_id,
-        ),
-        limit=10000,
+    collection = collection_resolver()
+    base_filter = console_filter(
+        profile,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        project_id=project_id,
     )
-    surfaces = Counter(
-        str(record.get("retrieval_surface", "") or "") for record in records
-    )
-    context_types = Counter(
-        str(record.get("context_type", "") or "") for record in records
+    surfaces = await vector_store.facet(collection, "retrieval_surface", base_filter)
+    context_types = await vector_store.facet(collection, "context_type", base_filter)
+    primary_filter = console_filter(
+        profile,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        project_id=project_id,
+        primary_only=True,
     )
     return ConsoleStatsResponse(
         tenant_id=profile.tenant_id,
         user_id=profile.user_id,
         project_id=profile.project_id,
         role=get_identity_profile().role,
-        total_records=len(records),
-        primary_records=sum(1 for record in records if is_primary_record(record)),
+        total_records=await vector_store.count(collection, base_filter),
+        primary_records=await vector_store.count(collection, primary_filter),
         by_context_type=dict(context_types),
         by_surface=dict(surfaces),
     )
@@ -274,6 +289,8 @@ def console_filter(
     project_id: str = "",
     context_type: str = "",
     category: str = "",
+    uri: str = "",
+    primary_only: bool = False,
 ) -> models.Filter:
     """Build a Qdrant filter for console-visible records."""
     current = get_identity_profile()
@@ -297,7 +314,42 @@ def console_filter(
         must.append(field_match("context_type", context_type))
     if category:
         must.append(field_match("category", category))
+    if uri:
+        must.append(field_match("uri", uri))
+    if primary_only:
+        must.append(
+            field_match("retrieval_surface", str(VectorPayloadSurface.L0_OBJECT))
+        )
+        must.append(
+            models.FieldCondition(
+                key="context_type",
+                match=models.MatchAny(
+                    any=[str(ContextType.MEMORY), str(ContextType.RESOURCE)]
+                ),
+            )
+        )
     return models.Filter(must=must)
+
+
+async def require_visible_memory(
+    vector_store: Any,
+    collection: str,
+    uri: str,
+    *,
+    profile: IdentityProfile,
+) -> dict[str, Any]:
+    """Return a visible primary record or reject access."""
+    target_uri = uri.strip()
+    if not target_uri:
+        raise HTTPException(status_code=422, detail="uri is required")
+    records = await vector_store.filter(
+        collection,
+        console_filter(profile, uri=target_uri, primary_only=True),
+        limit=1,
+    )
+    if not records:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return dict(records[0])
 
 
 def console_memory_retriever(
@@ -331,12 +383,35 @@ def console_memory_forgetter(
     )
 
 
-def is_primary_record(record: dict[str, Any]) -> bool:
-    """Return whether a Qdrant payload is a primary memory object."""
-    surface = str(record.get("retrieval_surface", "") or "")
-    return surface == str(VectorPayloadSurface.L0_OBJECT) and str(
-        record.get("context_type", "") or ""
-    ) in {str(ContextType.MEMORY), str(ContextType.RESOURCE)}
+async def load_console_memories(
+    vector_store: Any,
+    collection: str,
+    *,
+    profile: IdentityProfile,
+    query: ConsoleMemoryQuery,
+) -> tuple[list[dict[str, Any]], int]:
+    """Load a console page, preferring Qdrant pagination when possible."""
+    filters = console_filter(
+        profile,
+        tenant_id=query.tenant_id,
+        user_id=query.user_id,
+        project_id=query.project_id,
+        context_type=query.context_type,
+        category=query.category,
+        primary_only=True,
+    )
+    total = await vector_store.count(collection, filters)
+    if query.offset == 0:
+        page = await vector_store.scroll(collection, filters, limit=query.limit)
+        return page.records, total
+    records = await vector_store.filter(
+        collection,
+        filters,
+        limit=query.offset + query.limit,
+    )
+    return sorted(records, key=record_sort_key, reverse=True)[
+        query.offset : query.offset + query.limit
+    ], total
 
 
 def memory_record(record: dict[str, Any]) -> ConsoleMemoryRecord:
@@ -359,6 +434,31 @@ def memory_record(record: dict[str, Any]) -> ConsoleMemoryRecord:
         keywords=str(record.get("keywords", "") or ""),
         entities=list(record.get("entities") or []),
         meta=dict(record.get("meta") or {}),
+    )
+
+
+def memory_record_from_search(record: dict[str, Any]) -> ConsoleMemoryRecord:
+    """Convert a public recall result into a console memory record."""
+    source = dict(record.get("source") or {})
+    return ConsoleMemoryRecord(
+        uri=str(record.get("uri", "") or ""),
+        abstract=str(record.get("abstract", "") or ""),
+        overview=str(record.get("overview", "") or ""),
+        content=str(record.get("content", "") or ""),
+        category=str(record.get("category", "") or ""),
+        context_type=str(
+            record.get("type", "") or record.get("context_type", "") or ""
+        ),
+        project_id=str(record.get("project_id", "") or ""),
+        session_id=str(
+            record.get("session_id", "") or source.get("session_id", "") or ""
+        ),
+        updated_at=record_timestamp(record),
+        created_at=record_timestamp(record),
+        keywords=str(record.get("keywords", "") or ""),
+        entities=list(record.get("entities") or []),
+        meta=dict(record.get("meta") or {}),
+        score=record.get("score"),
     )
 
 

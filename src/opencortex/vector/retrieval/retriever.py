@@ -22,8 +22,12 @@ from opencortex.vector.retrieval.reason_tree import ReasonTreeRunner
 from opencortex.vector.retrieval.schemas import (
     DetailLevel,
     MatchedMemory,
+    RecallEvidence,
+    RecallEvidenceKind,
+    RecallSource,
     RetrievalRequest,
     RetrievalResponse,
+    RetrievalSurface,
 )
 
 
@@ -104,11 +108,12 @@ class MemoryRetriever:
                     hit=hit,
                     primary=primary_records.get(hit.source_uri),
                 ),
+                hit=hit,
                 detail_level=plan.depth,
             )
             for hit in ranked_hits
         ]
-        return RetrievalResponse(results=results, total=len(results), plan=plan)
+        return RetrievalResponse(results=results, total=len(results))
 
     async def load_primary_records(
         self,
@@ -142,6 +147,7 @@ class MemoryRetriever:
         self,
         record: dict[str, Any],
         *,
+        hit: Any,
         detail_level: DetailLevel,
     ) -> MatchedMemory:
         """Project one primary payload to API result."""
@@ -158,16 +164,15 @@ class MemoryRetriever:
                 content = await self.read_optional(f"{uri}/content.md")
         return MatchedMemory(
             uri=uri,
-            context_type=str(record.get("context_type", "") or ""),
+            type=str(record.get("context_type", "") or ""),
             category=str(record.get("category", "") or ""),
             abstract=str(record.get("abstract", "") or ""),
             overview=overview,
             content=content,
             score=float(record.get("_final_score", record.get("_score", 0.0)) or 0.0),
-            match_reason=",".join(record.get("_retrieval_surfaces") or []),
-            retrieval_surfaces=list(record.get("_retrieval_surfaces") or []),
             session_id=str(record.get("session_id", "") or ""),
-            source_doc_id=record.get("source_doc_id"),
+            source=recall_source(record, uri=uri),
+            evidence=recall_evidence(record, hit=hit),
             entities=list(record.get("entities") or []),
             keywords=str(record.get("keywords", "") or ""),
             meta=dict(record.get("meta") or {}),
@@ -189,3 +194,68 @@ def unique_uris(uris: list[str]) -> list[str]:
         if text and text not in values:
             values.append(text)
     return values
+
+
+def recall_source(record: dict[str, Any], *, uri: str) -> RecallSource:
+    """Build business source metadata for a recall result."""
+    meta = dict(record.get("meta") or {})
+    return RecallSource(
+        uri=uri,
+        primary_uri=uri,
+        session_id=str(
+            record.get("session_id", "") or meta.get("session_id", "") or ""
+        ),
+        document_id=record.get("source_doc_id") or meta.get("source_doc_id"),
+        title=str(
+            record.get("source_doc_title")
+            or meta.get("source_doc_title")
+            or meta.get("title")
+            or ""
+        ),
+        section=str(
+            record.get("source_section_path") or meta.get("source_section_path") or ""
+        ),
+    )
+
+
+def recall_evidence(record: dict[str, Any], *, hit: Any) -> list[RecallEvidence]:
+    """Build answer evidence without exposing retrieval internals."""
+    surfaces = list(record.get("_retrieval_surfaces") or [])
+    if not surfaces:
+        surfaces = [str(getattr(getattr(hit, "surface", ""), "value", "") or "match")]
+    score = float(record.get("_final_score", record.get("_score", 0.0)) or 0.0)
+    snippet = evidence_snippet(record)
+    uri = str(record.get("uri", "") or getattr(hit, "source_uri", "") or "")
+    return [
+        RecallEvidence(
+            uri=uri,
+            kind=business_evidence_kind(surface),
+            score=score,
+            snippet=snippet,
+        )
+        for surface in surfaces
+    ]
+
+
+def evidence_snippet(record: dict[str, Any]) -> str:
+    """Return the best short text evidence for a recall result."""
+    for key in ("abstract", "overview", "content"):
+        value = str(record.get(key, "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def business_evidence_kind(surface: str) -> RecallEvidenceKind:
+    """Map physical retrieval surfaces to business-facing evidence kinds."""
+    try:
+        retrieval_surface = RetrievalSurface(surface)
+    except ValueError:
+        return RecallEvidenceKind.MATCH
+    return {
+        RetrievalSurface.L0_OBJECT: RecallEvidenceKind.MEMORY,
+        RetrievalSurface.ANCHOR_INDEX: RecallEvidenceKind.TOPIC,
+        RetrievalSurface.FACT_INDEX: RecallEvidenceKind.FACT,
+        RetrievalSurface.ENTITY_INDEX: RecallEvidenceKind.ENTITY,
+        RetrievalSurface.REASON_TREE_INDEX: RecallEvidenceKind.SUMMARY,
+    }.get(retrieval_surface, RecallEvidenceKind.MATCH)

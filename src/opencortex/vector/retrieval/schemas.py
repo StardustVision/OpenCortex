@@ -43,6 +43,17 @@ class QuerySize(StrEnum):
     LARGE = "large"
 
 
+class RecallEvidenceKind(StrEnum):
+    """Business-facing evidence categories returned by recall."""
+
+    MEMORY = "memory"
+    TOPIC = "topic"
+    FACT = "fact"
+    ENTITY = "entity"
+    SUMMARY = "summary"
+    MATCH = "match"
+
+
 class RetrievalRequest(BaseModel):
     """Public memory recall request."""
 
@@ -141,20 +152,39 @@ class ProbeCandidateEvidence(BaseModel):
     anchors: list[str] = Field(default_factory=list)
 
 
+class RecallSource(BaseModel):
+    """Business source for one recall result."""
+
+    uri: str = ""
+    primary_uri: str = ""
+    session_id: str = ""
+    document_id: str | None = None
+    title: str = ""
+    section: str = ""
+
+
+class RecallEvidence(BaseModel):
+    """Evidence that explains why a result was returned."""
+
+    uri: str
+    kind: RecallEvidenceKind = RecallEvidenceKind.MATCH
+    score: float = 0.0
+    snippet: str = ""
+
+
 class MatchedMemory(BaseModel):
     """One user-facing recall result."""
 
     uri: str
-    context_type: str = ""
+    type: str = ""
     category: str = ""
     abstract: str = ""
     overview: str | None = None
     content: str | None = None
     score: float = 0.0
-    match_reason: str = ""
-    retrieval_surfaces: list[str] = Field(default_factory=list)
     session_id: str = ""
-    source_doc_id: str | None = None
+    source: RecallSource = Field(default_factory=RecallSource)
+    evidence: list[RecallEvidence] = Field(default_factory=list)
     entities: list[str] = Field(default_factory=list)
     keywords: str = ""
     meta: dict[str, Any] = Field(default_factory=dict)
@@ -165,4 +195,3 @@ class RetrievalResponse(BaseModel):
 
     results: list[MatchedMemory] = Field(default_factory=list)
     total: int = 0
-    plan: RetrievalPlan

@@ -11,6 +11,8 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 from qdrant_client import AsyncQdrantClient, models
 
+PointOffset = str | int | uuid.UUID | None
+
 
 class VectorRecord(BaseModel):
     """Record accepted by the Qdrant vector store."""
@@ -36,6 +38,15 @@ class VectorRecord(BaseModel):
             sparse_vector=sparse_vector if isinstance(sparse_vector, dict) else None,
             payload=data,
         )
+
+
+class VectorPage(BaseModel):
+    """One Qdrant scroll page."""
+
+    records: list[dict[str, Any]]
+    next_offset: str | int | None = None
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class QdrantVectorStore:
@@ -98,18 +109,80 @@ class QdrantVectorStore:
         filters: models.Filter | None,
         *,
         limit: int = 10000,
+        offset: PointOffset = None,
     ) -> list[dict[str, Any]]:
         """Return payloads that match a Qdrant filter."""
+        page = await self.scroll(
+            collection,
+            filters,
+            limit=limit,
+            offset=offset,
+        )
+        return page.records
+
+    async def scroll(
+        self,
+        collection: str,
+        filters: models.Filter | None,
+        *,
+        limit: int = 100,
+        offset: PointOffset = None,
+        order_by: models.OrderBy | None = None,
+    ) -> VectorPage:
+        """Return one Qdrant scroll page and its next offset."""
         await self.ensure_collection(collection)
         client = await self.ensure_client()
-        points, _ = await client.scroll(
+        points, next_offset = await client.scroll(
             collection_name=collection,
             scroll_filter=filters,
             limit=limit,
+            offset=offset,
+            order_by=order_by,
             with_payload=True,
             with_vectors=False,
         )
-        return [self.from_point(point) for point in points]
+        return VectorPage(
+            records=[self.from_point(point) for point in points],
+            next_offset=normalize_offset(next_offset),
+        )
+
+    async def count(
+        self,
+        collection: str,
+        filters: models.Filter | None,
+        *,
+        exact: bool = True,
+    ) -> int:
+        """Return the number of records matching a Qdrant filter."""
+        await self.ensure_collection(collection)
+        client = await self.ensure_client()
+        result = await client.count(
+            collection_name=collection,
+            count_filter=filters,
+            exact=exact,
+        )
+        return int(result.count)
+
+    async def facet(
+        self,
+        collection: str,
+        key: str,
+        filters: models.Filter | None,
+        *,
+        limit: int = 20,
+        exact: bool = True,
+    ) -> dict[str, int]:
+        """Return facet counts for one indexed payload key."""
+        await self.ensure_collection(collection)
+        client = await self.ensure_client()
+        result = await client.facet(
+            collection_name=collection,
+            key=key,
+            facet_filter=filters,
+            limit=limit,
+            exact=exact,
+        )
+        return {str(hit.value): int(hit.count) for hit in result.hits}
 
     async def search(
         self,
@@ -143,7 +216,13 @@ class QdrantVectorStore:
         )
         return [self.from_scored_point(point) for point in response.points]
 
-    async def remove_by_uri(self, collection: str, uri: str) -> bool:
+    async def remove_by_uri(
+        self,
+        collection: str,
+        uri: str,
+        *,
+        filters: models.Filter | None = None,
+    ) -> bool:
         """Remove a URI tree and vector projections that point at it."""
         await self.ensure_collection(collection)
         client = await self.ensure_client()
@@ -153,6 +232,7 @@ class QdrantVectorStore:
             points, offset = await client.scroll(
                 collection_name=collection,
                 offset=offset,
+                scroll_filter=filters,
                 limit=512,
                 with_payload=True,
                 with_vectors=False,
@@ -295,6 +375,15 @@ def payload_matches_uri(point: Any, uri: str) -> bool:
         if value == uri or value.startswith(prefix):
             return True
     return False
+
+
+def normalize_offset(offset: Any) -> str | int | None:
+    """Return a JSON-safe Qdrant scroll offset."""
+    if offset is None:
+        return None
+    if isinstance(offset, int):
+        return offset
+    return str(offset)
 
 
 def to_point_id(raw_id: str | int) -> str | int:

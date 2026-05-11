@@ -95,6 +95,53 @@ class TestQdrantVectorStore(unittest.IsolatedAsyncioTestCase):
             ["opencortex://tenant/user/memory/10"],
         )
 
+    async def test_scroll_count_facet_and_filtered_remove_by_uri(self) -> None:
+        """Qdrant boundary supports paged console reads and scoped deletes."""
+        for index, tenant in enumerate(["a", "a", "b"]):
+            await self.store.upsert(
+                "context",
+                {
+                    "id": f"opencortex://{tenant}/user/memory/{index}",
+                    "uri": f"opencortex://{tenant}/user/memory/{index}",
+                    "tenant_id": tenant,
+                    "context_type": "memory",
+                    "retrieval_surface": "l0_object",
+                    "vector": [0.1, 0.2, 0.3, 0.4],
+                },
+            )
+
+        tenant_a = models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="tenant_id",
+                    match=models.MatchValue(value="a"),
+                )
+            ]
+        )
+        first_page = await self.store.scroll("context", tenant_a, limit=1)
+        second_page = await self.store.scroll(
+            "context",
+            tenant_a,
+            limit=2,
+            offset=first_page.next_offset,
+        )
+
+        self.assertEqual(await self.store.count("context", tenant_a), 2)
+        self.assertEqual(first_page.records[0]["tenant_id"], "a")
+        self.assertEqual(len(second_page.records), 1)
+        self.assertEqual(
+            await self.store.facet("context", "tenant_id", None),
+            {"a": 2, "b": 1},
+        )
+        self.assertFalse(
+            await self.store.remove_by_uri(
+                "context",
+                "opencortex://b/user/memory/2",
+                filters=tenant_a,
+            )
+        )
+        self.assertEqual(await self.store.count("context", None), 3)
+
     async def test_rejects_wrong_vector_dimension(self) -> None:
         """QdrantVectorStore does not silently pad or truncate vectors."""
         with self.assertRaises(ValueError):

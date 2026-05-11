@@ -11,6 +11,7 @@ export interface ConsoleStats {
 
 export interface MemoryRecord {
   uri: string;
+  type?: string;
   abstract: string;
   overview?: string;
   content?: string;
@@ -24,15 +25,30 @@ export interface MemoryRecord {
   updated_at?: string;
   created_at?: string;
   score?: number | null;
-  retrieval_surfaces?: string[];
+  evidence?: RecallEvidence[];
+  source?: RecallSource;
   keywords?: string;
   entities?: string[];
   meta?: Record<string, unknown>;
 }
 
-export interface SearchResult extends MemoryRecord {
-  match_reason?: string;
+export interface RecallSource {
+  uri: string;
+  primary_uri: string;
+  session_id?: string;
+  document_id?: string | null;
+  title?: string;
+  section?: string;
 }
+
+export interface RecallEvidence {
+  uri: string;
+  kind: string;
+  score: number;
+  snippet: string;
+}
+
+export type SearchResult = MemoryRecord;
 
 export interface ConsoleListResponse {
   results: MemoryRecord[];
