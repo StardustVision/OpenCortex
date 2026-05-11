@@ -15,7 +15,12 @@ import httpx
 from httpx import ASGITransport
 
 from opencortex.app import create_app
-from opencortex.auth.token import ensure_secret, generate_token, save_token_record
+from opencortex.auth.token import (
+    ensure_secret,
+    generate_token,
+    load_token_records,
+    save_token_record,
+)
 from opencortex.prompts.retrieval import (
     QUERY_DECOMPOSITION_SYSTEM_PROMPT,
     REASON_TREE_SELECTION_SYSTEM_PROMPT,
@@ -496,6 +501,51 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(me_response.json()["tenant_id"], "tenant-admin")
         self.assertEqual(tokens_response.status_code, 200)
         self.assertEqual(tokens_response.json()["tokens"][0]["role"], "admin")
+
+    async def test_default_admin_token_is_created_once(self) -> None:
+        """A default admin token is created only when no admin record exists."""
+        with TemporaryDirectory() as data_root:
+            create_app(settings=app_settings(data_root))
+            records = load_token_records(data_root)
+            admin_records = [
+                record for record in records if record.get("role") == "admin"
+            ]
+
+            create_app(settings=app_settings(data_root))
+            after_second_start = load_token_records(data_root)
+            second_admin_records = [
+                record for record in after_second_start if record.get("role") == "admin"
+            ]
+
+        self.assertEqual(len(admin_records), 1)
+        self.assertEqual(admin_records[0]["tenant_id"], "_system")
+        self.assertEqual(admin_records[0]["user_id"], "_admin")
+        self.assertEqual(second_admin_records, admin_records)
+
+    async def test_default_admin_token_does_not_replace_existing_admin(self) -> None:
+        """Existing admin records suppress default admin token bootstrap."""
+        with TemporaryDirectory() as data_root:
+            secret = ensure_secret(data_root)
+            token = generate_token(
+                "tenant-admin",
+                "root",
+                secret,
+                role="admin",
+            )
+            save_token_record(
+                data_root,
+                token,
+                "tenant-admin",
+                "root",
+                role="admin",
+            )
+
+            create_app(settings=app_settings(data_root))
+            records = load_token_records(data_root)
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["tenant_id"], "tenant-admin")
+        self.assertEqual(records[0]["user_id"], "root")
 
     async def test_mcp_initialize_and_tools_list(self) -> None:
         """MCP exposes initialize and tools/list over Streamable HTTP."""

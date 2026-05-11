@@ -92,8 +92,9 @@ class Settings(BaseSettings):
     admin_api_token: str = Field(
         default="",
         description=(
-            "Optional pre-generated admin JWT to register at startup. "
-            "Use OPENCORTEX_APP_ADMIN_API_TOKEN or .env for local bootstrap."
+            "Optional pre-generated admin JWT to register at startup. If empty, "
+            "OpenCortex creates a one-time _system/_admin token when no admin "
+            "token record exists."
         ),
     )
     retrieval_rerank_enabled: bool = Field(

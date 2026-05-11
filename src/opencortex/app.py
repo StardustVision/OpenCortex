@@ -11,7 +11,13 @@ import structlog
 from fastapi import FastAPI
 
 from opencortex.auth.routes import admin_router, auth_router
-from opencortex.auth.token import ensure_secret, register_token_record
+from opencortex.auth.token import (
+    ensure_secret,
+    generate_admin_token,
+    load_token_records,
+    register_token_record,
+    save_token_record,
+)
 from opencortex.core.identity import (
     get_collection_name,
 )
@@ -112,10 +118,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 
 def configure_admin_token(settings: Settings) -> None:
-    """Register a configured bootstrap admin token."""
-    if not settings.admin_api_token:
-        return
     secret = ensure_secret(settings.data_root)
+    if not settings.admin_api_token:
+        bootstrap_admin_token(settings.data_root, secret=secret)
+        return
     record = register_token_record(
         settings.data_root,
         settings.admin_api_token,
@@ -123,6 +129,21 @@ def configure_admin_token(settings: Settings) -> None:
     )
     if record["role"] != "admin":
         raise ValueError("Configured admin_api_token must have role=admin")
+
+
+def bootstrap_admin_token(data_root: str, *, secret: str) -> str:
+    """Create the default admin token once when no admin token exists."""
+    if any(record.get("role") == "admin" for record in load_token_records(data_root)):
+        return ""
+    token = generate_admin_token(secret)
+    save_token_record(data_root, token, "_system", "_admin", role="admin")
+    logger.warning(
+        "opencortex.bootstrap_admin_token_created",
+        tenant_id="_system",
+        user_id="_admin",
+        token=token,
+    )
+    return token
 
 
 def configure_store_state(app: FastAPI, runtime: AppRuntime) -> None:
