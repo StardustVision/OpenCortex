@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from starlette import status
 from starlette.requests import ClientDisconnect
 
+from opencortex.mcp.instructions import MCP_CLIENT_RULES, MCP_INSTRUCTIONS
 from opencortex.mcp.schemas import (
     MCP_PROTOCOL_VERSION,
     JsonRpcError,
@@ -18,6 +19,8 @@ from opencortex.mcp.schemas import (
     JsonRpcRequest,
     JsonRpcResponse,
     McpMethod,
+    McpPrompt,
+    PromptGetParams,
     ToolCallParams,
 )
 from opencortex.mcp.tools import McpToolbox, list_tools
@@ -180,6 +183,11 @@ async def dispatch_request(
         return initialize_result()
     if method == McpMethod.PING:
         return {}
+    if method == McpMethod.PROMPTS_LIST:
+        return prompts_list_result()
+    if method == McpMethod.PROMPTS_GET:
+        params = PromptGetParams.model_validate(params)
+        return prompts_get_result(params)
     if method == McpMethod.TOOLS_LIST:
         return {
             "tools": [
@@ -200,8 +208,43 @@ def initialize_result() -> dict[str, Any]:
     """Return MCP initialize capabilities."""
     return {
         "protocolVersion": MCP_PROTOCOL_VERSION,
-        "capabilities": {"tools": {"listChanged": False}},
+        "capabilities": {
+            "prompts": {"listChanged": False},
+            "tools": {"listChanged": False},
+        },
         "serverInfo": {"name": "opencortex", "version": "0.8.0"},
+        "instructions": MCP_INSTRUCTIONS,
+    }
+
+
+def prompts_list_result() -> dict[str, Any]:
+    """Return MCP prompt descriptors."""
+    prompt = McpPrompt(
+        name="opencortex-memory-rules",
+        title="OpenCortex Memory Rules",
+        description=(
+            "Client rules that encourage proactive OpenCortex search and memory "
+            "writes through MCP tools."
+        ),
+    )
+    return {"prompts": [prompt.model_dump(mode="json")]}
+
+
+def prompts_get_result(params: PromptGetParams) -> dict[str, Any]:
+    """Return one MCP prompt body."""
+    if params.name != "opencortex-memory-rules":
+        raise McpJsonRpcError(
+            code=JsonRpcErrorCode.INVALID_PARAMS,
+            message=f"Unknown prompt: {params.name}",
+        )
+    return {
+        "description": "Use these rules as MCP client instructions for OpenCortex.",
+        "messages": [
+            {
+                "role": "user",
+                "content": {"type": "text", "text": MCP_CLIENT_RULES},
+            }
+        ],
     }
 
 

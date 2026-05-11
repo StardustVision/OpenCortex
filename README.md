@@ -449,6 +449,59 @@ Current MCP tools:
 - `opencortex.session_message`
 - `opencortex.session_end`
 
+OpenCortex also returns default MCP `instructions` during `initialize`. These
+instructions ask compatible clients to search memory before context-dependent
+answers and store durable facts or session turns when appropriate. This improves
+tool-call recall, but it is still client/model dependent.
+
+For clients that support MCP prompts, OpenCortex exposes:
+
+- `opencortex-memory-rules`
+
+You can fetch the prompt with:
+
+```bash
+curl -sS http://127.0.0.1:8921/mcp \
+  -H "Authorization: Bearer $OPENCORTEX_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"prompts/get","params":{"name":"opencortex-memory-rules","arguments":{}}}'
+```
+
+For clients that do not auto-load MCP instructions or prompts, copy this into
+the client's system prompt, user rules, or memory rules:
+
+```text
+# OpenCortex Memory Rules
+
+OpenCortex is available as a long-term memory system through MCP tools.
+
+Before answering:
+- If the user asks anything that may depend on prior context, preferences,
+  decisions, project history, resources, or durable facts, call
+  `opencortex.search` first with the user's current question.
+- Treat returned memories and resources as private grounding context.
+- If results are irrelevant, ignore them and answer normally.
+
+While answering:
+- Do not mention OpenCortex, MCP, internal URIs, scores, or storage details unless
+  the user explicitly asks.
+- Prefer concise answers grounded in the best matching memory/resource evidence.
+
+After or during the turn:
+- If the user provides durable facts, preferences, decisions, requirements,
+  personal details, project facts, or important outcomes, call
+  `opencortex.store_memory`.
+- If a stable conversation/session id is available, prefer
+  `opencortex.session_message` for each meaningful user/assistant turn.
+- At the end of a meaningful session, call `opencortex.session_end` when a stable
+  session id is available.
+- Use `opencortex.store_resource` only for reusable documents, notes, or reference
+  material.
+- Use `opencortex.forget` only when the user explicitly requests deletion or
+  forgetting.
+```
+
 For a quick transport check without an MCP client:
 
 ```bash

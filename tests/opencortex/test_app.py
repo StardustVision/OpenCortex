@@ -611,11 +611,35 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
                                 "method": "tools/list",
                             },
                         )
+                        prompts_response = await client.post(
+                            "/mcp",
+                            headers=MCP_HEADERS,
+                            json={
+                                "jsonrpc": "2.0",
+                                "id": "prompts-1",
+                                "method": "prompts/list",
+                            },
+                        )
+                        prompt_get_response = await client.post(
+                            "/mcp",
+                            headers=MCP_HEADERS,
+                            json={
+                                "jsonrpc": "2.0",
+                                "id": "prompt-get-1",
+                                "method": "prompts/get",
+                                "params": {
+                                    "name": "opencortex-memory-rules",
+                                    "arguments": {},
+                                },
+                            },
+                        )
 
         self.assertEqual(init_response.status_code, 200)
         init_result = init_response.json()["result"]
         self.assertEqual(init_result["protocolVersion"], "2025-06-18")
         self.assertIn("tools", init_result["capabilities"])
+        self.assertIn("prompts", init_result["capabilities"])
+        self.assertIn("opencortex.search", init_result["instructions"])
 
         self.assertEqual(tools_response.status_code, 200)
         tool_names = {tool["name"] for tool in tools_response.json()["result"]["tools"]}
@@ -628,6 +652,17 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
             if tool["name"] == "opencortex.search"
         )
         self.assertIn("inputSchema", search_tool)
+
+        self.assertEqual(prompts_response.status_code, 200)
+        prompts = prompts_response.json()["result"]["prompts"]
+        self.assertEqual(prompts[0]["name"], "opencortex-memory-rules")
+
+        self.assertEqual(prompt_get_response.status_code, 200)
+        prompt_text = prompt_get_response.json()["result"]["messages"][0]["content"][
+            "text"
+        ]
+        self.assertIn("Before answering", prompt_text)
+        self.assertIn("opencortex.session_message", prompt_text)
 
     async def test_mcp_store_and_search_tools_use_new_chain(self) -> None:
         """MCP tools/call writes and recalls through the current memory chain."""

@@ -17,6 +17,8 @@ class McpMethod(StrEnum):
     INITIALIZE = "initialize"
     INITIALIZED = "notifications/initialized"
     PING = "ping"
+    PROMPTS_GET = "prompts/get"
+    PROMPTS_LIST = "prompts/list"
     TOOLS_LIST = "tools/list"
     TOOLS_CALL = "tools/call"
 
@@ -84,6 +86,23 @@ class McpTool(BaseModel):
     )
 
 
+class McpPrompt(BaseModel):
+    """MCP prompt descriptor."""
+
+    name: str
+    title: str
+    description: str
+
+
+class PromptGetParams(BaseModel):
+    """Params for the MCP prompts/get method."""
+
+    name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class ToolCallParams(BaseModel):
     """Params for the MCP tools/call method."""
 
@@ -123,7 +142,9 @@ __all__ = [
     "JsonRpcRequest",
     "JsonRpcResponse",
     "McpMethod",
+    "McpPrompt",
     "McpTool",
+    "PromptGetParams",
     "ToolCallParams",
     "ToolContent",
     "ToolResult",
