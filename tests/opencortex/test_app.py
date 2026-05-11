@@ -706,7 +706,9 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
                                         "category": "semantic",
                                         "metadata": {"entities": ["Zephyr"]},
                                         "source": {"kind": "manual"},
+                                        "_meta": {"ignored": True},
                                     },
+                                    "_meta": {"progressToken": "store-1"},
                                 },
                             },
                         )
@@ -723,7 +725,9 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
                                     "arguments": {
                                         "query": "Zephyr notebook planning",
                                         "limit": 3,
+                                        "_meta": {"ignored": True},
                                     },
+                                    "_meta": {"progressToken": "search-1"},
                                 },
                             },
                         )

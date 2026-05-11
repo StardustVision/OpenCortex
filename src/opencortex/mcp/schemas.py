@@ -100,7 +100,7 @@ class PromptGetParams(BaseModel):
     name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
 
 class ToolCallParams(BaseModel):
@@ -109,7 +109,7 @@ class ToolCallParams(BaseModel):
     name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
 
 class ToolContent(BaseModel):

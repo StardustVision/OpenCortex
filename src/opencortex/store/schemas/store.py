@@ -204,7 +204,7 @@ class MemoryForgetRequest(BaseModel):
     query: str = ""
     uri: str = ""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     @model_validator(mode="after")
     def validate_target(self) -> Self:

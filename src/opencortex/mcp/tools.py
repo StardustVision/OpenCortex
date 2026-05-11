@@ -40,6 +40,16 @@ class McpToolName(StrEnum):
     SESSION_END = "opencortex.session_end"
 
 
+TOOL_NAME_ALIASES = {
+    "opencortex_search": McpToolName.SEARCH,
+    "opencortex_store_memory": McpToolName.STORE_MEMORY,
+    "opencortex_store_resource": McpToolName.STORE_RESOURCE,
+    "opencortex_forget": McpToolName.FORGET,
+    "opencortex_session_message": McpToolName.SESSION_MESSAGE,
+    "opencortex_session_end": McpToolName.SESSION_END,
+}
+
+
 class StoreMemoryToolInput(BaseModel):
     """Input schema for storing one memory through MCP."""
 
@@ -48,7 +58,7 @@ class StoreMemoryToolInput(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     source: dict[str, Any] = Field(default_factory=lambda: {"kind": "api"})
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
 
 class StoreResourceToolInput(StoreMemoryToolInput):
@@ -69,7 +79,7 @@ class McpToolbox(BaseModel):
 
     async def call(self, name: str, arguments: dict[str, Any]) -> ToolResult:
         """Call one OpenCortex MCP tool."""
-        tool_name = McpToolName(name)
+        tool_name = normalize_tool_name(name)
         if tool_name == McpToolName.SEARCH:
             return await self._search(arguments)
         if tool_name == McpToolName.STORE_MEMORY:
@@ -175,6 +185,13 @@ def list_tools() -> list[McpTool]:
     ]
 
 
+def normalize_tool_name(name: str) -> McpToolName:
+    """Return the canonical MCP tool name."""
+    if name in TOOL_NAME_ALIASES:
+        return TOOL_NAME_ALIASES[name]
+    return McpToolName(name)
+
+
 def tool_result(data: dict[str, Any]) -> ToolResult:
     """Return an MCP-compatible structured result."""
     return ToolResult(
@@ -187,4 +204,9 @@ def tool_result(data: dict[str, Any]) -> ToolResult:
     )
 
 
-__all__ = ["McpToolName", "McpToolbox", "list_tools"]
+__all__ = [
+    "McpToolName",
+    "McpToolbox",
+    "list_tools",
+    "normalize_tool_name",
+]

@@ -60,7 +60,7 @@ class RetrievalRequest(BaseModel):
     query: str = Field(..., min_length=1)
     limit: int = Field(default=5, ge=1, le=50)
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     @model_validator(mode="after")
     def validate_query(self) -> "RetrievalRequest":
