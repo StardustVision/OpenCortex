@@ -489,15 +489,18 @@ While answering:
 - Prefer concise answers grounded in the best matching memory/resource evidence.
 
 After or during the turn:
+- For every meaningful conversation turn, call `opencortex.session_message` when
+  a stable `session_id` and `turn_id` are available. Use this for ordinary
+  dialogue recording.
 - If the user provides durable facts, preferences, decisions, requirements,
-  personal details, project facts, or important outcomes, call
-  `opencortex.store_memory`.
-- If a stable conversation/session id is available, prefer
-  `opencortex.session_message` for each meaningful user/assistant turn.
+  personal details, project facts, important outcomes, or explicitly says to
+  remember something, call `opencortex.store_memory`. This does not replace
+  `opencortex.session_message`.
+- If the user provides a document, notes, specifications, API reference, pasted
+  article, or other reusable long-form material, call `opencortex.store_resource`
+  instead of `opencortex.store_memory`.
 - At the end of a meaningful session, call `opencortex.session_end` when a stable
   session id is available.
-- Use `opencortex.store_resource` only for reusable documents, notes, or reference
-  material.
 - Use `opencortex.forget` only when the user explicitly requests deletion or
   forgetting.
 ```
