@@ -24,6 +24,7 @@ export const Tokens: React.FC = () => {
   const [createError, setCreateError] = useState('');
   const [copied, setCopied] = useState(false);
   const [copiedRecord, setCopiedRecord] = useState('');
+  const [copyNotice, setCopyNotice] = useState('');
 
   const [revokeTarget, setRevokeTarget] = useState<TokenRecord | null>(null);
   const [revoking, setRevoking] = useState(false);
@@ -82,16 +83,42 @@ export const Tokens: React.FC = () => {
     }
   };
 
-  const copyToken = (text: string) => {
-    navigator.clipboard.writeText(text);
+  const showCopyNotice = (message: string) => {
+    setCopyNotice(message);
+    setTimeout(() => setCopyNotice(''), 2000);
+  };
+
+  const writeClipboard = async (text: string) => {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    const element = document.createElement('textarea');
+    element.value = text;
+    element.setAttribute('readonly', '');
+    element.style.position = 'fixed';
+    element.style.left = '-9999px';
+    document.body.appendChild(element);
+    element.select();
+    document.execCommand('copy');
+    document.body.removeChild(element);
+  };
+
+  const copyToken = async (text: string) => {
+    await writeClipboard(text);
     setCopied(true);
+    showCopyNotice('Token copied');
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const copyRecordToken = (record: TokenRecord) => {
-    const value = record.token || record.token_prefix;
-    navigator.clipboard.writeText(value);
+  const copyRecordToken = async (record: TokenRecord) => {
+    if (!record.token) {
+      showCopyNotice('Full token unavailable; regenerate this token');
+      return;
+    }
+    await writeClipboard(record.token);
     setCopiedRecord(record.token_prefix);
+    showCopyNotice('Full token copied');
     setTimeout(() => setCopiedRecord(''), 2000);
   };
 
@@ -143,15 +170,16 @@ export const Tokens: React.FC = () => {
                       </td>
                       <td className="py-3">
                         <div className="flex items-center gap-2">
-                          <span className="font-mono text-xs text-gray-400">
-                            {t.token ? `${t.token.slice(0, 16)}...` : t.token_prefix}
+                          <span className="font-mono text-xs text-gray-500">
+                            {maskedToken(t.token)}
                           </span>
                           <button
                             type="button"
-                            className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-indigo-600"
+                            className={`rounded p-1 ${t.token ? 'text-gray-400 hover:bg-gray-100 hover:text-indigo-600' : 'cursor-not-allowed text-gray-300'}`}
                             onClick={() => copyRecordToken(t)}
-                            title={t.token ? 'Copy full token' : 'Copy token prefix'}
-                            aria-label={t.token ? 'Copy full token' : 'Copy token prefix'}
+                            title={t.token ? 'Copy full token' : 'Full token unavailable'}
+                            aria-label={t.token ? 'Copy full token' : 'Full token unavailable'}
+                            disabled={!t.token}
                           >
                             {copiedRecord === t.token_prefix ? (
                               <Check size={14} className="text-green-600" />
@@ -254,6 +282,23 @@ export const Tokens: React.FC = () => {
           Revoke token for <strong>{revokeTarget?.tenant_id}/{revokeTarget?.user_id}</strong>? This cannot be undone.
         </p>
       </Modal>
+      {copyNotice && (
+        <div className="fixed bottom-6 right-6 z-50 rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm font-medium text-green-700 shadow-lg">
+          {copyNotice}
+        </div>
+      )}
     </PageLayout>
   );
 };
+
+function maskedToken(token?: string): string {
+  if (!token) {
+    return 'Full token unavailable';
+  }
+  const parts = token.split('.');
+  const signature = parts.length === 3 ? parts[2] : token;
+  if (signature.length <= 16) {
+    return signature;
+  }
+  return `${signature.slice(0, 8)}...${signature.slice(-8)}`;
+}
