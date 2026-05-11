@@ -243,6 +243,7 @@ def get_memory_retriever(
     embedder: Annotated[Any, Depends(get_embedding_model)],
     cortex_storage: Annotated[Any, Depends(get_cortex_storage)],
     llm_completion: Annotated[Any, Depends(get_llm_completion)],
+    config: Annotated[Any, Depends(get_store_config)],
 ) -> MemoryRetriever:
     """Return memory retriever."""
     return MemoryRetriever(
@@ -251,6 +252,14 @@ def get_memory_retriever(
         embedder=embedder,
         cortex_storage=cortex_storage,
         llm_completion=llm_completion,
+        rerank_enabled=bool(getattr(config, "retrieval_rerank_enabled", True)),
+        rerank_provider=str(getattr(config, "retrieval_rerank_provider", "llm")),
+        rerank_model=str(getattr(config, "retrieval_rerank_model", "")),
+        rerank_api_key=str(getattr(config, "retrieval_rerank_api_key", "")),
+        rerank_api_base=str(getattr(config, "retrieval_rerank_api_base", "")),
+        default_rerank_model=str(getattr(config, "llm_model", "")),
+        rerank_seed_limit=int(getattr(config, "retrieval_rerank_seed_limit", 30)),
+        rerank_final_limit=int(getattr(config, "retrieval_rerank_final_limit", 30)),
     )
 
 

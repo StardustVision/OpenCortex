@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import json
+import sys
 import unittest
 from hashlib import sha256
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -17,10 +19,16 @@ from opencortex.auth.token import ensure_secret, generate_token, save_token_reco
 from opencortex.prompts.retrieval import (
     QUERY_DECOMPOSITION_SYSTEM_PROMPT,
     REASON_TREE_SELECTION_SYSTEM_PROMPT,
+    RECALL_RERANK_SYSTEM_PROMPT,
 )
 from opencortex.prompts.write import LAYER_DERIVATION_SYSTEM_PROMPT
 from opencortex.settings import Settings, get_settings
 from opencortex.store.document_tree import DocumentParser
+from opencortex.vector.retrieval.reranker import (
+    HostedVLLMRerankClient,
+    LiteLLMRerankClient,
+    OpenAIRerankClient,
+)
 
 captured_system_prompts: list[str] = []
 MCP_HEADERS = {
@@ -99,6 +107,15 @@ async def fake_llm_completion(
         )
     if "Select the best reason-tree entry URIs" in prompt:
         return '{"selected_uris":["' + extract_first_reason_tree_uri(prompt) + '"]}'
+    if "Score these candidate memories" in prompt:
+        return json.dumps(
+            {
+                "scores": [
+                    {"uri": uri, "score": 1.0 - index * 0.05}
+                    for index, uri in enumerate(extract_candidate_uris(prompt))
+                ]
+            }
+        )
     if "Build a Reason Tree" in prompt:
         return json.dumps(
             {
@@ -200,6 +217,19 @@ def extract_reason_tree_node_uri(prompt: str) -> str:
         if "/reason_tree/" in uri:
             return uri
     return extract_first_reason_tree_uri(prompt)
+
+
+def extract_candidate_uris(prompt: str) -> list[str]:
+    """Return candidate URIs from a rerank prompt."""
+    values: list[str] = []
+    for line in prompt.splitlines():
+        text = line.strip()
+        if ". uri=" not in text:
+            continue
+        uri = text.split("uri=", maxsplit=1)[1].strip()
+        if uri:
+            values.append(uri)
+    return values
 
 
 def fake_embedding(_text: str) -> object:
@@ -1583,6 +1613,199 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
             {item["kind"] for item in data["results"][0]["evidence"]},
         )
 
+    async def test_memory_search_reranks_multiple_fused_candidates(self) -> None:
+        """Medium recall reranks fused candidates without exposing internals."""
+        captured_system_prompts.clear()
+        with TemporaryDirectory() as data_root:
+            app = create_app(settings=app_settings(data_root))
+            headers = auth_headers(data_root)
+            with (
+                patch(
+                    "opencortex.llm.client.LLMCompletion.complete",
+                    new=AsyncMock(side_effect=capture_system_prompt_llm_completion),
+                ),
+                patch(
+                    "opencortex.vector.embedder.OpenAIEmbeddingClient.embed",
+                    side_effect=keyword_embedding,
+                ),
+                patch(
+                    "opencortex.vector.embedder.OpenAIEmbeddingClient.embed_batch",
+                    side_effect=keyword_embedding_batch,
+                ),
+            ):
+                async with app.router.lifespan_context(app):
+                    transport = ASGITransport(app=app)
+                    async with httpx.AsyncClient(
+                        transport=transport,
+                        base_url="http://testserver",
+                        headers=headers,
+                    ) as client:
+                        first = await client.post(
+                            "/api/v1/memory/store",
+                            json={
+                                "type": "memory",
+                                "content": "Zephyr notebook planning uses Python.",
+                                "category": "semantic",
+                                "metadata": {},
+                                "source": {"kind": "manual"},
+                            },
+                        )
+                        second = await client.post(
+                            "/api/v1/memory/store",
+                            json={
+                                "type": "memory",
+                                "content": "Zephyr notebook planning uses Qdrant.",
+                                "category": "semantic",
+                                "metadata": {},
+                                "source": {"kind": "manual"},
+                            },
+                        )
+                        await app.state.store_event_worker.wait_idle()
+                        response = await client.post(
+                            "/api/v1/memory/search",
+                            json={
+                                "query": "Zephyr notebook planning",
+                                "limit": 2,
+                            },
+                        )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertIn(RECALL_RERANK_SYSTEM_PROMPT, captured_system_prompts)
+        self.assertNotIn("plan", data)
+        self.assertTrue(data["results"])
+        self.assertNotIn("rerank", data["results"][0])
+
+    async def test_memory_search_supports_litellm_rerank_provider(self) -> None:
+        """LiteLLM rerank provider uses the API provider interface."""
+        captured: dict[str, object] = {}
+
+        async def fake_arerank(**kwargs: object) -> object:
+            captured.update(kwargs)
+            return type(
+                "RerankResponse",
+                (),
+                {
+                    "results": [
+                        type(
+                            "RerankItem",
+                            (),
+                            {"index": 0, "relevance_score": 0.2},
+                        )(),
+                        type(
+                            "RerankItem",
+                            (),
+                            {"index": 1, "relevance_score": 0.9},
+                        )(),
+                    ]
+                },
+            )()
+
+        client = LiteLLMRerankClient(
+            model="cohere/rerank-v3.5",
+            api_base="https://rerank.example/v1",
+            api_key="test-rerank-key",
+        )
+        with patch.dict(
+            sys.modules, {"litellm": SimpleNamespace(arerank=fake_arerank)}
+        ):
+            scores = await client.rerank_batch("Zephyr notebook", ["first", "second"])
+
+        self.assertEqual(scores, [0.2, 0.9])
+        self.assertEqual(captured["model"], "cohere/rerank-v3.5")
+        self.assertEqual(captured["api_base"], "https://rerank.example/v1")
+        self.assertEqual(captured["api_key"], "test-rerank-key")
+        self.assertEqual(captured["query"], "Zephyr notebook")
+        self.assertEqual(captured["documents"], ["first", "second"])
+        self.assertFalse(captured["return_documents"])
+
+    async def test_memory_search_supports_hosted_vllm_rerank_provider(self) -> None:
+        """Hosted vLLM rerank provider uses LiteLLM's hosted_vllm adapter."""
+        captured: dict[str, object] = {}
+
+        async def fake_arerank(**kwargs: object) -> object:
+            captured.update(kwargs)
+            return type(
+                "RerankResponse",
+                (),
+                {
+                    "results": [
+                        {"index": 0, "relevance_score": 0.3},
+                        {"index": 1, "relevance_score": 0.8},
+                    ]
+                },
+            )()
+
+        client = HostedVLLMRerankClient(
+            model="qwen3-reranker-0.6b",
+            api_base="http://vllm-reranker:8000/v1",
+            api_key="local-key",
+        )
+        with patch.dict(
+            sys.modules, {"litellm": SimpleNamespace(arerank=fake_arerank)}
+        ):
+            scores = await client.rerank_batch("Zephyr notebook", ["first", "second"])
+
+        self.assertEqual(scores, [0.3, 0.8])
+        self.assertEqual(captured["model"], "hosted_vllm/qwen3-reranker-0.6b")
+        self.assertEqual(captured["custom_llm_provider"], "hosted_vllm")
+        self.assertEqual(captured["api_base"], "http://vllm-reranker:8000/v1")
+        self.assertEqual(captured["top_n"], 2)
+
+    async def test_memory_search_supports_openai_rerank_provider(self) -> None:
+        """OpenAI-compatible rerank provider calls /rerank directly."""
+        captured: dict[str, object] = {}
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict[str, object]:
+                return {
+                    "results": [
+                        {"index": 0, "relevance_score": 0.4},
+                        {"index": 1, "relevance_score": 0.7},
+                    ]
+                }
+
+        class FakeClient:
+            def __init__(self, **kwargs: object) -> None:
+                captured["client_kwargs"] = kwargs
+
+            async def __aenter__(self) -> "FakeClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def post(self, url: str, **kwargs: object) -> FakeResponse:
+                captured["url"] = url
+                captured.update(kwargs)
+                return FakeResponse()
+
+        client = OpenAIRerankClient(
+            model="qwen3-reranker-0.6b",
+            api_base="http://vllm-reranker:8000/v1",
+            api_key="local-key",
+        )
+        with patch("httpx.AsyncClient", FakeClient):
+            scores = await client.rerank_batch("Zephyr notebook", ["first", "second"])
+
+        self.assertEqual(scores, [0.4, 0.7])
+        self.assertEqual(captured["url"], "http://vllm-reranker:8000/v1/rerank")
+        self.assertEqual(
+            captured["json"],
+            {
+                "model": "qwen3-reranker-0.6b",
+                "query": "Zephyr notebook",
+                "documents": ["first", "second"],
+                "top_n": 2,
+                "return_documents": False,
+            },
+        )
+
     async def test_large_memory_search_rejects_invalid_reason_tree_uri(self) -> None:
         """ReasonTree selection fails when the LLM returns only invalid URIs."""
         content = "assistant: Alice uses Python in Hangzhou."
@@ -1821,6 +2044,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("probe", result)
         self.assertNotIn("cone_expansion", result)
         self.assertNotIn("reason_tree", result)
+        self.assertNotIn("rerank", result)
         self.assertNotIn("retrieval_surfaces", result)
 
     async def test_lifespan_requires_llm_configuration(self) -> None:
@@ -1833,7 +2057,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
                     pass
 
     async def test_settings_disable_identity_context_from_environment(self) -> None:
-        """Environment variables can disable identity context middleware."""
+        """Environment variables can disable identity context injection."""
         with patch.dict(
             "os.environ",
             {"OPENCORTEX_APP_IDENTITY_CONTEXT_ENABLED": "false"},
@@ -1844,7 +2068,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         get_settings.cache_clear()
 
         self.assertFalse(settings.identity_context_enabled)
-        self.assertFalse(
+        self.assertTrue(
             any(
                 middleware.cls.__name__ == "WriteRequestContextMiddleware"
                 for middleware in app.user_middleware

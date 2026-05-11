@@ -1,3 +1,4 @@
+# ruff: noqa: I001
 # SPDX-License-Identifier: Apache-2.0
 """FastAPI application for OpenCortex write-path APIs."""
 
@@ -34,10 +35,10 @@ from opencortex.store.event.actions import (
 from opencortex.store.event.events import StoreEvents
 from opencortex.store.event.worker import EventWorker
 from opencortex.store.routes import router as store_router
-from opencortex.console.routes import router as console_router  # noqa: E402  load after store imports to avoid circular init
 from opencortex.store.session.buffer import SessionBuffer
 from opencortex.store.session.merger import SessionMerger
 from opencortex.store.writer.primary_record_writer import PrimaryRecordWriter
+from opencortex.console.routes import router as console_router  # noqa: E402  load after store imports to avoid circular init
 
 logger = structlog.get_logger(__name__)
 
@@ -65,6 +66,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             immediate_event_ttl_hours=settings.immediate_event_ttl_hours,
             merged_event_ttl_hours=settings.merged_event_ttl_hours,
             store_event_worker_concurrency=settings.store_event_worker_concurrency,
+            retrieval_rerank_enabled=settings.retrieval_rerank_enabled,
+            retrieval_rerank_provider=settings.retrieval_rerank_provider,
+            retrieval_rerank_model=settings.retrieval_rerank_model,
+            retrieval_rerank_api_base=settings.retrieval_rerank_api_base,
+            retrieval_rerank_api_key=settings.retrieval_rerank_api_key,
+            retrieval_rerank_seed_limit=settings.retrieval_rerank_seed_limit,
+            retrieval_rerank_final_limit=settings.retrieval_rerank_final_limit,
         )
     )
     await runtime.init()

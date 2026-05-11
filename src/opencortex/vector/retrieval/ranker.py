@@ -20,6 +20,7 @@ class RetrievalRanker:
         hits: list[RetrievalHit],
         *,
         plan: RetrievalPlan,
+        limit: int | None = None,
     ) -> list[RetrievalHit]:
         """Collapse surface hits to one scored hit per primary URI."""
         by_uri: dict[str, RetrievalHit] = {}
@@ -60,7 +61,7 @@ class RetrievalRanker:
                 )
             )
         fused.sort(key=lambda item: item.score, reverse=True)
-        return fused[: plan.limit]
+        return fused[: (limit or plan.limit)]
 
     @staticmethod
     def weighted_hit(hit: RetrievalHit, *, plan: RetrievalPlan) -> RetrievalHit:

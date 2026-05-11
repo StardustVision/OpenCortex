@@ -7,6 +7,7 @@ from opencortex.vector.retrieval.schemas import (
     ConeExpansionPlan,
     DetailLevel,
     ReasonTreePlan,
+    RerankPlan,
     RetrievalDecision,
     RetrievalPlan,
     RetrievalProbeResult,
@@ -71,6 +72,7 @@ class RetrievalPlanner:
             depth=self.depth(decision),
             reason_tree=self.reason_tree_plan(decision, confidence, probe),
             cone_expansion=self.cone_expansion_plan(decision, probe),
+            rerank=self.rerank_plan(decision, probe),
             probe=probe,
         )
 
@@ -176,6 +178,25 @@ class RetrievalPlanner:
             enabled=should_expand,
             max_seeds=3 if should_expand else 0,
             max_neighbors_per_seed=2 if should_expand else 0,
+        )
+
+    @staticmethod
+    def rerank_plan(
+        decision: RetrievalDecision,
+        probe: RetrievalProbeResult,
+    ) -> RerankPlan:
+        """Return optional fused-candidate rerank plan."""
+        if decision == RetrievalDecision.NO_RECALL:
+            return RerankPlan()
+        multi_query = len(probe.search_vectors) > 1
+        expanded = decision == RetrievalDecision.EXPAND
+        seed_enabled = multi_query or expanded
+        final_enabled = seed_enabled or probe.evidence.locator_candidate_count > 0
+        return RerankPlan(
+            seed_enabled=seed_enabled,
+            final_enabled=final_enabled,
+            seed_limit=30 if seed_enabled else 0,
+            final_limit=30 if final_enabled else 0,
         )
 
 

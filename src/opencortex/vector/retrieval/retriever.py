@@ -19,6 +19,7 @@ from opencortex.vector.retrieval.ranker import (
     merge_primary_payload,
 )
 from opencortex.vector.retrieval.reason_tree import ReasonTreeRunner
+from opencortex.vector.retrieval.reranker import RecallReranker, build_rerank_client
 from opencortex.vector.retrieval.schemas import (
     DetailLevel,
     MatchedMemory,
@@ -42,6 +43,14 @@ class MemoryRetriever:
         embedder: Any,
         cortex_storage: CortexStorage,
         llm_completion: Any = None,
+        rerank_enabled: bool = True,
+        rerank_provider: str = "llm",
+        rerank_model: str = "",
+        rerank_api_key: str = "",
+        rerank_api_base: str = "",
+        default_rerank_model: str = "",
+        rerank_seed_limit: int = 30,
+        rerank_final_limit: int = 30,
     ) -> None:
         self.vector_store = vector_store
         self.collection_resolver = collection_resolver
@@ -68,6 +77,19 @@ class MemoryRetriever:
             cortex_storage=cortex_storage,
         )
         self.ranker = RetrievalRanker()
+        self.reranker = RecallReranker(
+            client=build_rerank_client(
+                provider=rerank_provider,
+                llm_completion=llm_completion,
+                model=rerank_model,
+                api_key=rerank_api_key,
+                api_base=rerank_api_base,
+                default_model=default_rerank_model,
+            ),
+            enabled=rerank_enabled,
+            seed_limit=rerank_seed_limit,
+            final_limit=rerank_final_limit,
+        )
 
     async def search(
         self,
@@ -90,14 +112,42 @@ class MemoryRetriever:
             *await self.executor.execute(plan=plan, profile=profile),
             *reason_tree_selection.hits,
         ]
-        ranked_hits = self.ranker.rank(raw_hits, plan=plan)
+        seed_limit = rerank_limit(plan.rerank.seed_limit, self.reranker.seed_limit)
+        final_limit = rerank_limit(plan.rerank.final_limit, self.reranker.final_limit)
+        initial_limit = plan.limit
+        if plan.rerank.seed_enabled:
+            initial_limit = seed_limit
+        elif plan.rerank.final_enabled:
+            initial_limit = final_limit
+        ranked_hits = self.ranker.rank(
+            raw_hits,
+            plan=plan,
+            limit=initial_limit,
+        )
+        if plan.rerank.seed_enabled:
+            ranked_hits = await self.reranker.rerank(
+                plan.query,
+                ranked_hits,
+                limit=seed_limit,
+            )
         cone_result = await self.cone_expander.expand(
             hits=ranked_hits,
             plan=plan,
             profile=profile,
         )
         if cone_result.hits:
-            ranked_hits = self.ranker.rank([*raw_hits, *cone_result.hits], plan=plan)
+            ranked_hits = self.ranker.rank(
+                [*raw_hits, *cone_result.hits],
+                plan=plan,
+                limit=final_limit if plan.rerank.final_enabled else plan.limit,
+            )
+        if plan.rerank.final_enabled:
+            ranked_hits = await self.reranker.rerank(
+                plan.query,
+                ranked_hits,
+                limit=final_limit,
+            )
+        ranked_hits = ranked_hits[: plan.limit]
         primary_records = await self.load_primary_records(
             ranked_hits,
             profile=profile,
@@ -194,6 +244,11 @@ def unique_uris(uris: list[str]) -> list[str]:
         if text and text not in values:
             values.append(text)
     return values
+
+
+def rerank_limit(plan_limit: int, configured_limit: int) -> int:
+    """Return bounded rerank candidate count."""
+    return max(1, min(plan_limit or configured_limit, configured_limit))
 
 
 def recall_source(record: dict[str, Any], *, uri: str) -> RecallSource:

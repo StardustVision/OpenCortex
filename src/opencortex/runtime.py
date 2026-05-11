@@ -44,6 +44,13 @@ class AppRuntimeConfig(BaseModel):
     immediate_event_ttl_hours: int = 24
     merged_event_ttl_hours: int = 168
     store_event_worker_concurrency: int = 4
+    retrieval_rerank_enabled: bool = True
+    retrieval_rerank_provider: str = "llm"
+    retrieval_rerank_model: str = ""
+    retrieval_rerank_api_base: str = ""
+    retrieval_rerank_api_key: str = ""
+    retrieval_rerank_seed_limit: int = 30
+    retrieval_rerank_final_limit: int = 30
 
 
 class AppRuntime:

@@ -96,6 +96,38 @@ class Settings(BaseSettings):
             "Use OPENCORTEX_APP_ADMIN_API_TOKEN or .env for local bootstrap."
         ),
     )
+    retrieval_rerank_enabled: bool = Field(
+        default=True,
+        description="Enable rerank for medium and large recall queries.",
+    )
+    retrieval_rerank_provider: str = Field(
+        default="llm",
+        description="Recall rerank provider: llm, litellm, hosted_vllm, or openai.",
+    )
+    retrieval_rerank_model: str = Field(
+        default="",
+        description="Rerank model for provider=litellm. Empty uses llm_model.",
+    )
+    retrieval_rerank_api_base: str = Field(
+        default="",
+        description="Optional rerank API base for provider=litellm.",
+    )
+    retrieval_rerank_api_key: str = Field(
+        default="",
+        description="Optional rerank API key for provider=litellm.",
+    )
+    retrieval_rerank_seed_limit: int = Field(
+        default=30,
+        ge=1,
+        le=100,
+        description="Maximum fused candidates reranked before cone expansion.",
+    )
+    retrieval_rerank_final_limit: int = Field(
+        default=30,
+        ge=1,
+        le=100,
+        description="Maximum fused candidates reranked before returning results.",
+    )
 
     model_config = SettingsConfigDict(
         env_prefix="OPENCORTEX_APP_",

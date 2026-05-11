@@ -14,14 +14,17 @@ services:
     container_name: opencortex-vllm-embedding
     profiles: ["gpu"]
     ports:
-      - "8001:8000"
+      - "18081:8000"
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+      - HTTP_PROXY=${HTTP_PROXY:-}
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,qdrant,opencortex,vllm-embedding,vllm-reranker}
     command:
       - --model
-      - ${VLLM_EMBEDDING_MODEL:-BAAI/bge-m3}
+      - ${VLLM_EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
       - --served-model-name
-      - ${VLLM_EMBEDDING_MODEL_ALIAS:-bge-m3}
+      - ${VLLM_EMBEDDING_MODEL_ALIAS:-qwen3-embedding-0.6b}
       - --task
       - embed
       - --host
@@ -32,6 +35,42 @@ services:
       - auto
       - --gpu-memory-utilization
       - ${VLLM_GPU_MEMORY_UTILIZATION:-0.85}
+      - --max-model-len
+      - ${VLLM_EMBEDDING_MAX_MODEL_LEN:-8192}
+    volumes:
+      - ./.cache/huggingface:/root/.cache/huggingface
+    ipc: host
+    gpus: all
+    restart: unless-stopped
+
+  vllm-reranker:
+    image: vllm/vllm-openai:latest
+    container_name: opencortex-vllm-reranker
+    profiles: ["gpu"]
+    ports:
+      - "18082:8000"
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+      - HTTP_PROXY=${HTTP_PROXY:-}
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,qdrant,opencortex,vllm-embedding,vllm-reranker}
+    command:
+      - --model
+      - ${VLLM_RERANK_MODEL:-Qwen/Qwen3-Reranker-0.6B}
+      - --served-model-name
+      - ${VLLM_RERANK_MODEL_ALIAS:-qwen3-reranker-0.6b}
+      - --task
+      - score
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --dtype
+      - auto
+      - --gpu-memory-utilization
+      - ${VLLM_GPU_MEMORY_UTILIZATION:-0.85}
+      - --max-model-len
+      - ${VLLM_RERANK_MAX_MODEL_LEN:-8192}
     volumes:
       - ./.cache/huggingface:/root/.cache/huggingface
     ipc: host
@@ -50,33 +89,32 @@ services:
       # - ./server.json:/app/server.json:ro
     environment:
       # ---- Server ----
-      - OPENCORTEX_HTTP_SERVER_HOST=0.0.0.0
-      - OPENCORTEX_HTTP_SERVER_PORT=8921
+      - OPENCORTEX_APP_APP_NAME=OpenCortex
       # ---- Storage ----
-      - OPENCORTEX_DATA_ROOT=/data
-      - OPENCORTEX_QDRANT_URL=http://qdrant:6333
-      # ---- Embedding (default: CPU local fastembed) ----
-      - OPENCORTEX_EMBEDDING_PROVIDER=local
-      - OPENCORTEX_EMBEDDING_MODEL=${OPENCORTEX_LOCAL_EMBEDDING_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}
-      # ---- Embedding (optional GPU profile: vLLM OpenAI-compatible /v1/embeddings) ----
-      # - OPENCORTEX_EMBEDDING_PROVIDER=openai
-      # - OPENCORTEX_EMBEDDING_DIMENSION=${VLLM_EMBEDDING_DIMENSION:-1024}
-      # - OPENCORTEX_EMBEDDING_MODEL=${VLLM_EMBEDDING_MODEL_ALIAS:-bge-m3}
-      # - OPENCORTEX_EMBEDDING_API_KEY=${VLLM_API_KEY:-opencortex-local}
-      # - OPENCORTEX_EMBEDDING_API_BASE=http://vllm-embedding:8000/v1
+      - OPENCORTEX_APP_DATA_ROOT=/data
+      - OPENCORTEX_APP_QDRANT_URL=http://qdrant:6333
+      - OPENCORTEX_APP_QDRANT_API_KEY=${QDRANT_API_KEY:-}
+      - OPENCORTEX_APP_QDRANT_TIMEOUT=${OPENCORTEX_APP_QDRANT_TIMEOUT:-30}
+      # ---- Embedding: vLLM OpenAI-compatible /v1/embeddings ----
+      - OPENCORTEX_APP_VECTOR_DIMENSION=${VLLM_EMBEDDING_DIMENSION:-1024}
+      - OPENCORTEX_APP_EMBEDDING_MODEL=${VLLM_EMBEDDING_MODEL_ALIAS:-qwen3-embedding-0.6b}
+      - OPENCORTEX_APP_EMBEDDING_API_KEY=${VLLM_API_KEY:-opencortex-local}
+      - OPENCORTEX_APP_EMBEDDING_API_BASE=${OPENCORTEX_APP_EMBEDDING_API_BASE:-http://vllm-embedding:8000/v1}
       # ---- LLM (required for insights generation) ----
-      # - OPENCORTEX_LLM_MODEL=<your-model>
-      # - OPENCORTEX_LLM_API_KEY=<your-key>
-      # - OPENCORTEX_LLM_API_BASE=
+      - OPENCORTEX_APP_LLM_MODEL=${OPENCORTEX_APP_LLM_MODEL:-gpt-4o-mini}
+      - OPENCORTEX_APP_LLM_API_KEY=${OPENCORTEX_APP_LLM_API_KEY:-}
+      - OPENCORTEX_APP_LLM_API_BASE=${OPENCORTEX_APP_LLM_API_BASE:-https://api.openai.com/v1}
+      - OPENCORTEX_APP_LLM_API_STYLE=${OPENCORTEX_APP_LLM_API_STYLE:-openai}
       # ---- Rerank ----
-      # - OPENCORTEX_RERANK_PROVIDER=
-      # - OPENCORTEX_RERANK_MODEL=
-      # - OPENCORTEX_RERANK_API_KEY=
-      # - OPENCORTEX_RERANK_API_BASE=
-      # - OPENCORTEX_RERANK_THRESHOLD=0.0
-      # - OPENCORTEX_RERANK_FUSION_BETA=0.7
-      # ---- Cortex Alpha (required for insights routes) ----
-      # - OPENCORTEX_CORTEX_ALPHA={"trace_splitter_enabled":true,"archivist_enabled":true,"archivist_trigger_threshold":5}
+      - OPENCORTEX_APP_RETRIEVAL_RERANK_ENABLED=${OPENCORTEX_APP_RETRIEVAL_RERANK_ENABLED:-true}
+      - OPENCORTEX_APP_RETRIEVAL_RERANK_PROVIDER=${OPENCORTEX_APP_RETRIEVAL_RERANK_PROVIDER:-hosted_vllm}
+      - OPENCORTEX_APP_RETRIEVAL_RERANK_MODEL=${VLLM_RERANK_MODEL_ALIAS:-qwen3-reranker-0.6b}
+      - OPENCORTEX_APP_RETRIEVAL_RERANK_API_KEY=${VLLM_API_KEY:-opencortex-local}
+      - OPENCORTEX_APP_RETRIEVAL_RERANK_API_BASE=${OPENCORTEX_APP_RETRIEVAL_RERANK_API_BASE:-http://vllm-reranker:8000/v1}
+      - OPENCORTEX_APP_RETRIEVAL_RERANK_SEED_LIMIT=${OPENCORTEX_APP_RETRIEVAL_RERANK_SEED_LIMIT:-30}
+      - OPENCORTEX_APP_RETRIEVAL_RERANK_FINAL_LIMIT=${OPENCORTEX_APP_RETRIEVAL_RERANK_FINAL_LIMIT:-30}
+      # ---- Auth ----
+      - OPENCORTEX_APP_ADMIN_API_TOKEN=${OPENCORTEX_APP_ADMIN_API_TOKEN:-}
     restart: unless-stopped
 
   opencortex-web:

@@ -365,6 +365,30 @@ def console_memory_retriever(
         embedder=getattr(request.app.state, "store_embedder", None),
         cortex_storage=cortex_storage,
         llm_completion=getattr(request.app.state, "store_llm_completion", None),
+        rerank_enabled=bool(
+            getattr(request.app.state.store_config, "retrieval_rerank_enabled", True)
+        ),
+        rerank_provider=str(
+            getattr(request.app.state.store_config, "retrieval_rerank_provider", "llm")
+        ),
+        rerank_model=str(
+            getattr(request.app.state.store_config, "retrieval_rerank_model", "")
+        ),
+        rerank_api_key=str(
+            getattr(request.app.state.store_config, "retrieval_rerank_api_key", "")
+        ),
+        rerank_api_base=str(
+            getattr(request.app.state.store_config, "retrieval_rerank_api_base", "")
+        ),
+        default_rerank_model=str(
+            getattr(request.app.state.store_config, "llm_model", "")
+        ),
+        rerank_seed_limit=int(
+            getattr(request.app.state.store_config, "retrieval_rerank_seed_limit", 30)
+        ),
+        rerank_final_limit=int(
+            getattr(request.app.state.store_config, "retrieval_rerank_final_limit", 30)
+        ),
     )
 
 

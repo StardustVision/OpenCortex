@@ -15,6 +15,11 @@ REASON_TREE_SELECTION_SYSTEM_PROMPT = """You are OpenCortex's reason-tree select
 Select the best indexed tree entry points for a recall query. Return JSON only.
 Use only candidate URIs. Prefer precise nodes over broad parent nodes."""
 
+RECALL_RERANK_SYSTEM_PROMPT = """You are OpenCortex's memory relevance ranker.
+
+Score candidate memories by how directly they help answer the user query.
+Return JSON only. Do not answer the query."""
+
 
 def build_query_decomposition_prompt(
     query: str,
@@ -64,3 +69,30 @@ def build_reason_tree_selection_prompt(
             f"source_refs={refs}"
         )
     return "\n".join(lines)
+
+
+def build_recall_rerank_prompt(
+    query: str,
+    candidates: list[dict[str, str]],
+) -> str:
+    """Build the LLM prompt for business-facing recall rerank."""
+    lines = [
+        "Score these candidate memories for this user query.",
+        'Return JSON only: {"scores":[{"uri":"candidate-uri","score":0.0}]}',
+        "Use only candidate URIs. Score from 0.0 to 1.0.",
+        "Higher means the candidate directly contains facts needed to answer.",
+        "Prefer exact facts, named entities, and source sections over broad summaries.",
+        "",
+        f"Query: {query}",
+        "",
+        "Candidates:",
+    ]
+    for index, candidate in enumerate(candidates, start=1):
+        lines.append(
+            f"{index}. uri={candidate['uri']}\n"
+            f"type={candidate['type']}\n"
+            f"title={candidate['title']}\n"
+            f"section={candidate['section']}\n"
+            f"text={candidate['text']}"
+        )
+    return "\n\n".join(lines)

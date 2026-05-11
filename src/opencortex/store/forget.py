@@ -70,7 +70,6 @@ class MemoryForgetter:
         removed = await self.vector_store.remove_by_uri(
             self.collection_resolver(),
             target_uri,
-            filters=self.visibility_filter(profile),
         )
         qdrant_removed = bool(removed)
         fs_removed = await self.remove_fs(target_uri)
@@ -135,11 +134,13 @@ class MemoryForgetter:
             field_match("user_id", profile.user_id),
             field_match("source_user_id", profile.user_id),
         ]
-        return models.Filter(
-            must=must,
-            should=should,
-            min_should=models.MinShould(conditions=should, min_count=1),
-        )
+        if uri:
+            return models.Filter(
+                must=must,
+                should=should,
+                min_should=models.MinShould(conditions=should, min_count=1),
+            )
+        return models.Filter(must=must)
 
     async def remove_fs(self, uri: str) -> bool:
         """Remove a CFS subtree if it exists."""

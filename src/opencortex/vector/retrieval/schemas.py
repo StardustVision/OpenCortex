@@ -113,6 +113,7 @@ class RetrievalPlan(BaseModel):
     cone_expansion: "ConeExpansionPlan" = Field(
         default_factory=lambda: ConeExpansionPlan()
     )
+    rerank: "RerankPlan" = Field(default_factory=lambda: RerankPlan())
     probe: RetrievalProbeResult | None = None
 
 
@@ -131,6 +132,15 @@ class ConeExpansionPlan(BaseModel):
     max_seeds: int = 0
     max_neighbors_per_seed: int = 0
     bonus: float = 0.03
+
+
+class RerankPlan(BaseModel):
+    """Optional LLM rerank plan for fused recall candidates."""
+
+    seed_enabled: bool = False
+    final_enabled: bool = False
+    seed_limit: int = 0
+    final_limit: int = 0
 
 
 class RetrievalHit(BaseModel):
