@@ -10,9 +10,8 @@ services:
     restart: unless-stopped
 
   vllm-embedding:
-    image: vllm/vllm-openai:latest
+    image: ${VLLM_IMAGE:-vllm/vllm-openai-cpu:latest-x86_64}
     container_name: opencortex-vllm-embedding
-    profiles: ["gpu"]
     ports:
       - "18081:8000"
     environment:
@@ -33,20 +32,15 @@ services:
       - "8000"
       - --dtype
       - auto
-      - --gpu-memory-utilization
-      - ${VLLM_GPU_MEMORY_UTILIZATION:-0.85}
       - --max-model-len
       - ${VLLM_EMBEDDING_MAX_MODEL_LEN:-8192}
     volumes:
       - ./.cache/huggingface:/root/.cache/huggingface
-    ipc: host
-    gpus: all
     restart: unless-stopped
 
   vllm-reranker:
-    image: vllm/vllm-openai:latest
+    image: ${VLLM_IMAGE:-vllm/vllm-openai-cpu:latest-x86_64}
     container_name: opencortex-vllm-reranker
-    profiles: ["gpu"]
     ports:
       - "18082:8000"
     environment:
@@ -67,14 +61,10 @@ services:
       - "8000"
       - --dtype
       - auto
-      - --gpu-memory-utilization
-      - ${VLLM_GPU_MEMORY_UTILIZATION:-0.85}
       - --max-model-len
       - ${VLLM_RERANK_MAX_MODEL_LEN:-8192}
     volumes:
       - ./.cache/huggingface:/root/.cache/huggingface
-    ipc: host
-    gpus: all
     restart: unless-stopped
 
   opencortex:
