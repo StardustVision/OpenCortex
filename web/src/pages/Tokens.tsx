@@ -9,6 +9,7 @@ import { EmptyState } from '../components/common/EmptyState';
 import { useApi } from '../api/Context';
 import { useFetch } from '../hooks/useFetch';
 import { TokenRecord } from '../api/types';
+import { APIRequestError } from '../api/client';
 import { Key, Plus, Trash2, Copy, Check, AlertTriangle } from 'lucide-react';
 
 export const Tokens: React.FC = () => {
@@ -20,6 +21,7 @@ export const Tokens: React.FC = () => {
   const [userId, setUserId] = useState('');
   const [creating, setCreating] = useState(false);
   const [createdToken, setCreatedToken] = useState<string | null>(null);
+  const [createError, setCreateError] = useState('');
   const [copied, setCopied] = useState(false);
 
   const [revokeTarget, setRevokeTarget] = useState<TokenRecord | null>(null);
@@ -37,17 +39,29 @@ export const Tokens: React.FC = () => {
     );
   }
 
-  const handleCreate = async () => {
+  const errorMessage = (error: unknown) => {
+    if (error instanceof APIRequestError) {
+      if (error.status === 401) return 'Current token is invalid or expired. Log out and connect again.';
+      if (error.status === 403) return 'Admin role is required to create tokens.';
+      return `Request failed: ${error.status}`;
+    }
+    return 'Failed to create token.';
+  };
+
+  const handleCreate = async (event?: React.FormEvent) => {
+    event?.preventDefault();
     if (!client || !tenantId.trim() || !userId.trim()) return;
     setCreating(true);
+    setCreateError('');
     try {
       const res = await client.createToken(tenantId.trim(), userId.trim());
       setCreatedToken(res.token);
       setTenantId('');
       setUserId('');
       refetch();
-    } catch (e) {
-      console.error('Failed to create token', e);
+    } catch (error) {
+      console.error('Failed to create token', error);
+      setCreateError(errorMessage(error));
     } finally {
       setCreating(false);
     }
@@ -57,7 +71,7 @@ export const Tokens: React.FC = () => {
     if (!client || !revokeTarget) return;
     setRevoking(true);
     try {
-      await client.revokeToken(revokeTarget.token_prefix.replace('...', ''));
+      await client.revokeToken(revokeTarget.token_prefix);
       setRevokeTarget(null);
       refetch();
     } catch (e) {
@@ -122,9 +136,6 @@ export const Tokens: React.FC = () => {
                       <td className="py-3 text-xs font-mono text-gray-400">{t.token_prefix}</td>
                       <td className="py-3">
                         <div className="flex gap-1">
-                          <Button variant="ghost" size="sm" className="text-gray-400 hover:text-indigo-600 hover:bg-indigo-50" onClick={() => copyToken(t.token)}>
-                            <Copy size={14} />
-                          </Button>
                           {t.role !== 'admin' && (
                             <Button variant="ghost" size="sm" className="text-red-500 hover:bg-red-50" onClick={() => setRevokeTarget(t)}>
                               <Trash2 size={14} />
@@ -144,7 +155,7 @@ export const Tokens: React.FC = () => {
         {showCreate && (
           <Card>
             <h3 className="text-md font-bold text-gray-900 mb-4">Generate New Token</h3>
-            <div className="flex gap-4 items-end">
+            <form className="flex gap-4 items-end" onSubmit={handleCreate}>
               <div className="flex-1">
                 <label className="block text-sm font-medium text-gray-700 mb-1">Tenant ID</label>
                 <input
@@ -152,6 +163,7 @@ export const Tokens: React.FC = () => {
                   value={tenantId}
                   onChange={(e) => setTenantId(e.target.value)}
                   placeholder="e.g. netops"
+                  autoComplete="off"
                 />
               </div>
               <div className="flex-1">
@@ -161,12 +173,18 @@ export const Tokens: React.FC = () => {
                   value={userId}
                   onChange={(e) => setUserId(e.target.value)}
                   placeholder="e.g. john"
+                  autoComplete="off"
                 />
               </div>
-              <Button onClick={handleCreate} loading={creating} disabled={!tenantId.trim() || !userId.trim()}>
+              <Button type="submit" loading={creating} disabled={!tenantId.trim() || !userId.trim()}>
                 Generate
               </Button>
-            </div>
+            </form>
+            {createError && (
+              <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {createError}
+              </div>
+            )}
           </Card>
         )}
 

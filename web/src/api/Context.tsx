@@ -1,64 +1,106 @@
-import React, { createContext, useContext, useState } from 'react';
-import { OpenCortexClient } from './client';
+import React, { createContext, useContext, useEffect, useState } from 'react';
+import { APIRequestError, OpenCortexClient } from './client';
 
-function decodeJwtPayload(token: string): Record<string, any> {
-  try {
-    const payload = token.split('.')[1];
-    return JSON.parse(atob(payload));
-  } catch {
-    return {};
-  }
-}
+type AuthStatus = 'checking' | 'authenticated' | 'anonymous';
 
 interface ApiContextType {
   client: OpenCortexClient | null;
   token: string | null;
   role: string;
-  setToken: (token: string) => void;
+  authStatus: AuthStatus;
+  connect: (token: string) => Promise<void>;
   logout: () => void;
 }
 
 const ApiContext = createContext<ApiContextType | undefined>(undefined);
 
+const tokenStorageKey = 'opencortex_token';
+
+export function normalizeToken(value: string): string {
+  return value.replace(/\s+/g, '');
+}
+
+function tokenFromLocation(): string {
+  const urlParams = new URLSearchParams(window.location.search);
+  const urlToken = normalizeToken(urlParams.get('token') || '');
+  if (urlToken) {
+    const newUrl = window.location.pathname;
+    window.history.replaceState({}, '', newUrl);
+  }
+  return urlToken;
+}
+
 export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [token, setTokenState] = useState<string | null>(() => {
-    const urlParams = new URLSearchParams(window.location.search);
-    const urlToken = urlParams.get('token');
-    if (urlToken) {
-      localStorage.setItem('opencortex_token', urlToken);
-      const newUrl = window.location.pathname;
-      window.history.replaceState({}, '', newUrl);
-      return urlToken;
-    }
-    return localStorage.getItem('opencortex_token');
-  });
+  const initialToken = tokenFromLocation()
+    || normalizeToken(localStorage.getItem(tokenStorageKey) || '');
+  const [token, setTokenState] = useState<string | null>(initialToken || null);
+  const [role, setRole] = useState('user');
+  const [client, setClient] = useState<OpenCortexClient | null>(
+    initialToken ? new OpenCortexClient('', initialToken) : null,
+  );
+  const [authStatus, setAuthStatus] = useState<AuthStatus>(
+    initialToken ? 'checking' : 'anonymous',
+  );
 
-  const [role, setRole] = useState<string>(() => {
-    if (token) return decodeJwtPayload(token).role || 'user';
-    return 'user';
-  });
-
-  const [client, setClient] = useState<OpenCortexClient | null>(() => {
-    if (token) return new OpenCortexClient('', token);
-    return null;
-  });
-
-  const setToken = (newToken: string) => {
-    localStorage.setItem('opencortex_token', newToken);
-    setTokenState(newToken);
-    setRole(decodeJwtPayload(newToken).role || 'user');
-    setClient(new OpenCortexClient('', newToken));
-  };
-
-  const logout = () => {
-    localStorage.removeItem('opencortex_token');
+  const clearToken = () => {
+    localStorage.removeItem(tokenStorageKey);
     setTokenState(null);
     setRole('user');
     setClient(null);
+    setAuthStatus('anonymous');
   };
 
+  const connect = async (nextToken: string) => {
+    const normalized = normalizeToken(nextToken);
+    if (!normalized) {
+      clearToken();
+      return;
+    }
+    const nextClient = new OpenCortexClient('', normalized);
+    const me = await nextClient.getMe();
+    localStorage.setItem(tokenStorageKey, normalized);
+    setTokenState(normalized);
+    setRole(me.role || 'user');
+    setClient(nextClient);
+    setAuthStatus('authenticated');
+  };
+
+  useEffect(() => {
+    if (!initialToken) return;
+    let cancelled = false;
+    const bootstrap = async () => {
+      try {
+        const nextClient = new OpenCortexClient('', initialToken);
+        const me = await nextClient.getMe();
+        if (cancelled) return;
+        localStorage.setItem(tokenStorageKey, initialToken);
+        setRole(me.role || 'user');
+        setClient(nextClient);
+        setAuthStatus('authenticated');
+      } catch (error) {
+        if (cancelled) return;
+        if (!(error instanceof APIRequestError) || error.status === 401) {
+          clearToken();
+          return;
+        }
+        clearToken();
+      }
+    };
+    bootstrap();
+    return () => {
+      cancelled = true;
+    };
+  }, [initialToken]);
+
   return (
-    <ApiContext.Provider value={{ client, token, role, setToken, logout }}>
+    <ApiContext.Provider value={{
+      client,
+      token,
+      role,
+      authStatus,
+      connect,
+      logout: clearToken,
+    }}>
       {children}
     </ApiContext.Provider>
   );

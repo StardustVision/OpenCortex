@@ -9,6 +9,14 @@ export default defineConfig({
       '/api': {
         target: process.env.OPENCORTEX_HTTP_URL || 'http://localhost:8921',
         changeOrigin: true,
+      },
+      '/admin': {
+        target: process.env.OPENCORTEX_HTTP_URL || 'http://localhost:8921',
+        changeOrigin: true,
+      },
+      '/console': {
+        target: process.env.OPENCORTEX_HTTP_URL || 'http://localhost:8921',
+        changeOrigin: true,
       }
     }
   }

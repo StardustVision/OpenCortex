@@ -1,8 +1,10 @@
 import {
-  SystemHealth, MemoryStats, SearchResponse, ListResponse, ContentResponse,
-  KnowledgeCandidate, ArchivistStatus, SearchDebugResponse,
-  TokenRecord, AuthMe, AdminListResponse,
-  GenerateInsightsResponse, LatestReportResponse, ReportHistoryResponse, InsightsReport,
+  AuthMe,
+  ConsoleContentResponse,
+  ConsoleListResponse,
+  ConsoleStats,
+  SearchResponse,
+  TokenRecord,
 } from './types';
 
 export class APIRequestError extends Error {
@@ -27,6 +29,16 @@ export class APIRequestError extends Error {
   }
 }
 
+export interface MemoryListParams {
+  tenant_id?: string;
+  user_id?: string;
+  project_id?: string;
+  category?: string;
+  context_type?: string;
+  limit?: number;
+  offset?: number;
+}
+
 export class OpenCortexClient {
   private baseUrl: string;
   private token: string;
@@ -46,7 +58,7 @@ export class OpenCortexClient {
 
     const query = new URLSearchParams();
     Object.entries(params).forEach(([key, value]) => {
-      if (value !== undefined) {
+      if (value !== undefined && value !== '') {
         query.append(key, String(value));
       }
     });
@@ -74,180 +86,61 @@ export class OpenCortexClient {
     }
 
     if (!res.ok) {
-      const parsedError =
-        parsedBody && typeof parsedBody === 'object'
-          ? (parsedBody as { error?: string })
-          : undefined;
-
-      if (parsedError?.error === 'feature disabled') {
-        return { error: 'feature disabled' } as T;
-      }
-
       throw new APIRequestError(res.status, parsedBody, method, path);
     }
 
     return parsedBody as T;
   }
 
-  // System
-  getHealth(): Promise<SystemHealth> {
-    return this.request('GET', '/api/v1/system/status?type=health');
-  }
-
-  getStats(): Promise<MemoryStats> {
-    return this.request('GET', '/api/v1/memory/stats');
-  }
-
-  getDoctor(): Promise<any> {
-    return this.request('GET', '/api/v1/system/status?type=doctor');
-  }
-
-  getSystemStats(): Promise<any> {
-    return this.request('GET', '/api/v1/system/status?type=stats');
-  }
-
-  // Memory
-  listMemories(params: { category?: string; context_type?: string; limit?: number; offset?: number }): Promise<ListResponse> {
-    const query = new URLSearchParams();
-    if (params.category) query.append('category', params.category);
-    if (params.context_type) query.append('context_type', params.context_type);
-    if (params.limit) query.append('limit', params.limit.toString());
-    if (params.offset) query.append('offset', params.offset.toString());
-    return this.request('GET', `/api/v1/memory/list?${query.toString()}`);
-  }
-
-  searchMemories(params: { query: string; limit?: number; context_type?: string; category?: string; detail_level?: string }): Promise<SearchResponse> {
-    return this.request('POST', '/api/v1/memory/search', params);
-  }
-
-  forgetMemory(uri: string): Promise<{ status: string; forgotten: number }> {
-    return this.request('POST', '/api/v1/memory/forget', { uri });
-  }
-
-  feedbackMemory(uri: string, reward: number): Promise<{ status: string; uri: string; reward: string }> {
-    return this.request('POST', '/api/v1/memory/feedback', { uri, reward });
-  }
-
-  decayMemories(): Promise<any> {
-    return this.request('POST', '/api/v1/memory/decay');
-  }
-
-  // Content
-  getContentAbstract(uri: string): Promise<ContentResponse> {
-    return this.request('GET', `/api/v1/content/abstract?uri=${encodeURIComponent(uri)}`);
-  }
-
-  getContentOverview(uri: string): Promise<ContentResponse> {
-    return this.request('GET', `/api/v1/content/overview?uri=${encodeURIComponent(uri)}`);
-  }
-
-  getContentRead(uri: string, offset = 0, limit = 2000): Promise<ContentResponse> {
-    return this.request('GET', `/api/v1/content/read?uri=${encodeURIComponent(uri)}&offset=${offset}&limit=${limit}`);
-  }
-
-  // Knowledge
-  getKnowledgeCandidates(): Promise<{ candidates: KnowledgeCandidate[]; count: number } | { error: string }> {
-    return this.request('GET', '/api/v1/knowledge/candidates');
-  }
-
-  searchKnowledge(params: { query: string; types?: string[]; limit?: number }): Promise<{ results: any[]; count: number } | { error: string }> {
-    return this.request('POST', '/api/v1/knowledge/search', params);
-  }
-
-  approveKnowledge(knowledge_id: string): Promise<any> {
-    return this.request('POST', '/api/v1/knowledge/approve', { knowledge_id });
-  }
-
-  rejectKnowledge(knowledge_id: string): Promise<any> {
-    return this.request('POST', '/api/v1/knowledge/reject', { knowledge_id });
-  }
-
-  // Archivist
-  triggerArchivist(): Promise<{ ok: boolean; status: string } | { error: string }> {
-    return this.request('POST', '/api/v1/archivist/trigger');
-  }
-
-  getArchivistStatus(): Promise<ArchivistStatus | { error: string }> {
-    return this.request('GET', '/api/v1/archivist/status');
-  }
-
-  // Admin
-  reembedAll(): Promise<{ status: string; updated: number }> {
-    return this.request('POST', '/api/v1/admin/reembed');
-  }
-
-  searchDebug(query: string, limit = 5): Promise<SearchDebugResponse> {
-    return this.request('POST', '/api/v1/admin/search_debug', { query, limit });
-  }
-
-  // Auth
   getMe(): Promise<AuthMe> {
     return this.request('GET', '/api/v1/auth/me');
   }
 
-  // Admin — Tokens
-  listTokens(): Promise<{ tokens: TokenRecord[] }> {
-    return this.request('GET', '/api/v1/admin/tokens');
+  getConsoleStats(params: MemoryListParams = {}): Promise<ConsoleStats> {
+    return this.request('GET', this.withQuery('/console/v1/stats', { ...params }));
   }
 
-  createToken(tenant_id: string, user_id: string): Promise<{ token: string; tenant_id: string; user_id: string; role: string }> {
-    return this.request('POST', '/api/v1/admin/tokens', { tenant_id, user_id });
+  listMemories(params: MemoryListParams = {}): Promise<ConsoleListResponse> {
+    return this.request('GET', this.withQuery('/console/v1/memories', { ...params }));
+  }
+
+  searchMemories(
+    params: { query: string; limit?: number },
+    scope: MemoryListParams = {},
+  ): Promise<SearchResponse> {
+    return this.request(
+      'POST',
+      this.withQuery('/console/v1/memories/search', { ...scope }),
+      params,
+    );
+  }
+
+  getMemoryContent(uri: string): Promise<ConsoleContentResponse> {
+    return this.request(
+      'GET',
+      this.withQuery('/console/v1/memories/content', { uri }),
+    );
+  }
+
+  forgetMemory(
+    uri: string,
+    scope: Pick<MemoryListParams, 'tenant_id' | 'user_id' | 'project_id'> = {},
+  ): Promise<{ forgotten: number; uri: string; matched_by: string }> {
+    return this.request('DELETE', '/console/v1/memories', { uri, ...scope });
+  }
+
+  listTokens(): Promise<{ tokens: TokenRecord[] }> {
+    return this.request('GET', '/admin/v1/tokens');
+  }
+
+  createToken(
+    tenant_id: string,
+    user_id: string,
+  ): Promise<{ token: string; tenant_id: string; user_id: string; role: string }> {
+    return this.request('POST', '/admin/v1/tokens', { tenant_id, user_id });
   }
 
   revokeToken(token_prefix: string): Promise<{ status: string }> {
-    return this.request('DELETE', '/api/v1/admin/tokens', { token_prefix });
-  }
-
-  // Admin — Memories
-  listAllMemories(params: { tenant_id?: string; user_id?: string; category?: string; context_type?: string; limit?: number; offset?: number }): Promise<AdminListResponse> {
-    const query = new URLSearchParams();
-    if (params.tenant_id) query.append('tenant_id', params.tenant_id);
-    if (params.user_id) query.append('user_id', params.user_id);
-    if (params.category) query.append('category', params.category);
-    if (params.context_type) query.append('context_type', params.context_type);
-    if (params.limit) query.append('limit', params.limit.toString());
-    if (params.offset) query.append('offset', params.offset.toString());
-    return this.request('GET', `/api/v1/admin/memories?${query.toString()}`);
-  }
-
-  // Insights (admin may supply tenant_id/user_id to operate on another user)
-  generateInsights(
-    days: number = 7, tenantId?: string, userId?: string,
-  ): Promise<GenerateInsightsResponse> {
-    return this.request(
-      'POST',
-      this.withQuery('/api/v1/insights/generate', {
-        days, tenant_id: tenantId, user_id: userId,
-      }),
-    );
-  }
-
-  getLatestInsights(
-    tenantId?: string, userId?: string,
-  ): Promise<LatestReportResponse> {
-    return this.request(
-      'GET',
-      this.withQuery('/api/v1/insights/latest', {
-        tenant_id: tenantId, user_id: userId,
-      }),
-    );
-  }
-
-  getInsightsHistory(
-    limit: number = 10, tenantId?: string, userId?: string,
-  ): Promise<ReportHistoryResponse> {
-    return this.request(
-      'GET',
-      this.withQuery('/api/v1/insights/history', {
-        limit, tenant_id: tenantId, user_id: userId,
-      }),
-    );
-  }
-
-  getInsightsReport(reportUri: string): Promise<InsightsReport> {
-    return this.request(
-      'GET',
-      this.withQuery('/api/v1/insights/report', { report_uri: reportUri })
-    );
+    return this.request('DELETE', '/admin/v1/tokens', { token_prefix });
   }
 }

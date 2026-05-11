@@ -1,17 +1,34 @@
 import React, { useState } from 'react';
-import { useApi } from '../api/Context';
+import { normalizeToken, useApi } from '../api/Context';
 import { Button } from '../components/common/Button';
 import { Card } from '../components/common/Card';
+import { APIRequestError } from '../api/client';
 import { Brain } from 'lucide-react';
 
 export const Connect: React.FC = () => {
   const [token, setTokenInput] = useState('');
-  const { setToken } = useApi();
+  const [error, setError] = useState('');
+  const [connecting, setConnecting] = useState(false);
+  const { connect } = useApi();
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (token.trim()) {
-      setToken(token.trim());
+    const normalized = normalizeToken(token);
+    if (!normalized) {
+      return;
+    }
+    setConnecting(true);
+    setError('');
+    try {
+      await connect(normalized);
+    } catch (err) {
+      if (err instanceof APIRequestError && err.status === 401) {
+        setError('Token is not valid for this OpenCortex server.');
+      } else {
+        setError('Could not verify token. Check that the API server is running.');
+      }
+    } finally {
+      setConnecting(false);
     }
   };
 
@@ -40,8 +57,18 @@ export const Connect: React.FC = () => {
               onChange={(e) => setTokenInput(e.target.value)}
               required
             />
+            {token && (
+              <p className="mt-1 text-xs text-gray-400">
+                {normalizeToken(token).length} characters after whitespace cleanup
+              </p>
+            )}
           </div>
-          <Button type="submit" className="w-full" size="lg">
+          {error && (
+            <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {error}
+            </div>
+          )}
+          <Button type="submit" className="w-full" size="lg" loading={connecting}>
             Connect
           </Button>
         </form>

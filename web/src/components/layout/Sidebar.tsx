@@ -3,11 +3,6 @@ import { NavLink } from 'react-router-dom';
 import { 
   LayoutDashboard, 
   Brain, 
-  BookOpen, 
-  BarChart3,
-  SearchCode, 
-  Settings,
-  Sparkles,
   Key,
   ChevronLeft,
   ChevronRight,
@@ -26,12 +21,7 @@ interface NavItem {
 const navItems: NavItem[] = [
   { icon: LayoutDashboard, label: 'Dashboard', path: '/', status: 'active' },
   { icon: Brain, label: 'Memories', path: '/memories', status: 'active' },
-  { icon: BookOpen, label: 'Knowledge', path: '/knowledge', status: 'active' },
-  { icon: BarChart3, label: 'Insights', path: '/insights', status: 'active' },
-  { icon: SearchCode, label: 'Search Debug', path: '/search-debug', status: 'active' },
-  { icon: Settings, label: 'System', path: '/system', status: 'active' },
   { icon: Key, label: 'Tokens', path: '/tokens', status: 'active', adminOnly: true },
-  { icon: Sparkles, label: 'Skills', path: '/skills', status: 'coming-soon' },
 ];
 
 export const Sidebar: React.FC = () => {
