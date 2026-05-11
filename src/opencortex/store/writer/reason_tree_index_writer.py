@@ -6,7 +6,6 @@ from __future__ import annotations
 from typing import Any
 
 import structlog
-from pydantic import BaseModel
 
 from opencortex.store.writer.event_payload import (
     digest,
@@ -14,51 +13,13 @@ from opencortex.store.writer.event_payload import (
     event_uri,
     primary_record,
 )
+from opencortex.vector.payloads import ReasonTreePayload, VectorPayloadSurface
 
 logger = structlog.get_logger(__name__)
 
 
-class ReasonTreeIndexRecord(BaseModel):
+class ReasonTreeIndexRecord(ReasonTreePayload):
     """Reason-tree index projection used by reasoned recall."""
-
-    id: str
-    uri: str
-    parent_uri: str
-    source_uri: str
-    source_record_id: str
-    parent_source_uri: str = ""
-    tree_uri: str = ""
-    path: str = ""
-    path_segments: list[str] = []
-    level: int
-    reason_role: str = "leaf"
-    context_window: str = "self"
-    source_uris: list[str] = []
-    merged_uris: list[str] = []
-    context_type: str = ""
-    category: str = ""
-    title: str = ""
-    summary: str = ""
-    abstract: str = ""
-    overview: str = ""
-    content: str = ""
-    fact_points: list[str] = []
-    source_refs: list[str] = []
-    is_leaf: bool = False
-    retrieval_surface: str = "reason_tree_index"
-    retrieval_ready: bool = True
-    source_tenant_id: str = ""
-    source_user_id: str = ""
-    project_id: str = ""
-    scope: str = ""
-    session_id: str = ""
-    entities: list[str] = []
-    keywords: str = ""
-    anchor_hits: list[str] = []
-    memory_kind: str = ""
-    cone_seed: bool = True
-    cone_neighbors: list[str] = []
-    meta: dict[str, Any] = {}
 
 
 class ReasonTreeIndexWriter:
@@ -83,7 +44,7 @@ class ReasonTreeIndexWriter:
         if not record or not bool(record.get("retrieval_ready", False)):
             return
         index_record = self.index_record(event, record)
-        payload = index_record.model_dump()
+        payload = index_record.to_record()
         self.embed_record(payload)
         await self.vector_store.upsert(self.collection_resolver(), payload)
 
@@ -158,6 +119,8 @@ class ReasonTreeIndexWriter:
             fact_points=[str(item) for item in fact_points if str(item).strip()],
             source_refs=source_refs,
             is_leaf=bool(record.get("is_leaf", False)),
+            retrieval_surface=VectorPayloadSurface.REASON_TREE_INDEX,
+            retrieval_ready=True,
             source_tenant_id=str(record.get("source_tenant_id", event.tenant_id) or ""),
             source_user_id=str(record.get("source_user_id", event.user_id) or ""),
             project_id=str(record.get("project_id", event.project_id) or ""),

@@ -9,6 +9,7 @@ from typing import Any
 from opencortex.store.schemas import PrimaryRecordInput, StoredRecord
 from opencortex.store.types import ContextType
 from opencortex.utils.uri import CortexURI
+from opencortex.vector.payloads import DirectoryPayload, VectorPayloadSurface
 
 
 class PrimaryRecordWriter:
@@ -74,32 +75,22 @@ class PrimaryRecordWriter:
         )
         user_id = str(source.get("user_id", "") or source.get("source_user_id", ""))
         project_id = str(source.get("project_id", "") or "")
-        return {
-            "id": uri,
-            "uri": uri,
-            "parent_uri": parent_uri,
-            "is_leaf": False,
-            "context_type": str(source.get("context_type") or ContextType.MEMORY),
-            "category": str(source.get("category", "") or ""),
-            "scope": "private" if CortexURI(uri).is_private else "shared",
-            "tenant_id": tenant_id,
-            "user_id": user_id,
-            "source_tenant_id": tenant_id,
-            "source_user_id": user_id,
-            "project_id": project_id,
-            "session_id": "",
-            "meta": {
+        return DirectoryPayload(
+            id=uri,
+            uri=uri,
+            parent_uri=parent_uri,
+            context_type=str(source.get("context_type") or ContextType.MEMORY),
+            category=str(source.get("category", "") or ""),
+            scope="private" if CortexURI(uri).is_private else "shared",
+            tenant_id=tenant_id,
+            user_id=user_id,
+            source_tenant_id=tenant_id,
+            source_user_id=user_id,
+            project_id=project_id,
+            session_id="",
+            meta={
                 "record_kind": "directory",
                 "project_id": project_id,
             },
-            "content": "",
-            "abstract": "",
-            "overview": "",
-            "entities": [],
-            "keywords": "",
-            "abstract_json": {},
-            "retrieval_surface": "directory",
-            "retrieval_ready": True,
-            "derive_status": "ready",
-            "ttl_expires_at": "",
-        }
+            retrieval_surface=VectorPayloadSurface.DIRECTORY,
+        ).to_record()

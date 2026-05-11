@@ -12,6 +12,7 @@ from opencortex.store.writer.event_payload import (
     event_uri,
     primary_record,
 )
+from opencortex.vector.payloads import EntityIndexPayload, VectorPayloadSurface
 
 
 class EntityIndexWriter:
@@ -63,34 +64,32 @@ class EntityIndexWriter:
                 }
             )
             records.append(
-                {
-                    "id": uri,
-                    "uri": uri,
-                    "parent_uri": event_uri(event),
-                    "context_type": record.get("context_type", ""),
-                    "category": record.get("category", ""),
-                    "abstract": entity,
-                    "overview": entity,
-                    "content": entity,
-                    "is_leaf": True,
-                    "retrieval_surface": "entity_index",
-                    "retrieval_ready": True,
-                    "source_uri": event_uri(event),
-                    "source_record_id": event_record_id(event),
-                    "source_tenant_id": event.tenant_id,
-                    "source_user_id": event.user_id,
-                    "tenant_id": event.tenant_id,
-                    "user_id": event.user_id,
-                    "project_id": event.project_id,
-                    "scope": record.get("scope", ""),
-                    "session_id": getattr(event, "session_id", ""),
-                    "entity_text": entity,
-                    "entities": [entity],
-                    "keywords": record.get("keywords", ""),
-                    "anchor_hits": record.get("anchor_hits", []),
-                    "memory_kind": record.get("memory_kind", ""),
-                    "meta": meta,
-                }
+                EntityIndexPayload(
+                    id=uri,
+                    uri=uri,
+                    parent_uri=event_uri(event),
+                    context_type=record.get("context_type", ""),
+                    category=record.get("category", ""),
+                    abstract=entity,
+                    overview=entity,
+                    content=entity,
+                    retrieval_surface=VectorPayloadSurface.ENTITY_INDEX,
+                    source_uri=event_uri(event),
+                    source_record_id=event_record_id(event),
+                    source_tenant_id=event.tenant_id,
+                    source_user_id=event.user_id,
+                    tenant_id=event.tenant_id,
+                    user_id=event.user_id,
+                    project_id=event.project_id,
+                    scope=record.get("scope", ""),
+                    session_id=getattr(event, "session_id", ""),
+                    entity_text=entity,
+                    entities=[entity],
+                    keywords=record.get("keywords", ""),
+                    anchor_hits=record.get("anchor_hits", []),
+                    memory_kind=record.get("memory_kind", ""),
+                    meta=meta,
+                ).to_record()
             )
         return records
 

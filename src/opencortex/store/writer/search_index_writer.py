@@ -16,6 +16,11 @@ from opencortex.store.writer.event_payload import (
     primary_record,
     record_abstract_json,
 )
+from opencortex.vector.payloads import (
+    AnchorIndexPayload,
+    FactIndexPayload,
+    VectorPayloadSurface,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -169,16 +174,14 @@ class SearchIndexWriter:
             event=event,
             record=record,
             index_name="AnchorIndex",
-            retrieval_surface="anchor_index",
+            retrieval_surface=VectorPayloadSurface.ANCHOR_INDEX,
             text=index.text,
             uri=(
                 f"{event_uri(event)}/anchor_indexes/"
                 f"{digest(f'{index.anchor_type}:{index.text}')}"
             ),
-            extra={
-                "anchor_type": index.anchor_type,
-                "index_score": index.score,
-            },
+            anchor_type=index.anchor_type,
+            index_score=index.score,
         )
 
     def fact_record(
@@ -192,10 +195,10 @@ class SearchIndexWriter:
             event=event,
             record=record,
             index_name="FactIndex",
-            retrieval_surface="fact_index",
+            retrieval_surface=VectorPayloadSurface.FACT_INDEX,
             text=index.text,
             uri=f"{event_uri(event)}/fact_indexes/{digest(index.text)}",
-            extra={"index_score": index.score},
+            index_score=index.score,
         )
 
     def index_record(
@@ -207,20 +210,19 @@ class SearchIndexWriter:
         retrieval_surface: str,
         text: str,
         uri: str,
-        extra: dict[str, Any] | None = None,
+        anchor_type: str = "",
+        index_score: float = 1.0,
     ) -> dict[str, Any]:
         """Build one generic search index storage record."""
         meta = dict(record.get("meta") or {})
-        extra = dict(extra or {})
         meta.update(
             {
                 "index_name": index_name,
                 "source_uri": event_uri(event),
                 "source_record_id": event_record_id(event),
-                **extra,
             }
         )
-        return {
+        base = {
             "id": uri,
             "uri": uri,
             "parent_uri": event_uri(event),
@@ -229,9 +231,7 @@ class SearchIndexWriter:
             "abstract": text,
             "overview": text,
             "content": text,
-            "is_leaf": True,
             "retrieval_surface": retrieval_surface,
-            "retrieval_ready": True,
             "source_uri": event_uri(event),
             "source_record_id": event_record_id(event),
             "source_tenant_id": event.tenant_id,
@@ -245,10 +245,15 @@ class SearchIndexWriter:
             "keywords": record.get("keywords", ""),
             "anchor_hits": record.get("anchor_hits", []),
             "memory_kind": record.get("memory_kind", ""),
-            "cone_seed": True,
-            **extra,
+            "index_score": index_score,
             "meta": meta,
         }
+        if retrieval_surface == VectorPayloadSurface.ANCHOR_INDEX:
+            return AnchorIndexPayload(
+                **base,
+                anchor_type=anchor_type or "term",
+            ).to_record()
+        return FactIndexPayload(**base).to_record()
 
     def embed_records(self, records: list[dict[str, Any]]) -> None:
         """Attach required vectors to search index records."""

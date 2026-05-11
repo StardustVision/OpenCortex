@@ -28,6 +28,7 @@ from opencortex.store.writer.reason_tree_index_writer import (
     source_references,
 )
 from opencortex.utils.json_parse import parse_json_from_response
+from opencortex.vector.payloads import VectorPayloadSurface
 
 
 class TreeNodeIndexRecord(BaseModel):
@@ -170,6 +171,8 @@ class ReasonTreeBuildWriter:
             entities=list(record.get("entities") or []),
             keywords=str(record.get("keywords", "") or ""),
             memory_kind=str(record.get("memory_kind", "") or ""),
+            retrieval_surface=VectorPayloadSurface.REASON_TREE_INDEX,
+            retrieval_ready=True,
             cone_neighbors=unique_strings(
                 [
                     str(record.get("parent_uri", "") or ""),
