@@ -70,7 +70,6 @@ services:
       - qdrant
     volumes:
       - ./.cortex:/data
-      # - ./server.json:/app/server.json:ro
     environment:
       # ---- Server ----
       - OPENCORTEX_APP_APP_NAME=OpenCortex

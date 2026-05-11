@@ -7,6 +7,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
+import jwt
 import structlog
 from fastapi import FastAPI
 
@@ -119,16 +120,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 def configure_admin_token(settings: Settings) -> None:
     secret = ensure_secret(settings.data_root)
-    if not settings.admin_api_token:
+    token = normalized_admin_token(settings.admin_api_token)
+    if not token:
         bootstrap_admin_token(settings.data_root, secret=secret)
         return
-    record = register_token_record(
-        settings.data_root,
-        settings.admin_api_token,
-        secret=secret,
-    )
+    try:
+        record = register_token_record(settings.data_root, token, secret=secret)
+    except jwt.InvalidTokenError as exc:
+        raise ValueError(
+            "Configured admin_api_token is not valid for this OpenCortex data root"
+        ) from exc
     if record["role"] != "admin":
         raise ValueError("Configured admin_api_token must have role=admin")
+
+
+def normalized_admin_token(token: str) -> str:
+    """Return a usable configured admin token, or empty when unset."""
+    value = str(token or "").strip()
+    if not value or value in {"<admin-jwt>", "<admin-token>", "changeme"}:
+        return ""
+    if value.lower() in {"none", "null", "unset"}:
+        return ""
+    if value.count(".") != 2:
+        logger.warning("opencortex.admin_api_token_ignored", reason="malformed_jwt")
+        return ""
+    return value
 
 
 def bootstrap_admin_token(data_root: str, *, secret: str) -> str:

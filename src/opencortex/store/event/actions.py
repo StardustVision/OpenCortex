@@ -251,14 +251,3 @@ class CheckUpdateAction:
             context_type=event.context_type,
             category=event.category,
         )
-
-
-class NoopAction:
-    """Placeholder action for wiring tests and future side effects."""
-
-    name = "noop"
-    event_type = MemoryEvent
-
-    async def run(self, event: MemoryEvent) -> None:
-        """Accept the event and do nothing."""
-        logger.debug("noop_action_accepted", event_name=event.name)

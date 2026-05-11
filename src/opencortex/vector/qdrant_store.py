@@ -356,11 +356,6 @@ class QdrantVectorStore:
         return payload
 
 
-def payload_uri(point: Any) -> str:
-    """Return a point payload URI."""
-    return str((point.payload or {}).get("uri", "") or "")
-
-
 def payload_matches_uri(point: Any, uri: str) -> bool:
     """Return whether a point belongs to a URI subtree."""
     prefix = uri if uri.endswith("/") else f"{uri}/"

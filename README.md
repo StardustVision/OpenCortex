@@ -199,11 +199,14 @@ Revoke by prefix:
 uv run opencortex-token revoke <token-prefix>
 ```
 
-Admin token management is available through `/admin/v1/tokens`. A configured
-bootstrap admin token can be supplied with:
+Admin token management is available through `/admin/v1/tokens`. In normal
+deployments you can leave `OPENCORTEX_APP_ADMIN_API_TOKEN` unset; if no admin
+record exists, OpenCortex creates a one-time `_system/_admin` token at startup
+and prints it in the server logs. A pre-generated admin token can also be
+supplied with:
 
 ```bash
-export OPENCORTEX_APP_ADMIN_API_TOKEN=<admin-jwt>
+export OPENCORTEX_APP_ADMIN_API_TOKEN=<signed-admin-jwt>
 ```
 
 The configured token must be signed by the current `data/auth_secret.key`.
@@ -416,19 +419,25 @@ The console currently includes:
 
 ## MCP
 
-OpenCortex supports Streamable HTTP MCP at:
+OpenCortex exposes a remote MCP server over Streamable HTTP. Configure your MCP client with:
 
-```text
-POST /mcp
+```json
+{
+  "mcpServers": {
+    "opencortex": {
+      "type": "streamable-http",
+      "url": "http://<host>:8921/mcp",
+      "headers": {
+        "Authorization": "Bearer <jwt>"
+      }
+    }
+  }
+}
 ```
 
-Required headers:
-
-```http
-Authorization: Bearer <jwt>
-Content-Type: application/json
-Accept: application/json, text/event-stream
-```
+Use the same Bearer token used by the HTTP API and Web console. Do not configure
+OpenCortex as an SSE server; the endpoint implements the 2025-06-18 Streamable
+HTTP transport.
 
 Current MCP tools:
 
@@ -438,6 +447,16 @@ Current MCP tools:
 - `opencortex.forget`
 - `opencortex.session_message`
 - `opencortex.session_end`
+
+For a quick transport check without an MCP client:
+
+```bash
+curl -sS http://127.0.0.1:8921/mcp \
+  -H "Authorization: Bearer $OPENCORTEX_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
 
 `GET /mcp` and `DELETE /mcp` currently return `405`; this runtime is stateless
 Streamable HTTP JSON-RPC, not the older HTTP+SSE transport.
@@ -540,4 +559,3 @@ Detailed current and planned behavior is documented in Chinese under:
 ## License
 
 Apache-2.0
-

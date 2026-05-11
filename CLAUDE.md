@@ -114,7 +114,7 @@ docs/solutions/                  # documented solutions to past problems and pat
 - URI format: `opencortex://{team}/{uid}/{type}/{category}/{node_id}`
 - **Client-side identity via JWT**: identity is NOT in server-side `CortexConfig`. It's embedded in the JWT token claims (`tid`/`uid`). `RequestContextMiddleware` decodes the Bearer token → contextvars.
   - Identity: JWT claims `tid`/`uid` → `get_effective_identity()`
-- **Server config** (`CortexConfig`): only server-side settings — storage, embedding, LLM, rerank, HTTP bind. Loads from `server.json` or `~/.opencortex/server.json`.
+- **Server config**: runtime settings use `Settings` with the `OPENCORTEX_APP_` environment prefix or `.env`; `server.json` is not loaded.
 - Reward scoring methods (`update_reward`, `get_profile`, `apply_decay`, `set_protected`) are not in the interface — detected via `hasattr` on the adapter
 - Package management uses `uv` (not pip)
 - VikingFS has been renamed to CortexFS; old name retained for backward compatibility

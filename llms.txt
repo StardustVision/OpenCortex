@@ -185,19 +185,8 @@ await orch.close()
 
 ## Configuration
 
-### Server Config (server.json)
-
-Search order: `./server.json` → `~/.opencortex/server.json`
-
-```json
-{
-  "embedding_provider": "local",
-  "http_server_host": "127.0.0.1",
-  "http_server_port": 8921
-}
-```
-
-All fields overridable via `OPENCORTEX_` env prefix.
+OpenCortex runtime settings come from `OPENCORTEX_APP_*` environment variables
+or `.env`. The server no longer reads `server.json`.
 
 ## Deployment Modes
 
@@ -209,15 +198,16 @@ All fields overridable via `OPENCORTEX_` env prefix.
 
 ```
 src/opencortex/
-  orchestrator.py          # MemoryOrchestrator — unified API layer
-  config.py                # CortexConfig dataclass + env overrides
-  http/                    # FastAPI server + async client + request context
-  retrieve/                # IntentRouter + HierarchicalRetriever + reranking
-  context/                 # ContextManager (HTTP context lifecycle)
-  alpha/                   # Observer, TraceSplitter, Archivist, Sandbox, KnowledgeStore
-  storage/                 # VikingDBInterface + CortexFS + Qdrant adapter
-  ingest/                  # IngestModeResolver (memory/document/conversation routing)
-  parse/                   # ParserRegistry + parsers (markdown, text, word, excel, ppt, pdf, epub)
+  app.py                   # FastAPI application factory
+  settings.py              # OPENCORTEX_APP_* settings
+  runtime.py               # Runtime dependency container
+  auth/                    # JWT and admin token management
+  console/                 # Web console management API
+  mcp/                     # Streamable HTTP MCP transport and tools
+  storage/                 # CFS and CortexStorage
+  store/                   # Write path, events, session flows, writers
+  vector/                  # Qdrant payloads and retrieval pipeline
+  parse/                   # Document parser registry and parsers
   models/                  # Embedder abstractions (local/API)
   auth/                    # JWT token generation and validation
   utils/                   # CortexURI tenant-isolated URI scheme

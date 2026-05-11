@@ -522,6 +522,21 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(admin_records[0]["user_id"], "_admin")
         self.assertEqual(second_admin_records, admin_records)
 
+    async def test_placeholder_admin_token_uses_default_bootstrap(self) -> None:
+        """Placeholder admin token values are treated as unset."""
+        with TemporaryDirectory() as data_root:
+            create_app(
+                settings=app_settings(data_root).model_copy(
+                    update={"admin_api_token": "<admin-jwt>"}
+                )
+            )
+            records = load_token_records(data_root)
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["tenant_id"], "_system")
+        self.assertEqual(records[0]["user_id"], "_admin")
+        self.assertEqual(records[0]["role"], "admin")
+
     async def test_default_admin_token_does_not_replace_existing_admin(self) -> None:
         """Existing admin records suppress default admin token bootstrap."""
         with TemporaryDirectory() as data_root:

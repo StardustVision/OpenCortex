@@ -14,7 +14,6 @@ def main() -> None:
     )
     parser.add_argument("--host", default="127.0.0.1", help="Bind host")
     parser.add_argument("--port", type=int, default=8921, help="Bind port")
-    parser.add_argument("--config", default=None, help="Path to config file")
     parser.add_argument(
         "--log-level",
         default="INFO",

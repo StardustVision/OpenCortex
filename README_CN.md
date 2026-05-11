@@ -192,10 +192,13 @@ uv run opencortex-token list
 uv run opencortex-token revoke <token-prefix>
 ```
 
-Admin token 管理走 `/admin/v1/tokens`。也可以通过配置注入 bootstrap admin token：
+Admin token 管理走 `/admin/v1/tokens`。正常部署可以不设置
+`OPENCORTEX_APP_ADMIN_API_TOKEN`；如果当前没有任何 admin 记录，OpenCortex 会在
+启动时自动创建一个一次性的 `_system/_admin` token，并打印到 server logs。也可以
+通过配置注入预生成的 admin token：
 
 ```bash
-export OPENCORTEX_APP_ADMIN_API_TOKEN=<admin-jwt>
+export OPENCORTEX_APP_ADMIN_API_TOKEN=<signed-admin-jwt>
 ```
 
 该 token 必须由当前 `data/auth_secret.key` 签名。
@@ -404,19 +407,25 @@ Vite dev server 会代理：
 
 ## MCP
 
-OpenCortex 支持 Streamable HTTP MCP：
+OpenCortex 通过 Streamable HTTP 暴露远程 MCP server。MCP client 配置示例：
 
-```text
-POST /mcp
+```json
+{
+  "mcpServers": {
+    "opencortex": {
+      "type": "streamable-http",
+      "url": "http://<host>:8921/mcp",
+      "headers": {
+        "Authorization": "Bearer <jwt>"
+      }
+    }
+  }
+}
 ```
 
-必需 headers：
-
-```http
-Authorization: Bearer <jwt>
-Content-Type: application/json
-Accept: application/json, text/event-stream
-```
+认证使用和 HTTP API / Web console 相同的 Bearer token。不要把 OpenCortex
+配置成 SSE server；当前 endpoint 实现的是 2025-06-18 Streamable HTTP
+transport。
 
 当前 MCP tools：
 
@@ -426,6 +435,16 @@ Accept: application/json, text/event-stream
 - `opencortex.forget`
 - `opencortex.session_message`
 - `opencortex.session_end`
+
+不用 MCP client 时，可以用下面的命令快速验证 transport：
+
+```bash
+curl -sS http://127.0.0.1:8921/mcp \
+  -H "Authorization: Bearer $OPENCORTEX_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
 
 `GET /mcp` 和 `DELETE /mcp` 当前返回 `405`。当前实现是无状态 Streamable HTTP
 JSON-RPC，不是旧 HTTP+SSE transport。
@@ -523,4 +542,3 @@ npm run build
 ## License
 
 Apache-2.0
-
