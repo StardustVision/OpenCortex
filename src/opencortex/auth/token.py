@@ -134,7 +134,7 @@ def load_token_records(data_root: str) -> List[Dict[str, Any]]:
 
 
 def public_token_record(record: Dict[str, Any]) -> Dict[str, Any]:
-    """Return a token record safe for API responses."""
+    """Return a token record for admin API responses."""
     token = str(record.get("token", "") or "")
     token_prefix = str(record.get("token_prefix", "") or "")
     if not token_prefix and token:
@@ -145,6 +145,7 @@ def public_token_record(record: Dict[str, Any]) -> Dict[str, Any]:
         "role": str(record.get("role", "") or "user"),
         "created_at": str(record.get("created_at", "") or ""),
         "token_prefix": token_prefix,
+        "token": token,
     }
 
 
@@ -237,6 +238,7 @@ def save_token_record(
             {
                 "token_hash": hashed,
                 "token_prefix": hashed[:16],
+                "token": token,
                 "tenant_id": tenant_id,
                 "user_id": user_id,
                 "role": role,

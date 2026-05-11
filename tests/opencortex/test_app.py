@@ -445,7 +445,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
             record for record in records if record["tenant_id"] == "tenant-a"
         ]
         self.assertEqual(len(user_records), 1)
-        self.assertNotIn("token", user_records[0])
+        self.assertEqual(user_records[0]["token"], created["token"])
         self.assertEqual(user_records[0]["token_prefix"], token_prefix)
 
         self.assertEqual(revoke_response.status_code, 200)

@@ -23,6 +23,7 @@ export const Tokens: React.FC = () => {
   const [createdToken, setCreatedToken] = useState<string | null>(null);
   const [createError, setCreateError] = useState('');
   const [copied, setCopied] = useState(false);
+  const [copiedRecord, setCopiedRecord] = useState('');
 
   const [revokeTarget, setRevokeTarget] = useState<TokenRecord | null>(null);
   const [revoking, setRevoking] = useState(false);
@@ -87,6 +88,13 @@ export const Tokens: React.FC = () => {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const copyRecordToken = (record: TokenRecord) => {
+    const value = record.token || record.token_prefix;
+    navigator.clipboard.writeText(value);
+    setCopiedRecord(record.token_prefix);
+    setTimeout(() => setCopiedRecord(''), 2000);
+  };
+
   const tokens = data?.tokens || [];
 
   return (
@@ -118,7 +126,7 @@ export const Tokens: React.FC = () => {
                     <th className="pb-3 text-sm font-semibold text-gray-600">User</th>
                     <th className="pb-3 text-sm font-semibold text-gray-600">Role</th>
                     <th className="pb-3 text-sm font-semibold text-gray-600">Created</th>
-                    <th className="pb-3 text-sm font-semibold text-gray-600">Token Prefix</th>
+                    <th className="pb-3 text-sm font-semibold text-gray-600">Token</th>
                     <th className="pb-3 text-sm font-semibold text-gray-600">Actions</th>
                   </tr>
                 </thead>
@@ -133,7 +141,26 @@ export const Tokens: React.FC = () => {
                       <td className="py-3 text-sm text-gray-500">
                         {t.created_at ? new Date(t.created_at).toLocaleDateString() : '-'}
                       </td>
-                      <td className="py-3 text-xs font-mono text-gray-400">{t.token_prefix}</td>
+                      <td className="py-3">
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-xs text-gray-400">
+                            {t.token ? `${t.token.slice(0, 16)}...` : t.token_prefix}
+                          </span>
+                          <button
+                            type="button"
+                            className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-indigo-600"
+                            onClick={() => copyRecordToken(t)}
+                            title={t.token ? 'Copy full token' : 'Copy token prefix'}
+                            aria-label={t.token ? 'Copy full token' : 'Copy token prefix'}
+                          >
+                            {copiedRecord === t.token_prefix ? (
+                              <Check size={14} className="text-green-600" />
+                            ) : (
+                              <Copy size={14} />
+                            )}
+                          </button>
+                        </div>
+                      </td>
                       <td className="py-3">
                         <div className="flex gap-1">
                           {t.role !== 'admin' && (

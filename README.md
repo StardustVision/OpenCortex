@@ -425,7 +425,7 @@ OpenCortex exposes a remote MCP server over Streamable HTTP. Configure your MCP 
 {
   "mcpServers": {
     "opencortex": {
-      "type": "streamable-http",
+      "type": "http",
       "url": "http://<host>:8921/mcp",
       "headers": {
         "Authorization": "Bearer <jwt>"
@@ -436,8 +436,9 @@ OpenCortex exposes a remote MCP server over Streamable HTTP. Configure your MCP 
 ```
 
 Use the same Bearer token used by the HTTP API and Web console. Do not configure
-OpenCortex as an SSE server; the endpoint implements the 2025-06-18 Streamable
-HTTP transport.
+OpenCortex as an SSE server. Many MCP clients name Streamable HTTP as
+`type: "http"` in their config; the OpenCortex endpoint implements the
+2025-06-18 Streamable HTTP transport.
 
 Current MCP tools:
 

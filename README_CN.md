@@ -413,7 +413,7 @@ OpenCortex 通过 Streamable HTTP 暴露远程 MCP server。MCP client 配置示
 {
   "mcpServers": {
     "opencortex": {
-      "type": "streamable-http",
+      "type": "http",
       "url": "http://<host>:8921/mcp",
       "headers": {
         "Authorization": "Bearer <jwt>"
@@ -424,7 +424,8 @@ OpenCortex 通过 Streamable HTTP 暴露远程 MCP server。MCP client 配置示
 ```
 
 认证使用和 HTTP API / Web console 相同的 Bearer token。不要把 OpenCortex
-配置成 SSE server；当前 endpoint 实现的是 2025-06-18 Streamable HTTP
+配置成 SSE server。很多 MCP client 在配置中把 Streamable HTTP 写作
+`type: "http"`；OpenCortex endpoint 实现的是 2025-06-18 Streamable HTTP
 transport。
 
 当前 MCP tools：

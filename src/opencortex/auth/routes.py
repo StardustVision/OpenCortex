@@ -66,6 +66,7 @@ class TokenRecordResponse(BaseModel):
     role: str
     created_at: str
     token_prefix: str
+    token: str = ""
 
 
 class TokenListResponse(BaseModel):

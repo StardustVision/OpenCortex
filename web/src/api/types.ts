@@ -73,6 +73,7 @@ export interface TokenRecord {
   role: string;
   created_at: string;
   token_prefix: string;
+  token?: string;
 }
 
 export interface AuthMe {
