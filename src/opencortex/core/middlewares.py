@@ -5,7 +5,13 @@ from __future__ import annotations
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.responses import JSONResponse
 
+from opencortex.auth.token import (
+    decode_token,
+    ensure_secret,
+    find_token_record,
+)
 from opencortex.core.identity import (
     IdentityProfile,
     identity_context,
@@ -21,20 +27,61 @@ class WriteRequestContextMiddleware(BaseHTTPMiddleware):
         call_next: RequestResponseEndpoint,
     ) -> Response:
         """Set context variables from headers for the request duration."""
-        tenant_id = request.headers.get("x-tenant-id", "default")
-        user_id = request.headers.get("x-user-id", "default")
-        project_id = request.headers.get("x-project-id", "public")
-        collection = request.headers.get("x-collection", "")
+        settings = getattr(request.app.state, "settings", None)
+        profile = authenticated_profile_from_bearer(
+            request.headers.get("authorization", ""),
+            data_root=getattr(settings, "data_root", "./data"),
+        )
+        if profile is None and protected_path(request.url.path):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Bearer token is required"},
+            )
+        profile = profile or IdentityProfile()
 
         profile_token = identity_context.set(
-            IdentityProfile(
-                tenant_id=tenant_id,
-                user_id=user_id,
-                project_id=project_id,
-                collection=collection,
+            profile.model_copy(
+                update={
+                    "collection": request.headers.get("x-collection", ""),
+                }
             )
         )
         try:
             return await call_next(request)
         finally:
             identity_context.reset(profile_token)
+
+
+def authenticated_profile_from_bearer(
+    authorization: str,
+    *,
+    data_root: str,
+) -> IdentityProfile | None:
+    """Return identity claims from a saved bearer token."""
+    scheme, _, token = str(authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        return None
+    try:
+        secret = ensure_secret(data_root)
+        claims = decode_token(token, secret)
+    except Exception:
+        return None
+
+    if find_token_record(data_root, token) is None:
+        return None
+    return IdentityProfile(
+        tenant_id=str(claims.get("tid", "") or "default"),
+        user_id=str(claims.get("uid", "") or "default"),
+        project_id=str(claims.get("pid", "") or "public"),
+        role=str(claims.get("role", "user") or "user"),
+    )
+
+
+def protected_path(path: str) -> bool:
+    """Return whether the request path requires bearer authentication."""
+    return (
+        path.startswith("/api/")
+        or path.startswith("/admin/")
+        or path.startswith("/console/")
+        or path == "/mcp"
+    )

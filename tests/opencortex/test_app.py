@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from hashlib import sha256
 from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, patch
 
@@ -12,6 +13,7 @@ import httpx
 from httpx import ASGITransport
 
 from opencortex.app import create_app
+from opencortex.auth.token import ensure_secret, generate_token, save_token_record
 from opencortex.prompts.retrieval import (
     QUERY_DECOMPOSITION_SYSTEM_PROMPT,
     REASON_TREE_SELECTION_SYSTEM_PROMPT,
@@ -30,6 +32,25 @@ MCP_HEADERS = {
 def app_settings(data_root: str) -> Settings:
     """Return settings with required LLM config for app lifespan tests."""
     return Settings(data_root=data_root, llm_api_key="test-key")
+
+
+def auth_headers(data_root: str, *, role: str = "user") -> dict[str, str]:
+    """Return authorization headers for app tests."""
+    secret = ensure_secret(data_root)
+    token = generate_token(
+        "default",
+        "default",
+        secret,
+        role=role,
+    )
+    save_token_record(
+        data_root,
+        token,
+        "default",
+        "default",
+        role=role,
+    )
+    return {"authorization": f"Bearer {token}"}
 
 
 def fast_merge_settings(data_root: str) -> Settings:
@@ -224,6 +245,10 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/api/v1/memory/store", paths)
         self.assertIn("/api/v1/memory/search", paths)
         self.assertIn("/api/v1/memory/forget", paths)
+        self.assertIn("/api/v1/auth/me", paths)
+        self.assertIn("/admin/v1/tokens", paths)
+        self.assertIn("/console/v1/memories", paths)
+        self.assertIn("/console/v1/stats", paths)
         self.assertIn("/api/v1/session/message", paths)
         self.assertIn("/api/v1/session/end", paths)
         self.assertIn("/mcp", paths)
@@ -231,10 +256,12 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
     async def test_mcp_get_returns_405(self) -> None:
         """Streamable HTTP GET is rejected until SSE sessions are supported."""
         app = create_app(settings=app_settings(":memory:"))
+        headers = auth_headers(":memory:")
         transport = ASGITransport(app=app)
         async with httpx.AsyncClient(
             transport=transport,
             base_url="http://testserver",
+            headers=headers,
         ) as client:
             response = await client.get("/mcp")
 
@@ -243,10 +270,12 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
     async def test_mcp_rejects_missing_streamable_http_accept(self) -> None:
         """MCP POST requires the Streamable HTTP Accept header pair."""
         app = create_app(settings=app_settings(":memory:"))
+        headers = auth_headers(":memory:")
         transport = ASGITransport(app=app)
         async with httpx.AsyncClient(
             transport=transport,
             base_url="http://testserver",
+            headers=headers,
         ) as client:
             response = await client.post(
                 "/mcp",
@@ -259,10 +288,168 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status_code, 406)
 
+    async def test_api_and_mcp_require_bearer_token(self) -> None:
+        """Protected API and MCP endpoints reject unauthenticated requests."""
+        app = create_app(settings=app_settings(":memory:"))
+        transport = ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            api_response = await client.post(
+                "/api/v1/memory/search",
+                json={"query": "anything"},
+            )
+            mcp_response = await client.post(
+                "/mcp",
+                headers=MCP_HEADERS,
+                json={"jsonrpc": "2.0", "id": "ping-1", "method": "ping"},
+            )
+            console_response = await client.get("/console/v1/stats")
+
+        self.assertEqual(api_response.status_code, 401)
+        self.assertEqual(mcp_response.status_code, 401)
+        self.assertEqual(console_response.status_code, 401)
+
+    async def test_auth_me_reads_bearer_claims(self) -> None:
+        """Bearer JWT claims populate request identity."""
+        with TemporaryDirectory() as data_root:
+            app = create_app(settings=app_settings(data_root))
+            secret = ensure_secret(data_root)
+            token = generate_token(
+                "tenant-a",
+                "alice",
+                secret,
+                role="admin",
+            )
+            save_token_record(
+                data_root,
+                token,
+                "tenant-a",
+                "alice",
+                role="admin",
+            )
+            transport = ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+                headers={"authorization": f"Bearer {token}"},
+            ) as client:
+                response = await client.get("/api/v1/auth/me")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "tenant_id": "tenant-a",
+                "user_id": "alice",
+                "project_id": "public",
+                "role": "admin",
+            },
+        )
+
+    async def test_admin_can_create_list_and_revoke_user_token(self) -> None:
+        """Admin token API manages persisted user API keys."""
+        with TemporaryDirectory() as data_root:
+            app = create_app(settings=app_settings(data_root))
+            headers = auth_headers(data_root, role="admin")
+            transport = ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+                headers=headers,
+            ) as client:
+                create_response = await client.post(
+                    "/admin/v1/tokens",
+                    json={
+                        "tenant_id": "tenant-a",
+                        "user_id": "alice",
+                    },
+                )
+                list_response = await client.get("/admin/v1/tokens")
+                created = create_response.json()
+                token_prefix = sha256(created["token"].encode("utf-8")).hexdigest()[:16]
+                revoke_response = await client.request(
+                    "DELETE",
+                    "/admin/v1/tokens",
+                    json={"token_prefix": token_prefix},
+                )
+                after_revoke_response = await client.get("/admin/v1/tokens")
+
+        self.assertEqual(create_response.status_code, 200)
+        self.assertEqual(created["tenant_id"], "tenant-a")
+        self.assertEqual(created["user_id"], "alice")
+        self.assertEqual(created["role"], "user")
+        self.assertIn("token", created)
+
+        self.assertEqual(list_response.status_code, 200)
+        records = list_response.json()["tokens"]
+        user_records = [
+            record for record in records if record["tenant_id"] == "tenant-a"
+        ]
+        self.assertEqual(len(user_records), 1)
+        self.assertNotIn("token", user_records[0])
+        self.assertEqual(user_records[0]["token_prefix"], token_prefix)
+
+        self.assertEqual(revoke_response.status_code, 200)
+        self.assertEqual(after_revoke_response.status_code, 200)
+        self.assertFalse(
+            any(
+                record["tenant_id"] == "tenant-a"
+                for record in after_revoke_response.json()["tokens"]
+            )
+        )
+
+    async def test_non_admin_cannot_manage_tokens(self) -> None:
+        """User tokens cannot access admin token management."""
+        with TemporaryDirectory() as data_root:
+            app = create_app(settings=app_settings(data_root))
+            headers = auth_headers(data_root)
+            transport = ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+                headers=headers,
+            ) as client:
+                response = await client.get("/admin/v1/tokens")
+
+        self.assertEqual(response.status_code, 403)
+
+    async def test_configured_admin_token_is_registered(self) -> None:
+        """A configured admin JWT bootstraps admin API access."""
+        with TemporaryDirectory() as data_root:
+            secret = ensure_secret(data_root)
+            token = generate_token(
+                "tenant-admin",
+                "root",
+                secret,
+                role="admin",
+            )
+            app = create_app(
+                settings=app_settings(data_root).model_copy(
+                    update={"admin_api_token": token}
+                )
+            )
+            transport = ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+                headers={"authorization": f"Bearer {token}"},
+            ) as client:
+                me_response = await client.get("/api/v1/auth/me")
+                tokens_response = await client.get("/admin/v1/tokens")
+
+        self.assertEqual(me_response.status_code, 200)
+        self.assertEqual(me_response.json()["role"], "admin")
+        self.assertEqual(me_response.json()["tenant_id"], "tenant-admin")
+        self.assertEqual(tokens_response.status_code, 200)
+        self.assertEqual(tokens_response.json()["tokens"][0]["role"], "admin")
+
     async def test_mcp_initialize_and_tools_list(self) -> None:
         """MCP exposes initialize and tools/list over Streamable HTTP."""
         with TemporaryDirectory() as data_root:
             app = create_app(settings=app_settings(data_root))
+            headers = auth_headers(data_root)
             with (
                 patch(
                     "opencortex.llm.client.LLMCompletion.complete",
@@ -282,6 +469,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
                     async with httpx.AsyncClient(
                         transport=transport,
                         base_url="http://testserver",
+                        headers=headers,
                     ) as client:
                         init_response = await client.post(
                             "/mcp",
@@ -328,6 +516,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         """MCP tools/call writes and recalls through the current memory chain."""
         with TemporaryDirectory() as data_root:
             app = create_app(settings=app_settings(data_root))
+            headers = auth_headers(data_root)
             with (
                 patch(
                     "opencortex.llm.client.LLMCompletion.complete",
@@ -347,6 +536,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
                     async with httpx.AsyncClient(
                         transport=transport,
                         base_url="http://testserver",
+                        headers=headers,
                     ) as client:
                         store_response = await client.post(
                             "/mcp",
@@ -414,6 +604,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         """POST /memory/store accepts the new store contract."""
         with TemporaryDirectory() as data_root:
             app = create_app(settings=app_settings(data_root))
+            headers = auth_headers(data_root)
             with (
                 patch(
                     "opencortex.llm.client.LLMCompletion.complete",
@@ -433,6 +624,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
                     async with httpx.AsyncClient(
                         transport=transport,
                         base_url="http://testserver",
+                        headers=headers,
                     ) as client:
                         response = await client.post(
                             "/api/v1/memory/store",
@@ -454,6 +646,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         """Every primary write also creates a check-update event."""
         with TemporaryDirectory() as data_root:
             app = create_app(settings=app_settings(data_root))
+            headers = auth_headers(data_root)
             with (
                 patch(
                     "opencortex.llm.client.LLMCompletion.complete",
@@ -487,6 +680,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
                     async with httpx.AsyncClient(
                         transport=transport,
                         base_url="http://testserver",
+                        headers=headers,
                     ) as client:
                         response = await client.post(
                             "/api/v1/memory/store",
@@ -510,6 +704,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         """Semantic forget recalls top1 and removes FS plus vector projections."""
         with TemporaryDirectory() as data_root:
             app = create_app(settings=app_settings(data_root))
+            headers = auth_headers(data_root)
             with (
                 patch(
                     "opencortex.llm.client.LLMCompletion.complete",
@@ -529,6 +724,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
                     async with httpx.AsyncClient(
                         transport=transport,
                         base_url="http://testserver",
+                        headers=headers,
                     ) as client:
                         store_response = await client.post(
                             "/api/v1/memory/store",
@@ -593,11 +789,87 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(after_forget.json()["data"]["total"], 0)
         self.assertTrue(fs_missing)
 
+    async def test_console_memory_management_uses_separate_routes(self) -> None:
+        """Console routes list, hydrate, search, and delete memories."""
+        content = "Zephyr uses a blue notebook for planning."
+        with TemporaryDirectory() as data_root:
+            app = create_app(settings=app_settings(data_root))
+            headers = auth_headers(data_root)
+            with (
+                patch(
+                    "opencortex.llm.client.LLMCompletion.complete",
+                    new=AsyncMock(side_effect=fake_llm_completion),
+                ),
+                patch(
+                    "opencortex.vector.embedder.OpenAIEmbeddingClient.embed",
+                    side_effect=keyword_embedding,
+                ),
+                patch(
+                    "opencortex.vector.embedder.OpenAIEmbeddingClient.embed_batch",
+                    side_effect=keyword_embedding_batch,
+                ),
+            ):
+                async with app.router.lifespan_context(app):
+                    transport = ASGITransport(app=app)
+                    async with httpx.AsyncClient(
+                        transport=transport,
+                        base_url="http://testserver",
+                        headers=headers,
+                    ) as client:
+                        store_response = await client.post(
+                            "/api/v1/memory/store",
+                            json={
+                                "type": "memory",
+                                "content": content,
+                                "category": "semantic",
+                                "metadata": {"entities": ["Zephyr"]},
+                                "source": {"kind": "manual"},
+                            },
+                        )
+                        await app.state.store_event_worker.wait_idle()
+                        uri = store_response.json()["uri"]
+
+                        stats_response = await client.get("/console/v1/stats")
+                        list_response = await client.get("/console/v1/memories")
+                        content_response = await client.get(
+                            "/console/v1/memories/content",
+                            params={"uri": uri},
+                        )
+                        search_response = await client.post(
+                            "/console/v1/memories/search",
+                            json={
+                                "query": "Zephyr notebook planning",
+                                "limit": 3,
+                            },
+                        )
+                        delete_response = await client.request(
+                            "DELETE",
+                            "/console/v1/memories",
+                            json={"uri": uri},
+                        )
+
+        self.assertEqual(store_response.status_code, 200)
+        self.assertEqual(stats_response.status_code, 200)
+        self.assertGreaterEqual(stats_response.json()["primary_records"], 1)
+        self.assertEqual(list_response.status_code, 200)
+        self.assertTrue(
+            any(item["uri"] == uri for item in list_response.json()["results"])
+        )
+        self.assertEqual(content_response.status_code, 200)
+        self.assertEqual(content_response.json()["content"], content)
+        self.assertEqual(search_response.status_code, 200)
+        self.assertTrue(
+            any(item["uri"] == uri for item in search_response.json()["results"])
+        )
+        self.assertEqual(delete_response.status_code, 200)
+        self.assertEqual(delete_response.json()["uri"], uri)
+
     async def test_memory_store_uses_llm_derived_layers(self) -> None:
         """Store writes use LLM-derived abstract and overview layers."""
         content = "0123456789" * 150
         with TemporaryDirectory() as data_root:
             app = create_app(settings=app_settings(data_root))
+            headers = auth_headers(data_root)
             with (
                 patch(
                     "opencortex.llm.client.LLMCompletion.complete",
@@ -617,6 +889,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
                     async with httpx.AsyncClient(
                         transport=transport,
                         base_url="http://testserver",
+                        headers=headers,
                     ) as client:
                         response = await client.post(
                             "/api/v1/memory/store",
@@ -649,6 +922,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         content = "# Atlas Setup\n\nVector recall setup.\n\n## Qdrant\n\nUse Qdrant."
         with TemporaryDirectory() as data_root:
             app = create_app(settings=app_settings(data_root))
+            headers = auth_headers(data_root)
             with (
                 patch(
                     "opencortex.llm.client.LLMCompletion.complete",
@@ -668,6 +942,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
                     async with httpx.AsyncClient(
                         transport=transport,
                         base_url="http://testserver",
+                        headers=headers,
                     ) as client:
                         response = await client.post(
                             "/api/v1/memory/store",
@@ -749,6 +1024,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         content = "assistant: Alice uses Python in Hangzhou."
         with TemporaryDirectory() as data_root:
             app = create_app(settings=fast_merge_settings(data_root))
+            headers = auth_headers(data_root)
             with (
                 patch(
                     "opencortex.llm.client.LLMCompletion.complete",
@@ -768,6 +1044,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
                     async with httpx.AsyncClient(
                         transport=transport,
                         base_url="http://testserver",
+                        headers=headers,
                     ) as client:
                         response = await client.post(
                             "/api/v1/session/message",
@@ -843,6 +1120,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         content = "# Decision\n\nUse CFS.\n\n## Follow Up\n\nWire parser."
         with TemporaryDirectory() as data_root:
             app = create_app(settings=fast_merge_settings(data_root))
+            headers = auth_headers(data_root)
             with (
                 patch(
                     "opencortex.llm.client.LLMCompletion.complete",
@@ -862,6 +1140,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
                     async with httpx.AsyncClient(
                         transport=transport,
                         base_url="http://testserver",
+                        headers=headers,
                     ) as client:
                         await client.post(
                             "/api/v1/session/message",
@@ -906,6 +1185,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         content = "assistant: Alice uses Python in Hangzhou."
         with TemporaryDirectory() as data_root:
             app = create_app(settings=fast_merge_settings(data_root))
+            headers = auth_headers(data_root)
             with (
                 patch(
                     "opencortex.llm.client.LLMCompletion.complete",
@@ -925,6 +1205,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
                     async with httpx.AsyncClient(
                         transport=transport,
                         base_url="http://testserver",
+                        headers=headers,
                     ) as client:
                         await client.post(
                             "/api/v1/session/message",
@@ -958,6 +1239,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         content = "assistant: Alice uses Python in Hangzhou."
         with TemporaryDirectory() as data_root:
             app = create_app(settings=fast_merge_settings(data_root))
+            headers = auth_headers(data_root)
             with (
                 patch(
                     "opencortex.llm.client.LLMCompletion.complete",
@@ -977,6 +1259,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
                     async with httpx.AsyncClient(
                         transport=transport,
                         base_url="http://testserver",
+                        headers=headers,
                     ) as client:
                         await client.post(
                             "/api/v1/session/message",
@@ -1047,6 +1330,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         targets: dict[str, str] = {}
         with TemporaryDirectory() as data_root:
             app = create_app(settings=fast_merge_settings(data_root))
+            headers = auth_headers(data_root)
             with (
                 patch(
                     "opencortex.llm.client.LLMCompletion.complete",
@@ -1066,6 +1350,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
                     async with httpx.AsyncClient(
                         transport=transport,
                         base_url="http://testserver",
+                        headers=headers,
                     ) as client:
                         memory_response = await client.post(
                             "/api/v1/memory/store",
@@ -1150,6 +1435,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         captured_system_prompts.clear()
         with TemporaryDirectory() as data_root:
             app = create_app(settings=fast_merge_settings(data_root))
+            headers = auth_headers(data_root)
             with (
                 patch(
                     "opencortex.llm.client.LLMCompletion.complete",
@@ -1169,6 +1455,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
                     async with httpx.AsyncClient(
                         transport=transport,
                         base_url="http://testserver",
+                        headers=headers,
                     ) as client:
                         await client.post(
                             "/api/v1/session/message",
@@ -1230,6 +1517,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         content = "assistant: Alice uses Python in Hangzhou."
         with TemporaryDirectory() as data_root:
             app = create_app(settings=fast_merge_settings(data_root))
+            headers = auth_headers(data_root)
             with (
                 patch(
                     "opencortex.llm.client.LLMCompletion.complete",
@@ -1249,6 +1537,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
                     async with httpx.AsyncClient(
                         transport=transport,
                         base_url="http://testserver",
+                        headers=headers,
                     ) as client:
                         await client.post(
                             "/api/v1/session/message",
@@ -1285,6 +1574,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         content = "# Atlas Ops\n\nAtlas configures Qdrant HNSW."
         with TemporaryDirectory() as data_root:
             app = create_app(settings=app_settings(data_root))
+            headers = auth_headers(data_root)
             with (
                 patch(
                     "opencortex.llm.client.LLMCompletion.complete",
@@ -1304,6 +1594,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
                     async with httpx.AsyncClient(
                         transport=transport,
                         base_url="http://testserver",
+                        headers=headers,
                     ) as client:
                         store_response = await client.post(
                             "/api/v1/memory/store",
@@ -1348,6 +1639,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         content = "assistant: Alice uses Python in Hangzhou."
         with TemporaryDirectory() as data_root:
             app = create_app(settings=fast_merge_settings(data_root))
+            headers = auth_headers(data_root)
             with (
                 patch(
                     "opencortex.llm.client.LLMCompletion.complete",
@@ -1367,6 +1659,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
                     async with httpx.AsyncClient(
                         transport=transport,
                         base_url="http://testserver",
+                        headers=headers,
                     ) as client:
                         await client.post(
                             "/api/v1/session/message",
@@ -1403,6 +1696,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         content = "assistant: Alice uses Python in Hangzhou."
         with TemporaryDirectory() as data_root:
             app = create_app(settings=fast_merge_settings(data_root))
+            headers = auth_headers(data_root)
             with (
                 patch(
                     "opencortex.llm.client.LLMCompletion.complete",
@@ -1422,6 +1716,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
                     async with httpx.AsyncClient(
                         transport=transport,
                         base_url="http://testserver",
+                        headers=headers,
                     ) as client:
                         await client.post(
                             "/api/v1/session/message",

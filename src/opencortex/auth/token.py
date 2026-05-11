@@ -6,6 +6,7 @@ Tokens use HS256 signing with a server-generated secret key stored at
 are persisted in ``{data_root}/tokens.json``.
 """
 
+import hashlib
 import os
 import secrets
 import time
@@ -52,7 +53,11 @@ def ensure_secret(data_root: str) -> str:
 
 
 def generate_token(
-    tenant_id: str, user_id: str, secret: str, *, role: str = "user"
+    tenant_id: str,
+    user_id: str,
+    secret: str,
+    *,
+    role: str = "user",
 ) -> str:
     """Generate a JWT with tenant and user identity claims.
 
@@ -62,7 +67,7 @@ def generate_token(
             "tid": tenant_id,
             "uid": user_id,
             "iat": <unix timestamp>,
-            "role": "<role>"  # only when role != "user"
+            "role": "<role>"
         }
 
     The token does **not** expire (no ``exp`` claim).
@@ -71,9 +76,8 @@ def generate_token(
         "tid": tenant_id,
         "uid": user_id,
         "iat": int(time.time()),
+        "role": role,
     }
-    if role != "user":
-        payload["role"] = role
     return jwt.encode(payload, secret, algorithm=_ALGORITHM)
 
 
@@ -116,6 +120,62 @@ def load_token_records(data_root: str) -> List[Dict[str, Any]]:
         return []
 
 
+def public_token_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a token record safe for API responses."""
+    token = str(record.get("token", "") or "")
+    token_prefix = str(record.get("token_prefix", "") or "")
+    if not token_prefix and token:
+        token_prefix = token_hash(token)[:16]
+    return {
+        "tenant_id": str(record.get("tenant_id", "") or ""),
+        "user_id": str(record.get("user_id", "") or ""),
+        "role": str(record.get("role", "") or "user"),
+        "created_at": str(record.get("created_at", "") or ""),
+        "token_prefix": token_prefix,
+    }
+
+
+def token_hash(token: str) -> str:
+    """Return the persisted hash for one token."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def find_token_record(data_root: str, token: str) -> Optional[Dict[str, Any]]:
+    """Return the saved token record matching an issued token."""
+    hashed = token_hash(token)
+    for record in load_token_records(data_root):
+        if record.get("token_hash") == hashed or record.get("token") == token:
+            return record
+    return None
+
+
+def register_token_record(
+    data_root: str,
+    token: str,
+    *,
+    secret: str,
+) -> Dict[str, Any]:
+    """Decode and persist an externally configured token."""
+    claims = decode_token(token, secret)
+    tenant_id = str(claims.get("tid", "") or "")
+    user_id = str(claims.get("uid", "") or "")
+    role = str(claims.get("role", "") or "user")
+    if not tenant_id or not user_id:
+        raise ValueError("Configured token must contain tid and uid claims")
+    save_token_record(
+        data_root,
+        token,
+        tenant_id,
+        user_id,
+        role=role,
+    )
+    return {
+        "tenant_id": tenant_id,
+        "user_id": user_id,
+        "role": role,
+    }
+
+
 def save_token_record(
     data_root: str,
     token: str,
@@ -126,8 +186,8 @@ def save_token_record(
 ) -> None:
     """Save a token record to ``{data_root}/tokens.json``.
 
-    Deduplicates by (tenant_id, user_id) — if a record with the same
-    identity already exists, it is replaced with the new token.
+    Deduplicates by (tenant_id, user_id, role). If a record with
+    the same identity already exists, it is replaced with the new token.
     """
     from datetime import datetime, timezone
 
@@ -136,11 +196,16 @@ def save_token_record(
     records = [
         r
         for r in records
-        if not (r["tenant_id"] == tenant_id and r["user_id"] == user_id)
+        if not (
+            r.get("tenant_id") == tenant_id
+            and r.get("user_id") == user_id
+            and str(r.get("role", "user") or "user") == role
+        )
     ]
     records.append(
         {
-            "token": token,
+            "token_hash": token_hash(token),
+            "token_prefix": token_hash(token)[:16],
             "tenant_id": tenant_id,
             "user_id": user_id,
             "role": role,
@@ -159,7 +224,14 @@ def revoke_token(data_root: str, token_prefix: str) -> Optional[Dict[str, Any]]:
     """
     records = load_token_records(data_root)
     for i, rec in enumerate(records):
-        if rec["token"].startswith(token_prefix):
+        prefix = str(rec.get("token_prefix", "") or "").removesuffix("...")
+        hashed = str(rec.get("token_hash", "") or "")
+        legacy_token = str(rec.get("token", "") or "")
+        if (
+            prefix == token_prefix
+            or hashed.startswith(token_prefix)
+            or legacy_token.startswith(token_prefix)
+        ):
             removed = records.pop(i)
             p = _records_path(data_root)
             p.write_bytes(json.dumps(records, option=json.OPT_INDENT_2))

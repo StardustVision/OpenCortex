@@ -89,6 +89,13 @@ class Settings(BaseSettings):
         default=True,
         description="Enable header-derived identity context middleware.",
     )
+    admin_api_token: str = Field(
+        default="",
+        description=(
+            "Optional pre-generated admin JWT to register at startup. "
+            "Use OPENCORTEX_APP_ADMIN_API_TOKEN or .env for local bootstrap."
+        ),
+    )
 
     model_config = SettingsConfigDict(
         env_prefix="OPENCORTEX_APP_",

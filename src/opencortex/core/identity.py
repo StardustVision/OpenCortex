@@ -16,6 +16,7 @@ class IdentityProfile(BaseModel):
     project_id: str = "public"
     collection: str = ""
     session_id: str = ""
+    role: str = "user"
 
 
 _profile: ContextVar[IdentityProfile | None] = ContextVar("profile", default=None)

@@ -9,6 +9,8 @@ from typing import AsyncIterator
 import structlog
 from fastapi import FastAPI
 
+from opencortex.auth.routes import admin_router, auth_router
+from opencortex.auth.token import ensure_secret, register_token_record
 from opencortex.core.identity import (
     get_collection_name,
 )
@@ -32,6 +34,7 @@ from opencortex.store.event.actions import (
 from opencortex.store.event.events import StoreEvents
 from opencortex.store.event.worker import EventWorker
 from opencortex.store.routes import router as store_router
+from opencortex.console.routes import router as console_router  # noqa: E402  load after store imports to avoid circular init
 from opencortex.store.session.buffer import SessionBuffer
 from opencortex.store.session.merger import SessionMerger
 from opencortex.store.writer.primary_record_writer import PrimaryRecordWriter
@@ -91,10 +94,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     if settings.identity_context_enabled:
         app.add_middleware(WriteRequestContextMiddleware)
+    app.include_router(auth_router)
+    app.include_router(admin_router)
     app.include_router(store_router)
+    app.include_router(console_router)
     app.include_router(mcp_router)
     app.state.settings = settings
+    configure_admin_token(settings)
     return app
+
+
+def configure_admin_token(settings: Settings) -> None:
+    """Register a configured bootstrap admin token."""
+    if not settings.admin_api_token:
+        return
+    secret = ensure_secret(settings.data_root)
+    record = register_token_record(
+        settings.data_root,
+        settings.admin_api_token,
+        secret=secret,
+    )
+    if record["role"] != "admin":
+        raise ValueError("Configured admin_api_token must have role=admin")
 
 
 def configure_store_state(app: FastAPI, runtime: AppRuntime) -> None:
