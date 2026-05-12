@@ -70,9 +70,12 @@ class LLMCompletion:
                 response = await self.client.post(url, headers=headers, json=payload)
                 response.raise_for_status()
                 return self.extract_text(response.json())
-            except (httpx.TimeoutException, httpx.TransportError):
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
                 if attempt >= 3:
-                    raise
+                    raise RuntimeError(
+                        f"LLM request failed: url={url}, model={self.config.model}, "
+                        f"api_style={self.api_style}: {exc}"
+                    ) from exc
                 await asyncio.sleep(2**attempt)
             except httpx.HTTPStatusError as exc:
                 if attempt >= 3 or exc.response.status_code not in (429, 500, 502, 503):
