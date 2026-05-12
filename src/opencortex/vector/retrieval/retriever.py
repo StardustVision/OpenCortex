@@ -9,6 +9,7 @@ from qdrant_client import models
 
 from opencortex.core.identity import IdentityProfile
 from opencortex.storage.cortex_storage import CortexStorage
+from opencortex.utils.facts import best_fact_point
 from opencortex.vector.retrieval.cone import ConeExpander
 from opencortex.vector.retrieval.executor import RetrievalExecutor
 from opencortex.vector.retrieval.filters import field_match, retrieval_filter
@@ -294,7 +295,10 @@ def recall_evidence(record: dict[str, Any], *, hit: Any) -> list[RecallEvidence]
 
 def evidence_snippet(record: dict[str, Any]) -> str:
     """Return the best short text evidence for a recall result."""
-    for key in ("abstract", "overview", "content"):
+    fact = best_fact_point(record)
+    if fact:
+        return fact
+    for key in ("overview", "content", "abstract"):
         value = str(record.get(key, "") or "").strip()
         if value:
             return value

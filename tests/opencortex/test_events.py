@@ -25,6 +25,7 @@ from opencortex.store.writer.reason_tree_build_writer import ReasonTreeBuildWrit
 from opencortex.store.writer.reason_tree_index_writer import ReasonTreeIndexWriter
 from opencortex.store.writer.search_index_writer import SearchIndexWriter
 from opencortex.store.writer.semantic_derive_writer import SemanticDeriveWriter
+from opencortex.vector.retrieval.retriever import evidence_snippet
 
 
 class TestMemoryEventManager(unittest.IsolatedAsyncioTestCase):
@@ -490,6 +491,7 @@ class TestSearchIndexWriter(unittest.IsolatedAsyncioTestCase):
                         "too",
                         "Alice uses Python",
                         "OpenCortex stores primary records",
+                        "Alice visited Tokyo in 2024-03 with 2 teammates.",
                     ],
                 },
             },
@@ -509,6 +511,7 @@ class TestSearchIndexWriter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [item.text for item in fact_indexes],
             [
+                "Alice visited Tokyo in 2024-03 with 2 teammates.",
                 "Alice uses Python",
                 "OpenCortex stores primary records",
             ],
@@ -617,6 +620,29 @@ class TestEntityIndexAction(unittest.IsolatedAsyncioTestCase):
         await bus.close()
 
 
+class TestRecallEvidence(unittest.TestCase):
+    """Recall evidence projection prefers concrete facts."""
+
+    def test_evidence_snippet_prefers_fact_points(self) -> None:
+        """A concrete fact point beats generic summary text."""
+        record = {
+            "abstract": "Alice shared travel history.",
+            "overview": "Alice discussed a trip.",
+            "content": "Full content.",
+            "abstract_json": {
+                "fact_points": [
+                    "Alice shared travel history.",
+                    "Alice went to Tokyo in 2024-03 with 2 teammates.",
+                ],
+            },
+        }
+
+        self.assertEqual(
+            evidence_snippet(record),
+            "Alice went to Tokyo in 2024-03 with 2 teammates.",
+        )
+
+
 class _VectorStore:
     """Capture upserted vector payloads."""
 
@@ -648,6 +674,29 @@ class _LLM:
             '"entities":["Alice"],'
             '"anchor_handles":["Alice"],'
             '"fact_points":["Alice moved to Hangzhou."]'
+            "}"
+        )
+
+
+class _GenericLLM:
+    """Fake LLM completion that loses exact raw details."""
+
+    async def __call__(
+        self,
+        _prompt: str,
+        *,
+        system_prompt: str | None = None,
+    ) -> str:
+        """Return intentionally generic layer JSON."""
+        _ = system_prompt
+        return (
+            "{"
+            '"abstract":"Alice shared travel history.",'
+            '"overview":"Alice discussed a trip.",'
+            '"keywords":["travel"],'
+            '"entities":["Alice"],'
+            '"anchor_handles":["Alice"],'
+            '"fact_points":["Alice shared travel history."]'
             "}"
         )
 
@@ -694,6 +743,18 @@ class _Embedder:
     def embed_batch(self, texts: list[str]) -> list[object]:
         """Return one deterministic embedding for each text."""
         return [self.embed(text) for text in texts]
+
+
+class _CaptureEmbedder(_Embedder):
+    """Fake embedder that records embedding texts."""
+
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+
+    def embed(self, text: str) -> object:
+        """Capture embedding text before returning a vector."""
+        self.texts.append(text)
+        return super().embed(text)
 
 
 class _Namespace:
@@ -775,6 +836,50 @@ class TestSemanticDeriveWriter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ready_record["retrieval_surface"], "l0_object")
         self.assertEqual(ready_record["vector"], [0.1, 0.2])
         self.assertEqual(len(vector_store.records), 1)
+
+    async def test_preserves_raw_facts_when_derivation_is_generic(self) -> None:
+        """Raw precise details survive generic LLM-derived summaries."""
+        vector_store = _VectorStore()
+        embedder = _CaptureEmbedder()
+        writer = SemanticDeriveWriter(
+            vector_store=vector_store,
+            collection_resolver=lambda: "context",
+            llm_completion=_GenericLLM(),
+            embedder=embedder,
+        )
+        content = "assistant: Alice went to Tokyo in 2024-03 with 2 teammates."
+        event = MemoryStoredEvent(
+            profile=IdentityProfile(
+                tenant_id="tenant",
+                user_id="user",
+                project_id="public",
+            ),
+            uri="opencortex://tenant/user/memories/public/events/1",
+            record_id="record-1",
+            context_type="memory",
+            category="events",
+            content=content,
+            record={
+                "id": "record-1",
+                "uri": "opencortex://tenant/user/memories/public/events/1",
+                "parent_uri": "opencortex://tenant/user/memories/public/events",
+                "context_type": "memory",
+                "category": "events",
+                "is_leaf": True,
+                "content": content,
+                "meta": {},
+                "derive_status": "pending",
+                "retrieval_ready": False,
+            },
+        )
+
+        ready_record = await writer.write(event)
+
+        fact_points = ready_record["abstract_json"]["fact_points"]
+        self.assertIn("Alice went to Tokyo in 2024-03 with 2 teammates.", fact_points)
+        self.assertEqual(ready_record["meta"]["time_refs"], ["2024-03"])
+        self.assertIn("2024-03", embedder.texts[0])
+        self.assertIn("2 teammates", embedder.texts[0])
 
 
 class TestReasonTreeIndexWriter(unittest.IsolatedAsyncioTestCase):

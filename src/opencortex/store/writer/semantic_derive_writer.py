@@ -16,6 +16,7 @@ from opencortex.store.common import (
 from opencortex.store.derive import derive_layers
 from opencortex.store.event.events import MemoryEvent
 from opencortex.store.writer.event_payload import event_content, primary_record
+from opencortex.utils.facts import extract_time_refs, merge_preserved_fact_points
 
 logger = structlog.get_logger(__name__)
 
@@ -66,6 +67,14 @@ class SemanticDeriveWriter:
         """Build the ready primary record payload from raw payload and LLM output."""
         ready = dict(record)
         meta = dict(ready.get("meta") or {})
+        time_refs = merge_unique_strings(
+            meta.get("time_refs"),
+            ready.get("event_date"),
+            meta.get("event_date"),
+            extract_time_refs(content),
+        )
+        if time_refs:
+            meta["time_refs"] = time_refs
         derived_entities = layers.get("entities", [])
         explicit_entities = meta.get("entities", [])
         entities = merge_unique_strings(derived_entities, explicit_entities)
@@ -101,7 +110,10 @@ class SemanticDeriveWriter:
             session_id=str(ready.get("session_id", "") or ""),
         )
         if bool(ready.get("is_leaf", False)):
-            abstract_json["fact_points"] = layers.get("fact_points", [])
+            abstract_json["fact_points"] = merge_preserved_fact_points(
+                layers.get("fact_points", []),
+                content=content,
+            )
 
         ready.update(
             {
@@ -146,5 +158,14 @@ class SemanticDeriveWriter:
         if meta.get("source_doc_title"):
             prefix = f"[{meta['source_doc_title']}] "
         keywords = str(record.get("keywords", "") or "")
+        abstract_json = record.get("abstract_json")
+        fact_points = []
+        if isinstance(abstract_json, dict):
+            fact_points = [
+                str(fact)
+                for fact in (abstract_json.get("fact_points") or [])[:4]
+                if str(fact).strip()
+            ]
         base = str(record.get("overview") or record.get("abstract") or "")
-        return f"{prefix}{base} {keywords}".strip()
+        facts = " ".join(fact_points)
+        return f"{prefix}{base} {facts} {keywords}".strip()

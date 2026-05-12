@@ -16,6 +16,7 @@ from opencortex.store.writer.event_payload import (
     primary_record,
     record_abstract_json,
 )
+from opencortex.utils.facts import sorted_answerable_facts
 from opencortex.vector.payloads import (
     AnchorIndexPayload,
     FactIndexPayload,
@@ -47,7 +48,7 @@ class FactIndex(BaseModel):
 class SearchIndexWriter:
     """Write AnchorIndex and FactIndex records for primary records."""
 
-    max_fact_points = 8
+    max_fact_points = 12
     min_fact_length = 8
     max_fact_length = 240
 
@@ -131,8 +132,8 @@ class SearchIndexWriter:
             fact_points = []
         seen: set[str] = set()
         indexes: list[FactIndex] = []
-        for fact in fact_points:
-            text = " ".join(str(fact).split())
+        for fact in sorted_answerable_facts(fact_points):
+            text = fact
             if (
                 len(text) < self.min_fact_length
                 or len(text) > self.max_fact_length
