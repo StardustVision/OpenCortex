@@ -51,6 +51,7 @@ class AppRuntimeConfig(BaseModel):
     retrieval_rerank_api_key: str = ""
     retrieval_rerank_seed_limit: int = 30
     retrieval_rerank_final_limit: int = 30
+    retrieval_surface_timeout_seconds: float = 8.0
 
 
 class AppRuntime:

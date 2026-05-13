@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import asyncio
 
+import jwt
+import structlog
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import JSONResponse
@@ -18,6 +20,8 @@ from opencortex.core.identity import (
     IdentityProfile,
     identity_context,
 )
+
+logger = structlog.get_logger(__name__)
 
 
 class WriteRequestContextMiddleware(BaseHTTPMiddleware):
@@ -68,7 +72,13 @@ async def authenticated_profile_from_bearer(
     try:
         secret = await asyncio.to_thread(ensure_secret, data_root)
         claims = decode_token(token, secret)
-    except Exception:
+    except jwt.InvalidTokenError:
+        return None
+    except (OSError, ValueError) as exc:
+        logger.warning(
+            "opencortex.auth_context_failed",
+            error_type=type(exc).__name__,
+        )
         return None
 
     if await asyncio.to_thread(find_token_record, data_root, token) is None:

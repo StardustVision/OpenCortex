@@ -6,6 +6,7 @@ from __future__ import annotations
 from opencortex.vector.retrieval.schemas import (
     ConeExpansionPlan,
     DetailLevel,
+    QueryType,
     ReasonTreePlan,
     RerankPlan,
     RetrievalDecision,
@@ -13,6 +14,7 @@ from opencortex.vector.retrieval.schemas import (
     RetrievalProbeResult,
     RetrievalRequest,
     RetrievalSurface,
+    TemporalPlan,
 )
 
 
@@ -52,8 +54,10 @@ class RetrievalPlanner:
         decision = self.decision(confidence, probe)
         candidate_limit = self.candidate_limit(request.limit, confidence, probe)
         surface_weights = self.surface_weights(probe)
+        query_type = probe.query_type
         return RetrievalPlan(
             query=request.query.strip(),
+            query_type=query_type,
             limit=request.limit,
             candidate_limit=candidate_limit,
             surfaces=[]
@@ -64,12 +68,13 @@ class RetrievalPlanner:
                 for surface in self.surfaces
             },
             surface_weights=surface_weights,
-            surface_bonus=dict(self.base_surface_bonus),
+            surface_bonus=self.surface_bonus(query_type),
             starting_uris=probe.starting_uris,
             search_vectors=probe.search_vectors,
             confidence=confidence,
             decision=decision,
-            depth=self.depth(decision),
+            depth=self.depth(decision, confidence, query_type),
+            temporal=self.temporal_plan(request.query, query_type),
             reason_tree=self.reason_tree_plan(decision, confidence, probe),
             cone_expansion=self.cone_expansion_plan(decision, probe),
             rerank=self.rerank_plan(decision, probe),
@@ -111,6 +116,16 @@ class RetrievalPlanner:
     ) -> dict[RetrievalSurface, float]:
         """Return planner-selected score weights for each surface."""
         weights = dict(self.base_surface_weights)
+        if probe.query_type == QueryType.FACTUAL:
+            weights[RetrievalSurface.L0_OBJECT] += 0.08
+            weights[RetrievalSurface.FACT_INDEX] += 0.10
+            weights[RetrievalSurface.REASON_TREE_INDEX] -= 0.08
+        elif probe.query_type == QueryType.TEMPORAL:
+            weights[RetrievalSurface.FACT_INDEX] += 0.12
+            weights[RetrievalSurface.L0_OBJECT] += 0.04
+        elif probe.query_type in {QueryType.REASONING, QueryType.MULTIHOP}:
+            weights[RetrievalSurface.REASON_TREE_INDEX] += 0.10
+            weights[RetrievalSurface.ANCHOR_INDEX] += 0.04
         if probe.evidence.locator_candidate_count > 0:
             weights[RetrievalSurface.ANCHOR_INDEX] += 0.04
             weights[RetrievalSurface.ENTITY_INDEX] += 0.04
@@ -118,6 +133,20 @@ class RetrievalPlanner:
             weights[RetrievalSurface.REASON_TREE_INDEX] += 0.05
             weights[RetrievalSurface.FACT_INDEX] += 0.04
         return weights
+
+    def surface_bonus(self, query_type: QueryType) -> dict[RetrievalSurface, float]:
+        """Return bounded surface bonuses tuned by query intent."""
+        bonus = dict(self.base_surface_bonus)
+        if query_type == QueryType.FACTUAL:
+            bonus[RetrievalSurface.FACT_INDEX] += 0.04
+            bonus[RetrievalSurface.L0_OBJECT] += 0.03
+            bonus[RetrievalSurface.REASON_TREE_INDEX] = max(
+                0.0,
+                bonus[RetrievalSurface.REASON_TREE_INDEX] - 0.04,
+            )
+        elif query_type == QueryType.TEMPORAL:
+            bonus[RetrievalSurface.FACT_INDEX] += 0.05
+        return bonus
 
     @staticmethod
     def decision(
@@ -132,11 +161,25 @@ class RetrievalPlanner:
         return RetrievalDecision.EXPAND
 
     @staticmethod
-    def depth(decision: RetrievalDecision) -> DetailLevel:
+    def depth(
+        decision: RetrievalDecision,
+        confidence: float = 0.0,
+        query_type: QueryType = QueryType.FACTUAL,
+    ) -> DetailLevel:
         """Return hydration depth for the retrieval posture."""
         if decision == RetrievalDecision.NO_RECALL:
             return DetailLevel.L0
+        _ = confidence, query_type
         return DetailLevel.L2
+
+    @staticmethod
+    def temporal_plan(query: str, query_type: QueryType) -> TemporalPlan:
+        """Parse simple explicit temporal constraints from the query."""
+        if query_type != QueryType.TEMPORAL:
+            return TemporalPlan()
+        from opencortex.vector.retrieval.temporal import parse_temporal_plan
+
+        return parse_temporal_plan(query)
 
     @staticmethod
     def reason_tree_plan(
@@ -168,17 +211,28 @@ class RetrievalPlanner:
     ) -> ConeExpansionPlan:
         """Return optional post-rank cone expansion plan."""
         multi_query = len(probe.search_vectors) > 1
+        temporal = probe.query_type == QueryType.TEMPORAL
         should_expand = (
             decision != RetrievalDecision.NO_RECALL
             and probe.evidence.candidate_count > 0
             and probe.evidence.locator_candidate_count > 0
-            and (multi_query or decision == RetrievalDecision.EXPAND)
+            and (temporal or multi_query or decision == RetrievalDecision.EXPAND)
         )
         return ConeExpansionPlan(
             enabled=should_expand,
             max_seeds=3 if should_expand else 0,
-            max_neighbors_per_seed=2 if should_expand else 0,
+            max_neighbors_per_seed=RetrievalPlanner.neighbor_budget(
+                temporal,
+                should_expand,
+            ),
         )
+
+    @staticmethod
+    def neighbor_budget(temporal: bool, should_expand: bool) -> int:
+        """Return relation neighbor budget."""
+        if not should_expand:
+            return 0
+        return 3 if temporal else 2
 
     @staticmethod
     def rerank_plan(
@@ -190,7 +244,8 @@ class RetrievalPlanner:
             return RerankPlan()
         multi_query = len(probe.search_vectors) > 1
         expanded = decision == RetrievalDecision.EXPAND
-        seed_enabled = multi_query or expanded
+        reasoning = probe.query_type in {QueryType.REASONING, QueryType.MULTIHOP}
+        seed_enabled = multi_query or expanded or reasoning
         final_enabled = seed_enabled or probe.evidence.locator_candidate_count > 0
         return RerankPlan(
             seed_enabled=seed_enabled,

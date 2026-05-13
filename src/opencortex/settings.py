@@ -129,6 +129,11 @@ class Settings(BaseSettings):
         le=100,
         description="Maximum fused candidates reranked before returning results.",
     )
+    retrieval_surface_timeout_seconds: float = Field(
+        default=8.0,
+        gt=0,
+        description="Per-surface recall search timeout in seconds.",
+    )
 
     model_config = SettingsConfigDict(
         env_prefix="OPENCORTEX_APP_",

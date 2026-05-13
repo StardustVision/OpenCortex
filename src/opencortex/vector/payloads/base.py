@@ -40,6 +40,12 @@ class VectorPayload(BaseModel):
     retrieval_surface: str = ""
     retrieval_ready: bool = True
     ttl_expires_at: str = ""
+    event_ts: str = ""
+    utterance_ts: str = ""
+    date_range_start: str = ""
+    date_range_end: str = ""
+    time_refs: list[str] = Field(default_factory=list)
+    section_index: int | None = None
 
     model_config = ConfigDict(extra="forbid")
 

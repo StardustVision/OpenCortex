@@ -107,6 +107,7 @@ class QueryDecompositionOutput(BaseModel):
     """Short vector-search queries generated from one large recall query."""
 
     retrieval_queries: list[str] = Field(default_factory=list)
+    query_type: str = ""
 
     model_config = ConfigDict(extra="ignore")
 

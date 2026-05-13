@@ -489,6 +489,7 @@ class TestSearchIndexWriter(unittest.IsolatedAsyncioTestCase):
                     "fact_points": [
                         "Alice uses Python",
                         "too",
+                        "2024-03",
                         "Alice uses Python",
                         "OpenCortex stores primary records",
                         "Alice visited Tokyo in 2024-03 with 2 teammates.",
@@ -518,6 +519,7 @@ class TestSearchIndexWriter(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(anchor_indexes[0].source_uri, event.uri)
         self.assertEqual(fact_indexes[0].source_record_id, event.record_id)
+        self.assertNotIn("2024-03", [item.text for item in fact_indexes])
 
 
 class TestEntityIndexAction(unittest.IsolatedAsyncioTestCase):
@@ -653,6 +655,15 @@ class _VectorStore:
         """Capture one upsert."""
         self.records.append(record)
         return str(record["id"])
+
+    async def upsert_many(
+        self,
+        _collection: str,
+        records: list[dict[str, object]],
+    ) -> list[str]:
+        """Capture one batch upsert."""
+        self.records.extend(records)
+        return [str(record["id"]) for record in records]
 
 
 class _LLM:
@@ -877,7 +888,10 @@ class TestSemanticDeriveWriter(unittest.IsolatedAsyncioTestCase):
 
         fact_points = ready_record["abstract_json"]["fact_points"]
         self.assertIn("Alice went to Tokyo in 2024-03 with 2 teammates.", fact_points)
+        self.assertIn("2024-03", ready_record["abstract"])
+        self.assertIn("Facts:", ready_record["overview"])
         self.assertEqual(ready_record["meta"]["time_refs"], ["2024-03"])
+        self.assertEqual(ready_record["date_range_start"], "2024-03-01T00:00:00+00:00")
         self.assertIn("2024-03", embedder.texts[0])
         self.assertIn("2 teammates", embedder.texts[0])
 

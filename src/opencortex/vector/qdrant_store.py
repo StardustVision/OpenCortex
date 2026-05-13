@@ -73,6 +73,12 @@ class QdrantVectorStore:
         "meta.source_uri": models.PayloadSchemaType.KEYWORD,
         "meta.tree_uri": models.PayloadSchemaType.KEYWORD,
         "ttl_expires_at": models.PayloadSchemaType.DATETIME,
+        "event_ts": models.PayloadSchemaType.DATETIME,
+        "utterance_ts": models.PayloadSchemaType.DATETIME,
+        "date_range_start": models.PayloadSchemaType.DATETIME,
+        "date_range_end": models.PayloadSchemaType.DATETIME,
+        "time_refs": models.PayloadSchemaType.KEYWORD,
+        "section_index": models.PayloadSchemaType.INTEGER,
     }
 
     def __init__(
@@ -102,6 +108,21 @@ class QdrantVectorStore:
             points=[self.to_point(vector_record)],
         )
         return str(vector_record.id)
+
+    async def upsert_many(
+        self, collection: str, records: list[dict[str, Any]]
+    ) -> list[str]:
+        """Insert or replace multiple vector records in one Qdrant request."""
+        if not records:
+            return []
+        await self.ensure_collection(collection)
+        vector_records = [VectorRecord.from_payload(record) for record in records]
+        client = await self.ensure_client()
+        await client.upsert(
+            collection_name=collection,
+            points=[self.to_point(record) for record in vector_records],
+        )
+        return [str(record.id) for record in vector_records]
 
     async def filter(
         self,

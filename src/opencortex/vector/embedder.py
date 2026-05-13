@@ -54,14 +54,47 @@ class OpenAIEmbeddingClient:
         if not texts:
             return []
         response = self.client.post(
-            f"{self.config.api_base.rstrip('/')}/embeddings",
-            headers={"Authorization": f"Bearer {self.config.api_key}"},
-            json={"model": self.config.model, "input": texts},
+            self.embeddings_url, headers=self.headers, json=self.payload(texts)
         )
         response.raise_for_status()
+        return self.embedding_results(response.json())
+
+    async def aembed(self, text: str) -> EmbeddingResult:
+        """Embed one text asynchronously."""
+        return (await self.aembed_batch([text]))[0]
+
+    async def aembed_batch(self, texts: list[str]) -> list[EmbeddingResult]:
+        """Embed multiple texts in one async request."""
+        if not texts:
+            return []
+        async with httpx.AsyncClient(timeout=self.config.timeout_seconds) as client:
+            response = await client.post(
+                self.embeddings_url,
+                headers=self.headers,
+                json=self.payload(texts),
+            )
+            response.raise_for_status()
+            return self.embedding_results(response.json())
+
+    @property
+    def embeddings_url(self) -> str:
+        """Return configured embeddings endpoint."""
+        return f"{self.config.api_base.rstrip('/')}/embeddings"
+
+    @property
+    def headers(self) -> dict[str, str]:
+        """Return embedding request headers."""
+        return {"Authorization": f"Bearer {self.config.api_key}"}
+
+    def payload(self, texts: list[str]) -> dict[str, Any]:
+        """Return the OpenAI-compatible embeddings payload."""
+        return {"model": self.config.model, "input": texts}
+
+    def embedding_results(self, payload: dict[str, Any]) -> list[EmbeddingResult]:
+        """Validate embedding response items."""
         return [
             self.embedding_result(item)
-            for item in sorted(response.json()["data"], key=lambda item: item["index"])
+            for item in sorted(payload["data"], key=lambda item: item["index"])
         ]
 
     def close(self) -> None:

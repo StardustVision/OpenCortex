@@ -12,6 +12,8 @@ from opencortex.store.writer.event_payload import (
     event_uri,
     primary_record,
 )
+from opencortex.store.writer.search_index_writer import upsert_records
+from opencortex.utils.facts import temporal_payload_fields
 from opencortex.vector.payloads import EntityIndexPayload, VectorPayloadSurface
 
 
@@ -41,9 +43,8 @@ class EntityIndexWriter:
         records = self.entity_records(event, record)
         if not records:
             return
-        self.embed_records(records)
-        for entity_record in records:
-            await self.vector_store.upsert(self.collection_resolver(), entity_record)
+        await self.embed_records(records)
+        await upsert_records(self.vector_store, self.collection_resolver(), records)
 
     def entity_records(
         self,
@@ -88,17 +89,33 @@ class EntityIndexWriter:
                     keywords=record.get("keywords", ""),
                     anchor_hits=record.get("anchor_hits", []),
                     memory_kind=record.get("memory_kind", ""),
+                    **temporal_payload_fields(
+                        record.get("event_ts"),
+                        record.get("event_date"),
+                        record.get("utterance_ts"),
+                        record.get("date_range_start"),
+                        record.get("date_range_end"),
+                        record.get("time_refs"),
+                        entity,
+                    ),
                     meta=meta,
                 ).to_record()
             )
         return records
 
-    def embed_records(self, records: list[dict[str, Any]]) -> None:
+    async def embed_records(self, records: list[dict[str, Any]]) -> None:
         """Attach required vectors to entity index records."""
         if self.embedder is None:
             raise RuntimeError("EntityIndexWriter requires an embedder")
         texts = [str(record.get("overview", "") or "") for record in records]
-        results = self.embedder.embed_batch(texts)
+        if hasattr(self.embedder, "prefer_async") and hasattr(
+            self.embedder, "aembed_batch"
+        ):
+            results = await self.embedder.aembed_batch(texts)
+        else:
+            import asyncio
+
+            results = await asyncio.to_thread(self.embedder.embed_batch, texts)
         for record, result in zip(records, results, strict=False):
             if getattr(result, "dense_vector", None):
                 record["vector"] = result.dense_vector

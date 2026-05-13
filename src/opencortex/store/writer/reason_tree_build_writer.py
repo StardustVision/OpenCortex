@@ -27,6 +27,8 @@ from opencortex.store.writer.reason_tree_index_writer import (
     ReasonTreeIndexRecord,
     source_references,
 )
+from opencortex.store.writer.search_index_writer import upsert_records
+from opencortex.utils.facts import temporal_payload_fields
 from opencortex.utils.json_parse import parse_json_from_response
 from opencortex.vector.payloads import VectorPayloadSurface
 
@@ -73,10 +75,12 @@ class ReasonTreeBuildWriter:
             root_uri=event_uri(event),
             parent_uri=event_uri(event),
         )
-        for node_record in nodes[: self.max_nodes]:
-            payload = self.index_payload(event, record, output, node_record)
-            self.embed_record(payload)
-            await self.vector_store.upsert(self.collection_resolver(), payload)
+        payloads = [
+            self.index_payload(event, record, output, node_record)
+            for node_record in nodes[: self.max_nodes]
+        ]
+        await self.embed_records(payloads)
+        await upsert_records(self.vector_store, self.collection_resolver(), payloads)
 
     async def build_tree(
         self,
@@ -180,6 +184,16 @@ class ReasonTreeBuildWriter:
                     *merged_uris,
                 ]
             ),
+            **temporal_payload_fields(
+                record.get("event_ts"),
+                record.get("event_date"),
+                record.get("utterance_ts"),
+                record.get("date_range_start"),
+                record.get("date_range_end"),
+                record.get("time_refs"),
+                node_record.node.summary,
+                fact_points,
+            ),
             meta={
                 **meta,
                 "index_name": "ReasonTreeBuild",
@@ -193,18 +207,29 @@ class ReasonTreeBuildWriter:
             },
         ).model_dump(mode="json")
 
-    def embed_record(self, record: dict[str, Any]) -> None:
-        """Attach a dense vector to the enhanced reason-tree record."""
+    async def embed_records(self, records: list[dict[str, Any]]) -> None:
+        """Attach dense vectors to enhanced reason-tree records."""
         if self.embedder is None:
             raise RuntimeError("ReasonTreeBuildWriter requires an embedder")
-        text = str(record.get("summary") or record.get("overview") or "")
-        result = self.embedder.embed(text)
-        if getattr(result, "dense_vector", None):
-            record["vector"] = result.dense_vector
+        texts = [
+            str(record.get("summary") or record.get("overview") or "")
+            for record in records
+        ]
+        if hasattr(self.embedder, "prefer_async") and hasattr(
+            self.embedder, "aembed_batch"
+        ):
+            results = await self.embedder.aembed_batch(texts)
         else:
-            raise ValueError("Reason-tree build embedding returned no dense vector")
-        if getattr(result, "sparse_vector", None):
-            record["sparse_vector"] = result.sparse_vector
+            import asyncio
+
+            results = await asyncio.to_thread(self.embedder.embed_batch, texts)
+        for record, result in zip(records, results, strict=False):
+            if getattr(result, "dense_vector", None):
+                record["vector"] = result.dense_vector
+            else:
+                raise ValueError("Reason-tree build embedding returned no dense vector")
+            if getattr(result, "sparse_vector", None):
+                record["sparse_vector"] = result.sparse_vector
 
     def flatten_nodes(
         self,

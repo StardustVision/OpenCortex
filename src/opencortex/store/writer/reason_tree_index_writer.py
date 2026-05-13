@@ -13,6 +13,8 @@ from opencortex.store.writer.event_payload import (
     event_uri,
     primary_record,
 )
+from opencortex.store.writer.search_index_writer import upsert_records
+from opencortex.utils.facts import temporal_payload_fields
 from opencortex.vector.payloads import ReasonTreePayload, VectorPayloadSurface
 
 logger = structlog.get_logger(__name__)
@@ -45,8 +47,8 @@ class ReasonTreeIndexWriter:
             return
         index_record = self.index_record(event, record)
         payload = index_record.to_record()
-        self.embed_record(payload)
-        await self.vector_store.upsert(self.collection_resolver(), payload)
+        await self.embed_record(payload)
+        await upsert_records(self.vector_store, self.collection_resolver(), [payload])
 
     def index_record(
         self,
@@ -133,6 +135,16 @@ class ReasonTreeIndexWriter:
             anchor_hits=list(record.get("anchor_hits") or []),
             memory_kind=str(record.get("memory_kind", "") or ""),
             cone_neighbors=cone_neighbors,
+            **temporal_payload_fields(
+                record.get("event_ts"),
+                record.get("event_date"),
+                record.get("utterance_ts"),
+                record.get("date_range_start"),
+                record.get("date_range_end"),
+                record.get("time_refs"),
+                summary,
+                fact_points,
+            ),
             meta=meta,
         )
 
@@ -192,7 +204,7 @@ class ReasonTreeIndexWriter:
                 neighbors.append(text)
         return neighbors
 
-    def embed_record(self, record: dict[str, Any]) -> None:
+    async def embed_record(self, record: dict[str, Any]) -> None:
         """Attach required vector to a reason-tree index record."""
         if self.embedder is None:
             raise RuntimeError("ReasonTreeIndexWriter requires an embedder")
@@ -202,7 +214,12 @@ class ReasonTreeIndexWriter:
             or record.get("abstract")
             or ""
         )
-        result = self.embedder.embed(text)
+        if hasattr(self.embedder, "prefer_async") and hasattr(self.embedder, "aembed"):
+            result = await self.embedder.aembed(text)
+        else:
+            import asyncio
+
+            result = await asyncio.to_thread(self.embedder.embed, text)
         if getattr(result, "dense_vector", None):
             record["vector"] = result.dense_vector
         else:

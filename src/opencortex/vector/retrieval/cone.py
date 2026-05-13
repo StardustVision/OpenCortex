@@ -12,10 +12,12 @@ from opencortex.core.identity import IdentityProfile
 from opencortex.storage.cortex_storage import CortexStorage
 from opencortex.vector.retrieval.filters import field_match, retrieval_filter
 from opencortex.vector.retrieval.schemas import (
+    QueryType,
     RetrievalHit,
     RetrievalPlan,
     RetrievalSurface,
 )
+from opencortex.vector.retrieval.temporal import record_time_key
 
 
 class ConeExpansionResult(BaseModel):
@@ -53,7 +55,7 @@ class ConeExpander:
             for hit in hits[: plan.cone_expansion.max_seeds]
             if hit.source_uri
         ]
-        neighbor_uris = await self.neighbor_uris(seed_uris, hits)
+        neighbor_uris = await self.neighbor_uris(seed_uris, hits, plan=plan)
         if not neighbor_uris:
             return ConeExpansionResult()
         records = await self.primary_records(
@@ -78,6 +80,8 @@ class ConeExpander:
         self,
         seed_uris: list[str],
         hits: list[RetrievalHit],
+        *,
+        plan: RetrievalPlan,
     ) -> list[str]:
         """Return bounded neighbors for seed URIs."""
         seen = set(seed_uris)
@@ -90,6 +94,12 @@ class ConeExpander:
                     append_unique_neighbor(neighbors, seen, uri)
             for relation in await self.cortex_storage.get_relations(seed_uri):
                 append_unique_neighbor(neighbors, seen, relation)
+        if plan.query_type == QueryType.TEMPORAL:
+            neighbors.sort(
+                key=lambda uri: record_time_key(
+                    by_uri[uri].record if uri in by_uri else {}
+                )
+            )
         return neighbors
 
     async def primary_records(

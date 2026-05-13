@@ -46,6 +46,12 @@ class RawPrimaryRecord(BaseModel):
     chunk_role: str = ""
     speaker: str = ""
     event_date: Any = None
+    event_ts: str = ""
+    utterance_ts: str = ""
+    date_range_start: str = ""
+    date_range_end: str = ""
+    time_refs: list[str] = Field(default_factory=list)
+    section_index: int | None = None
     vector: list[float] | None = None
     sparse_vector: Any = None
     memory_kind: str = ""
@@ -96,6 +102,12 @@ class RawPrimaryRecord(BaseModel):
             chunk_role=str(metadata.get("chunk_role", "") or ""),
             speaker=str(metadata.get("speaker", "") or ""),
             event_date=metadata.get("event_date"),
+            event_ts=str(metadata.get("event_ts", "") or ""),
+            utterance_ts=str(metadata.get("utterance_ts", "") or ""),
+            date_range_start=str(metadata.get("date_range_start", "") or ""),
+            date_range_end=str(metadata.get("date_range_end", "") or ""),
+            time_refs=[str(item) for item in metadata.get("time_refs", []) or []],
+            section_index=metadata.get("section_index"),
         )
 
 

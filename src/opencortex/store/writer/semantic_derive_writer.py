@@ -16,7 +16,14 @@ from opencortex.store.common import (
 from opencortex.store.derive import derive_layers
 from opencortex.store.event.events import MemoryEvent
 from opencortex.store.writer.event_payload import event_content, primary_record
-from opencortex.utils.facts import extract_time_refs, merge_preserved_fact_points
+from opencortex.utils.facts import (
+    extract_time_refs,
+    merge_preserved_fact_points,
+    normalize_date_ref,
+    overview_with_fact_section,
+    preserve_summary_fidelity,
+    temporal_payload_fields,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -93,8 +100,24 @@ class SemanticDeriveWriter:
         if anchor_handles:
             meta["anchor_handles"] = anchor_handles
 
-        abstract = str(layers.get("abstract", "") or "")
-        overview = str(layers.get("overview", "") or "")
+        fact_points: list[str] = []
+        if bool(ready.get("is_leaf", False)):
+            fact_points = merge_preserved_fact_points(
+                layers.get("fact_points", []),
+                content=content,
+                max_points=24,
+            )
+        abstract = preserve_summary_fidelity(
+            str(layers.get("abstract", "") or ""), content=content
+        )
+        overview = overview_with_fact_section(
+            preserve_summary_fidelity(
+                str(layers.get("overview", "") or ""),
+                content=content,
+                max_length=1000,
+            ),
+            fact_points,
+        )
         keywords = ", ".join(keywords_list)
         abstract_json = build_abstract_json(
             uri=str(ready.get("uri", "") or ""),
@@ -110,10 +133,22 @@ class SemanticDeriveWriter:
             session_id=str(ready.get("session_id", "") or ""),
         )
         if bool(ready.get("is_leaf", False)):
-            abstract_json["fact_points"] = merge_preserved_fact_points(
-                layers.get("fact_points", []),
-                content=content,
-            )
+            abstract_json["fact_points"] = fact_points
+
+        temporal_fields = temporal_payload_fields(
+            ready.get("event_date"),
+            meta.get("event_date"),
+            meta.get("time_refs"),
+            content,
+        )
+        event_ts = normalize_date_ref(ready.get("event_date") or meta.get("event_date"))
+        utterance_ts = normalize_date_ref(
+            meta.get("utterance_ts") or meta.get("timestamp")
+        )
+        if event_ts:
+            temporal_fields["event_ts"] = event_ts
+        if utterance_ts:
+            temporal_fields["utterance_ts"] = utterance_ts
 
         ready.update(
             {
@@ -125,6 +160,7 @@ class SemanticDeriveWriter:
                 "abstract_json": abstract_json,
                 "derive_status": "ready",
                 "retrieval_ready": True,
+                **temporal_fields,
             }
         )
         ready.update(

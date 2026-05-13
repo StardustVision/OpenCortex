@@ -389,6 +389,13 @@ def console_memory_retriever(
         rerank_final_limit=int(
             getattr(request.app.state.store_config, "retrieval_rerank_final_limit", 30)
         ),
+        surface_timeout_seconds=float(
+            getattr(
+                request.app.state.store_config,
+                "retrieval_surface_timeout_seconds",
+                8.0,
+            )
+        ),
     )
 
 

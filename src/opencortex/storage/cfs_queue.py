@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 import time
@@ -83,6 +84,21 @@ class CFSQueue:
             )
         return message_id
 
+    async def aenqueue(
+        self,
+        queue_name: str,
+        payload: dict[str, Any],
+        *,
+        max_attempts: int = 3,
+    ) -> str:
+        """Persist one pending queue message without blocking the event loop."""
+        return await asyncio.to_thread(
+            self.enqueue,
+            queue_name,
+            payload,
+            max_attempts=max_attempts,
+        )
+
     def dequeue(self, queue_name: str) -> QueueMessage | None:
         """Atomically claim one pending message for processing."""
         now = time.time()
@@ -124,6 +140,10 @@ class CFSQueue:
                 max_attempts=int(row["max_attempts"] or 1),
             )
 
+    async def adequeue(self, queue_name: str) -> QueueMessage | None:
+        """Claim one pending message without blocking the event loop."""
+        return await asyncio.to_thread(self.dequeue, queue_name)
+
     def ack(self, message_id: str) -> None:
         """Mark one processing message as done."""
         now = time.time()
@@ -138,6 +158,10 @@ class CFSQueue:
                 """,
                 (now, message_id),
             )
+
+    async def aack(self, message_id: str) -> None:
+        """Mark one processing message as done without blocking the event loop."""
+        await asyncio.to_thread(self.ack, message_id)
 
     def release(self, message_id: str, *, delay_seconds: float = 0.05) -> None:
         """Return one processing message to pending without consuming a retry."""
@@ -156,6 +180,10 @@ class CFSQueue:
                 """,
                 (now + max(0.0, delay_seconds), now, message_id),
             )
+
+    async def arelease(self, message_id: str, *, delay_seconds: float = 0.05) -> None:
+        """Return one processing message to pending without blocking the loop."""
+        await asyncio.to_thread(self.release, message_id, delay_seconds=delay_seconds)
 
     def fail(
         self,
@@ -203,6 +231,23 @@ class CFSQueue:
                 """,
                 (error, now, message_id),
             )
+
+    async def afail(
+        self,
+        message_id: str,
+        error: str,
+        *,
+        retry: bool,
+        delay_seconds: float = 1.0,
+    ) -> None:
+        """Record failure without blocking the event loop."""
+        await asyncio.to_thread(
+            self.fail,
+            message_id,
+            error,
+            retry=retry,
+            delay_seconds=delay_seconds,
+        )
 
     def recover_stale(
         self,
@@ -315,6 +360,10 @@ class CFSQueue:
                 for row in errors
             ],
         )
+
+    async def astatus(self, queue_name: str) -> QueueStatus:
+        """Return queue status counters without blocking the event loop."""
+        return await asyncio.to_thread(self.status, queue_name)
 
     def clear(self, queue_name: str | None = None) -> None:
         """Delete queue rows, primarily for tests."""

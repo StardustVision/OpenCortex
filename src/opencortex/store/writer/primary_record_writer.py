@@ -104,4 +104,5 @@ class PrimaryRecordWriter:
                 "project_id": project_id,
             },
             retrieval_surface=VectorPayloadSurface.DIRECTORY,
+            section_index=source.get("section_index"),
         ).to_record()

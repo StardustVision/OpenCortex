@@ -88,6 +88,14 @@ class EventWorker:
                 max_attempts=self.max_attempts,
             )
 
+    async def aenqueue(self, event: StoreWriteEvent) -> None:
+        """Enqueue supported store events through the async queue adapter."""
+        await self.event_queue.aenqueue(
+            self.queue_name,
+            self.event_payload(event),
+            max_attempts=self.max_attempts,
+        )
+
     async def start(self) -> None:
         """Start the worker loop."""
         if self.tasks and any(not task.done() for task in self.tasks):
@@ -122,7 +130,7 @@ class EventWorker:
         deadline = asyncio.get_running_loop().time() + timeout_seconds
         while True:
             await self.wait_publish_tasks(deadline=deadline)
-            status = self.event_queue.status(self.queue_name)
+            status = await self.event_queue.astatus(self.queue_name)
             if (
                 status.pending == 0
                 and status.processing == 0
@@ -156,7 +164,7 @@ class EventWorker:
         """Run the queue consumer loop."""
         _ = worker_index
         while not self._stop.is_set():
-            message = self.event_queue.dequeue(self.queue_name)
+            message = await self.event_queue.adequeue(self.queue_name)
             if message is None:
                 await asyncio.sleep(self.idle_sleep_seconds)
                 continue
@@ -168,7 +176,7 @@ class EventWorker:
             event = self.event_from_payload(message.payload)
             lock = self._key_locks[self.ordering_key(event)]
             if lock.locked():
-                self.event_queue.release(
+                await self.event_queue.arelease(
                     message.id,
                     delay_seconds=self.locked_key_delay_seconds,
                 )
@@ -181,7 +189,7 @@ class EventWorker:
             raise
         except Exception as exc:
             failure = classify_event_failure(exc)
-            self.event_queue.fail(
+            await self.event_queue.afail(
                 message.id,
                 failure.message,
                 retry=failure.retry,
@@ -195,7 +203,7 @@ class EventWorker:
                 error=failure.message,
             )
             return
-        self.event_queue.ack(message.id)
+        await self.event_queue.aack(message.id)
 
     @staticmethod
     def ordering_key(event: StoreWriteEvent) -> Hashable:

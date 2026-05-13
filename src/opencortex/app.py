@@ -18,6 +18,7 @@ from opencortex.auth.token import (
     load_token_records,
     register_token_record,
     save_token_record,
+    token_hash,
 )
 from opencortex.core.identity import (
     get_collection_name,
@@ -48,6 +49,7 @@ from opencortex.store.writer.primary_record_writer import PrimaryRecordWriter
 from opencortex.console.routes import router as console_router  # noqa: E402  load after store imports to avoid circular init
 
 logger = structlog.get_logger(__name__)
+JWT_SEGMENT_COUNT = 3
 
 
 @asynccontextmanager
@@ -80,6 +82,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             retrieval_rerank_api_key=settings.retrieval_rerank_api_key,
             retrieval_rerank_seed_limit=settings.retrieval_rerank_seed_limit,
             retrieval_rerank_final_limit=settings.retrieval_rerank_final_limit,
+            retrieval_surface_timeout_seconds=settings.retrieval_surface_timeout_seconds,
         )
     )
     await runtime.init()
@@ -141,7 +144,7 @@ def normalized_admin_token(token: str) -> str:
         return ""
     if value.lower() in {"none", "null", "unset"}:
         return ""
-    if value.count(".") != 2:
+    if len(value.split(".")) != JWT_SEGMENT_COUNT:
         logger.warning("opencortex.admin_api_token_ignored", reason="malformed_jwt")
         return ""
     return value
@@ -153,11 +156,14 @@ def bootstrap_admin_token(data_root: str, *, secret: str) -> str:
         return ""
     token = generate_admin_token(secret)
     save_token_record(data_root, token, "_system", "_admin", role="admin")
+    hashed = token_hash(token)
     logger.warning(
         "opencortex.bootstrap_admin_token_created",
         tenant_id="_system",
         user_id="_admin",
-        token=token,
+        token_prefix=hashed[:16],
+        token_hash=hashed,
+        stored_to_token_registry=True,
     )
     return token
 

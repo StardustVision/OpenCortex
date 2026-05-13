@@ -13,8 +13,9 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 from httpx import ASGITransport
+from structlog.testing import capture_logs
 
-from opencortex.app import create_app
+from opencortex.app import bootstrap_admin_token, create_app
 from opencortex.auth.token import (
     ensure_secret,
     generate_token,
@@ -104,7 +105,7 @@ async def fake_llm_completion(
     _ = system_prompt
     if "Split this user query into short retrieval queries" in prompt:
         return (
-            '{"retrieval_queries":['
+            '{"query_type":"multihop","retrieval_queries":['
             '"写入链路设计",'
             '"召回链路设计",'
             '"Qdrant 向量写入检索"'
@@ -119,6 +120,14 @@ async def fake_llm_completion(
                     {"uri": uri, "score": 1.0 - index * 0.05}
                     for index, uri in enumerate(extract_candidate_uris(prompt))
                 ]
+            }
+        )
+    if "Compose a compact reasoning trace" in prompt:
+        return json.dumps(
+            {
+                "reasoning_chain": ["Candidates jointly support the query."],
+                "supporting_uris": extract_candidate_uris(prompt),
+                "confidence": 0.72,
             }
         )
     if "Build a Reason Tree" in prompt:
@@ -521,6 +530,19 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(admin_records[0]["tenant_id"], "_system")
         self.assertEqual(admin_records[0]["user_id"], "_admin")
         self.assertEqual(second_admin_records, admin_records)
+
+    async def test_bootstrap_admin_token_is_not_logged(self) -> None:
+        """Bootstrap logs token diagnostics without emitting the full JWT."""
+        with TemporaryDirectory() as data_root:
+            secret = ensure_secret(data_root)
+            with capture_logs() as logs:
+                token = bootstrap_admin_token(data_root, secret=secret)
+
+        self.assertTrue(token)
+        serialized_logs = json.dumps(logs, ensure_ascii=False)
+        self.assertNotIn(token, serialized_logs)
+        self.assertIn("token_hash", logs[0])
+        self.assertTrue(logs[0]["stored_to_token_registry"])
 
     async def test_placeholder_admin_token_uses_default_bootstrap(self) -> None:
         """Placeholder admin token values are treated as unset."""
@@ -1143,9 +1165,10 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(record["abstract"], f"derived abstract: {content}")
-        self.assertEqual(record["overview"], f"derived overview: {content}")
+        self.assertTrue(record["overview"].startswith(f"derived overview: {content}"))
+        self.assertIn("Facts:", record["overview"])
         self.assertEqual(abstract, f"derived abstract: {content}")
-        self.assertEqual(overview, f"derived overview: {content}")
+        self.assertEqual(overview, record["overview"])
 
     async def test_resource_store_writes_document_parser_tree(self) -> None:
         """Structured resource content writes parsed child records."""
@@ -1336,13 +1359,16 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(immediate_records, [])
         self.assertEqual(len(merged_records), 1)
         self.assertEqual(merged_records[0]["abstract"], f"derived abstract: {content}")
-        self.assertEqual(merged_records[0]["overview"], f"derived overview: {content}")
+        self.assertTrue(
+            merged_records[0]["overview"].startswith(f"derived overview: {content}")
+        )
+        self.assertIn("Facts:", merged_records[0]["overview"])
         self.assertIn("anchor_index", retrieval_surfaces)
         self.assertIn("fact_index", retrieval_surfaces)
         self.assertIn("entity_index", retrieval_surfaces)
         self.assertIn("reason_tree_index", retrieval_surfaces)
         self.assertEqual(abstract, f"derived abstract: {content}")
-        self.assertEqual(overview, f"derived overview: {content}")
+        self.assertEqual(overview, merged_records[0]["overview"])
         self.assertEqual(content_file, content)
 
     async def test_session_end_writes_structured_final_tree(self) -> None:
@@ -1712,6 +1738,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         self.assertIn(LAYER_DERIVATION_SYSTEM_PROMPT, captured_system_prompts)
         self.assertIn(QUERY_DECOMPOSITION_SYSTEM_PROMPT, captured_system_prompts)
         self.assertIn(REASON_TREE_SELECTION_SYSTEM_PROMPT, captured_system_prompts)
+        self.assertIn("composition", data["results"][0]["meta"])
         self.assertIn(
             "summary",
             {item["kind"] for item in data["results"][0]["evidence"]},
@@ -1780,6 +1807,7 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         self.assertIn(RECALL_RERANK_SYSTEM_PROMPT, captured_system_prompts)
         self.assertNotIn("plan", data)
         self.assertTrue(data["results"])
+        self.assertNotIn("composition", data["results"][0]["meta"])
         self.assertNotIn("rerank", data["results"][0])
 
     async def test_memory_search_supports_litellm_rerank_provider(self) -> None:

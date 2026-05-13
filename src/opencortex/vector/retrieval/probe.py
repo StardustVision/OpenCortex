@@ -20,6 +20,7 @@ from opencortex.vector.retrieval.schemas import (
     ProbeCandidateEvidence,
     ProbeEvidence,
     QuerySize,
+    QueryType,
     RetrievalProbeResult,
     RetrievalRequest,
     RetrievalSurface,
@@ -60,7 +61,13 @@ class RetrievalProbe:
         """Run the probe and return evidence for planning."""
         query = request.query.strip()
         query_size = query_size_for(query)
-        retrieval_queries = await self.prepare_queries(query, query_size=query_size)
+        query_type = query_type_for(query)
+        retrieval_queries, planned_query_type = await self.prepare_queries(
+            query,
+            query_size=query_size,
+        )
+        if planned_query_type is not None:
+            query_type = planned_query_type
         collection = self.collection_resolver()
         probe_results = await asyncio.gather(
             *[
@@ -85,12 +92,18 @@ class RetrievalProbe:
             object_records=object_records,
             locator_records=locator_records,
             search_vectors=search_vectors,
+            query_type=query_type,
         )
 
-    async def prepare_queries(self, query: str, *, query_size: QuerySize) -> list[str]:
+    async def prepare_queries(
+        self,
+        query: str,
+        *,
+        query_size: QuerySize,
+    ) -> tuple[list[str], QueryType | None]:
         """Return retrieval queries used by this probe."""
         if query_size != QuerySize.LARGE:
-            return [query]
+            return [query], None
         if self.llm_completion is None:
             raise RuntimeError("Large recall query requires LLM query planning")
         response = await self.llm_completion(
@@ -106,7 +119,7 @@ class RetrievalProbe:
         queries = normalize_retrieval_queries(output.retrieval_queries)
         if not queries:
             raise ValueError("LLM query planning returned no retrieval_queries")
-        return queries
+        return queries, normalized_query_type(output.query_type)
 
     async def probe_query(
         self,
@@ -116,7 +129,7 @@ class RetrievalProbe:
         profile: IdentityProfile,
     ) -> tuple[list[float], list[dict[str, Any]], list[dict[str, Any]]]:
         """Run direct and locator probes for one retrieval query."""
-        query_vector = await asyncio.to_thread(self.embed_query, retrieval_query)
+        query_vector = await self.aembed_query(retrieval_query)
         object_records, locator_records = await asyncio.gather(
             self.search_surface(
                 collection=collection,
@@ -181,6 +194,7 @@ class RetrievalProbe:
         object_records: list[dict[str, Any]],
         locator_records: list[dict[str, Any]],
         search_vectors: list[list[float]],
+        query_type: QueryType = QueryType.FACTUAL,
     ) -> RetrievalProbeResult:
         """Build a planner-friendly probe result."""
         records = [*object_records, *locator_records]
@@ -197,6 +211,7 @@ class RetrievalProbe:
             locator_records=locator_records,
         )
         return RetrievalProbeResult(
+            query_type=query_type,
             starting_uris=starting_uris,
             search_vectors=search_vectors,
             evidence=ProbeEvidence(
@@ -248,6 +263,16 @@ class RetrievalProbe:
         if not vector:
             raise ValueError("Recall probe embedding returned no dense vector")
         return list(vector)
+
+    async def aembed_query(self, query: str) -> list[float]:
+        """Embed the recall query using an async embedder when available."""
+        if hasattr(self.embedder, "prefer_async") and hasattr(self.embedder, "aembed"):
+            result = await self.embedder.aembed(query)
+            vector = getattr(result, "dense_vector", None)
+            if not vector:
+                raise ValueError("Recall probe embedding returned no dense vector")
+            return list(vector)
+        return await asyncio.to_thread(self.embed_query, query)
 
 
 def candidate_anchors(record: dict[str, Any]) -> list[str]:
@@ -346,6 +371,52 @@ def query_size_for(query: str) -> QuerySize:
     if token_count <= 5 and len(text) <= 40 and not question_like(text):
         return QuerySize.QUICK
     return QuerySize.MEDIUM
+
+
+def query_type_for(query: str) -> QueryType:
+    """Return a conservative fallback query type."""
+    text = " ".join(str(query or "").split())
+    lowered = text.lower()
+    has_temporal_order = any(
+        hint in lowered
+        for hint in (
+            "before",
+            "after",
+            "since",
+            "until",
+            "latest",
+            "earliest",
+            "之前",
+            "之后",
+            "以来",
+            "直到",
+            "最近",
+            "最早",
+            "最晚",
+        )
+    )
+    has_explicit_date = bool(
+        re.search(
+            r"\b(?:19|20)\d{2}(?:[-/.]\d{1,2}(?:[-/.]\d{1,2})?)?\b",
+            text,
+        )
+    )
+    if has_temporal_order or has_explicit_date:
+        return QueryType.TEMPORAL
+    if query_size_for(text) == QuerySize.LARGE:
+        return QueryType.SUMMARY
+    return QueryType.FACTUAL
+
+
+def normalized_query_type(value: str) -> QueryType | None:
+    """Return an LLM-supplied query type constrained to the internal enum."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    try:
+        return QueryType(text)
+    except ValueError:
+        return None
 
 
 def clause_count(query: str) -> int:

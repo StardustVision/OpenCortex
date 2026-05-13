@@ -6,10 +6,12 @@ from __future__ import annotations
 from typing import Any
 
 from opencortex.vector.retrieval.schemas import (
+    QueryType,
     RetrievalHit,
     RetrievalPlan,
     RetrievalSurface,
 )
+from opencortex.vector.retrieval.temporal import record_time_key
 
 
 class RetrievalRanker:
@@ -23,17 +25,18 @@ class RetrievalRanker:
         limit: int | None = None,
     ) -> list[RetrievalHit]:
         """Collapse surface hits to one scored hit per primary URI."""
+        weighted_hits = [self.weighted_hit(hit, plan=plan) for hit in hits]
+        normalized_hits = normalize_weighted_hits(weighted_hits)
         by_uri: dict[str, RetrievalHit] = {}
         surface_counts: dict[str, set[RetrievalSurface]] = {}
-        for hit in hits:
+        for hit in normalized_hits:
             uri = hit.source_uri or str(hit.record.get("uri", "") or "")
             if not uri:
                 continue
-            weighted_hit = self.weighted_hit(hit, plan=plan)
             current = by_uri.get(uri)
-            if current is None or weighted_hit.score > current.score:
-                by_uri[uri] = weighted_hit
-            surface_counts.setdefault(uri, set()).add(weighted_hit.surface)
+            if current is None or hit.score > current.score:
+                by_uri[uri] = hit
+            surface_counts.setdefault(uri, set()).add(hit.surface)
 
         fused: list[RetrievalHit] = []
         for uri, hit in by_uri.items():
@@ -61,6 +64,15 @@ class RetrievalRanker:
                 )
             )
         fused.sort(key=lambda item: item.score, reverse=True)
+        if plan.query_type == QueryType.TEMPORAL and plan.temporal.order:
+            reverse = plan.temporal.order == "latest"
+            fused.sort(
+                key=lambda item: (
+                    record_time_key(item.record),
+                    item.score,
+                ),
+                reverse=reverse,
+            )
         return fused[: (limit or plan.limit)]
 
     @staticmethod
@@ -91,6 +103,31 @@ def merge_primary_payload(
         hit.record.get("_retrieval_surfaces") or [hit.surface.value]
     )
     return payload
+
+
+def normalize_weighted_hits(hits: list[RetrievalHit]) -> list[RetrievalHit]:
+    """Normalize weighted scores within the current candidate pool."""
+    if not hits:
+        return []
+    scores = [hit.score for hit in hits]
+    minimum = min(scores)
+    maximum = max(scores)
+    spread = maximum - minimum
+    normalized: list[RetrievalHit] = []
+    for hit in hits:
+        score = 1.0 if spread <= 0 else (hit.score - minimum) / spread
+        record = dict(hit.record)
+        record["_normalized_score"] = score
+        normalized.append(
+            RetrievalHit(
+                record=record,
+                score=score,
+                surface=hit.surface,
+                source_uri=hit.source_uri,
+                path_cost=hit.path_cost,
+            )
+        )
+    return normalized
 
 
 def is_near_starting_uri(uri: str, starting_uris: list[str]) -> bool:

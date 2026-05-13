@@ -260,6 +260,9 @@ def get_memory_retriever(
         default_rerank_model=str(getattr(config, "llm_model", "")),
         rerank_seed_limit=int(getattr(config, "retrieval_rerank_seed_limit", 30)),
         rerank_final_limit=int(getattr(config, "retrieval_rerank_final_limit", 30)),
+        surface_timeout_seconds=float(
+            getattr(config, "retrieval_surface_timeout_seconds", 8.0)
+        ),
     )
 
 

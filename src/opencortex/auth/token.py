@@ -12,16 +12,18 @@ import secrets
 import time
 from pathlib import Path
 from threading import RLock
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import jwt
 import orjson as json
+import structlog
 
 _SECRET_KEY_FILE = "auth_secret.key"
 _TOKEN_RECORDS_FILE = "tokens.json"
 _ALGORITHM = "HS256"
 _cache_lock = RLock()
 _record_cache: dict[str, tuple[int, int, list[dict[str, Any]]]] = {}
+logger = structlog.get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +75,7 @@ def generate_token(
 
     The token does **not** expire (no ``exp`` claim).
     """
-    payload: Dict[str, Any] = {
+    payload: dict[str, Any] = {
         "tid": tenant_id,
         "uid": user_id,
         "iat": int(time.time()),
@@ -82,7 +84,7 @@ def generate_token(
     return jwt.encode(payload, secret, algorithm=_ALGORITHM)
 
 
-def decode_token(token: str, secret: str) -> Dict[str, Any]:
+def decode_token(token: str, secret: str) -> dict[str, Any]:
     """Verify signature and decode JWT claims.
 
     Returns the decoded payload dict.
@@ -110,7 +112,7 @@ def _records_path(data_root: str) -> Path:
     return Path(data_root) / _TOKEN_RECORDS_FILE
 
 
-def load_token_records(data_root: str) -> List[Dict[str, Any]]:
+def load_token_records(data_root: str) -> list[dict[str, Any]]:
     """Read all token records from ``{data_root}/tokens.json``."""
     p = _records_path(data_root)
     if not p.exists():
@@ -123,7 +125,12 @@ def load_token_records(data_root: str) -> List[Dict[str, Any]]:
             return [dict(record) for record in cached[2]]
     try:
         records = json.loads(p.read_bytes())
-    except Exception:
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning(
+            "opencortex.token_records_load_failed",
+            path=str(p),
+            error_type=type(exc).__name__,
+        )
         return []
     if not isinstance(records, list):
         return []
@@ -133,7 +140,7 @@ def load_token_records(data_root: str) -> List[Dict[str, Any]]:
     return [dict(record) for record in normalized]
 
 
-def public_token_record(record: Dict[str, Any]) -> Dict[str, Any]:
+def public_token_record(record: dict[str, Any]) -> dict[str, Any]:
     """Return a token record for admin API responses."""
     token = str(record.get("token", "") or "")
     token_prefix = str(record.get("token_prefix", "") or "")
@@ -154,7 +161,7 @@ def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def find_token_record(data_root: str, token: str) -> Optional[Dict[str, Any]]:
+def find_token_record(data_root: str, token: str) -> dict[str, Any] | None:
     """Return the saved token record matching an issued token."""
     hashed = token_hash(token)
     for record in load_token_records(data_root):
@@ -185,7 +192,7 @@ def register_token_record(
     token: str,
     *,
     secret: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Decode and persist an externally configured token."""
     claims = decode_token(token, secret)
     tenant_id = str(claims.get("tid", "") or "")
@@ -248,7 +255,7 @@ def save_token_record(
         store_token_records(data_root, records)
 
 
-def revoke_token(data_root: str, token_prefix: str) -> Optional[Dict[str, Any]]:
+def revoke_token(data_root: str, token_prefix: str) -> dict[str, Any] | None:
     """Remove a token record matching *token_prefix* (first match).
 
     Returns the removed record, or ``None`` if not found.

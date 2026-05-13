@@ -27,6 +27,8 @@ class RelationEntry(BaseModel):
     id: str
     uris: list[str]
     reason: str = ""
+    relation_type: str = ""
+    event_ts: str = ""
     created_at: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )

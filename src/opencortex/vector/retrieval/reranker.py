@@ -7,6 +7,7 @@ import json
 from typing import Any, Protocol
 
 import httpx
+import structlog
 from pydantic import BaseModel, Field, ValidationError
 
 from opencortex.prompts.retrieval import (
@@ -14,6 +15,8 @@ from opencortex.prompts.retrieval import (
     build_recall_rerank_prompt,
 )
 from opencortex.vector.retrieval.schemas import RetrievalHit
+
+logger = structlog.get_logger(__name__)
 
 
 class RerankClient(Protocol):
@@ -70,6 +73,12 @@ class RecallReranker:
         documents = [rerank_text(hit) for hit in candidates]
         scores = await self.client.rerank_batch(query, documents)
         if not valid_scores(scores, len(documents)):
+            logger.warning(
+                "recall_rerank_fallback",
+                provider=type(self.client).__name__,
+                candidate_count=len(candidates),
+                error_type="invalid_scores",
+            )
             return hits
         scored = [
             apply_rerank_score(hit, score)
@@ -115,7 +124,13 @@ class LLMRerankClient:
             ValueError,
             ValidationError,
             json.JSONDecodeError,
-        ):
+        ) as exc:
+            logger.warning(
+                "recall_rerank_fallback",
+                provider="llm",
+                candidate_count=len(documents),
+                error_type=type(exc).__name__,
+            )
             return None
         values: list[float] = []
         for index in range(len(documents)):
@@ -159,7 +174,13 @@ class LiteLLMRerankClient:
                 api_base=self.api_base,
                 return_documents=False,
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "recall_rerank_fallback",
+                provider="litellm",
+                candidate_count=len(documents),
+                error_type=type(exc).__name__,
+            )
             return None
         return scores_from_results(getattr(response, "results", None), len(documents))
 
@@ -199,7 +220,13 @@ class HostedVLLMRerankClient:
                 top_n=len(documents),
                 return_documents=False,
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "recall_rerank_fallback",
+                provider="hosted_vllm",
+                candidate_count=len(documents),
+                error_type=type(exc).__name__,
+            )
             return None
         return scores_from_results(getattr(response, "results", None), len(documents))
 
@@ -371,6 +398,11 @@ def rerank_text(hit: RetrievalHit) -> str:
     record = hit.record
     meta = dict(record.get("meta") or {})
     entities = ", ".join(str(item) for item in record.get("entities") or [])
+    abstract_json = record.get("abstract_json")
+    fact_points = []
+    if isinstance(abstract_json, dict):
+        fact_points.extend(abstract_json.get("fact_points") or [])
+    fact_points.extend(record.get("fact_points") or meta.get("fact_points") or [])
     text_parts = [
         f"type={record.get('context_type', '')}",
         f"title={record.get('source_doc_title') or meta.get('title') or ''}",
@@ -378,6 +410,7 @@ def rerank_text(hit: RetrievalHit) -> str:
         str(record.get("abstract", "") or ""),
         str(record.get("overview", "") or ""),
         str(record.get("content", "") or ""),
+        " ".join(str(fact) for fact in fact_points if str(fact).strip()),
         str(record.get("keywords", "") or ""),
         entities,
     ]

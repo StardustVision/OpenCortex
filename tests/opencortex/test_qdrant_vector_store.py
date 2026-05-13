@@ -95,6 +95,34 @@ class TestQdrantVectorStore(unittest.IsolatedAsyncioTestCase):
             ["opencortex://tenant/user/memory/10"],
         )
 
+    async def test_upsert_many_writes_multiple_records(self) -> None:
+        """Batch upsert persists all vector records."""
+        ids = await self.store.upsert_many(
+            "context",
+            [
+                {
+                    "id": "opencortex://tenant/user/memory/batch-1",
+                    "uri": "opencortex://tenant/user/memory/batch-1",
+                    "vector": [0.1, 0.2, 0.3, 0.4],
+                },
+                {
+                    "id": "opencortex://tenant/user/memory/batch-2",
+                    "uri": "opencortex://tenant/user/memory/batch-2",
+                    "vector": [0.4, 0.3, 0.2, 0.1],
+                },
+            ],
+        )
+
+        self.assertEqual(
+            ids,
+            [
+                "opencortex://tenant/user/memory/batch-1",
+                "opencortex://tenant/user/memory/batch-2",
+            ],
+        )
+        records = await self.store.filter("context", None)
+        self.assertEqual(len(records), 2)
+
     async def test_scroll_count_facet_and_filtered_remove_by_uri(self) -> None:
         """Qdrant boundary supports paged console reads and scoped deletes."""
         for index, tenant in enumerate(["a", "a", "b"]):
@@ -181,5 +209,13 @@ class TestQdrantVectorStore(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             QdrantVectorStore.payload_indexes["meta.layer"],
             models.PayloadSchemaType.KEYWORD,
+        )
+        self.assertEqual(
+            QdrantVectorStore.payload_indexes["event_ts"],
+            models.PayloadSchemaType.DATETIME,
+        )
+        self.assertEqual(
+            QdrantVectorStore.payload_indexes["section_index"],
+            models.PayloadSchemaType.INTEGER,
         )
         self.assertLess(QdrantVectorStore.indexing_threshold, 10000)

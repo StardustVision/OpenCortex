@@ -6,6 +6,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import structlog
+
 from opencortex.core.identity import IdentityProfile
 from opencortex.vector.retrieval.filters import retrieval_filter
 from opencortex.vector.retrieval.records import source_uri
@@ -14,6 +16,9 @@ from opencortex.vector.retrieval.schemas import (
     RetrievalPlan,
     RetrievalSurface,
 )
+from opencortex.vector.retrieval.temporal import temporal_filter_conditions
+
+logger = structlog.get_logger(__name__)
 
 
 class RetrievalExecutor:
@@ -24,9 +29,11 @@ class RetrievalExecutor:
         *,
         vector_store: Any,
         collection_resolver: Any,
+        surface_timeout_seconds: float = 8.0,
     ) -> None:
         self.vector_store = vector_store
         self.collection_resolver = collection_resolver
+        self.surface_timeout_seconds = max(0.1, float(surface_timeout_seconds))
 
     async def execute(
         self,
@@ -40,7 +47,7 @@ class RetrievalExecutor:
         collection = self.collection_resolver()
         results = await asyncio.gather(
             *[
-                self.search_surface(
+                self.timed_search_surface(
                     collection=collection,
                     surface=surface,
                     query_vector=query_vector,
@@ -53,6 +60,35 @@ class RetrievalExecutor:
         )
         return [hit for surface_hits in results for hit in surface_hits]
 
+    async def timed_search_surface(
+        self,
+        *,
+        collection: str,
+        surface: RetrievalSurface,
+        query_vector: list[float],
+        plan: RetrievalPlan,
+        profile: IdentityProfile,
+    ) -> list[RetrievalHit]:
+        """Search one surface with bounded latency."""
+        try:
+            return await asyncio.wait_for(
+                self.search_surface(
+                    collection=collection,
+                    surface=surface,
+                    query_vector=query_vector,
+                    plan=plan,
+                    profile=profile,
+                ),
+                timeout=self.surface_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "retrieval_surface_timeout",
+                surface=surface.value,
+                timeout_seconds=self.surface_timeout_seconds,
+            )
+            return []
+
     async def search_surface(
         self,
         *,
@@ -63,13 +99,17 @@ class RetrievalExecutor:
         profile: IdentityProfile,
     ) -> list[RetrievalHit]:
         """Search one retrieval surface."""
+        filters = retrieval_filter(
+            profile=profile,
+            surface=surface.value,
+        )
+        temporal_conditions = temporal_filter_conditions(plan.temporal)
+        if temporal_conditions:
+            filters.must = list(filters.must or []) + temporal_conditions
         records = await self.vector_store.search(
             collection,
             query_vector=query_vector,
-            filters=retrieval_filter(
-                profile=profile,
-                surface=surface.value,
-            ),
+            filters=filters,
             limit=plan.surface_limits.get(surface, plan.candidate_limit),
         )
         return [

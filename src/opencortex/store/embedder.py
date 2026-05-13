@@ -22,11 +22,13 @@ class StoreEmbedder:
 
         loop = asyncio.get_running_loop()
         embed_started = loop.time()
-        result = await loop.run_in_executor(
-            None,
-            self.embedder.embed,
-            ctx.get_vectorization_text(),
-        )
+        if hasattr(self.embedder, "prefer_async") and hasattr(self.embedder, "aembed"):
+            result = await self.embedder.aembed(ctx.get_vectorization_text())
+        else:
+            result = await asyncio.to_thread(
+                self.embedder.embed,
+                ctx.get_vectorization_text(),
+            )
         ctx.vector = result.dense_vector
         return StoreEmbedding(
             embed_ms=int((loop.time() - embed_started) * 1000),

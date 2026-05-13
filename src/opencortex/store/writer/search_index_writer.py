@@ -16,7 +16,7 @@ from opencortex.store.writer.event_payload import (
     primary_record,
     record_abstract_json,
 )
-from opencortex.utils.facts import sorted_answerable_facts
+from opencortex.utils.facts import sorted_answerable_facts, temporal_payload_fields
 from opencortex.vector.payloads import (
     AnchorIndexPayload,
     FactIndexPayload,
@@ -48,7 +48,7 @@ class FactIndex(BaseModel):
 class SearchIndexWriter:
     """Write AnchorIndex and FactIndex records for primary records."""
 
-    max_fact_points = 12
+    max_fact_points = 24
     min_fact_length = 8
     max_fact_length = 240
 
@@ -75,9 +75,8 @@ class SearchIndexWriter:
         records = self.search_records(event)
         if not records:
             return
-        self.embed_records(records)
-        for index_record in records:
-            await self.vector_store.upsert(self.collection_resolver(), index_record)
+        await self.embed_records(records)
+        await upsert_records(self.vector_store, self.collection_resolver(), records)
 
     def anchor_indexes(self, event: MemoryEvent) -> list[AnchorIndex]:
         """Build anchor index entries from the event record payload."""
@@ -216,6 +215,7 @@ class SearchIndexWriter:
     ) -> dict[str, Any]:
         """Build one generic search index storage record."""
         meta = dict(record.get("meta") or {})
+        time_refs = meta.get("time_refs") or record.get("time_refs") or []
         meta.update(
             {
                 "index_name": index_name,
@@ -248,6 +248,15 @@ class SearchIndexWriter:
             "memory_kind": record.get("memory_kind", ""),
             "index_score": index_score,
             "meta": meta,
+            **temporal_payload_fields(
+                record.get("event_ts"),
+                record.get("event_date"),
+                record.get("utterance_ts"),
+                record.get("date_range_start"),
+                record.get("date_range_end"),
+                time_refs,
+                text,
+            ),
         }
         if retrieval_surface == VectorPayloadSurface.ANCHOR_INDEX:
             return AnchorIndexPayload(
@@ -256,12 +265,19 @@ class SearchIndexWriter:
             ).to_record()
         return FactIndexPayload(**base).to_record()
 
-    def embed_records(self, records: list[dict[str, Any]]) -> None:
+    async def embed_records(self, records: list[dict[str, Any]]) -> None:
         """Attach required vectors to search index records."""
         if self.embedder is None:
             raise RuntimeError("SearchIndexWriter requires an embedder")
         texts = [str(record.get("overview", "") or "") for record in records]
-        results = self.embedder.embed_batch(texts)
+        if hasattr(self.embedder, "prefer_async") and hasattr(
+            self.embedder, "aembed_batch"
+        ):
+            results = await self.embedder.aembed_batch(texts)
+        else:
+            import asyncio
+
+            results = await asyncio.to_thread(self.embedder.embed_batch, texts)
         for record, result in zip(records, results, strict=False):
             if getattr(result, "dense_vector", None):
                 record["vector"] = result.dense_vector
@@ -269,3 +285,16 @@ class SearchIndexWriter:
                 raise ValueError("Search index embedding returned no dense vector")
             if getattr(result, "sparse_vector", None):
                 record["sparse_vector"] = result.sparse_vector
+
+
+async def upsert_records(
+    vector_store: Any,
+    collection: str,
+    records: list[dict[str, Any]],
+) -> None:
+    """Upsert records through the batch API when available."""
+    if hasattr(vector_store, "upsert_many"):
+        await vector_store.upsert_many(collection, records)
+        return
+    for record in records:
+        await vector_store.upsert(collection, record)

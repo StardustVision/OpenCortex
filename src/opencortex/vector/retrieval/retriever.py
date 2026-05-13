@@ -10,6 +10,7 @@ from qdrant_client import models
 from opencortex.core.identity import IdentityProfile
 from opencortex.storage.cortex_storage import CortexStorage
 from opencortex.utils.facts import best_fact_point
+from opencortex.vector.retrieval.composer import RecallComposer
 from opencortex.vector.retrieval.cone import ConeExpander
 from opencortex.vector.retrieval.executor import RetrievalExecutor
 from opencortex.vector.retrieval.filters import field_match, retrieval_filter
@@ -52,6 +53,7 @@ class MemoryRetriever:
         default_rerank_model: str = "",
         rerank_seed_limit: int = 30,
         rerank_final_limit: int = 30,
+        surface_timeout_seconds: float = 8.0,
     ) -> None:
         self.vector_store = vector_store
         self.collection_resolver = collection_resolver
@@ -66,6 +68,7 @@ class MemoryRetriever:
         self.executor = RetrievalExecutor(
             vector_store=vector_store,
             collection_resolver=collection_resolver,
+            surface_timeout_seconds=surface_timeout_seconds,
         )
         self.reason_tree = ReasonTreeRunner(
             vector_store=vector_store,
@@ -91,6 +94,7 @@ class MemoryRetriever:
             seed_limit=rerank_seed_limit,
             final_limit=rerank_final_limit,
         )
+        self.composer = RecallComposer(llm_completion)
 
     async def search(
         self,
@@ -164,6 +168,11 @@ class MemoryRetriever:
             )
             for hit in ranked_hits
         ]
+        results = await self.composer.compose(
+            query=plan.query,
+            query_type=plan.query_type,
+            results=results,
+        )
         return RetrievalResponse(results=results, total=len(results))
 
     async def load_primary_records(
@@ -226,7 +235,7 @@ class MemoryRetriever:
             evidence=recall_evidence(record, hit=hit),
             entities=list(record.get("entities") or []),
             keywords=str(record.get("keywords", "") or ""),
-            meta=dict(record.get("meta") or {}),
+            meta=matched_meta(record),
         )
 
     async def read_optional(self, uri: str) -> str | None:
@@ -272,6 +281,28 @@ def recall_source(record: dict[str, Any], *, uri: str) -> RecallSource:
             record.get("source_section_path") or meta.get("source_section_path") or ""
         ),
     )
+
+
+def matched_meta(record: dict[str, Any]) -> dict[str, Any]:
+    """Return non-breaking diagnostic metadata for one matched record."""
+    meta = dict(record.get("meta") or {})
+    surfaces = list(record.get("_retrieval_surfaces") or [])
+    if surfaces:
+        meta["retrieval_surfaces"] = surfaces
+    abstract_json = record.get("abstract_json")
+    if isinstance(abstract_json, dict):
+        meta["abstract_json"] = abstract_json
+    for key in (
+        "event_ts",
+        "utterance_ts",
+        "date_range_start",
+        "date_range_end",
+        "time_refs",
+    ):
+        value = record.get(key)
+        if value:
+            meta[key] = value
+    return meta
 
 
 def recall_evidence(record: dict[str, Any], *, hit: Any) -> list[RecallEvidence]:

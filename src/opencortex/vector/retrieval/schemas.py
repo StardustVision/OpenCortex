@@ -35,6 +35,16 @@ class RetrievalSurface(StrEnum):
     REASON_TREE_INDEX = "reason_tree_index"
 
 
+class QueryType(StrEnum):
+    """Internal recall query intent."""
+
+    FACTUAL = "factual"
+    TEMPORAL = "temporal"
+    REASONING = "reasoning"
+    MULTIHOP = "multihop"
+    SUMMARY = "summary"
+
+
 class QuerySize(StrEnum):
     """Recall query complexity buckets used by probe preparation."""
 
@@ -86,6 +96,7 @@ class RetrievalProbeResult(BaseModel):
     """Probe output consumed by the planner and executor."""
 
     should_recall: bool = True
+    query_type: QueryType = QueryType.FACTUAL
     starting_uris: list[str] = Field(default_factory=list)
     evidence: ProbeEvidence = Field(default_factory=ProbeEvidence)
     search_vectors: list[list[float]] = Field(default_factory=list, exclude=True)
@@ -95,6 +106,7 @@ class RetrievalPlan(BaseModel):
     """Planner output consumed by the executor."""
 
     query: str
+    query_type: QueryType = QueryType.FACTUAL
     limit: int
     candidate_limit: int
     surfaces: list[RetrievalSurface] = Field(default_factory=list)
@@ -109,6 +121,7 @@ class RetrievalPlan(BaseModel):
     confidence: float = 0.0
     decision: RetrievalDecision = RetrievalDecision.EXPAND
     depth: DetailLevel = DetailLevel.L2
+    temporal: "TemporalPlan" = Field(default_factory=lambda: TemporalPlan())
     reason_tree: "ReasonTreePlan" = Field(default_factory=lambda: ReasonTreePlan())
     cone_expansion: "ConeExpansionPlan" = Field(
         default_factory=lambda: ConeExpansionPlan()
@@ -123,6 +136,17 @@ class ReasonTreePlan(BaseModel):
     enabled: bool = False
     use_llm: bool = False
     max_nodes: int = 0
+
+
+class TemporalPlan(BaseModel):
+    """Optional explicit-time retrieval filter and sort instructions."""
+
+    enabled: bool = False
+    before: str = ""
+    after: str = ""
+    since: str = ""
+    until: str = ""
+    order: str = ""
 
 
 class ConeExpansionPlan(BaseModel):
