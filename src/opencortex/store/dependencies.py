@@ -17,6 +17,7 @@ from opencortex.store.session.ender import SessionEnder
 from opencortex.store.session.merger import SessionMerger
 from opencortex.store.session.store import SessionStore
 from opencortex.store.store import MemoryStore, ResourceStore
+from opencortex.store.upload import TempUploadStore
 from opencortex.store.writer.primary_record_writer import PrimaryRecordWriter
 from opencortex.vector.retrieval import MemoryRetriever
 
@@ -69,6 +70,30 @@ def get_embedding_model(request: Request) -> Any:
 def get_memory_events(request: Request) -> Any:
     """Return write-path event manager."""
     return getattr(request.app.state, "store_memory_events", None)
+
+
+def get_store_event_worker(request: Request) -> Any:
+    """Return persistent write-path event worker."""
+    return getattr(request.app.state, "store_event_worker", None)
+
+
+def get_store_wait_tracker(request: Request) -> Any:
+    """Return request-scoped store wait tracker."""
+    tracker = getattr(request.app.state, "store_wait_tracker", None)
+    if tracker is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Store wait tracker is not initialized",
+        )
+    return tracker
+
+
+def get_temp_upload_store(request: Request) -> TempUploadStore:
+    """Return CFS-backed temporary upload storage."""
+    runtime = getattr(request.app.state, "runtime", None)
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="Runtime is not initialized")
+    return TempUploadStore(cfs=runtime.cortex_storage.cfs)
 
 
 def get_cortex_namespace(

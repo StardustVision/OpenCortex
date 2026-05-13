@@ -1248,6 +1248,143 @@ class TestOpenCortexApp(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(reason_tree_nodes[0]["uri"].startswith(f"{root_uri}/"))
         self.assertEqual(reason_tree_nodes[0]["reason_role"], "resource_tree_node")
 
+    async def test_resource_store_wait_returns_ready_status(self) -> None:
+        """wait=True waits for request-scoped resource side effects."""
+        content = "# Atlas Setup\n\nVector recall setup."
+        with TemporaryDirectory() as data_root:
+            app = create_app(settings=app_settings(data_root))
+            headers = auth_headers(data_root)
+            with (
+                patch(
+                    "opencortex.llm.client.LLMCompletion.complete",
+                    new=AsyncMock(side_effect=fake_llm_completion),
+                ),
+                patch(
+                    "opencortex.vector.embedder.OpenAIEmbeddingClient.embed",
+                    side_effect=fake_embedding,
+                ),
+                patch(
+                    "opencortex.vector.embedder.OpenAIEmbeddingClient.embed_batch",
+                    side_effect=fake_embedding_batch,
+                ),
+            ):
+                async with app.router.lifespan_context(app):
+                    transport = ASGITransport(app=app)
+                    async with httpx.AsyncClient(
+                        transport=transport,
+                        base_url="http://testserver",
+                        headers=headers,
+                    ) as client:
+                        response = await client.post(
+                            "/api/v1/memory/store",
+                            json={
+                                "type": "resource",
+                                "content": content,
+                                "category": "semantic",
+                                "metadata": {},
+                                "source": {
+                                    "kind": "document",
+                                    "path": "/docs/atlas.md",
+                                    "title": "Atlas",
+                                },
+                                "wait": True,
+                                "timeout": 5,
+                            },
+                        )
+                        body = response.json()
+                        status_response = await client.get(
+                            f"/api/v1/memory/store/status/{body['request_id']}"
+                        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(body["index_status"], "ready")
+        self.assertGreaterEqual(body["queue_status"]["done"], 2)
+        self.assertEqual(status_response.json()["index_status"], "ready")
+
+    async def test_inline_store_rejects_large_content(self) -> None:
+        """Inline store rejects content that should use temp upload."""
+        with TemporaryDirectory() as data_root:
+            app = create_app(settings=app_settings(data_root))
+            headers = auth_headers(data_root)
+            async with app.router.lifespan_context(app):
+                transport = ASGITransport(app=app)
+                async with httpx.AsyncClient(
+                    transport=transport,
+                    base_url="http://testserver",
+                    headers=headers,
+                ) as client:
+                    response = await client.post(
+                        "/api/v1/memory/store",
+                        json={
+                            "type": "resource",
+                            "content": "x" * (5 * 1024 * 1024 + 1),
+                            "category": "semantic",
+                            "metadata": {},
+                            "source": {
+                                "kind": "document",
+                                "path": "/docs/large.md",
+                            },
+                        },
+                    )
+
+        self.assertEqual(response.status_code, 413)
+        self.assertIn("temp_upload", response.json()["detail"])
+
+    async def test_resource_temp_upload_imports_large_document(self) -> None:
+        """Uploaded resource bytes can be imported with request-scoped wait."""
+        content = b"# Atlas Upload\n\nVector recall setup from upload."
+        with TemporaryDirectory() as data_root:
+            app = create_app(settings=app_settings(data_root))
+            headers = auth_headers(data_root)
+            with (
+                patch(
+                    "opencortex.llm.client.LLMCompletion.complete",
+                    new=AsyncMock(side_effect=fake_llm_completion),
+                ),
+                patch(
+                    "opencortex.vector.embedder.OpenAIEmbeddingClient.embed",
+                    side_effect=fake_embedding,
+                ),
+                patch(
+                    "opencortex.vector.embedder.OpenAIEmbeddingClient.embed_batch",
+                    side_effect=fake_embedding_batch,
+                ),
+            ):
+                async with app.router.lifespan_context(app):
+                    transport = ASGITransport(app=app)
+                    async with httpx.AsyncClient(
+                        transport=transport,
+                        base_url="http://testserver",
+                        headers=headers,
+                    ) as client:
+                        upload_response = await client.post(
+                            "/api/v1/resources/temp_upload",
+                            params={"filename": "atlas-upload.md"},
+                            content=content,
+                            headers={**headers, "content-type": "text/markdown"},
+                        )
+                        upload_id = upload_response.json()["upload_id"]
+                        import_response = await client.post(
+                            "/api/v1/resources/import",
+                            json={
+                                "upload_id": upload_id,
+                                "category": "semantic",
+                                "metadata": {},
+                                "wait": True,
+                                "timeout": 5,
+                            },
+                        )
+                    body = import_response.json()
+                    stored_content = await app.state.runtime.cortex_storage.read_file(
+                        f"{body['uri']}/content.md"
+                    )
+
+        self.assertEqual(upload_response.status_code, 200)
+        self.assertEqual(import_response.status_code, 200)
+        self.assertEqual(body["index_status"], "ready")
+        self.assertEqual(body["upload_id"], upload_id)
+        self.assertIn("Atlas Upload", stored_content)
+
     async def test_document_parser_dispatches_resource_source_formats(self) -> None:
         """Resource parser accepts explicit document formats, MIME types, and paths."""
         parser = DocumentParser()

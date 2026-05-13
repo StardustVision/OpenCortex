@@ -23,6 +23,7 @@ from opencortex.store.event.events import (
     SessionTurnStoredEvent,
 )
 from opencortex.store.event.failure import classify_event_failure
+from opencortex.store.event.wait import StoreWaitTracker
 from opencortex.store.types import EventName
 
 logger = structlog.get_logger(__name__)
@@ -58,6 +59,7 @@ class EventWorker:
         idle_sleep_seconds: float = 0.1,
         concurrency: int = 1,
         locked_key_delay_seconds: float = 2.0,
+        wait_tracker: StoreWaitTracker | None = None,
     ) -> None:
         self.memory_events = memory_events
         self.event_queue = event_queue
@@ -67,6 +69,7 @@ class EventWorker:
         self.idle_sleep_seconds = max(0.01, float(idle_sleep_seconds))
         self.concurrency = max(1, int(concurrency))
         self.locked_key_delay_seconds = max(0.05, float(locked_key_delay_seconds))
+        self.wait_tracker = wait_tracker
         self.tasks: set[asyncio.Task[None]] = set()
         self._key_locks: defaultdict[Hashable, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._stop = asyncio.Event()
@@ -82,19 +85,27 @@ class EventWorker:
     def enqueue(self, event: Any) -> None:
         """Enqueue supported store events without blocking the publisher."""
         if self.supports(event):
-            self.event_queue.enqueue(
+            request_id = (
+                self.wait_tracker.current_request_id() if self.wait_tracker else ""
+            )
+            message_id = self.event_queue.enqueue(
                 self.queue_name,
-                self.event_payload(event),
+                self.event_payload(event, request_id=request_id),
                 max_attempts=self.max_attempts,
             )
+            if self.wait_tracker is not None and request_id:
+                self.wait_tracker.register_message_nowait(request_id, message_id)
 
     async def aenqueue(self, event: StoreWriteEvent) -> None:
         """Enqueue supported store events through the async queue adapter."""
-        await self.event_queue.aenqueue(
+        request_id = self.wait_tracker.current_request_id() if self.wait_tracker else ""
+        message_id = await self.event_queue.aenqueue(
             self.queue_name,
-            self.event_payload(event),
+            self.event_payload(event, request_id=request_id),
             max_attempts=self.max_attempts,
         )
+        if self.wait_tracker is not None and request_id:
+            await self.wait_tracker.register_message(request_id, message_id)
 
     async def start(self) -> None:
         """Start the worker loop."""
@@ -180,6 +191,7 @@ class EventWorker:
                     message.id,
                     delay_seconds=self.locked_key_delay_seconds,
                 )
+                await self.mark_wait_requeued(message)
                 return
             async with lock:
                 failures = await self.handle(event)
@@ -195,6 +207,10 @@ class EventWorker:
                 retry=failure.retry,
                 delay_seconds=failure.delay_seconds,
             )
+            if failure.retry and message.attempts < message.max_attempts:
+                await self.mark_wait_requeued(message)
+            else:
+                await self.mark_wait_failed(message, failure.message)
             logger.warning(
                 "store_event_failed",
                 queue_name=self.queue_name,
@@ -204,6 +220,31 @@ class EventWorker:
             )
             return
         await self.event_queue.aack(message.id)
+        await self.mark_wait_done(message)
+
+    async def mark_wait_done(self, message: QueueMessage) -> None:
+        """Update request-scoped wait state for a completed message."""
+        if self.wait_tracker is None:
+            return
+        request_id = str(message.payload.get("request_id", "") or "")
+        if request_id:
+            await self.wait_tracker.mark_done(request_id, message.id)
+
+    async def mark_wait_requeued(self, message: QueueMessage) -> None:
+        """Update request-scoped wait state for a requeued message."""
+        if self.wait_tracker is None:
+            return
+        request_id = str(message.payload.get("request_id", "") or "")
+        if request_id:
+            await self.wait_tracker.mark_requeued(request_id, message.id)
+
+    async def mark_wait_failed(self, message: QueueMessage, error: str) -> None:
+        """Update request-scoped wait state for a terminally failed message."""
+        if self.wait_tracker is None:
+            return
+        request_id = str(message.payload.get("request_id", "") or "")
+        if request_id:
+            await self.wait_tracker.mark_failed(request_id, message.id, error)
 
     @staticmethod
     def ordering_key(event: StoreWriteEvent) -> Hashable:
@@ -280,11 +321,16 @@ class EventWorker:
         )
 
     @staticmethod
-    def event_payload(event: StoreWriteEvent) -> dict[str, Any]:
+    def event_payload(
+        event: StoreWriteEvent,
+        *,
+        request_id: str = "",
+    ) -> dict[str, Any]:
         """Serialize one supported event for persistent queue storage."""
         return {
             "event_name": event.name,
             "event": event.model_dump(mode="json"),
+            "request_id": request_id,
         }
 
     @staticmethod

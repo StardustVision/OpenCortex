@@ -19,7 +19,9 @@ from opencortex.store.event.events import (
     SessionEndedEvent,
     SessionTurnStoredEvent,
 )
+from opencortex.store.event.wait import StoreWaitTracker
 from opencortex.store.event.worker import EventWorker
+from opencortex.store.routes import _wait_for_store_request
 from opencortex.store.types import ContextType, EventName, SessionRecordLayer
 from opencortex.store.writer.reason_tree_build_writer import ReasonTreeBuildWriter
 from opencortex.store.writer.reason_tree_index_writer import ReasonTreeIndexWriter
@@ -108,6 +110,13 @@ class _TimedCaptureAction:
         else:
             await asyncio.sleep(0.05)
         self.records.append(("end", session_id))
+
+
+class _TimeoutPublishWorker:
+    async def wait_publish_tasks(self, *, deadline: float) -> None:
+        """Simulate event publication exceeding the caller's wait budget."""
+        _ = deadline
+        raise TimeoutError("publish timeout")
 
 
 def _queue(root: str) -> CFSQueue:
@@ -448,6 +457,65 @@ class TestEventWorker(unittest.IsolatedAsyncioTestCase):
                 ("end", "session-1"),
             ],
         )
+
+    async def test_worker_updates_request_wait_tracker(self) -> None:
+        """Request-scoped wait state completes when the queued event is acknowledged."""
+        events = MemoryEventManager()
+        tracker = StoreWaitTracker()
+        received: list[MemoryEvent] = []
+        request_id = "request-1"
+        with tempfile.TemporaryDirectory() as root:
+            worker = EventWorker(
+                memory_events=events,
+                event_queue=_queue(root),
+                actions=[_CaptureAction(MemoryStoredEvent, received)],
+                idle_sleep_seconds=0.01,
+                wait_tracker=tracker,
+            )
+            worker.subscribe()
+            await tracker.register_request(request_id)
+            await worker.start()
+            event = MemoryStoredEvent(
+                uri="opencortex://tenant/user/memories/test",
+                record_id="record-1",
+                tenant_id="tenant",
+                user_id="user",
+                project_id="public",
+                context_type="memory",
+                category="general",
+            )
+
+            with tracker.scope(request_id):
+                events.publish_nowait(event)
+            await worker.wait_publish_tasks(
+                deadline=asyncio.get_running_loop().time() + 2
+            )
+            await tracker.wait_for_request(request_id, timeout_seconds=2)
+            status = await tracker.status(request_id)
+            await worker.close()
+            await events.close()
+
+        self.assertEqual(received, [event])
+        self.assertEqual(status["index_status"], "ready")
+        self.assertEqual(status["queue_status"]["done"], 1)
+
+    async def test_store_wait_publish_timeout_reports_processing(self) -> None:
+        """Gateway-safe wait does not report ready before events are published."""
+        tracker = StoreWaitTracker()
+        request_id = "request-1"
+        response = {"data": {}}
+        await tracker.register_request(request_id)
+
+        await _wait_for_store_request(
+            request_id=request_id,
+            wait_tracker=tracker,
+            event_worker=_TimeoutPublishWorker(),
+            requested_timeout=0,
+            response=response,
+        )
+
+        self.assertEqual(response["index_status"], "processing")
+        self.assertEqual(response["queue_status"]["pending"], 1)
 
 
 class TestSearchIndexWriter(unittest.IsolatedAsyncioTestCase):

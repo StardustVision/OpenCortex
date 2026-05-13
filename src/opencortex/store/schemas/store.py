@@ -40,6 +40,8 @@ class StoreRequest(BaseModel):
     category: StoreMemoryCategory
     metadata: dict[str, Any]
     source: StoreSource
+    wait: bool = False
+    timeout: float | None = None
 
     model_config = ConfigDict(extra="forbid")
 
@@ -49,6 +51,19 @@ class StoreRequest(BaseModel):
         if not self.content.strip():
             raise ValueError("content is required")
         return self
+
+
+class ResourceImportRequest(BaseModel):
+    """Request to import a previously uploaded resource."""
+
+    upload_id: str = Field(..., min_length=1)
+    category: StoreMemoryCategory
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    source: StoreSource | None = None
+    wait: bool = False
+    timeout: float | None = None
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class MemoryStoreInput(BaseModel):
@@ -274,24 +289,52 @@ def resource_store_input_from_request(req: Any) -> ResourceStoreInput:
     )
 
 
+def resource_store_input_from_upload(req: Any, upload: Any) -> ResourceStoreInput:
+    """Validate an uploaded document as a resource input."""
+    source = req.source or StoreSource(
+        kind=StoreSourceKind.DOCUMENT,
+        path=upload.source_path,
+        title=upload.title,
+        format=upload.source_format,
+        content_type=upload.content_type,
+    )
+    meta = store_meta_from_parts(metadata=req.metadata, source=source)
+    meta["upload_id"] = upload.upload_id
+    meta["upload_size_bytes"] = upload.size_bytes
+    return ResourceStoreInput(
+        content=upload.content,
+        category=str(req.category),
+        meta=meta,
+    )
+
+
 def store_meta_from_request(req: StoreRequest) -> dict[str, Any]:
     """Map public metadata and source fields to internal store metadata."""
-    source = req.source.model_dump()
-    meta = dict(req.metadata)
-    meta[str(StoreMetadataKey.SOURCE)] = source
+    return store_meta_from_parts(metadata=req.metadata, source=req.source)
 
-    if req.source.path:
-        meta.setdefault(str(StoreMetadataKey.SOURCE_PATH), req.source.path)
-        meta.setdefault(str(StoreMetadataKey.FILE_PATH), req.source.path)
-    if req.source.title:
-        meta.setdefault(str(StoreMetadataKey.SOURCE_DOC_TITLE), req.source.title)
-        meta.setdefault(str(StoreMetadataKey.TITLE), req.source.title)
-    if req.source.section:
-        meta.setdefault(str(StoreMetadataKey.SOURCE_SECTION_PATH), req.source.section)
-    if req.source.format:
-        meta.setdefault(str(StoreMetadataKey.SOURCE_FORMAT), req.source.format)
-    if req.source.content_type:
-        meta.setdefault(str(StoreMetadataKey.CONTENT_TYPE), req.source.content_type)
+
+def store_meta_from_parts(
+    *,
+    metadata: dict[str, Any],
+    source: StoreSource,
+) -> dict[str, Any]:
+    """Map public metadata and source fields to internal store metadata."""
+    source_data = source.model_dump()
+    meta = dict(metadata)
+    meta[str(StoreMetadataKey.SOURCE)] = source_data
+
+    if source.path:
+        meta.setdefault(str(StoreMetadataKey.SOURCE_PATH), source.path)
+        meta.setdefault(str(StoreMetadataKey.FILE_PATH), source.path)
+    if source.title:
+        meta.setdefault(str(StoreMetadataKey.SOURCE_DOC_TITLE), source.title)
+        meta.setdefault(str(StoreMetadataKey.TITLE), source.title)
+    if source.section:
+        meta.setdefault(str(StoreMetadataKey.SOURCE_SECTION_PATH), source.section)
+    if source.format:
+        meta.setdefault(str(StoreMetadataKey.SOURCE_FORMAT), source.format)
+    if source.content_type:
+        meta.setdefault(str(StoreMetadataKey.CONTENT_TYPE), source.content_type)
     return meta
 
 

@@ -41,6 +41,7 @@ from opencortex.store.event.actions import (
     SessionMergeAction,
 )
 from opencortex.store.event.events import StoreEvents
+from opencortex.store.event.wait import StoreWaitTracker
 from opencortex.store.event.worker import EventWorker
 from opencortex.store.routes import router as store_router
 from opencortex.store.session.buffer import SessionBuffer
@@ -178,6 +179,7 @@ def configure_store_state(app: FastAPI, runtime: AppRuntime) -> None:
     app.state.store_llm_completion = runtime.llm_completion
     app.state.store_memory_events = runtime.memory_events
     app.state.store_event_queue = runtime.store_event_queue
+    app.state.store_wait_tracker = StoreWaitTracker()
     app.state.collection_resolver = runtime.get_collection
     app.state.ttl_resolver = runtime.ttl_from_hours
     app.state.store_document_parser = DocumentParser()
@@ -210,6 +212,7 @@ def build_event_worker(app: FastAPI, runtime: AppRuntime) -> EventWorker:
     return EventWorker(
         memory_events=runtime.memory_events,
         event_queue=runtime.store_event_queue,
+        wait_tracker=app.state.store_wait_tracker,
         actions=[
             SemanticDeriveAction(
                 vector_store=runtime.vector_store,
@@ -277,6 +280,7 @@ def store_state_attrs() -> tuple[str, ...]:
         "collection_resolver",
         "store_memory_events",
         "store_event_queue",
+        "store_wait_tracker",
         "store_document_parser",
         "store_llm_completion",
         "store_embedder",
