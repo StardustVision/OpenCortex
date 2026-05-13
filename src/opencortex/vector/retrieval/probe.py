@@ -206,6 +206,15 @@ class RetrievalProbe:
         locator_scores = sorted(
             (record_score(record) for record in locator_records), reverse=True
         )
+        reason_tree_scores = sorted(
+            (
+                record_score(record)
+                for record in locator_records
+                if record.get("retrieval_surface")
+                == RetrievalSurface.REASON_TREE_INDEX.value
+            ),
+            reverse=True,
+        )
         starting_uris = starting_uris_from_locator_hits(
             direct_records=object_records,
             locator_records=locator_records,
@@ -219,9 +228,13 @@ class RetrievalProbe:
                 score_gap=round(scores[0] - scores[1], 4) if len(scores) >= 2 else None,
                 object_top_score=object_scores[0] if object_scores else None,
                 locator_top_score=locator_scores[0] if locator_scores else None,
+                reason_tree_top_score=(
+                    reason_tree_scores[0] if reason_tree_scores else None
+                ),
                 candidate_count=len(candidates),
                 object_candidate_count=len(object_records),
                 locator_candidate_count=len(locator_records),
+                reason_tree_candidate_count=len(reason_tree_scores),
             ),
         )
 

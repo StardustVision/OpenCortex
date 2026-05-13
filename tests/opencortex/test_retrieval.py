@@ -49,6 +49,30 @@ class TestRetrievalPlanning(unittest.TestCase):
         self.assertEqual(plan.query_type, QueryType.FACTUAL)
         self.assertFalse(plan.temporal.enabled)
 
+    def test_strong_reason_tree_probe_enables_selection_for_simple_query(self) -> None:
+        """Strong reason-tree hits opt factual queries into tree selection."""
+        planner = RetrievalPlanner()
+        probe = RetrievalProbeResult(
+            query_type=QueryType.FACTUAL,
+            starting_uris=["opencortex://tenant/user/resources/public/doc"],
+            search_vectors=[[0.1, 0.2]],
+            evidence=ProbeEvidence(
+                top_score=0.92,
+                object_top_score=0.84,
+                locator_top_score=0.91,
+                reason_tree_top_score=0.91,
+                candidate_count=2,
+                object_candidate_count=1,
+                locator_candidate_count=1,
+                reason_tree_candidate_count=1,
+            ),
+        )
+
+        plan = planner.plan(RetrievalRequest(query="Atlas setup"), probe=probe)
+
+        self.assertTrue(plan.reason_tree.enabled)
+        self.assertTrue(plan.reason_tree.use_llm)
+
     def test_temporal_query_builds_temporal_plan(self) -> None:
         """Explicit dates or order words become temporal plans."""
         self.assertEqual(

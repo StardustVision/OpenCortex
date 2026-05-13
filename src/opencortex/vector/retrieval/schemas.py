@@ -87,9 +87,11 @@ class ProbeEvidence(BaseModel):
     score_gap: float | None = None
     object_top_score: float | None = None
     locator_top_score: float | None = None
+    reason_tree_top_score: float | None = None
     candidate_count: int = 0
     object_candidate_count: int = 0
     locator_candidate_count: int = 0
+    reason_tree_candidate_count: int = 0
 
 
 class RetrievalProbeResult(BaseModel):

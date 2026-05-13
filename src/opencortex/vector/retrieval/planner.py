@@ -193,16 +193,27 @@ class RetrievalPlanner:
             probe.evidence.object_candidate_count == 0
             and probe.evidence.locator_candidate_count > 0
         )
+        reason_tree_strong = RetrievalPlanner.strong_reason_tree_signal(probe)
         should_use_llm = (
             decision != RetrievalDecision.NO_RECALL
             and bool(probe.starting_uris)
-            and (multi_query or locator_only or confidence < 0.76)
+            and (multi_query or locator_only or confidence < 0.76 or reason_tree_strong)
         )
         return ReasonTreePlan(
             enabled=should_use_llm,
             use_llm=should_use_llm,
             max_nodes=6 if should_use_llm else 0,
         )
+
+    @staticmethod
+    def strong_reason_tree_signal(probe: RetrievalProbeResult) -> bool:
+        """Return whether reason-tree evidence should trigger LLM selection."""
+        evidence = probe.evidence
+        reason_tree_top = evidence.reason_tree_top_score or 0.0
+        if evidence.reason_tree_candidate_count <= 0 or reason_tree_top < 0.78:
+            return False
+        object_top = evidence.object_top_score or 0.0
+        return object_top <= 0.0 or reason_tree_top >= object_top - 0.08
 
     @staticmethod
     def cone_expansion_plan(
